@@ -1,5 +1,5 @@
-import Darwin
-import EasyTierCore
+import EasyTierRuntime
+import EasyTierShared
 import Foundation
 
 final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unchecked Sendable {
@@ -10,27 +10,12 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
         reply(EasyTierPrivilegedHelperConstants.pingPayload, nil)
     }
 
-    func repairUserStateDirectory(uid: Int32, gid: Int32, home: String, reply: @escaping (String?, String?) -> Void) {
-        do {
-            let directory = URL(fileURLWithPath: home, isDirectory: true)
-                .appendingPathComponent("Library", isDirectory: true)
-                .appendingPathComponent("Application Support", isDirectory: true)
-                .appendingPathComponent("EasyTier", isDirectory: true)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            _ = chown(directory.path, uid_t(uid), gid_t(gid))
-            _ = chmod(directory.path, S_IRWXU | S_IRGRP | S_IXGRP)
-            reply("ok", nil)
-        } catch {
-            reply(nil, error.localizedDescription)
-        }
-    }
-
     func validate(toml: String, reply: @escaping (String?, String?) -> Void) {
         do {
             try StaticEasyTierFFIClient.validateDirect(toml: toml)
             reply("ok", nil)
         } catch {
-            reply(nil, error.localizedDescription)
+            replyFailure(error, code: "validationFailed", reply: reply)
         }
     }
 
@@ -40,7 +25,7 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
             try client.run(toml: configTOML)
             reply("ok", nil)
         } catch {
-            reply(nil, error.localizedDescription)
+            replyFailure(error, code: "runFailed", reply: reply)
         }
     }
 
@@ -57,7 +42,7 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
             let instances = try client.listInstancesSync()
             reply(String(data: try encoder.encode(instances), encoding: .utf8) ?? "[]", nil)
         } catch {
-            reply(nil, error.localizedDescription)
+            replyFailure(error, code: "listInstancesFailed", reply: reply)
         }
     }
 
@@ -71,7 +56,7 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
             let data = try JSONSerialization.data(withJSONObject: object)
             reply(String(data: data, encoding: .utf8) ?? "{}", nil)
         } catch {
-            reply(nil, error.localizedDescription)
+            replyFailure(error, code: "collectNetworkInfosFailed", reply: reply)
         }
     }
 
@@ -80,7 +65,30 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
             try operation()
             reply("ok", nil)
         } catch {
-            reply(nil, error.localizedDescription)
+            replyFailure(error, code: "operationFailed", reply: reply)
+        }
+    }
+
+    private func replyFailure(_ error: Error, code: String, reply: @escaping (String?, String?) -> Void) {
+        let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let payload = PrivilegedHelperErrorPayload(
+            code: code,
+            message: message.isEmpty ? "EasyTier privileged helper operation failed." : message,
+            recoverySuggestion: recoverySuggestion(for: code)
+        )
+        reply(nil, payload.encodedString())
+    }
+
+    private func recoverySuggestion(for code: String) -> String? {
+        switch code {
+        case "validationFailed":
+            "Review the network config fields and try validating again."
+        case "runFailed":
+            "Check helper permissions and the EasyTier runtime error, then try starting the network again."
+        case "collectNetworkInfosFailed", "listInstancesFailed":
+            "The network may still be starting. Refresh again in a few seconds."
+        default:
+            nil
         }
     }
 }

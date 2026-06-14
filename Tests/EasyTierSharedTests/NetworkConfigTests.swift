@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import EasyTierCore
+@testable import EasyTierShared
 
 @Test func defaultNetworkConfigMatchesWebDefaults() {
     let config = NetworkConfig()
@@ -161,6 +161,54 @@ import Testing
 }
 
 @MainActor
+@Test func loadMigratesUnavailableServiceModeToNormalMode() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let storage = EasyTierStorage(baseDirectory: directory)
+    let config = NetworkConfig(network_name: "legacy-service")
+    let snapshot = AppSnapshot(
+        configs: [StoredNetworkConfig(config: config)],
+        mode: .service(
+            configDir: directory.appendingPathComponent("config.d", isDirectory: true),
+            rpcPortal: "127.0.0.1:15999",
+            fileLogLevel: .off,
+            fileLogDir: directory.appendingPathComponent("logs", isDirectory: true),
+            configServerURL: nil
+        ),
+        lastSelectedConfigID: config.instance_id
+    )
+    try storage.save(snapshot)
+
+    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"), storage: storage)
+
+    await store.load()
+    store.stopPolling()
+
+    #expect(store.mode == .default)
+    #expect(store.selectedConfigID == config.instance_id)
+    #expect(store.logLines.contains { $0.contains("Service mode is not available") })
+}
+
+@MainActor
+@Test func applyModeDoesNotPersistUnavailableServiceMode() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let storage = EasyTierStorage(baseDirectory: directory)
+    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"), storage: storage)
+    let serviceMode = AppMode.service(
+        configDir: directory.appendingPathComponent("config.d", isDirectory: true),
+        rpcPortal: "127.0.0.1:15999",
+        fileLogLevel: .off,
+        fileLogDir: directory.appendingPathComponent("logs", isDirectory: true),
+        configServerURL: nil
+    )
+
+    await store.applyMode(serviceMode)
+
+    let snapshot = try storage.load()
+    #expect(store.mode == .default)
+    #expect(snapshot.mode == .default)
+}
+
+@MainActor
 @Test func selectedRunningInstanceDoesNotFallBackToFirstInstance() {
     let first = NetworkConfig(instance_id: "first-id", network_name: "first-network")
     let second = NetworkConfig(instance_id: "second-id", network_name: "second-network")
@@ -216,6 +264,58 @@ import Testing
     let message = PrivilegedHelperError.unavailable.localizedDescription
     #expect(message.contains("privileged helper"))
     #expect(message.contains("TUN"))
+}
+
+@Test func privilegedHelperErrorPayloadRoundTripsAndFeedsLocalizedDescription() {
+    let payload = PrivilegedHelperErrorPayload(
+        code: "runFailed",
+        message: "TUN device creation failed.",
+        recoverySuggestion: "Reinstall the privileged helper."
+    )
+
+    let decoded = PrivilegedHelperErrorPayload.decode(from: payload.encodedString())
+    let message = PrivilegedHelperError.helperReported(decoded).localizedDescription
+
+    #expect(decoded == payload)
+    #expect(message.contains("TUN device creation failed."))
+    #expect(message.contains("Reinstall the privileged helper."))
+}
+
+@MainActor
+@Test func runSelectedConfigKeepsPendingInstanceWhenRuntimeListIsInitiallyEmpty() async throws {
+    let client = PendingStartClient()
+    let config = NetworkConfig(instance_id: "pending-id", network_name: "pending-network")
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.selectedConfigID = config.instance_id
+
+    await store.runSelectedConfig()
+
+    let selected = try #require(store.selectedRunningInstance)
+    #expect(client.didRun)
+    #expect(selected.instance_id == config.instance_id)
+    #expect(selected.name == config.network_name)
+    #expect(selected.running)
+    #expect(selected.detail?.running == true)
+    #expect(store.lastError == nil)
+}
+
+@MainActor
+@Test func helperPermissionErrorsDoNotBecomeModalLastError() async throws {
+    let client = HelperRequiresApprovalClient()
+    let config = NetworkConfig(instance_id: "approval-id", network_name: "approval-network")
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.selectedConfigID = config.instance_id
+
+    await store.runSelectedConfig()
+
+    #expect(store.lastError == nil)
+    #expect(store.logLines.contains { $0.contains("Privileged helper needs user approval") })
 }
 
 @Test func runtimeInfoDerivesLocalAndPeerMembers() throws {
@@ -487,4 +587,55 @@ import Testing
 
 @Test func workspaceTabsExposeTrafficView() {
     #expect(WorkspaceTab.allCases.map(\.rawValue) == ["Status", "View", "Config", "Logs"])
+}
+
+private final class PendingStartClient: EasyTierCoreClient, @unchecked Sendable {
+    var didRun = false
+
+    func version() async throws -> String { "test" }
+    func validate(toml _: String) async throws {}
+
+    func run(config _: NetworkConfig) async throws {
+        didRun = true
+    }
+
+    func stop(instanceNames _: [String]) async throws {}
+    func retain(instanceNames _: [String]) async throws {}
+    func listInstances() async throws -> [NetworkInstance] { [] }
+    func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] { [:] }
+
+    func callJSONRPC(service _: String, method _: String, domain _: String?, payload _: String) async throws -> String {
+        throw EasyTierCoreError.operationFailed("unsupported")
+    }
+
+    func startConfigServerClient(url _: URL) async throws {
+        throw EasyTierCoreError.operationFailed("unsupported")
+    }
+
+    func stopConfigServerClient() async throws {}
+    func isConfigServerClientConnected() async throws -> Bool { false }
+}
+
+private final class HelperRequiresApprovalClient: EasyTierCoreClient, @unchecked Sendable {
+    func version() async throws -> String { "test" }
+    func validate(toml _: String) async throws {}
+
+    func run(config _: NetworkConfig) async throws {
+        throw PrivilegedHelperError.helperReported(
+            PrivilegedHelperErrorPayload(
+                code: "helperRequiresApproval",
+                message: "Privileged helper is installed but macOS has not allowed it to run in the background.",
+                recoverySuggestion: "Open System Settings > General > Login Items & Extensions, allow EasyTier, then return to EasyTier and try again."
+            )
+        )
+    }
+
+    func stop(instanceNames _: [String]) async throws {}
+    func retain(instanceNames _: [String]) async throws {}
+    func listInstances() async throws -> [NetworkInstance] { [] }
+    func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] { [:] }
+    func callJSONRPC(service _: String, method _: String, domain _: String?, payload _: String) async throws -> String { "" }
+    func startConfigServerClient(url _: URL) async throws {}
+    func stopConfigServerClient() async throws {}
+    func isConfigServerClientConnected() async throws -> Bool { false }
 }

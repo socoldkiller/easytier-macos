@@ -1,4 +1,4 @@
-import EasyTierCore
+import EasyTierShared
 import SwiftUI
 
 struct TrafficView: View {

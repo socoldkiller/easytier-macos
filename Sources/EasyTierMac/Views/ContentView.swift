@@ -1,4 +1,4 @@
-import EasyTierCore
+import EasyTierShared
 import SwiftUI
 
 struct ContentView: View {
@@ -58,7 +58,6 @@ struct ContentView: View {
         }
         .task {
             permissionController.refresh()
-            await repairPrivilegedHelperIfNeeded()
         }
         .sheet(isPresented: $showingModeSettings) {
             ModeSettingsSheet(mode: store.mode) { mode in
@@ -124,6 +123,11 @@ struct ContentView: View {
             Button {
                 commitDraft(saveImmediately: true)
                 Task {
+                    permissionController.refresh()
+                    guard permissionController.state == .enabled else {
+                        store.clearHelperPermissionError()
+                        return
+                    }
                     if selectedConfigIsRunning {
                         await store.stopSelectedConfig()
                     } else {
@@ -136,7 +140,8 @@ struct ContentView: View {
                     systemImage: store.isBusy ? "hourglass" : selectedConfigIsRunning ? "pause.fill" : "play.fill"
                 )
             }
-            .disabled(store.selectedConfig == nil || store.isBusy)
+            .disabled(store.selectedConfig == nil || store.isBusy || permissionController.state != .enabled)
+            .help("Run selected network")
 
             Menu {
                 Button("Import TOML") {
@@ -230,29 +235,6 @@ struct ContentView: View {
         store.updateConfig(id: draftConfigID, with: draftConfig, saveImmediately: saveImmediately)
         self.draftConfigID = store.selectedConfigID
         draftIsDirty = false
-    }
-
-    private func repairPrivilegedHelperIfNeeded() async {
-        guard permissionController.state == .enabled else { return }
-        let client = PrivilegedEasyTierClient()
-        do {
-            let payload = try await client.helperPingPayload()
-            guard payload != EasyTierPrivilegedHelperConstants.pingPayload else { return }
-            permissionController.reinstall()
-        } catch {
-            permissionController.reinstall()
-        }
-
-        do {
-            let payload = try await client.helperPingPayload()
-            if payload == EasyTierPrivilegedHelperConstants.pingPayload {
-                permissionController.refresh()
-            } else {
-                permissionController.markHelperUnavailable("Privileged helper is registered but did not match this app version.")
-            }
-        } catch {
-            permissionController.markHelperUnavailable("Privileged helper is registered but launchd could not start it. Reinstall EasyTier from a Developer ID signed and notarized build.")
-        }
     }
 }
 

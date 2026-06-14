@@ -21,6 +21,7 @@ public final class EasyTierAppStore {
     private let storage: EasyTierStorage
     private var pollingTask: Task<Void, Never>?
     private var lastTrafficCounters: [String: (timestamp: Date, txBytes: Int64, rxBytes: Int64)] = [:]
+    private var pendingStarts: [String: PendingNetworkStart] = [:]
 
     public init(client: any EasyTierCoreClient = EasyTierClientFactory.makeDefault(), storage: EasyTierStorage = .default) {
         self.client = client
@@ -80,7 +81,13 @@ public final class EasyTierAppStore {
         do {
             let snapshot = try storage.load()
             configs = snapshot.configs.isEmpty ? [StoredNetworkConfig(config: NetworkConfig())] : snapshot.configs
-            mode = snapshot.mode ?? .default
+            let loadedMode = snapshot.mode ?? .default
+            if case .service = loadedMode {
+                mode = .default
+                log("Service mode is not available in this build; switched to Normal mode.")
+            } else {
+                mode = loadedMode
+            }
             selectedConfigID = snapshot.lastSelectedConfigID ?? configs.first?.id
             log("Loaded \(configs.count) saved network config(s).")
         } catch {
@@ -118,6 +125,7 @@ public final class EasyTierAppStore {
         } catch {
             log("Stop before delete skipped: \(error.localizedDescription)")
         }
+        clearPendingStart(for: configs[index].config)
         configs.remove(at: index)
         if configs.isEmpty { configs.append(StoredNetworkConfig(config: NetworkConfig())) }
         self.selectedConfigID = configs.first?.id
@@ -156,6 +164,7 @@ public final class EasyTierAppStore {
             log("Starting \(config.network_name)...")
             try NetworkConfigValidator.validate(config)
             try await client.run(config: config)
+            recordPendingStart(for: config)
             log("Started \(config.network_name).")
             try await refreshRuntimeThrowing()
         }
@@ -166,6 +175,7 @@ public final class EasyTierAppStore {
         await busy {
             log("Stopping \(config.network_name)...")
             try await client.stop(instanceNames: [config.network_name])
+            clearPendingStart(for: config)
             log("Stopped \(config.network_name).")
             try await refreshRuntimeThrowing()
         }
@@ -174,6 +184,7 @@ public final class EasyTierAppStore {
     public func stopAll() async {
         await busy {
             try await client.retain(instanceNames: [])
+            pendingStarts.removeAll()
             log("Stopped all EasyTier instances.")
             try await refreshRuntimeThrowing()
         }
@@ -183,7 +194,14 @@ public final class EasyTierAppStore {
         do {
             try await refreshRuntimeThrowing()
         } catch {
+            guard !handleHelperPermissionError(error) else { return }
             lastError = error.localizedDescription
+        }
+    }
+
+    public func clearHelperPermissionError() {
+        if isHelperPermissionErrorMessage(lastError) {
+            lastError = nil
         }
     }
 
@@ -192,9 +210,17 @@ public final class EasyTierAppStore {
     }
 
     public func applyMode(_ mode: AppMode) async {
-        self.mode = mode
+        let effectiveMode: AppMode
+        if case .service = mode {
+            effectiveMode = .default
+            log("Service mode is not available in this build; switched to Normal mode.")
+        } else {
+            effectiveMode = mode
+        }
+
+        self.mode = effectiveMode
         save()
-        if let url = mode.configServerURL {
+        if let url = effectiveMode.configServerURL {
             await busy {
                 try await client.startConfigServerClient(url: url)
                 isConfigServerConnected = try await client.isConfigServerClientConnected()
@@ -244,6 +270,7 @@ public final class EasyTierAppStore {
     }
 
     private func refreshRuntimeThrowing() async throws {
+        let now = Date()
         var running = try await client.listInstances()
         let infos = try await client.collectNetworkInfos()
         for index in running.indices {
@@ -257,6 +284,12 @@ public final class EasyTierAppStore {
             }
             running[index].running = true
         }
+        let expired = mergePendingStarts(into: &running, now: now)
+        for pending in expired {
+            let message = "EasyTier accepted \(pending.name), but no runtime instance appeared within \(Int(Self.pendingStartTimeout)) seconds. Refresh runtime state or restart the network."
+            lastError = message
+            log("Error: \(message)")
+        }
         recordTrafficSamples(for: running)
         instances = running
         isConfigServerConnected = (try? await client.isConfigServerClientConnected()) ?? false
@@ -266,6 +299,49 @@ public final class EasyTierAppStore {
         if let byID = infos[instance.instance_id] { return byID }
         if let byName = infos[instance.name] { return byName }
         return nil
+    }
+
+    private func recordPendingStart(for config: NetworkConfig) {
+        pendingStarts[config.instance_id] = PendingNetworkStart(
+            instanceID: config.instance_id,
+            name: config.network_name,
+            startedAt: Date()
+        )
+    }
+
+    private func clearPendingStart(for config: NetworkConfig) {
+        pendingStarts.removeValue(forKey: config.instance_id)
+    }
+
+    private func mergePendingStarts(into running: inout [NetworkInstance], now: Date) -> [PendingNetworkStart] {
+        let runningIDs = Set(running.map(\.instance_id))
+        let runningNames = Set(running.map(\.name))
+        var expired: [PendingNetworkStart] = []
+
+        pendingStarts = pendingStarts.filter { _, pending in
+            if runningIDs.contains(pending.instanceID) || runningNames.contains(pending.name) {
+                return false
+            }
+            if now.timeIntervalSince(pending.startedAt) > Self.pendingStartTimeout {
+                expired.append(pending)
+                return false
+            }
+            return true
+        }
+
+        for pending in pendingStarts.values.sorted(by: { $0.startedAt < $1.startedAt }) {
+            guard !running.contains(where: { $0.instance_id == pending.instanceID || $0.name == pending.name }) else { continue }
+            running.append(
+                NetworkInstance(
+                    instance_id: pending.instanceID,
+                    name: pending.name,
+                    running: true,
+                    detail: NetworkInstanceRunningInfo(running: true)
+                )
+            )
+        }
+
+        return expired
     }
 
     private func recordTrafficSamples(for instances: [NetworkInstance]) {
@@ -314,9 +390,43 @@ public final class EasyTierAppStore {
         do {
             try await operation()
         } catch {
+            guard !handleHelperPermissionError(error) else { return }
             lastError = error.localizedDescription
             log("Error: \(error.localizedDescription)")
         }
+    }
+
+    private func handleHelperPermissionError(_ error: Error) -> Bool {
+        guard Self.isHelperPermissionError(error) else { return false }
+        lastError = nil
+        log("Privileged helper needs user approval before TUN networking can start.")
+        return true
+    }
+
+    private static func isHelperPermissionError(_ error: Error) -> Bool {
+        if let helperError = error as? PrivilegedHelperError {
+            switch helperError {
+            case let .helperReported(payload):
+                return Self.helperPermissionErrorCodes.contains(payload.code)
+            case .unavailable:
+                return true
+            case .invalidPayload:
+                return false
+            }
+        }
+        return isHelperPermissionErrorMessage(error.localizedDescription)
+    }
+
+    private static func isHelperPermissionErrorMessage(_ message: String?) -> Bool {
+        guard let message else { return false }
+        return helperPermissionErrorCodes.contains { message.contains($0) }
+            || message.contains("macOS has not allowed")
+            || message.contains("Click Install Helper")
+            || message.contains("privileged helper is not installed")
+    }
+
+    private func isHelperPermissionErrorMessage(_ message: String?) -> Bool {
+        Self.isHelperPermissionErrorMessage(message)
     }
 
     private func log(_ message: String) {
@@ -340,6 +450,19 @@ public final class EasyTierAppStore {
         formatter.dateFormat = "HH:mm:ss"
         return formatter
     }()
+
+    private static let pendingStartTimeout: TimeInterval = 20
+    private static let helperPermissionErrorCodes: Set<String> = [
+        "helperNotRegistered",
+        "helperRequiresApproval",
+        "helperNotFound",
+    ]
+}
+
+private struct PendingNetworkStart: Sendable {
+    var instanceID: String
+    var name: String
+    var startedAt: Date
 }
 
 public enum WorkspaceTab: String, CaseIterable, Identifiable, Sendable {

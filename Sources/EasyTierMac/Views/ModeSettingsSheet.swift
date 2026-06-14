@@ -1,11 +1,10 @@
-import EasyTierCore
+import EasyTierShared
 import SwiftUI
 
 struct ModeSettingsSheet: View {
     enum ModeKind: String, CaseIterable, Identifiable {
         case normal = "Normal"
         case remote = "Remote"
-        case service = "Service"
         var id: String { rawValue }
     }
 
@@ -16,10 +15,6 @@ struct ModeSettingsSheet: View {
     @State private var rpcListenPort: Int
     @State private var configServerURL: String
     @State private var remoteRPCAddress: String
-    @State private var serviceConfigDir: String
-    @State private var serviceRPCPortal: String
-    @State private var serviceLogLevel: LogLevel
-    @State private var serviceLogDir: String
 
     var onSave: (AppMode) -> Void
 
@@ -33,10 +28,6 @@ struct ModeSettingsSheet: View {
             _rpcListenPort = State(initialValue: rpcListenPort)
             _configServerURL = State(initialValue: configServerURL?.absoluteString ?? "")
             _remoteRPCAddress = State(initialValue: "tcp://127.0.0.1:15999")
-            _serviceConfigDir = State(initialValue: Self.defaultConfigDir.path)
-            _serviceRPCPortal = State(initialValue: "127.0.0.1:15999")
-            _serviceLogLevel = State(initialValue: .off)
-            _serviceLogDir = State(initialValue: Self.defaultLogDir.path)
         case let .remote(remoteRPCAddress):
             _kind = State(initialValue: .remote)
             _rpcPortal = State(initialValue: "")
@@ -44,21 +35,13 @@ struct ModeSettingsSheet: View {
             _rpcListenPort = State(initialValue: 15_999)
             _configServerURL = State(initialValue: "")
             _remoteRPCAddress = State(initialValue: remoteRPCAddress)
-            _serviceConfigDir = State(initialValue: Self.defaultConfigDir.path)
-            _serviceRPCPortal = State(initialValue: "127.0.0.1:15999")
-            _serviceLogLevel = State(initialValue: .off)
-            _serviceLogDir = State(initialValue: Self.defaultLogDir.path)
-        case let .service(configDir, rpcPortal, fileLogLevel, fileLogDir, configServerURL):
-            _kind = State(initialValue: .service)
+        case let .service(_, _, _, _, configServerURL):
+            _kind = State(initialValue: .normal)
             _rpcPortal = State(initialValue: "")
             _rpcListenEnabled = State(initialValue: false)
             _rpcListenPort = State(initialValue: 15_999)
             _configServerURL = State(initialValue: configServerURL?.absoluteString ?? "")
             _remoteRPCAddress = State(initialValue: "tcp://127.0.0.1:15999")
-            _serviceConfigDir = State(initialValue: configDir.path)
-            _serviceRPCPortal = State(initialValue: rpcPortal)
-            _serviceLogLevel = State(initialValue: fileLogLevel)
-            _serviceLogDir = State(initialValue: fileLogDir.path)
         }
     }
 
@@ -85,16 +68,6 @@ struct ModeSettingsSheet: View {
                     TextField("Config server URL", text: $configServerURL)
                 case .remote:
                     TextField("Remote RPC address", text: $remoteRPCAddress)
-                case .service:
-                    TextField("Config directory", text: $serviceConfigDir)
-                    TextField("RPC portal", text: $serviceRPCPortal)
-                    Picker("File log level", selection: $serviceLogLevel) {
-                        ForEach(LogLevel.allCases) { level in
-                            Text(level.rawValue).tag(level)
-                        }
-                    }
-                    TextField("Log directory", text: $serviceLogDir)
-                    TextField("Config server URL", text: $configServerURL)
                 }
             }
             .formStyle(.grouped)
@@ -124,24 +97,6 @@ struct ModeSettingsSheet: View {
             )
         case .remote:
             .remote(remoteRPCAddress: remoteRPCAddress.isEmpty ? "tcp://127.0.0.1:15999" : remoteRPCAddress)
-        case .service:
-            .service(
-                configDir: URL(fileURLWithPath: serviceConfigDir),
-                rpcPortal: serviceRPCPortal.isEmpty ? "127.0.0.1:15999" : serviceRPCPortal,
-                fileLogLevel: serviceLogLevel,
-                fileLogDir: URL(fileURLWithPath: serviceLogDir),
-                configServerURL: URL(string: configServerURL.trimmingCharacters(in: .whitespacesAndNewlines))
-            )
         }
-    }
-
-    private static var defaultConfigDir: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("EasyTier/config.d", isDirectory: true)
-    }
-
-    private static var defaultLogDir: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("EasyTier/logs", isDirectory: true)
     }
 }

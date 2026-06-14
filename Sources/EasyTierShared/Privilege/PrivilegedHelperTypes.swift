@@ -4,8 +4,35 @@ public enum EasyTierPrivilegedHelperConstants {
     public static let bundleIdentifier = "com.kkrainbow.easytier.mac.helper"
     public static let machServiceName = "com.kkrainbow.easytier.mac.helper"
     public static let launchDaemonPlistName = "com.kkrainbow.easytier.mac.helper.plist"
-    public static let protocolVersion = "4"
+    public static let protocolVersion = "5"
     public static let pingPayload = "pong:\(protocolVersion)"
+}
+
+public struct PrivilegedHelperErrorPayload: Codable, Equatable, Sendable {
+    public var code: String
+    public var message: String
+    public var recoverySuggestion: String?
+
+    public init(code: String, message: String, recoverySuggestion: String? = nil) {
+        self.code = code
+        self.message = message
+        self.recoverySuggestion = recoverySuggestion
+    }
+
+    public func encodedString() -> String {
+        guard let data = try? JSONEncoder().encode(self),
+              let string = String(data: data, encoding: .utf8)
+        else { return message }
+        return string
+    }
+
+    public static func decode(from string: String) -> PrivilegedHelperErrorPayload {
+        if let data = string.data(using: .utf8),
+           let payload = try? JSONDecoder().decode(PrivilegedHelperErrorPayload.self, from: data) {
+            return payload
+        }
+        return PrivilegedHelperErrorPayload(code: "legacyHelperError", message: string)
+    }
 }
 
 public enum PermissionState: String, Codable, Equatable, Sendable {
@@ -19,7 +46,6 @@ public enum PermissionState: String, Codable, Equatable, Sendable {
 @objc(EasyTierPrivilegedServiceProtocol)
 public protocol EasyTierPrivilegedServiceProtocol {
     func ping(reply: @escaping (String?, String?) -> Void)
-    func repairUserStateDirectory(uid: Int32, gid: Int32, home: String, reply: @escaping (String?, String?) -> Void)
     func validate(toml: String, reply: @escaping (String?, String?) -> Void)
     func run(configTOML: String, reply: @escaping (String?, String?) -> Void)
     func stop(instanceNames: [String], reply: @escaping (String?, String?) -> Void)
@@ -30,15 +56,20 @@ public protocol EasyTierPrivilegedServiceProtocol {
 
 public enum PrivilegedHelperError: LocalizedError, Equatable {
     case unavailable
-    case helperReported(String)
+    case helperReported(PrivilegedHelperErrorPayload)
     case invalidPayload(String)
 
     public var errorDescription: String? {
         switch self {
         case .unavailable:
             "EasyTier privileged helper is not installed or not enabled. Install the helper before starting TUN networking."
-        case let .helperReported(message):
-            message
+        case let .helperReported(payload):
+            if let recoverySuggestion = payload.recoverySuggestion?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !recoverySuggestion.isEmpty {
+                "\(payload.message)\n\(recoverySuggestion)"
+            } else {
+                payload.message
+            }
         case let .invalidPayload(message):
             "Invalid privileged helper response: \(message)"
         }

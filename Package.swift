@@ -8,7 +8,7 @@ let package = Package(
         .macOS(.v14),
     ],
     products: [
-        .library(name: "EasyTierCore", targets: ["EasyTierCore"]),
+        .library(name: "EasyTierShared", targets: ["EasyTierShared"]),
         .executable(name: "EasyTierMac", targets: ["EasyTierMac"]),
         .executable(name: "EasyTierPrivilegedHelper", targets: ["EasyTierPrivilegedHelper"]),
     ],
@@ -25,10 +25,16 @@ let package = Package(
             ]
         ),
         .target(
-            name: "EasyTierCore",
+            name: "EasyTierShared",
             dependencies: [
-                "CEasyTierFFI",
                 .product(name: "TOML", package: "swift-toml"),
+            ]
+        ),
+        .target(
+            name: "EasyTierRuntime",
+            dependencies: [
+                "EasyTierShared",
+                "CEasyTierFFI",
             ],
             linkerSettings: [
                 .linkedLibrary("System"),
@@ -36,11 +42,11 @@ let package = Package(
         ),
         .executableTarget(
             name: "EasyTierMac",
-            dependencies: ["EasyTierCore"]
+            dependencies: ["EasyTierShared"]
         ),
         .executableTarget(
             name: "EasyTierPrivilegedHelper",
-            dependencies: ["EasyTierCore"],
+            dependencies: ["EasyTierShared", "EasyTierRuntime"],
             exclude: ["Info.plist"],
             linkerSettings: [
                 .unsafeFlags([
@@ -52,8 +58,8 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "EasyTierCoreTests",
-            dependencies: ["EasyTierCore"]
+            name: "EasyTierSharedTests",
+            dependencies: ["EasyTierShared"]
         ),
     ]
 )

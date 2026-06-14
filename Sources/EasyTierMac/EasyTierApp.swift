@@ -1,4 +1,4 @@
-import EasyTierCore
+import EasyTierShared
 import AppKit
 import ServiceManagement
 import SwiftUI
@@ -57,30 +57,14 @@ struct EasyTierApp: App {
             }
         }
 
-        if arguments.contains("--list-instances") {
-            runAsyncHelperCommandAndExit {
-                let instances = try await PrivilegedEasyTierClient().listInstances()
-                let data = try JSONEncoder().encode(instances)
-                return String(data: data, encoding: .utf8) ?? "[]"
-            }
-        }
-
-        if arguments.contains("--collect-network-infos") {
-            runAsyncHelperCommandAndExit {
-                let infos = try await PrivilegedEasyTierClient().collectNetworkInfos()
-                let data = try JSONEncoder().encode(infos)
-                return String(data: data, encoding: .utf8) ?? "{}"
-            }
-        }
-
-        guard arguments.contains("--repair-helper") || arguments.contains("--unregister-helper") || arguments.contains("--helper-status") else { return }
+        guard arguments.contains("--register-helper") || arguments.contains("--unregister-helper") || arguments.contains("--helper-status") else { return }
 
         let service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
         do {
-            if arguments.contains("--unregister-helper") || arguments.contains("--repair-helper") {
+            if arguments.contains("--unregister-helper") || arguments.contains("--register-helper") {
                 try? service.unregister()
             }
-            if arguments.contains("--repair-helper") {
+            if arguments.contains("--register-helper") {
                 try service.register()
             }
             print("helper status: \(Self.describe(service.status))")

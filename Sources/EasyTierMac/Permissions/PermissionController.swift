@@ -1,4 +1,4 @@
-import EasyTierCore
+import EasyTierShared
 import AppKit
 import Foundation
 import Observation
@@ -24,7 +24,7 @@ final class PermissionController {
             detail = "Approve EasyTier in System Settings to enable TUN networking."
         case .notFound:
             state = .notFound
-            detail = "Privileged helper plist is missing from this app bundle. Rebuild the app package."
+            detail = "Privileged helper registration is not initialized. Install the helper before starting TUN networking."
         @unknown default:
             state = .error
             detail = "Unknown privileged helper status."
@@ -36,30 +36,21 @@ final class PermissionController {
             try service.register()
             refresh()
         } catch {
-            state = .error
-            detail = error.localizedDescription
+            refreshAfterRegistrationFailure(error)
         }
-    }
-
-    func reinstall() {
-        do {
-            try? service.unregister()
-            try service.register()
-            refresh()
-        } catch {
-            state = .error
-            detail = error.localizedDescription
-        }
-    }
-
-    func markHelperUnavailable(_ message: String) {
-        state = .error
-        detail = message
     }
 
     func openSystemSettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension") {
             NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func refreshAfterRegistrationFailure(_ error: Error) {
+        refresh()
+        if state == .error || state == .notRegistered || state == .notFound {
+            state = .error
+            detail = error.localizedDescription
         }
     }
 }

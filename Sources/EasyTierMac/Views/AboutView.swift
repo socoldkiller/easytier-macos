@@ -1,5 +1,5 @@
 import AppKit
-import EasyTierCore
+import EasyTierShared
 import SwiftUI
 
 struct AboutView: View {

@@ -1,4 +1,5 @@
 import CEasyTierFFI
+import EasyTierShared
 import Foundation
 
 public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Sendable {
