@@ -42,6 +42,34 @@ jobs:
       - name: Install native build dependencies
         run: brew install protobuf
 
+      - name: Select Xcode 16
+        run: |
+          XCODE_APP="$(python3 - <<'PY'
+          import glob
+          import os
+          import re
+
+          def version(path):
+              match = re.search(r'Xcode_(\d+(?:\.\d+)*)\.app$', path)
+              if not match:
+                  return ()
+              return tuple(int(part) for part in match.group(1).split('.'))
+
+          candidates = glob.glob('/Applications/Xcode_16*.app')
+          if candidates:
+              print(max(candidates, key=version))
+          elif os.path.isdir('/Applications/Xcode.app'):
+              print('/Applications/Xcode.app')
+          PY
+          )"
+          if [[ -z "$XCODE_APP" ]]; then
+            echo "Xcode 16 is required but was not found." >&2
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          xcodebuild -version
+          swift --version
+
       - name: Bootstrap toolchain
         run: ./scripts/bootstrap.sh
 
