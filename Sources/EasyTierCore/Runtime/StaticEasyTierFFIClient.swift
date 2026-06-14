@@ -31,10 +31,12 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
     }
 
     public func stopSync(instanceNames: [String]) throws {
-        try withCStringArray(instanceNames) { names in
-            let result = delete_network_instance(names.baseAddress, UInt(names.count))
-            if result != 0 { throw lastError() }
-        }
+        guard !instanceNames.isEmpty else { return }
+        let stopped = Set(instanceNames)
+        let retained = try collectNetworkInfoPayloadsSync()
+            .map(\.key)
+            .filter { !stopped.contains($0) }
+        try retainSync(instanceNames: retained)
     }
 
     public func retain(instanceNames: [String]) async throws {
@@ -53,8 +55,8 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
     }
 
     public func listInstancesSync() throws -> [NetworkInstance] {
-        let pairs = try readPairs(command: list_instance)
-        return pairs.map { NetworkInstance(instance_id: $0.value, name: $0.key, running: true) }
+        let pairs = try collectNetworkInfoPayloadsSync()
+        return pairs.map { NetworkInstance(instance_id: $0.key, name: $0.key, running: true) }
     }
 
     public func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] {
@@ -81,49 +83,19 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
     }
 
     public func callJSONRPC(service: String, method: String, domain: String?, payload: String) async throws -> String {
-        var response: UnsafePointer<CChar>?
-        let result = service.withCString { servicePointer in
-            method.withCString { methodPointer in
-                payload.withCString { payloadPointer in
-                    if let domain {
-                        domain.withCString { domainPointer in
-                            call_json_rpc(servicePointer, methodPointer, domainPointer, payloadPointer, &response)
-                        }
-                    } else {
-                        call_json_rpc(servicePointer, methodPointer, nil, payloadPointer, &response)
-                    }
-                }
-            }
-        }
-        if result != 0 { throw lastError() }
-        guard let response else { throw EasyTierCoreError.invalidResponse("empty JSON RPC response") }
-        defer { free_string(response) }
-        return String(cString: response)
+        throw EasyTierCoreError.operationFailed("JSON-RPC bridge is not available with EasyTier Core v2.6.4 FFI.")
     }
 
     public func startConfigServerClient(url: URL) async throws {
-        let machineID = Host.current().localizedName ?? UUID().uuidString
-        let hostname = Host.current().localizedName
-        let result = url.absoluteString.withCString { urlPointer in
-            machineID.withCString { machinePointer in
-                if let hostname {
-                    hostname.withCString { hostnamePointer in
-                        start_config_server_client(urlPointer, hostnamePointer, machinePointer, false, nil, nil)
-                    }
-                } else {
-                    start_config_server_client(urlPointer, nil, machinePointer, false, nil, nil)
-                }
-            }
-        }
-        if result != 0 { throw lastError() }
+        throw EasyTierCoreError.operationFailed("Config-server client mode is not available with EasyTier Core v2.6.4 FFI.")
     }
 
     public func stopConfigServerClient() async throws {
-        if stop_config_server_client() != 0 { throw lastError() }
+        // EasyTier Core v2.6.4 FFI does not expose config-server client state.
     }
 
     public func isConfigServerClientConnected() async throws -> Bool {
-        is_config_server_client_connected() == 1
+        false
     }
 
     public static func validateDirect(toml: String) throws {

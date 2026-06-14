@@ -22,6 +22,9 @@ swift test
 swift run EasyTierMac
 ```
 
+The vendored EasyTier core is built from tag `v2.6.4` by default. Override it
+for a one-off core upgrade with `EASYTIER_CORE_TAG=vX.Y.Z ./scripts/build-ffi.sh`.
+
 The Rust FFI is built as a universal static library and static XCFramework:
 
 ```sh

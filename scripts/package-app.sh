@@ -6,6 +6,7 @@ BUILD_DIR="$ROOT_DIR/.build/arm64-apple-macosx/debug"
 APP_PRODUCTS_DIR="$ROOT_DIR/.build/AppProducts"
 APP_DIR="$APP_PRODUCTS_DIR/EasyTier.app"
 STAGING_DIR="$APP_PRODUCTS_DIR/EasyTier.staging"
+EXPORT_APP_DIR="${EASYTIER_EXPORT_APP_DIR:-/tmp/EasyTier.app}"
 CONTENTS_DIR="$STAGING_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 LAUNCH_DAEMONS_DIR="$CONTENTS_DIR/Library/LaunchDaemons"
@@ -28,6 +29,20 @@ git_revision() {
   echo "$revision"
 }
 
+git_exact_tag() {
+  local path="$1"
+  local tag
+  tag="$(git -C "$path" describe --tags --exact-match HEAD 2>/dev/null || true)"
+  if [[ -z "$tag" ]]; then
+    echo "unknown"
+    return
+  fi
+  if [[ -n "$(git -C "$path" status --short --untracked-files=no 2>/dev/null || true)" ]]; then
+    tag="$tag-dirty"
+  fi
+  echo "$tag"
+}
+
 clear_finder_info() {
   local path="$1"
   for _ in $(seq 1 20); do
@@ -45,12 +60,14 @@ clear_codesign_blocking_xattrs() {
     xattr -d com.apple.FinderInfo "$item" 2>/dev/null || true
     xattr -d 'com.apple.fileprovider.dir#N' "$item" 2>/dev/null || true
     xattr -d 'com.apple.fileprovider.fpfs#P' "$item" 2>/dev/null || true
+    xattr -d com.apple.provenance "$item" 2>/dev/null || true
     xattr -d com.apple.quarantine "$item" 2>/dev/null || true
   done < <(find "$path" -print0)
 }
 
 cd "$ROOT_DIR"
 GUI_COMMIT="$(git_revision "$ROOT_DIR")"
+CORE_TAG="$(git_exact_tag "$ROOT_DIR/Vendor/EasyTier")"
 CORE_COMMIT="$(git_revision "$ROOT_DIR/Vendor/EasyTier")"
 
 swift build --product EasyTierMac
@@ -88,6 +105,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
     <string>$BUILD_NUMBER</string>
     <key>EasyTierGUICommit</key>
     <string>$GUI_COMMIT</string>
+    <key>EasyTierCoreTag</key>
+    <string>$CORE_TAG</string>
     <key>EasyTierCoreCommit</key>
     <string>$CORE_COMMIT</string>
     <key>LSMinimumSystemVersion</key>
@@ -145,4 +164,10 @@ codesign --verify --deep --strict --verbose=2 "$APP_DIR" >/dev/null
 clear_codesign_blocking_xattrs "$APP_DIR"
 clear_finder_info "$APP_DIR"
 
-echo "$APP_DIR"
+rm -rf "$EXPORT_APP_DIR"
+ditto --noextattr --norsrc "$APP_DIR" "$EXPORT_APP_DIR"
+clear_codesign_blocking_xattrs "$EXPORT_APP_DIR"
+clear_finder_info "$EXPORT_APP_DIR"
+codesign --verify --deep --strict --verbose=2 "$EXPORT_APP_DIR" >/dev/null
+
+echo "$EXPORT_APP_DIR"

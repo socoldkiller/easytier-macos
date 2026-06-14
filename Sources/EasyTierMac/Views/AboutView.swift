@@ -56,7 +56,7 @@ struct AboutView: View {
 
                     VStack(alignment: .leading, spacing: 5) {
                         MetadataRow(label: "GUI", value: "\(appInfo.version) · \(revisions.guiCommit)")
-                        MetadataRow(label: "Core", value: revisions.coreCommit)
+                        MetadataRow(label: "Core", value: revisions.coreVersion)
                         MetadataRow(label: "Runtime", value: runtimeLabel)
                         MetadataRow(label: "Build", value: appInfo.build)
                     }
@@ -227,17 +227,19 @@ private struct AppVersionInfo: Equatable {
 
 private struct SourceRevisionInfo: Equatable {
     var guiCommit: String
-    var coreCommit: String
+    var coreVersion: String
 
     static var current: SourceRevisionInfo {
         let info = Bundle.main.infoDictionary ?? [:]
         let bundledGUI = normalized(info["EasyTierGUICommit"] as? String)
+        let bundledCoreTag = normalized(info["EasyTierCoreTag"] as? String)
         let bundledCore = normalized(info["EasyTierCoreCommit"] as? String)
         let guiRoot = GitRevision.repositoryRoot(from: FileManager.default.currentDirectoryPath)
+        let coreRoot = guiRoot.map { ($0 as NSString).appendingPathComponent("Vendor/EasyTier") }
 
         return SourceRevisionInfo(
             guiCommit: bundledGUI ?? guiRoot.flatMap { GitRevision.revision(at: $0) } ?? "unknown",
-            coreCommit: bundledCore ?? guiRoot.flatMap { GitRevision.revision(at: ($0 as NSString).appendingPathComponent("Vendor/EasyTier")) } ?? "unknown"
+            coreVersion: bundledCoreTag ?? coreRoot.flatMap { GitRevision.exactTag(at: $0) } ?? bundledCore ?? coreRoot.flatMap { GitRevision.revision(at: $0) } ?? "unknown"
         )
     }
 
@@ -265,6 +267,12 @@ private enum GitRevision {
         guard let commit = runGit(["-C", path, "rev-parse", "--short", "HEAD"]), !commit.isEmpty else { return nil }
         let status = runGit(["-C", path, "status", "--short", "--untracked-files=no"])
         return status?.isEmpty == false ? "\(commit)-dirty" : commit
+    }
+
+    static func exactTag(at path: String) -> String? {
+        guard let tag = runGit(["-C", path, "describe", "--tags", "--exact-match", "HEAD"]), !tag.isEmpty else { return nil }
+        let status = runGit(["-C", path, "status", "--short", "--untracked-files=no"])
+        return status?.isEmpty == false ? "\(tag)-dirty" : tag
     }
 
     private static func runGit(_ arguments: [String]) -> String? {

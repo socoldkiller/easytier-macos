@@ -6,14 +6,35 @@ EASYTIER_DIR="$ROOT_DIR/Vendor/EasyTier"
 OUT_DIR="$ROOT_DIR/Vendor/Frameworks"
 HEADER_DIR="$OUT_DIR/include"
 STATIC_DIR="$OUT_DIR/static"
+CORE_TAG="${EASYTIER_CORE_TAG:-v2.6.4}"
+
+ensure_easytier_core_tag() {
+  if [[ -f "$EASYTIER_DIR/Cargo.toml" ]]; then
+    echo "Vendor/EasyTier already present."
+  else
+    git submodule update --init Vendor/EasyTier
+  fi
+
+  local current_tag
+  current_tag="$(git -C "$EASYTIER_DIR" describe --tags --exact-match HEAD 2>/dev/null || true)"
+
+  if [[ "$current_tag" != "$CORE_TAG" ]]; then
+    if [[ -n "$(git -C "$EASYTIER_DIR" status --short --untracked-files=no 2>/dev/null || true)" ]]; then
+      echo "Vendor/EasyTier has local tracked changes; refusing to switch Core tag." >&2
+      exit 1
+    fi
+    if ! git -C "$EASYTIER_DIR" rev-parse -q --verify "refs/tags/$CORE_TAG" >/dev/null; then
+      git -C "$EASYTIER_DIR" fetch --force --depth 1 origin "refs/tags/$CORE_TAG:refs/tags/$CORE_TAG"
+    fi
+    git -C "$EASYTIER_DIR" checkout --detach "$CORE_TAG"
+  fi
+
+  echo "EasyTier Core: $(git -C "$EASYTIER_DIR" describe --tags --always --dirty)"
+}
 
 cd "$ROOT_DIR"
 export MACOSX_DEPLOYMENT_TARGET=14.0
-if [[ -f Vendor/EasyTier/Cargo.toml ]]; then
-  echo "Vendor/EasyTier already present."
-else
-  git submodule update --init --depth 1 Vendor/EasyTier
-fi
+ensure_easytier_core_tag
 
 mkdir -p "$OUT_DIR" "$HEADER_DIR" "$STATIC_DIR"
 
