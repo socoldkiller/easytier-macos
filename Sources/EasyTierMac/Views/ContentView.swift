@@ -136,8 +136,7 @@ struct ContentView: View {
                     systemImage: store.isBusy ? "hourglass" : selectedConfigIsRunning ? "pause.fill" : "play.fill"
                 )
             }
-            .disabled(activeConfig == nil || store.isBusy || selectedConfigNeedsUnavailableHelper)
-            .help(selectedConfigNeedsUnavailableHelper ? "Install and enable the privileged helper before starting TUN networking." : "Run or stop the selected network")
+            .disabled(store.selectedConfig == nil || store.isBusy)
 
             Menu {
                 Button("Import TOML") {
@@ -169,17 +168,8 @@ struct ContentView: View {
     }
 
     private var selectedConfigIsRunning: Bool {
-        guard let config = activeConfig else { return false }
+        guard let config = draftConfigID == store.selectedConfigID ? draftConfig : store.selectedConfig else { return false }
         return store.runningInstance(matching: config) != nil
-    }
-
-    private var activeConfig: NetworkConfig? {
-        draftConfigID == store.selectedConfigID ? draftConfig : store.selectedConfig
-    }
-
-    private var selectedConfigNeedsUnavailableHelper: Bool {
-        guard let config = activeConfig else { return false }
-        return config.no_tun != true && permissionController.state != .enabled
     }
 
     private func connectionState(for stored: StoredNetworkConfig) -> ConnectionGlyphState {
