@@ -22,6 +22,25 @@ swift test
 swift run EasyTierMac
 ```
 
+## CI/CD
+
+GitHub Actions workflow `.github/workflows/macos-app.yml` builds and uploads a
+macOS app artifact on pushes to `main` / `master`, pull requests, and manual
+workflow runs.
+
+The workflow runs these steps on macOS:
+
+```sh
+./scripts/bootstrap.sh
+./scripts/build-ffi.sh
+swift test --configuration release
+EASYTIER_BUILD_CONFIGURATION=release ./scripts/package-app.sh
+```
+
+Download the packaged app from the workflow artifact named
+`EasyTier-macOS-<arch>`. Pushing a version tag such as `v0.1.0` also publishes
+the same `.app.zip` to the GitHub Release for that tag.
+
 The vendored EasyTier core is built from tag `v2.6.4` by default. Override it
 for a one-off core upgrade with `EASYTIER_CORE_TAG=vX.Y.Z ./scripts/build-ffi.sh`.
 

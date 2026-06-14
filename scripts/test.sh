@@ -7,8 +7,9 @@ cd "$ROOT_DIR"
 swift test
 swift build --product EasyTierValidator
 swift build --product EasyTierPrivilegedHelper
+BUILD_DIR="$(swift build --show-bin-path)"
 
-.build/arm64-apple-macosx/debug/EasyTierValidator validate <<'TOML'
+"$BUILD_DIR/EasyTierValidator" validate <<'TOML'
 instance_name = "easytier"
 instance_id = "11111111-1111-1111-1111-111111111111"
 dhcp = true
@@ -47,7 +48,7 @@ use_smoltcp = false
 TOML
 
 if [[ -f Vendor/Frameworks/static/libeasytier_ffi.a ]]; then
-  for symbol in parse_config run_network_instance list_instance collect_network_infos call_json_rpc free_string; do
+  for symbol in parse_config run_network_instance retain_network_instance collect_network_infos get_error_msg free_string; do
     if ! (nm -arch arm64 Vendor/Frameworks/static/libeasytier_ffi.a 2>/dev/null || true) | grep -q "_$symbol"; then
       echo "Missing FFI symbol: $symbol" >&2
       exit 1

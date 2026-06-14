@@ -2,7 +2,6 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="$ROOT_DIR/.build/arm64-apple-macosx/debug"
 APP_PRODUCTS_DIR="$ROOT_DIR/.build/AppProducts"
 APP_DIR="$APP_PRODUCTS_DIR/EasyTier.app"
 STAGING_DIR="$APP_PRODUCTS_DIR/EasyTier.staging"
@@ -14,6 +13,12 @@ BUNDLE_IDENTIFIER="com.kkrainbow.easytier.mac"
 HELPER_IDENTIFIER="com.kkrainbow.easytier.mac.helper"
 VALIDATOR_IDENTIFIER="com.kkrainbow.easytier.mac.validator"
 BUILD_NUMBER="${EASYTIER_BUILD_NUMBER:-$(date -u +%Y%m%d%H%M%S)}"
+BUILD_CONFIGURATION="${EASYTIER_BUILD_CONFIGURATION:-debug}"
+
+if [[ "$BUILD_CONFIGURATION" != "debug" && "$BUILD_CONFIGURATION" != "release" ]]; then
+  echo "EASYTIER_BUILD_CONFIGURATION must be 'debug' or 'release'." >&2
+  exit 1
+fi
 
 git_revision() {
   local path="$1"
@@ -70,9 +75,10 @@ GUI_COMMIT="$(git_revision "$ROOT_DIR")"
 CORE_TAG="$(git_exact_tag "$ROOT_DIR/Vendor/EasyTier")"
 CORE_COMMIT="$(git_revision "$ROOT_DIR/Vendor/EasyTier")"
 
-swift build --product EasyTierMac
-swift build --product EasyTierValidator
-swift build --product EasyTierPrivilegedHelper
+swift build --configuration "$BUILD_CONFIGURATION" --product EasyTierMac
+swift build --configuration "$BUILD_CONFIGURATION" --product EasyTierValidator
+swift build --configuration "$BUILD_CONFIGURATION" --product EasyTierPrivilegedHelper
+BUILD_DIR="$(swift build --configuration "$BUILD_CONFIGURATION" --show-bin-path)"
 
 rm -rf "$APP_DIR" "$STAGING_DIR"
 mkdir -p "$APP_PRODUCTS_DIR"

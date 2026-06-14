@@ -1,0 +1,96 @@
+name: macOS App
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build EasyTier.app
+    runs-on: macos-14
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      EASYTIER_BUILD_CONFIGURATION: release
+      EASYTIER_BUILD_NUMBER: ${{ github.run_number }}
+      EASYTIER_EXPORT_APP_DIR: ${{ github.workspace }}/.build/artifacts/EasyTier.app
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Bootstrap toolchain
+        run: ./scripts/bootstrap.sh
+
+      - name: Build EasyTier FFI
+        run: ./scripts/build-ffi.sh
+
+      - name: Test Swift package
+        run: swift test --configuration release
+
+      - name: Package app
+        run: ./scripts/package-app.sh
+
+      - name: Verify app bundle
+        run: |
+          test -x "$EASYTIER_EXPORT_APP_DIR/Contents/MacOS/EasyTierMac"
+          test -x "$EASYTIER_EXPORT_APP_DIR/Contents/MacOS/EasyTierValidator"
+          test -x "$EASYTIER_EXPORT_APP_DIR/Contents/MacOS/EasyTierPrivilegedHelper"
+          codesign --verify --deep --strict --verbose=2 "$EASYTIER_EXPORT_APP_DIR"
+
+      - name: Archive app
+        run: |
+          mkdir -p .build/artifacts
+          ditto -c -k --keepParent --sequesterRsrc --zlibCompressionLevel 9 \
+            "$EASYTIER_EXPORT_APP_DIR" \
+            ".build/artifacts/EasyTier-macOS-${{ runner.arch }}.app.zip"
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EasyTier-macOS-${{ runner.arch }}
+          path: .build/artifacts/EasyTier-macOS-${{ runner.arch }}.app.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download app artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: EasyTier-macOS-*
+          path: .build/release-artifacts
+          merge-multiple: true
+
+      - name: Publish GitHub Release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG_NAME" >/dev/null 2>&1 || \
+            gh release create "$TAG_NAME" --title "$TAG_NAME" --notes "Automated EasyTier macOS app build."
+          gh release upload "$TAG_NAME" .build/release-artifacts/*.zip --clobber
