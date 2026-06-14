@@ -7,6 +7,9 @@ OUT_DIR="$ROOT_DIR/Vendor/Frameworks"
 HEADER_DIR="$OUT_DIR/include"
 STATIC_DIR="$OUT_DIR/static"
 CORE_TAG="${EASYTIER_CORE_TAG:-v2.6.4}"
+FFI_CACHE_DIR="${EASYTIER_FFI_CACHE_DIR:-$HOME/Library/Caches/easytier-swift/ffi}"
+FFI_CACHE_VERSION="2"
+USE_FFI_CACHE="${EASYTIER_USE_FFI_CACHE:-1}"
 RUST_RELEASE_OPT_LEVEL="${EASYTIER_RUST_OPT_LEVEL:-z}"
 RUST_RELEASE_LTO="${EASYTIER_RUST_LTO:-fat}"
 RUST_RELEASE_CODEGEN_UNITS="${EASYTIER_RUST_CODEGEN_UNITS:-1}"
@@ -39,6 +42,67 @@ strip_static_library() {
   xcrun ranlib "$path"
 }
 
+sha256_files() {
+  shasum -a 256 "$@" | shasum -a 256 | awk '{ print $1 }'
+}
+
+ffi_cache_key() {
+  local core_rev cargo_lock_hash script_hash rustc_hash profile_hash
+  core_rev="$(git -C "$EASYTIER_DIR" rev-parse HEAD)"
+  cargo_lock_hash="$(sha256_files "$EASYTIER_DIR/Cargo.lock")"
+  script_hash="$(sha256_files "$ROOT_DIR/scripts/build-ffi.sh")"
+  rustc_hash="$(rustc -vV | shasum -a 256 | awk '{ print $1 }')"
+  profile_hash="$(printf '%s\n' \
+    "cache=$FFI_CACHE_VERSION" \
+    "core=$core_rev" \
+    "cargo-lock=$cargo_lock_hash" \
+    "script=$script_hash" \
+    "rustc=$rustc_hash" \
+    "deployment=$MACOSX_DEPLOYMENT_TARGET" \
+    "opt=$RUST_RELEASE_OPT_LEVEL" \
+    "lto=$RUST_RELEASE_LTO" \
+    "codegen-units=$RUST_RELEASE_CODEGEN_UNITS" \
+    "panic=$RUST_RELEASE_PANIC" \
+    "cargo-strip=$RUST_RELEASE_STRIP" \
+    "archive-strip=$STRIP_STATIC_LIBS" \
+    "targets=aarch64-apple-darwin,x86_64-apple-darwin" \
+    | shasum -a 256 | awk '{ print $1 }')"
+  printf 'core-%s-%s' "$core_rev" "$profile_hash"
+}
+
+restore_cached_ffi() {
+  local cache_path="$1"
+  if [[ "$USE_FFI_CACHE" != "1" ]]; then
+    return 1
+  fi
+  if [[ ! -f "$cache_path/static/libeasytier_ffi.a" || ! -d "$cache_path/EasyTierFFI.xcframework" ]]; then
+    return 1
+  fi
+
+  rm -rf "$OUT_DIR"
+  mkdir -p "$(dirname "$OUT_DIR")"
+  ditto "$cache_path" "$OUT_DIR"
+  mkdir -p "$ROOT_DIR/Sources/CEasyTierFFI/include"
+  cp "$HEADER_DIR/EasyTierFFI.h" "$ROOT_DIR/Sources/CEasyTierFFI/include/EasyTierFFI.h"
+  echo "Restored EasyTier FFI from cache: $cache_path"
+}
+
+save_cached_ffi() {
+  local cache_path="$1"
+  if [[ "$USE_FFI_CACHE" != "1" ]]; then
+    return
+  fi
+
+  local tmp_path
+  mkdir -p "$FFI_CACHE_DIR"
+  tmp_path="$cache_path.tmp.$$"
+  rm -rf "$tmp_path"
+  ditto "$OUT_DIR" "$tmp_path"
+  rm -rf "$cache_path"
+  mv "$tmp_path" "$cache_path"
+  echo "Saved EasyTier FFI cache: $cache_path"
+}
+
 ensure_easytier_core_tag() {
   if [[ -f "$EASYTIER_DIR/Cargo.toml" ]]; then
     echo "Vendor/EasyTier already present."
@@ -67,6 +131,13 @@ cd "$ROOT_DIR"
 export MACOSX_DEPLOYMENT_TARGET=14.0
 ensure_easytier_core_tag
 configure_rust_release_profile
+
+CACHE_KEY="$(ffi_cache_key)"
+CACHE_PATH="$FFI_CACHE_DIR/$CACHE_KEY"
+if restore_cached_ffi "$CACHE_PATH"; then
+  exit 0
+fi
+echo "EasyTier FFI cache miss: $CACHE_PATH"
 
 mkdir -p "$OUT_DIR" "$HEADER_DIR" "$STATIC_DIR"
 
@@ -117,5 +188,6 @@ xcodebuild -create-xcframework \
   -output "$OUT_DIR/EasyTierFFI.xcframework"
 
 cp "$HEADER_DIR/EasyTierFFI.h" "$ROOT_DIR/Sources/CEasyTierFFI/include/EasyTierFFI.h"
+save_cached_ffi "$CACHE_PATH"
 
 echo "Created static $OUT_DIR/EasyTierFFI.xcframework"
