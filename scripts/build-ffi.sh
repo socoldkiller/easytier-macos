@@ -8,7 +8,7 @@ HEADER_DIR="$OUT_DIR/include"
 STATIC_DIR="$OUT_DIR/static"
 CORE_TAG="${EASYTIER_CORE_TAG:-v2.6.4}"
 FFI_CACHE_DIR="${EASYTIER_FFI_CACHE_DIR:-$HOME/Library/Caches/easytier-swift/ffi}"
-FFI_CACHE_VERSION="2"
+FFI_CACHE_VERSION="3"
 USE_FFI_CACHE="${EASYTIER_USE_FFI_CACHE:-1}"
 RUST_RELEASE_OPT_LEVEL="${EASYTIER_RUST_OPT_LEVEL:-z}"
 RUST_RELEASE_LTO="${EASYTIER_RUST_LTO:-fat}"
@@ -43,7 +43,7 @@ strip_static_library() {
 }
 
 sha256_files() {
-  shasum -a 256 "$@" | shasum -a 256 | awk '{ print $1 }'
+  cat "$@" | shasum -a 256 | awk '{ print $1 }'
 }
 
 ffi_cache_key() {
