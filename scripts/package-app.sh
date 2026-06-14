@@ -27,11 +27,16 @@ if [[ "$REQUIRE_DISTRIBUTION_SIGNING" == "1" && ( -z "$CODE_SIGN_IDENTITY" || "$
   exit 1
 fi
 
-codesign_signed_args() {
-  if [[ "$CODE_SIGN_TIMESTAMP" == "1" ]]; then
-    echo --timestamp --options runtime --sign "$CODE_SIGN_IDENTITY"
+sign_macho() {
+  local identifier="$1"
+  local path="$2"
+
+  if [[ "$CODE_SIGN_IDENTITY" == "-" ]]; then
+    codesign --force --sign "$CODE_SIGN_IDENTITY" --identifier "$identifier" "$path"
+  elif [[ "$CODE_SIGN_TIMESTAMP" == "1" ]]; then
+    codesign --force --timestamp --options runtime --sign "$CODE_SIGN_IDENTITY" --identifier "$identifier" "$path"
   else
-    echo --options runtime --sign "$CODE_SIGN_IDENTITY"
+    codesign --force --options runtime --sign "$CODE_SIGN_IDENTITY" --identifier "$identifier" "$path"
   fi
 }
 
@@ -174,17 +179,9 @@ PLIST
 xattr -cr "$STAGING_DIR"
 clear_codesign_blocking_xattrs "$STAGING_DIR"
 clear_finder_info "$STAGING_DIR"
-if [[ "$CODE_SIGN_IDENTITY" == "-" ]]; then
-  codesign --force --sign "$CODE_SIGN_IDENTITY" --identifier "$HELPER_IDENTIFIER" "$MACOS_DIR/EasyTierPrivilegedHelper"
-else
-  codesign --force $(codesign_signed_args) --identifier "$HELPER_IDENTIFIER" "$MACOS_DIR/EasyTierPrivilegedHelper"
-fi
+sign_macho "$HELPER_IDENTIFIER" "$MACOS_DIR/EasyTierPrivilegedHelper"
 clear_finder_info "$STAGING_DIR"
-if [[ "$CODE_SIGN_IDENTITY" == "-" ]]; then
-  codesign --force --sign "$CODE_SIGN_IDENTITY" --identifier "$BUNDLE_IDENTIFIER" "$STAGING_DIR"
-else
-  codesign --force $(codesign_signed_args) --identifier "$BUNDLE_IDENTIFIER" "$STAGING_DIR"
-fi
+sign_macho "$BUNDLE_IDENTIFIER" "$STAGING_DIR"
 mv "$STAGING_DIR" "$APP_DIR"
 xattr -cr "$APP_DIR"
 clear_codesign_blocking_xattrs "$APP_DIR"

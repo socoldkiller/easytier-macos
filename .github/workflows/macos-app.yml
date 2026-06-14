@@ -115,6 +115,20 @@ jobs:
         run: |
           test -x "$EASYTIER_EXPORT_APP_DIR/Contents/MacOS/EasyTierMac"
           test -x "$EASYTIER_EXPORT_APP_DIR/Contents/MacOS/EasyTierPrivilegedHelper"
+          test ! -e "$EASYTIER_EXPORT_APP_DIR/Contents/MacOS/EasyTierValidator"
+
+          helper_info_plist="$(codesign -dv --verbose=4 "$EASYTIER_EXPORT_APP_DIR/Contents/MacOS/EasyTierPrivilegedHelper" 2>&1 | sed -n '/^Info.plist/p')"
+          if [[ -z "$helper_info_plist" || "$helper_info_plist" == *"not bound"* ]]; then
+            echo "Privileged helper must embed an Info.plist." >&2
+            exit 1
+          fi
+
+          helper_bundle_identifier="$(sfltool csinfo "$EASYTIER_EXPORT_APP_DIR/Contents/MacOS/EasyTierPrivilegedHelper" 2>/dev/null | sed -n 's/^Bundle Identifier: //p')"
+          if [[ "$helper_bundle_identifier" != "com.kkrainbow.easytier.mac.helper" ]]; then
+            echo "Unexpected helper bundle identifier: $helper_bundle_identifier" >&2
+            exit 1
+          fi
+
           codesign --verify --deep --strict --verbose=2 "$EASYTIER_EXPORT_APP_DIR"
 
       - name: Notarize release app
@@ -179,7 +193,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          gh release view "$TAG_NAME" >/dev/null 2>&1 || \
-            gh release create "$TAG_NAME" --title "$TAG_NAME" --notes "Automated EasyTier macOS app build."
-          gh release upload "$TAG_NAME" .build/release-artifacts/*.zip --clobber
+          gh release view "$TAG_NAME" --repo "$REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$TAG_NAME" --repo "$REPOSITORY" --title "$TAG_NAME" --notes "Automated EasyTier macOS app build."
+          gh release upload "$TAG_NAME" .build/release-artifacts/*.zip --repo "$REPOSITORY" --clobber
