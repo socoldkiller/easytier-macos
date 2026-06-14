@@ -13,6 +13,12 @@ open_login_items_settings() {
   open 'x-apple.systempreferences:com.apple.LoginItems-Settings.extension' >/dev/null 2>&1 || true
 }
 
+open_app_if_requested() {
+  if [[ "$OPEN_APP" == "1" ]]; then
+    open "$APP_PATH"
+  fi
+}
+
 needs_user_approval() {
   local output="$1"
   [[ "$output" == *"requiresApproval"* \
@@ -49,6 +55,7 @@ if ! register_output="$($APP_BINARY --register-helper 2>&1)"; then
 $register_output"; then
     echo "macOS requires approval before EasyTier's privileged helper can run." >&2
     open_login_items_settings
+    open_app_if_requested
   fi
   exit 1
 fi
@@ -57,6 +64,7 @@ echo "$register_output"
 if needs_user_approval "$register_output"; then
   echo "macOS requires approval before EasyTier's privileged helper can run." >&2
   open_login_items_settings
+  open_app_if_requested
   exit 1
 fi
 
@@ -66,6 +74,7 @@ if ! ping_output="$($APP_BINARY --ping-helper 2>&1)"; then
   if needs_user_approval "$ping_output"; then
     echo "macOS requires approval before EasyTier's privileged helper can run." >&2
     open_login_items_settings
+    open_app_if_requested
   fi
   echo "launchctl state:" >&2
   launchctl print system/com.kkrainbow.easytier.mac.helper 2>&1 | sed -n '1,120p' >&2 || true

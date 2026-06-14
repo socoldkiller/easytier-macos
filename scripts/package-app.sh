@@ -9,11 +9,13 @@ EXPORT_APP_DIR="${EASYTIER_EXPORT_APP_DIR:-$HOME/Applications/EasyTier.app}"
 EXPORT_CODESIGN_CERT_PATH="${EASYTIER_EXPORT_CODESIGN_CERT_PATH:-}"
 CONTENTS_DIR="$STAGING_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
+RESOURCES_DIR="$CONTENTS_DIR/Resources"
 LAUNCH_DAEMONS_DIR="$CONTENTS_DIR/Library/LaunchDaemons"
 BUNDLE_IDENTIFIER="com.kkrainbow.easytier.mac"
 HELPER_IDENTIFIER="com.kkrainbow.easytier.mac.helper"
-BUILD_NUMBER="${EASYTIER_BUILD_NUMBER:-$(date -u +%Y%m%d%H%M%S)}"
 BUILD_CONFIGURATION="${EASYTIER_BUILD_CONFIGURATION:-debug}"
+DEAD_STRIP_RELEASE="${EASYTIER_DEAD_STRIP_RELEASE:-1}"
+STRIP_RELEASE_BINARIES="${EASYTIER_STRIP_RELEASE_BINARIES:-1}"
 CODE_SIGN_IDENTITY="${EASYTIER_CODESIGN_IDENTITY:--}"
 CODE_SIGN_KEYCHAIN="${EASYTIER_CODESIGN_KEYCHAIN:-}"
 REQUIRE_DISTRIBUTION_SIGNING="${EASYTIER_REQUIRE_DISTRIBUTION_SIGNING:-0}"
@@ -246,6 +248,7 @@ use_local_codesigning_identity() {
     create_local_codesigning_identity
   fi
 
+  add_local_keychain_to_search_list
   unlock_local_codesigning_keychain
   if ! local_codesign_identity_is_valid; then
     echo "Local code signing identity is not valid: $LOCAL_CODESIGN_IDENTITY" >&2
@@ -288,7 +291,7 @@ if [[ "$CODE_SIGN_IDENTITY" == "-" && "$AUTO_CODESIGN_IDENTITY" == "1" ]]; then
   fi
 fi
 
-if [[ "$CODE_SIGN_IDENTITY" == "$LOCAL_CODESIGN_IDENTITY" && "$CODE_SIGN_KEYCHAIN" == "" ]]; then
+if [[ "$CODE_SIGN_IDENTITY" == "$LOCAL_CODESIGN_IDENTITY" ]]; then
   use_local_codesigning_identity
 fi
 
@@ -467,6 +470,14 @@ clear_codesign_blocking_xattrs() {
   done < <(find "$path" -print0)
 }
 
+strip_release_macho() {
+  local path="$1"
+  if [[ "$BUILD_CONFIGURATION" != "release" || "$STRIP_RELEASE_BINARIES" != "1" ]]; then
+    return
+  fi
+  xcrun strip -x "$path"
+}
+
 clean_development_helper_state() {
   if [[ "$CLEAN_HELPER_STATE" != "1" ]]; then
     return
@@ -522,20 +533,33 @@ rm -rf "$ROOT_DIR/.build/AppProducts/EasyTier.app" "$ROOT_DIR/.build/AppProducts
 GUI_COMMIT="$(git_revision "$ROOT_DIR")"
 CORE_TAG="$(git_exact_tag "$ROOT_DIR/Vendor/EasyTier")"
 CORE_COMMIT="$(git_revision "$ROOT_DIR/Vendor/EasyTier")"
-BUILD_DIR="$(swift build --configuration "$BUILD_CONFIGURATION" --show-bin-path)"
+SWIFT_BUILD_ARGS=(--configuration "$BUILD_CONFIGURATION")
+if [[ "$BUILD_CONFIGURATION" == "release" && "$DEAD_STRIP_RELEASE" == "1" ]]; then
+  SWIFT_BUILD_ARGS+=(-Xlinker -dead_strip)
+  echo "Swift release linker: -dead_strip"
+fi
+BUILD_DIR="$(swift build "${SWIFT_BUILD_ARGS[@]}" --show-bin-path)"
 rm -f \
   "$BUILD_DIR/EasyTierMac" \
   "$BUILD_DIR/EasyTierPrivilegedHelper"
 
-swift build --configuration "$BUILD_CONFIGURATION" --product EasyTierMac
-swift build --configuration "$BUILD_CONFIGURATION" --product EasyTierPrivilegedHelper
+swift build "${SWIFT_BUILD_ARGS[@]}" --product EasyTierMac
+swift build "${SWIFT_BUILD_ARGS[@]}" --product EasyTierPrivilegedHelper
+
+BUILD_TIME_UTC="$(date -u -r "$BUILD_DIR/EasyTierMac" +%Y-%m-%dT%H:%M:%SZ)"
+BUILD_NUMBER="$(date -u -r "$BUILD_DIR/EasyTierMac" +%Y%m%d%H%M%S)"
 
 rm -rf "$APP_DIR" "$STAGING_DIR"
 mkdir -p "$APP_PRODUCTS_DIR"
 mkdir -p "$MACOS_DIR"
+mkdir -p "$RESOURCES_DIR"
 mkdir -p "$LAUNCH_DAEMONS_DIR"
 cp "$BUILD_DIR/EasyTierMac" "$MACOS_DIR/EasyTierMac"
 cp "$BUILD_DIR/EasyTierPrivilegedHelper" "$MACOS_DIR/EasyTierPrivilegedHelper"
+strip_release_macho "$MACOS_DIR/EasyTierMac"
+strip_release_macho "$MACOS_DIR/EasyTierPrivilegedHelper"
+cp "$ROOT_DIR/Assets/easytier-icon.icns" "$RESOURCES_DIR/EasyTier.icns"
+cp "$ROOT_DIR/Sources/EasyTierMac/Resources/easytier-icon.png" "$RESOURCES_DIR/easytier-icon.png"
 
 cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -548,6 +572,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
     <string>EasyTierMac</string>
     <key>CFBundleIdentifier</key>
     <string>$BUNDLE_IDENTIFIER</string>
+    <key>CFBundleIconFile</key>
+    <string>EasyTier.icns</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -558,6 +584,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
     <string>0.1.0</string>
     <key>CFBundleVersion</key>
     <string>$BUILD_NUMBER</string>
+    <key>EasyTierBuildTime</key>
+    <string>$BUILD_TIME_UTC</string>
     <key>EasyTierGUICommit</key>
     <string>$GUI_COMMIT</string>
     <key>EasyTierCoreTag</key>

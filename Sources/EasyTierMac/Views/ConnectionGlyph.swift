@@ -39,7 +39,7 @@ struct ConnectionGlyph: View {
         return Self.connectingSequence[activeConnectingNodeIndex % Self.connectingSequence.count]
     }
 
-    private static let connectingSequence: [ConnectionGlyphNode] = [.top, .bottomRight, .bottomLeft]
+    private static let connectingSequence: [ConnectionGlyphNode] = [.top, .bottomLeft, .bottomRight]
 
     private func runConnectingAnimationIfNeeded() async {
         guard state == .connecting else {
@@ -63,15 +63,15 @@ struct ConnectionGlyph: View {
     }
 
     private var nodeSize: CGFloat {
-        max(size * 0.28 - 0.5, 3.9)
+        max(size * 0.24, 3.6)
     }
 
     private var lineOpacity: Double {
         switch state {
-        case .idle: 0.16
-        case .connecting: 0.38
-        case .connected: 0.56
-        case .error: 0.36
+        case .idle: 0.18
+        case .connecting: 0.34
+        case .connected: 0.50
+        case .error: 0.34
         }
     }
 
@@ -110,13 +110,13 @@ struct ConnectionGlyph: View {
     private func nodeOpacity(for node: ConnectionGlyphNode, activeConnectingNode: ConnectionGlyphNode?) -> Double {
         switch state {
         case .idle:
-            return 0.26
+            return 0.32
         case .connecting:
-            return node == activeConnectingNode ? 0.86 : 0.26
+            return node == activeConnectingNode ? 1.0 : 0.32
         case .connected:
-            return 0.86
+            return 1.0
         case .error:
-            return node == .bottomRight ? 0.86 : 0.28
+            return node == .bottomRight ? 1.0 : 0.34
         }
     }
 

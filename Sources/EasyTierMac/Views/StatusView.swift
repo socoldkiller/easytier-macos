@@ -1,3 +1,4 @@
+import AppKit
 import EasyTierShared
 import SwiftUI
 
@@ -82,8 +83,7 @@ struct StatusView: View {
                 }
             }
             TableColumn("IPv4") { member in
-                Text(member.virtualIPv4)
-                    .monospacedDigit()
+                CopyableIPv4Cell(member: member)
             }
             TableColumn("Route") { member in
                 RouteCostBadge(member: member)
@@ -115,6 +115,121 @@ struct StatusView: View {
                     .lineLimit(1)
             }
         }
+    }
+}
+
+private struct CopyableIPv4Cell: View {
+    var member: NetworkMemberStatus
+    @State private var isHovering = false
+    @State private var didCopy = false
+    @State private var copyFeedbackToken = 0
+
+    var body: some View {
+        if let ip = member.copyableIPv4Address {
+            Button {
+                copy(ip)
+            } label: {
+                Text(ip)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .padding(.trailing, 20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .background {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(cellBackground)
+                    }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(cellBorder, lineWidth: isHovering || didCopy ? 1 : 0)
+                    }
+                    .overlay(alignment: .trailing) {
+                        trailingIndicator
+                            .padding(.trailing, 7)
+                    }
+            }
+            .buttonStyle(CopyFeedbackButtonStyle())
+            .onHover { hovering in
+                withAnimation(.easeOut(duration: 0.14)) {
+                    isHovering = hovering
+                }
+            }
+            .animation(.easeOut(duration: 0.18), value: didCopy)
+            .help(didCopy ? "Copied \(ip)" : "Copy IP \(ip)")
+            .contextMenu {
+                Button("Copy IP") {
+                    copy(ip)
+                }
+            }
+            .accessibilityLabel(Text(didCopy ? "Copied IP \(ip)" : "Copy IP \(ip)"))
+            .accessibilityHint(Text("Copies the IPv4 address to the clipboard."))
+        } else {
+            Text(member.virtualIPv4)
+                .monospacedDigit()
+                .lineLimit(1)
+        }
+    }
+
+    private var trailingIndicator: some View {
+        ZStack(alignment: .trailing) {
+            if didCopy {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.green)
+                    .transition(.scale(scale: 0.9).combined(with: .opacity))
+            } else {
+                Image(systemName: isHovering ? "doc.on.doc.fill" : "doc.on.doc")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(isHovering ? Color.accentColor : Color.secondary)
+                    .opacity(isHovering ? 1 : 0.64)
+                    .transition(.opacity)
+            }
+        }
+        .frame(width: 16, alignment: .trailing)
+    }
+
+    private var cellBackground: Color {
+        if didCopy { return Color.green.opacity(0.16) }
+        if isHovering { return Color.accentColor.opacity(0.12) }
+        return Color.secondary.opacity(0.06)
+    }
+
+    private var cellBorder: Color {
+        if didCopy { return Color.green.opacity(0.72) }
+        if isHovering { return Color.accentColor.opacity(0.5) }
+        return Color.clear
+    }
+
+    private func copy(_ ip: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(ip, forType: .string)
+        copyFeedbackToken += 1
+        let token = copyFeedbackToken
+
+        withAnimation(.spring(response: 0.22, dampingFraction: 0.74)) {
+            didCopy = true
+        }
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.35))
+            guard copyFeedbackToken == token else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                didCopy = false
+            }
+        }
+    }
+}
+
+private struct CopyFeedbackButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .opacity(configuration.isPressed ? 0.82 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 

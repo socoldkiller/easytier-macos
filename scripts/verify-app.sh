@@ -157,6 +157,20 @@ verify_app_bundle() {
   bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Contents/Info.plist")"
   [[ "$bundle_version" != "1" ]] || fail "Packaged app must use a fresh CFBundleVersion, not the static value 1."
 
+  local bundle_icon
+  bundle_icon="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP_PATH/Contents/Info.plist")"
+  [[ "$bundle_icon" == "EasyTier.icns" ]] || fail "Packaged app must use the official EasyTier dock icon: $bundle_icon"
+  [[ -f "$APP_PATH/Contents/Resources/$bundle_icon" ]] || fail "Missing dock icon resource: Contents/Resources/$bundle_icon"
+  [[ -f "$APP_PATH/Contents/Resources/easytier-icon.png" ]] || fail "Missing About icon resource: Contents/Resources/easytier-icon.png"
+
+  local build_time
+  build_time="$(/usr/libexec/PlistBuddy -c 'Print :EasyTierBuildTime' "$APP_PATH/Contents/Info.plist")" || fail "Packaged app must include EasyTierBuildTime."
+  [[ "$build_time" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || fail "EasyTierBuildTime must be an ISO-8601 UTC timestamp: $build_time"
+
+  local compact_build_time
+  compact_build_time="$(printf '%s' "$build_time" | tr -d ':TZ-')"
+  [[ "$bundle_version" == "$compact_build_time" ]] || fail "CFBundleVersion must match EasyTierBuildTime: $bundle_version != $compact_build_time"
+
   local helper_identifier
   helper_identifier="$(codesign -dv --verbose=4 "$HELPER_BINARY" 2>&1 | sed -n 's/^Identifier=//p')"
   [[ "$helper_identifier" == "com.kkrainbow.easytier.mac.helper" ]] || fail "Unexpected helper code signature identifier: $helper_identifier"

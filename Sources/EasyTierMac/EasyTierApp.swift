@@ -40,13 +40,10 @@ struct EasyTierApp: App {
     }
 
     private var menuBarConnectionState: ConnectionGlyphState {
+        if store.lastError != nil { return .error }
         if store.isBusy { return .connecting }
-        guard !store.instances.isEmpty else { return .idle }
-        return allRunningInstancesConnected ? .connected : .connecting
-    }
-
-    private var allRunningInstancesConnected: Bool {
-        store.instances.allSatisfy { store.instanceIsFullyConnected($0) }
+        guard let instance = store.selectedRunningInstance else { return .idle }
+        return store.instanceIsFullyConnected(instance) ? .connected : .connecting
     }
 
     private static func runHelperCommandIfRequested() {
@@ -118,10 +115,10 @@ private struct MenuBarConnectionLabel: View {
 
     private var currentActiveNodeIndex: Int? {
         guard state == .connecting else { return nil }
-        return Self.clockwiseNodeIndexes[activeNodeIndex % Self.clockwiseNodeIndexes.count]
+        return Self.counterclockwiseNodeIndexes[activeNodeIndex % Self.counterclockwiseNodeIndexes.count]
     }
 
-    private static let clockwiseNodeIndexes = [0, 2, 1]
+    private static let counterclockwiseNodeIndexes = [0, 1, 2]
     private static let stepDurationNanoseconds: UInt64 = 340_000_000
 
     private func runConnectingAnimationIfNeeded() async {
@@ -137,7 +134,7 @@ private struct MenuBarConnectionLabel: View {
             } catch {
                 break
             }
-            activeNodeIndex = (activeNodeIndex + 1) % Self.clockwiseNodeIndexes.count
+            activeNodeIndex = (activeNodeIndex + 1) % Self.counterclockwiseNodeIndexes.count
         }
     }
 }
@@ -183,7 +180,7 @@ private enum MenuBarConnectionIcon {
 
         for (index, point) in nodes.enumerated() {
             NSColor.black.withAlphaComponent(nodeAlpha(for: state, index: index, activeNodeIndex: activeNodeIndex)).setFill()
-            NSBezierPath(ovalIn: NSRect(x: point.x - 2.45, y: point.y - 2.45, width: 4.9, height: 4.9)).fill()
+            NSBezierPath(ovalIn: NSRect(x: point.x - 2.25, y: point.y - 2.25, width: 4.5, height: 4.5)).fill()
         }
 
         image.isTemplate = true
@@ -192,23 +189,23 @@ private enum MenuBarConnectionIcon {
 
     private static func lineAlpha(for state: ConnectionGlyphState) -> CGFloat {
         switch state {
-        case .idle: 0.28
-        case .connecting: 0.42
-        case .connected: 0.74
-        case .error: 0.42
+        case .idle: 0.22
+        case .connecting: 0.36
+        case .connected: 0.62
+        case .error: 0.36
         }
     }
 
     private static func nodeAlpha(for state: ConnectionGlyphState, index: Int, activeNodeIndex: Int?) -> CGFloat {
         switch state {
         case .idle:
-            return 0.42
+            return 0.46
         case .connecting:
-            return index == activeNodeIndex ? 0.92 : 0.34
+            return index == activeNodeIndex ? 1.0 : 0.40
         case .connected:
-            return 0.92
+            return 1.0
         case .error:
-            return index == 2 ? 0.92 : 0.44
+            return index == 2 ? 1.0 : 0.46
         }
     }
 }
@@ -238,10 +235,10 @@ private struct MenuBarContent: View {
                 Spacer(minLength: 0)
 
                 Button(action: toggleConnection) {
-                    MenuBarConnectionSwitch(isOn: hasRunningInstances, isBusy: store.isBusy)
+                    MenuBarConnectionSwitch(isOn: store.selectedConfigIsRunning, isBusy: store.isBusy)
                 }
                     .buttonStyle(.plain)
-                    .disabled(store.isBusy || (!hasRunningInstances && store.selectedConfig == nil))
+                    .disabled(store.isBusy || store.selectedConfig == nil)
             }
             .padding(.horizontal, 12)
             .padding(.top, 8)
@@ -249,28 +246,15 @@ private struct MenuBarContent: View {
 
             MenuBarDivider()
 
-            Button(action: openMainWindow) {
-                HStack(spacing: 10) {
-                    MenuBarNetworkAvatar(state: selectedNetworkState)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(currentNetworkName)
-                            .font(.system(size: 13.5, weight: .medium))
-                            .lineLimit(1)
-                        Text(selectedNetworkSubtitle)
-                            .font(.system(size: 13.5, weight: .regular))
-                            .foregroundStyle(MenuBarPalette.secondaryText)
-                            .lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(MenuBarPalette.primaryText)
-                }
-                .contentShape(Rectangle())
-                .padding(.horizontal, 12)
-                .padding(.vertical, 12)
-            }
-            .buttonStyle(.plain)
+            MenuBarNetworkRow(
+                name: currentNetworkName,
+                subtitle: selectedNetworkSubtitle,
+                state: selectedNetworkState,
+                canSwitch: canSwitchNetworks,
+                open: openMainWindow,
+                previous: selectPreviousNetwork,
+                next: selectNextNetwork
+            )
 
             MenuBarDivider()
 
@@ -299,14 +283,10 @@ private struct MenuBarContent: View {
                 NSApp.terminate(nil)
             }
         }
-        .frame(width: 320)
+        .frame(width: 292)
         .foregroundStyle(MenuBarPalette.primaryText)
         .background(.ultraThinMaterial)
         .environment(\.colorScheme, .dark)
-    }
-
-    private var hasRunningInstances: Bool {
-        !store.instances.isEmpty
     }
 
     private var selectedNetworkState: ConnectionGlyphState {
@@ -321,8 +301,8 @@ private struct MenuBarContent: View {
         return store.runningInstance(matching: config)
     }
 
-    private var allRunningInstancesConnected: Bool {
-        store.instances.allSatisfy { store.instanceIsFullyConnected($0) }
+    private var canSwitchNetworks: Bool {
+        store.configs.count > 1
     }
 
     private var currentNetworkName: String {
@@ -352,21 +332,22 @@ private struct MenuBarContent: View {
     private var devicesTitle: String {
         let count = store.selectedMemberStatuses.count
         if count > 0 { return "\(count) Devices" }
-        return hasRunningInstances ? "Loading Devices..." : "No Devices"
+        return store.selectedConfigIsRunning ? "Loading Devices..." : "No Devices"
     }
 
     private var connectionSubtitle: String {
         if store.isBusy { return "Working" }
         if store.lastError != nil { return "Needs Attention" }
-        guard hasRunningInstances else { return "Not Connected" }
-        return allRunningInstancesConnected ? "Connected" : "Connecting"
+        guard store.selectedConfig != nil else { return "No Network" }
+        guard let instance = selectedRunningInstance else { return "Not Connected" }
+        return store.instanceIsFullyConnected(instance) ? "Connected" : "Connecting"
     }
 
     private var connectionIndicatorColor: Color {
         if store.lastError != nil { return .orange }
         if store.isBusy { return .yellow.opacity(0.82) }
-        guard hasRunningInstances else { return MenuBarPalette.mutedText }
-        return allRunningInstancesConnected ? MenuBarPalette.connected : .yellow.opacity(0.82)
+        guard let instance = selectedRunningInstance else { return MenuBarPalette.mutedText }
+        return store.instanceIsFullyConnected(instance) ? MenuBarPalette.connected : .yellow.opacity(0.82)
     }
 
     private var selectedNetworkSubtitle: String {
@@ -382,12 +363,16 @@ private struct MenuBarContent: View {
 
     private func toggleConnection() {
         Task {
-            if hasRunningInstances {
-                await store.stopAll()
-            } else {
-                await store.runSelectedConfig()
-            }
+            await store.toggleSelectedConfigConnection()
         }
+    }
+
+    private func selectPreviousNetwork() {
+        store.selectPreviousConfig()
+    }
+
+    private func selectNextNetwork() {
+        store.selectNextConfig()
     }
 
     private func copyDeviceAddress() {
@@ -491,6 +476,81 @@ private struct MenuBarNetworkAvatar: View {
         case .error: Color.white.opacity(0.12)
         case .idle: Color.white.opacity(0.09)
         }
+    }
+}
+
+private struct MenuBarNetworkRow: View {
+    var name: String
+    var subtitle: String
+    var state: ConnectionGlyphState
+    var canSwitch: Bool
+    var open: () -> Void
+    var previous: () -> Void
+    var next: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button(action: open) {
+                HStack(spacing: 10) {
+                    MenuBarNetworkAvatar(state: state)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(name)
+                            .font(.system(size: 13.5, weight: .medium))
+                            .lineLimit(1)
+                        Text(subtitle)
+                            .font(.system(size: 13.5, weight: .regular))
+                            .foregroundStyle(MenuBarPalette.secondaryText)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+
+                    if !canSwitch {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(MenuBarPalette.primaryText)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity)
+
+            if canSwitch {
+                HStack(spacing: 2) {
+                    MenuBarIconButton(systemName: "chevron.left", help: "Previous network", action: previous)
+                    MenuBarIconButton(systemName: "chevron.right", help: "Next network", action: next)
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+}
+
+private struct MenuBarIconButton: View {
+    var systemName: String
+    var help: String
+    var action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(MenuBarPalette.primaryText)
+                .frame(width: 24, height: 28)
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .background(buttonBackground, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .animation(.easeOut(duration: 0.14), value: isHovering)
+        .help(help)
+    }
+
+    private var buttonBackground: Color {
+        isHovering ? MenuBarPalette.rowHighlight : Color.white.opacity(0.04)
     }
 }
 

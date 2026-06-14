@@ -2,6 +2,7 @@ import EasyTierShared
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(EasyTierAppStore.self) private var store
     @State private var permissionController = PermissionController()
     @State private var showingModeSettings = false
@@ -58,6 +59,11 @@ struct ContentView: View {
         }
         .task {
             permissionController.refresh()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                permissionController.refresh()
+            }
         }
         .sheet(isPresented: $showingModeSettings) {
             ModeSettingsSheet(mode: store.mode) { mode in
@@ -272,9 +278,28 @@ private struct PermissionBanner: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
             .background(.bar)
+            .task(id: controller.state) {
+                await refreshUntilHelperApproved()
+            }
             Divider()
         }
     }
+
+    private func refreshUntilHelperApproved() async {
+        guard controller.state == .requiresApproval else { return }
+
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(nanoseconds: Self.approvalRefreshIntervalNanoseconds)
+            } catch {
+                return
+            }
+            guard controller.state == .requiresApproval else { return }
+            controller.refresh()
+        }
+    }
+
+    private static let approvalRefreshIntervalNanoseconds: UInt64 = 2_000_000_000
 }
 
 private struct NetworkRow: View {

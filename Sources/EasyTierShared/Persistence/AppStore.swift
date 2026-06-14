@@ -30,7 +30,7 @@ public final class EasyTierAppStore {
 
     public var selectedConfig: NetworkConfig? {
         get {
-            guard let selectedConfigID else { return configs.first?.config }
+            guard let selectedConfigID else { return nil }
             return configs.first { $0.id == selectedConfigID }?.config
         }
         set {
@@ -46,13 +46,16 @@ public final class EasyTierAppStore {
         return runningInstance(matching: config)
     }
 
+    public var selectedConfigIsRunning: Bool {
+        selectedRunningInstance != nil
+    }
+
     public func runningInstance(matching config: NetworkConfig) -> NetworkInstance? {
         let instanceID = config.instance_id
         let networkName = config.network_name
 
         if let byID = instances.first(where: { instance in instance.instance_id == instanceID }) { return byID }
-        if let byName = instances.first(where: { instance in instance.name == networkName }) { return byName }
-        return nil
+        return uniquelyMatchedInstance(named: networkName)
     }
 
     public func config(matching instance: NetworkInstance) -> NetworkConfig? {
@@ -60,8 +63,7 @@ public final class EasyTierAppStore {
         let networkName = instance.name
 
         if let byID = configs.first(where: { stored in stored.config.instance_id == instanceID })?.config { return byID }
-        if let byName = configs.first(where: { stored in stored.config.network_name == networkName })?.config { return byName }
-        return nil
+        return uniquelyMatchedConfig(named: networkName)
     }
 
     public func instanceIsFullyConnected(_ instance: NetworkInstance) -> Bool {
@@ -88,7 +90,13 @@ public final class EasyTierAppStore {
             } else {
                 mode = loadedMode
             }
-            selectedConfigID = snapshot.lastSelectedConfigID ?? configs.first?.id
+            if let lastSelectedConfigID = snapshot.lastSelectedConfigID,
+               configs.contains(where: { $0.id == lastSelectedConfigID })
+            {
+                selectedConfigID = lastSelectedConfigID
+            } else {
+                selectedConfigID = configs.first?.id
+            }
             log("Loaded \(configs.count) saved network config(s).")
         } catch {
             configs = [StoredNetworkConfig(config: NetworkConfig())]
@@ -149,6 +157,14 @@ public final class EasyTierAppStore {
         }
     }
 
+    public func selectPreviousConfig() {
+        selectConfig(offset: -1)
+    }
+
+    public func selectNextConfig() {
+        selectConfig(offset: 1)
+    }
+
     public func validateSelectedConfig() async {
         guard let config = selectedConfig else { return }
         await busy {
@@ -178,6 +194,14 @@ public final class EasyTierAppStore {
             clearPendingStart(for: config)
             log("Stopped \(config.network_name).")
             try await refreshRuntimeThrowing()
+        }
+    }
+
+    public func toggleSelectedConfigConnection() async {
+        if selectedConfigIsRunning {
+            await stopSelectedConfig()
+        } else {
+            await runSelectedConfig()
         }
     }
 
@@ -299,6 +323,40 @@ public final class EasyTierAppStore {
         if let byID = infos[instance.instance_id] { return byID }
         if let byName = infos[instance.name] { return byName }
         return nil
+    }
+
+    private func uniquelyMatchedInstance(named networkName: String) -> NetworkInstance? {
+        let matchingConfigs = configs.filter { $0.config.network_name == networkName }
+        guard matchingConfigs.count <= 1 else { return nil }
+
+        let matches = instances.filter { instance in
+            instance.name == networkName || instance.instance_id == networkName
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    private func uniquelyMatchedConfig(named networkName: String) -> NetworkConfig? {
+        let matches = configs.filter { $0.config.network_name == networkName }
+        return matches.count == 1 ? matches[0].config : nil
+    }
+
+    private func selectConfig(offset: Int) {
+        guard !configs.isEmpty else {
+            selectedConfigID = nil
+            return
+        }
+
+        let count = configs.count
+        let currentIndex = selectedConfigID.flatMap { selectedID in
+            configs.firstIndex { $0.id == selectedID }
+        }
+        let baseIndex = currentIndex ?? (offset > 0 ? -1 : count)
+        let nextIndex = (baseIndex + offset + count) % count
+        let nextID = configs[nextIndex].id
+        guard selectedConfigID != nextID else { return }
+
+        selectedConfigID = nextID
+        save()
     }
 
     private func recordPendingStart(for config: NetworkConfig) {

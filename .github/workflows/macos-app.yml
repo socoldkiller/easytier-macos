@@ -38,7 +38,6 @@ jobs:
       contents: read
     env:
       EASYTIER_BUILD_CONFIGURATION: release
-      EASYTIER_BUILD_NUMBER: ${{ github.run_number }}
       EASYTIER_EXPORT_APP_DIR: ${{ github.workspace }}/.build/artifacts/EasyTier.app
 
     steps:

@@ -161,6 +161,96 @@ import Testing
 }
 
 @MainActor
+@Test func selectedConfigDoesNotFallBackToFirstConfigWhenSelectionIsCleared() {
+    let first = NetworkConfig(instance_id: "first-id", network_name: "first-network")
+    let second = NetworkConfig(instance_id: "second-id", network_name: "second-network")
+    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"))
+
+    store.configs = [StoredNetworkConfig(config: first), StoredNetworkConfig(config: second)]
+    store.selectedConfigID = nil
+    store.instances = [NetworkInstance(instance_id: first.instance_id, name: first.network_name, running: true)]
+
+    #expect(store.selectedConfig == nil)
+    #expect(store.selectedRunningInstance == nil)
+    #expect(!store.selectedConfigIsRunning)
+}
+
+@MainActor
+@Test func selectNextConfigCyclesThroughConfigsAndPersistsSelection() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let storage = EasyTierStorage(baseDirectory: directory)
+    let first = NetworkConfig(instance_id: "first-id", network_name: "first-network")
+    let second = NetworkConfig(instance_id: "second-id", network_name: "second-network")
+    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"), storage: storage)
+
+    store.configs = [StoredNetworkConfig(config: first), StoredNetworkConfig(config: second)]
+    store.selectedConfigID = first.instance_id
+
+    store.selectNextConfig()
+
+    #expect(store.selectedConfigID == second.instance_id)
+    #expect(try storage.load().lastSelectedConfigID == second.instance_id)
+
+    store.selectNextConfig()
+
+    #expect(store.selectedConfigID == first.instance_id)
+}
+
+@MainActor
+@Test func selectPreviousConfigWrapsToLastConfig() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let storage = EasyTierStorage(baseDirectory: directory)
+    let first = NetworkConfig(instance_id: "first-id", network_name: "first-network")
+    let second = NetworkConfig(instance_id: "second-id", network_name: "second-network")
+    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"), storage: storage)
+
+    store.configs = [StoredNetworkConfig(config: first), StoredNetworkConfig(config: second)]
+    store.selectedConfigID = first.instance_id
+
+    store.selectPreviousConfig()
+
+    #expect(store.selectedConfigID == second.instance_id)
+}
+
+@MainActor
+@Test func adjacentConfigSelectionStartsAtDirectionalEdgeWhenSelectionIsMissing() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let storage = EasyTierStorage(baseDirectory: directory)
+    let first = NetworkConfig(instance_id: "first-id", network_name: "first-network")
+    let second = NetworkConfig(instance_id: "second-id", network_name: "second-network")
+    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"), storage: storage)
+
+    store.configs = [StoredNetworkConfig(config: first), StoredNetworkConfig(config: second)]
+    store.selectedConfigID = nil
+
+    store.selectNextConfig()
+
+    #expect(store.selectedConfigID == first.instance_id)
+
+    store.selectedConfigID = nil
+    store.selectPreviousConfig()
+
+    #expect(store.selectedConfigID == second.instance_id)
+}
+
+@MainActor
+@Test func loadFallsBackToFirstConfigWhenSavedSelectionIsMissing() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let storage = EasyTierStorage(baseDirectory: directory)
+    let config = NetworkConfig(instance_id: "current-id", network_name: "current-network")
+    let snapshot = AppSnapshot(configs: [StoredNetworkConfig(config: config)], mode: .default, lastSelectedConfigID: "missing-id")
+    try storage.save(snapshot)
+
+    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"), storage: storage)
+
+    await store.load()
+    store.stopPolling()
+
+    #expect(store.selectedConfigID == config.instance_id)
+    #expect(store.selectedConfig?.network_name == config.network_name)
+}
+
+@MainActor
 @Test func loadMigratesUnavailableServiceModeToNormalMode() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let storage = EasyTierStorage(baseDirectory: directory)
@@ -237,6 +327,72 @@ import Testing
 
     let selected = try #require(store.selectedRunningInstance)
     #expect(selected.instance_id == second.instance_id)
+}
+
+@MainActor
+@Test func selectedRunningInstanceUsesLegacyRuntimeNameWhenConfigNameIsUnique() throws {
+    let config = NetworkConfig(instance_id: "config-id", network_name: "legacy-runtime-name")
+    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"))
+
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.selectedConfigID = config.instance_id
+    store.instances = [NetworkInstance(instance_id: config.network_name, name: config.network_name, running: true)]
+
+    let selected = try #require(store.selectedRunningInstance)
+    #expect(selected.instance_id == config.network_name)
+}
+
+@MainActor
+@Test func selectedRunningInstanceDoesNotUseAmbiguousNameFallback() {
+    let first = NetworkConfig(instance_id: "first-id", network_name: "shared-network")
+    let second = NetworkConfig(instance_id: "second-id", network_name: "shared-network")
+    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"))
+
+    store.configs = [StoredNetworkConfig(config: first), StoredNetworkConfig(config: second)]
+    store.selectedConfigID = second.instance_id
+    store.instances = [NetworkInstance(instance_id: "shared-network", name: "shared-network", running: true)]
+
+    #expect(store.selectedRunningInstance == nil)
+    #expect(!store.selectedConfigIsRunning)
+}
+
+@MainActor
+@Test func toggleSelectedConfigConnectionRunsSelectedStoppedNetwork() async {
+    let first = NetworkConfig(instance_id: "first-id", network_name: "first-network")
+    let second = NetworkConfig(instance_id: "second-id", network_name: "second-network")
+    let client = RecordingToggleClient()
+    let store = EasyTierAppStore(client: client)
+
+    store.configs = [StoredNetworkConfig(config: first), StoredNetworkConfig(config: second)]
+    store.selectedConfigID = second.instance_id
+    store.instances = [NetworkInstance(instance_id: first.instance_id, name: first.network_name, running: true)]
+
+    await store.toggleSelectedConfigConnection()
+
+    #expect(client.runConfigs.map(\.instance_id) == [second.instance_id])
+    #expect(client.stoppedInstanceNames.isEmpty)
+    #expect(client.retainedInstanceNames.isEmpty)
+}
+
+@MainActor
+@Test func toggleSelectedConfigConnectionStopsOnlySelectedRunningNetwork() async {
+    let first = NetworkConfig(instance_id: "first-id", network_name: "first-network")
+    let second = NetworkConfig(instance_id: "second-id", network_name: "second-network")
+    let client = RecordingToggleClient()
+    let store = EasyTierAppStore(client: client)
+
+    store.configs = [StoredNetworkConfig(config: first), StoredNetworkConfig(config: second)]
+    store.selectedConfigID = second.instance_id
+    store.instances = [
+        NetworkInstance(instance_id: first.instance_id, name: first.network_name, running: true),
+        NetworkInstance(instance_id: second.instance_id, name: second.network_name, running: true),
+    ]
+
+    await store.toggleSelectedConfigConnection()
+
+    #expect(client.stoppedInstanceNames == [[second.network_name]])
+    #expect(client.retainedInstanceNames.isEmpty)
+    #expect(client.runConfigs.isEmpty)
 }
 
 @Test func unavailableClientReportsClearRuntimeFailure() async {
@@ -368,11 +524,13 @@ import Testing
     #expect(members[0].isLocal)
     #expect(members[0].hostname == "macbook")
     #expect(members[0].virtualIPv4 == "10.10.0.1/24")
+    #expect(members[0].copyableIPv4Address == "10.10.0.1")
     #expect(members[0].natType == "Open Internet")
 
     #expect(!members[1].isLocal)
     #expect(members[1].peerID == "200")
     #expect(members[1].virtualIPv4 == "10.10.0.2/24")
+    #expect(members[1].copyableIPv4Address == "10.10.0.2")
     #expect(members[1].routeCost == "P2P")
     #expect(members[1].tunnelProto == "tcp")
     #expect(members[1].latency == "2 ms")
@@ -603,6 +761,43 @@ private final class PendingStartClient: EasyTierCoreClient, @unchecked Sendable 
     func retain(instanceNames _: [String]) async throws {}
     func listInstances() async throws -> [NetworkInstance] { [] }
     func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] { [:] }
+
+    func callJSONRPC(service _: String, method _: String, domain _: String?, payload _: String) async throws -> String {
+        throw EasyTierCoreError.operationFailed("unsupported")
+    }
+
+    func startConfigServerClient(url _: URL) async throws {
+        throw EasyTierCoreError.operationFailed("unsupported")
+    }
+
+    func stopConfigServerClient() async throws {}
+    func isConfigServerClientConnected() async throws -> Bool { false }
+}
+
+private final class RecordingToggleClient: EasyTierCoreClient, @unchecked Sendable {
+    var runConfigs: [NetworkConfig] = []
+    var stoppedInstanceNames: [[String]] = []
+    var retainedInstanceNames: [[String]] = []
+    var listedInstances: [NetworkInstance] = []
+    var networkInfos: [String: NetworkInstanceRunningInfo] = [:]
+
+    func version() async throws -> String { "test" }
+    func validate(toml _: String) async throws {}
+
+    func run(config: NetworkConfig) async throws {
+        runConfigs.append(config)
+    }
+
+    func stop(instanceNames: [String]) async throws {
+        stoppedInstanceNames.append(instanceNames)
+    }
+
+    func retain(instanceNames: [String]) async throws {
+        retainedInstanceNames.append(instanceNames)
+    }
+
+    func listInstances() async throws -> [NetworkInstance] { listedInstances }
+    func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] { networkInfos }
 
     func callJSONRPC(service _: String, method _: String, domain _: String?, payload _: String) async throws -> String {
         throw EasyTierCoreError.operationFailed("unsupported")

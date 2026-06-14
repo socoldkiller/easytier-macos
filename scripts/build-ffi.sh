@@ -7,6 +7,37 @@ OUT_DIR="$ROOT_DIR/Vendor/Frameworks"
 HEADER_DIR="$OUT_DIR/include"
 STATIC_DIR="$OUT_DIR/static"
 CORE_TAG="${EASYTIER_CORE_TAG:-v2.6.4}"
+RUST_RELEASE_OPT_LEVEL="${EASYTIER_RUST_OPT_LEVEL:-z}"
+RUST_RELEASE_LTO="${EASYTIER_RUST_LTO:-fat}"
+RUST_RELEASE_CODEGEN_UNITS="${EASYTIER_RUST_CODEGEN_UNITS:-1}"
+RUST_RELEASE_PANIC="${EASYTIER_RUST_PANIC:-abort}"
+RUST_RELEASE_STRIP="${EASYTIER_RUST_STRIP:-none}"
+STRIP_STATIC_LIBS="${EASYTIER_STRIP_STATIC_LIBS:-1}"
+
+configure_rust_release_profile() {
+  # Keep the vendored EasyTier checkout clean while forcing the FFI/core build
+  # through the smallest portable release profile. Override OPT_LEVEL=3 for
+  # throughput-focused builds. Final archives are stripped explicitly below so
+  # host-side proc-macro dylibs stay intact during cross compilation.
+  export CARGO_INCREMENTAL=0
+  export CARGO_PROFILE_RELEASE_DEBUG=0
+  export CARGO_PROFILE_RELEASE_OPT_LEVEL="$RUST_RELEASE_OPT_LEVEL"
+  export CARGO_PROFILE_RELEASE_LTO="$RUST_RELEASE_LTO"
+  export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$RUST_RELEASE_CODEGEN_UNITS"
+  export CARGO_PROFILE_RELEASE_PANIC="$RUST_RELEASE_PANIC"
+  export CARGO_PROFILE_RELEASE_STRIP="$RUST_RELEASE_STRIP"
+
+  echo "Rust FFI release profile: opt-level=$RUST_RELEASE_OPT_LEVEL lto=$RUST_RELEASE_LTO codegen-units=$RUST_RELEASE_CODEGEN_UNITS panic=$RUST_RELEASE_PANIC cargo-strip=$RUST_RELEASE_STRIP archive-strip=$STRIP_STATIC_LIBS incremental=0"
+}
+
+strip_static_library() {
+  local path="$1"
+  if [[ "$STRIP_STATIC_LIBS" != "1" ]]; then
+    return
+  fi
+  xcrun strip -S -x "$path"
+  xcrun ranlib "$path"
+}
 
 ensure_easytier_core_tag() {
   if [[ -f "$EASYTIER_DIR/Cargo.toml" ]]; then
@@ -35,6 +66,7 @@ ensure_easytier_core_tag() {
 cd "$ROOT_DIR"
 export MACOSX_DEPLOYMENT_TARGET=14.0
 ensure_easytier_core_tag
+configure_rust_release_profile
 
 mkdir -p "$OUT_DIR" "$HEADER_DIR" "$STATIC_DIR"
 
@@ -74,6 +106,8 @@ ARM_STATIC="$EASYTIER_DIR/target/aarch64-apple-darwin/release/libeasytier_ffi.a"
 X64_STATIC="$EASYTIER_DIR/target/x86_64-apple-darwin/release/libeasytier_ffi.a"
 UNIVERSAL_STATIC="$STATIC_DIR/libeasytier_ffi.a"
 
+strip_static_library "$ARM_STATIC"
+strip_static_library "$X64_STATIC"
 lipo -create "$ARM_STATIC" "$X64_STATIC" -output "$UNIVERSAL_STATIC"
 
 rm -rf "$OUT_DIR/EasyTierFFI.xcframework"

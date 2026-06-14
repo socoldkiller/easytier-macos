@@ -1,20 +1,14 @@
 import AppKit
-import EasyTierShared
 import SwiftUI
 
 struct AboutView: View {
-    @Environment(EasyTierAppStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
-
     @State private var automaticUpdates = true
     @State private var unstableUpdates = false
-    @State private var runtimeVersion = "Loading"
 
     private let appInfo = AppVersionInfo.current
     private let revisions = SourceRevisionInfo.current
 
     private let background = Color(red: 0.19, green: 0.21, blue: 0.21)
-    private let markBackground = Color.black.opacity(0.24)
     private let primaryText = Color.white.opacity(0.86)
     private let secondaryText = Color.white.opacity(0.56)
     private let mutedText = Color.white.opacity(0.36)
@@ -35,13 +29,12 @@ struct AboutView: View {
         .background(background)
         .foregroundStyle(primaryText)
         .environment(\.colorScheme, .dark)
-        .task { await loadRuntimeVersion() }
     }
 
     private var content: some View {
         VStack(spacing: 24) {
             HStack(alignment: .center, spacing: 34) {
-                EasyTierMark(background: markBackground)
+                EasyTierMark()
                     .frame(width: 118, height: 118)
 
                 VStack(alignment: .leading, spacing: 12) {
@@ -57,7 +50,6 @@ struct AboutView: View {
                     VStack(alignment: .leading, spacing: 5) {
                         MetadataRow(label: "GUI", value: "\(appInfo.version) · \(revisions.guiCommit)")
                         MetadataRow(label: "Core", value: revisions.coreVersion)
-                        MetadataRow(label: "Runtime", value: runtimeLabel)
                         MetadataRow(label: "Build", value: appInfo.build)
                     }
 
@@ -108,38 +100,25 @@ struct AboutView: View {
         .padding(.vertical, 20)
     }
 
-    private var runtimeLabel: String {
-        switch runtimeVersion {
-        case "EasyTier privileged helper":
-            "Privileged helper"
-        case "EasyTier FFI (static)":
-            "Static FFI"
-        default:
-            runtimeVersion
-        }
-    }
-
-    private func loadRuntimeVersion() async {
-        do {
-            let version = try await store.easyTierCoreVersion()
-            runtimeVersion = version.isEmpty ? "Unavailable" : version
-        } catch {
-            runtimeVersion = "Unavailable"
-        }
-    }
 }
 
 private struct EasyTierMark: View {
-    var background: Color
-
     var body: some View {
-        RoundedRectangle(cornerRadius: 28, style: .continuous)
-            .fill(background)
-            .overlay {
-                ConnectionGlyph(state: .connected, size: 66, templateMode: true)
-                    .foregroundStyle(Color.white.opacity(0.72))
-            }
+        Image(nsImage: Self.iconImage)
+            .resizable()
+            .interpolation(.high)
+            .aspectRatio(contentMode: .fit)
+            .shadow(color: Color.black.opacity(0.24), radius: 10, x: 0, y: 5)
+            .accessibilityLabel(Text("EasyTier app icon"))
     }
+
+    private static let iconImage: NSImage = {
+        guard let url = Bundle.main.url(forResource: "easytier-icon", withExtension: "png"),
+              let image = NSImage(contentsOf: url) else {
+            preconditionFailure("Missing bundled resource: easytier-icon.png")
+        }
+        return image
+    }()
 }
 
 private struct MetadataRow: View {
@@ -220,8 +199,47 @@ private struct AppVersionInfo: Equatable {
     init(bundle: Bundle) {
         let info = bundle.infoDictionary ?? [:]
         version = info["CFBundleShortVersionString"] as? String ?? "Development"
-        build = info["CFBundleVersion"] as? String ?? "Local"
+        build = Self.formattedBuildTime(from: info["EasyTierBuildTime"] as? String)
+            ?? Self.formattedExecutableModificationDate(bundle: bundle)
+            ?? Self.formattedBuildTime(from: info["CFBundleVersion"] as? String)
+            ?? "Local"
         bundleIdentifier = bundle.bundleIdentifier ?? "com.kkrainbow.easytier.mac"
+    }
+
+    private static func formattedExecutableModificationDate(bundle: Bundle) -> String? {
+        guard let executableURL = bundle.executableURL,
+              let values = try? executableURL.resourceValues(forKeys: [.contentModificationDateKey]),
+              let date = values.contentModificationDate else { return nil }
+        return formattedBuildDate(date)
+    }
+
+    private static func formattedBuildTime(from rawValue: String?) -> String? {
+        guard let rawValue = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines), !rawValue.isEmpty else {
+            return nil
+        }
+
+        let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime]
+        if let date = isoFormatter.date(from: rawValue) {
+            return formattedBuildDate(date)
+        }
+
+        let compactFormatter = DateFormatter()
+        compactFormatter.locale = Locale(identifier: "en_US_POSIX")
+        compactFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+        compactFormatter.dateFormat = "yyyyMMddHHmmss"
+        if let date = compactFormatter.date(from: rawValue) {
+            return formattedBuildDate(date)
+        }
+
+        return nil
+    }
+
+    private static func formattedBuildDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter.string(from: date)
     }
 }
 
@@ -234,6 +252,14 @@ private struct SourceRevisionInfo: Equatable {
         let bundledGUI = normalized(info["EasyTierGUICommit"] as? String)
         let bundledCoreTag = normalized(info["EasyTierCoreTag"] as? String)
         let bundledCore = normalized(info["EasyTierCoreCommit"] as? String)
+
+        if Bundle.main.bundleURL.pathExtension == "app" {
+            return SourceRevisionInfo(
+                guiCommit: bundledGUI ?? "unknown",
+                coreVersion: bundledCoreTag ?? bundledCore ?? "unknown"
+            )
+        }
+
         let guiRoot = GitRevision.repositoryRoot(from: FileManager.default.currentDirectoryPath)
         let coreRoot = guiRoot.map { ($0 as NSString).appendingPathComponent("Vendor/EasyTier") }
 

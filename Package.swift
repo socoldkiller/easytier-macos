@@ -42,7 +42,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "EasyTierMac",
-            dependencies: ["EasyTierShared"]
+            dependencies: ["EasyTierShared"],
+            resources: [
+                .process("Resources"),
+            ]
         ),
         .executableTarget(
             name: "EasyTierPrivilegedHelper",

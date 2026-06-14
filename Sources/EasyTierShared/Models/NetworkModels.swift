@@ -672,6 +672,18 @@ public struct NetworkMemberStatus: Identifiable, Equatable, Sendable {
     public var rxBytes: Int64
 }
 
+public extension NetworkMemberStatus {
+    var copyableIPv4Address: String? {
+        let value = virtualIPv4.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, value != "-" else { return nil }
+
+        let address = value.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? value
+        let trimmedAddress = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedAddress.isEmpty, trimmedAddress != "-" else { return nil }
+        return trimmedAddress
+    }
+}
+
 public struct TrafficSample: Identifiable, Equatable, Sendable {
     public var id = UUID()
     public var timestamp: Date
