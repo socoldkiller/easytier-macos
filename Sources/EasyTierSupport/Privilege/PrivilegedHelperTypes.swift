@@ -4,7 +4,7 @@ public enum EasyTierPrivilegedHelperConstants {
     public static let bundleIdentifier = "com.kkrainbow.easytier.mac.helper"
     public static let machServiceName = "com.kkrainbow.easytier.mac.helper"
     public static let launchDaemonPlistName = "com.kkrainbow.easytier.mac.helper.plist"
-    public static let protocolVersion = "3"
+    public static let protocolVersion = "2"
     public static let pingPayload = "pong:\(protocolVersion)"
 }
 
