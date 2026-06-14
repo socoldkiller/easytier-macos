@@ -7,14 +7,13 @@ struct StatusView: View {
     private var instance: NetworkInstance? { store.selectedRunningInstance }
     private var members: [NetworkMemberStatus] { store.selectedMemberStatuses }
     private var runtimeError: String? {
-        if let error = instance?.error_msg, !error.isEmpty { return error }
-        if let error = instance?.detail?.error_msg, !error.isEmpty { return error }
-        return nil
+        instance?.runtimeErrorMessage
     }
     private var connectionState: ConnectionGlyphState {
         if runtimeError != nil { return .error }
         if store.isBusy { return .connecting }
-        return instance == nil ? .idle : .connected
+        guard let instance else { return .idle }
+        return store.instanceIsFullyConnected(instance) ? .connected : .connecting
     }
 
     var body: some View {

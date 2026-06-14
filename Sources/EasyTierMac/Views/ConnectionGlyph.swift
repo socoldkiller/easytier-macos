@@ -12,7 +12,7 @@ struct ConnectionGlyph: View {
     var size: CGFloat = 18
     var templateMode = false
 
-    @State private var isPulsing = false
+    @State private var activeConnectingNodeIndex = 0
 
     var body: some View {
         ZStack {
@@ -21,18 +21,41 @@ struct ConnectionGlyph: View {
                 .opacity(lineOpacity)
 
             ForEach(ConnectionGlyphNode.allCases) { node in
-                nodeView(for: node)
+                nodeView(for: node, activeConnectingNode: activeConnectingNode)
             }
         }
         .frame(width: size, height: size)
-        .scaleEffect(state == .connecting && isPulsing ? 1.07 : 1)
-        .opacity(state == .connecting && isPulsing ? 0.72 : 1)
-        .animation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true), value: isPulsing)
-        .onAppear { isPulsing = state == .connecting }
-        .onChange(of: state) { _, newState in
-            isPulsing = newState == .connecting
+        .animation(.easeInOut(duration: 0.16), value: activeConnectingNode)
+        .task(id: state) {
+            await runConnectingAnimationIfNeeded()
         }
         .accessibilityLabel(accessibilityLabel)
+    }
+
+    private static let stepDurationNanoseconds: UInt64 = 340_000_000
+
+    private var activeConnectingNode: ConnectionGlyphNode? {
+        guard state == .connecting else { return nil }
+        return Self.connectingSequence[activeConnectingNodeIndex % Self.connectingSequence.count]
+    }
+
+    private static let connectingSequence: [ConnectionGlyphNode] = [.top, .bottomRight, .bottomLeft]
+
+    private func runConnectingAnimationIfNeeded() async {
+        guard state == .connecting else {
+            activeConnectingNodeIndex = 0
+            return
+        }
+
+        activeConnectingNodeIndex = 0
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(nanoseconds: Self.stepDurationNanoseconds)
+            } catch {
+                break
+            }
+            activeConnectingNodeIndex = (activeConnectingNodeIndex + 1) % Self.connectingSequence.count
+        }
     }
 
     private var lineWidth: CGFloat {
@@ -40,13 +63,13 @@ struct ConnectionGlyph: View {
     }
 
     private var nodeSize: CGFloat {
-        max(size * 0.28, 4.4)
+        max(size * 0.28 - 0.5, 3.9)
     }
 
     private var lineOpacity: Double {
         switch state {
         case .idle: 0.16
-        case .connecting: 0.44
+        case .connecting: 0.38
         case .connected: 0.56
         case .error: 0.36
         }
@@ -60,10 +83,10 @@ struct ConnectionGlyph: View {
         }
     }
 
-    private func nodeView(for node: ConnectionGlyphNode) -> some View {
+    private func nodeView(for node: ConnectionGlyphNode, activeConnectingNode: ConnectionGlyphNode?) -> some View {
         let position = node.position(in: size)
         return Circle()
-            .fill(nodeFill(for: node))
+            .fill(nodeFill(for: node, activeConnectingNode: activeConnectingNode))
             .overlay {
                 Circle()
                     .stroke(nodeStroke(for: node), lineWidth: nodeStrokeWidth)
@@ -76,20 +99,20 @@ struct ConnectionGlyph: View {
         0
     }
 
-    private func nodeFill(for node: ConnectionGlyphNode) -> Color {
+    private func nodeFill(for node: ConnectionGlyphNode, activeConnectingNode: ConnectionGlyphNode?) -> Color {
         if templateMode {
-            return .primary.opacity(nodeOpacity(for: node))
+            return .primary.opacity(nodeOpacity(for: node, activeConnectingNode: activeConnectingNode))
         }
 
-        return .primary.opacity(nodeOpacity(for: node))
+        return .primary.opacity(nodeOpacity(for: node, activeConnectingNode: activeConnectingNode))
     }
 
-    private func nodeOpacity(for node: ConnectionGlyphNode) -> Double {
+    private func nodeOpacity(for node: ConnectionGlyphNode, activeConnectingNode: ConnectionGlyphNode?) -> Double {
         switch state {
         case .idle:
             return 0.26
         case .connecting:
-            return node == .top ? 0.78 : 0.34
+            return node == activeConnectingNode ? 0.86 : 0.26
         case .connected:
             return 0.86
         case .error:
@@ -163,6 +186,7 @@ private struct ConnectionGlyphLines: Shape {
         case .connecting:
             addSegment(from: .top, to: .bottomLeft)
             addSegment(from: .bottomLeft, to: .bottomRight)
+            addSegment(from: .bottomRight, to: .top)
         case .connected:
             addSegment(from: .top, to: .bottomLeft)
             addSegment(from: .bottomLeft, to: .bottomRight)

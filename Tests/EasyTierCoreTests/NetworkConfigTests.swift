@@ -16,6 +16,25 @@ import Testing
     #expect(config.multi_thread == true)
 }
 
+@Test func networkConfigTracksWhetherRemotePeerConnectionIsExpected() {
+    var config = NetworkConfig(networking_method: .standalone)
+    #expect(!config.expectsRemotePeerConnection)
+
+    config.networking_method = .manual
+    config.peer_urls = []
+    #expect(!config.expectsRemotePeerConnection)
+
+    config.peer_urls = ["tcp://127.0.0.1:11010"]
+    #expect(config.expectsRemotePeerConnection)
+
+    config.networking_method = .publicServer
+    config.public_server_url = ""
+    #expect(!config.expectsRemotePeerConnection)
+
+    config.public_server_url = "tcp://public.easytier.top:11010"
+    #expect(config.expectsRemotePeerConnection)
+}
+
 @Test func tomlRoundTripsCommonConfigFields() throws {
     var config = NetworkConfig(network_name: "office", network_secret: "secret")
     config.dhcp = false
@@ -261,6 +280,67 @@ import Testing
     #expect(members[1].downloadTotal == "4.0 KiB")
     #expect(members[1].lossRate == "25%")
     #expect(members[1].natType == "Symmetric")
+}
+
+@Test func runtimeInfoReportsLocalOnlyNodeAsFullyConnected() throws {
+    let json = """
+    {
+      "my_node_info": {
+        "hostname": "macbook",
+        "peer_id": 100
+      },
+      "running": true
+    }
+    """
+
+    let info = try JSONDecoder().decode(NetworkInstanceRunningInfo.self, from: Data(json.utf8))
+    let instance = NetworkInstance(instance_id: "local", name: "local", running: true, detail: info)
+
+    #expect(info.isFullyConnected)
+    #expect(instance.isFullyConnected)
+    #expect(!info.isFullyConnected(expectRemotePeers: true))
+    #expect(!instance.isFullyConnected(expectRemotePeers: true))
+}
+
+@Test func runtimeInfoWaitsUntilRemotePeerRoutesHaveConnections() throws {
+    let waitingJSON = """
+    {
+      "my_node_info": {
+        "hostname": "macbook",
+        "peer_id": 100
+      },
+      "peer_route_pairs": [
+        {
+          "route": { "peer_id": 200, "hostname": "office-mini", "cost": 1 },
+          "peer": { "peer_id": 200, "conns": [] }
+        }
+      ],
+      "running": true
+    }
+    """
+    let connectedJSON = """
+    {
+      "my_node_info": {
+        "hostname": "macbook",
+        "peer_id": 100
+      },
+      "peer_route_pairs": [
+        {
+          "route": { "peer_id": 200, "hostname": "office-mini", "cost": 1 },
+          "peer": { "peer_id": 200, "conns": [ { "conn_id": "c1" } ] }
+        }
+      ],
+      "running": true
+    }
+    """
+
+    let waiting = try JSONDecoder().decode(NetworkInstanceRunningInfo.self, from: Data(waitingJSON.utf8))
+    let connected = try JSONDecoder().decode(NetworkInstanceRunningInfo.self, from: Data(connectedJSON.utf8))
+
+    #expect(!waiting.isFullyConnected)
+    #expect(!waiting.isFullyConnected(expectRemotePeers: true))
+    #expect(connected.isFullyConnected)
+    #expect(connected.isFullyConnected(expectRemotePeers: true))
 }
 
 @Test func runtimeInfoReadsCurrentApiMemberFields() throws {

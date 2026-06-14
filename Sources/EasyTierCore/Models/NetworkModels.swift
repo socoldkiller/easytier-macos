@@ -225,6 +225,19 @@ public struct NetworkConfig: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+public extension NetworkConfig {
+    var expectsRemotePeerConnection: Bool {
+        switch networking_method {
+        case .standalone:
+            return false
+        case .publicServer:
+            return !public_server_url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .manual:
+            return peer_urls.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        }
+    }
+}
+
 public struct NetworkInstance: Codable, Identifiable, Equatable, Sendable {
     public var id: String { instance_id }
     public var instance_id: String
@@ -239,6 +252,23 @@ public struct NetworkInstance: Codable, Identifiable, Equatable, Sendable {
         self.running = running
         self.error_msg = error_msg
         self.detail = detail
+    }
+}
+
+public extension NetworkInstance {
+    var runtimeErrorMessage: String? {
+        if let error = error_msg.nilIfEmpty { return error }
+        if let error = detail?.error_msg?.nilIfEmpty { return error }
+        return nil
+    }
+
+    var isFullyConnected: Bool {
+        isFullyConnected(expectRemotePeers: false)
+    }
+
+    func isFullyConnected(expectRemotePeers: Bool) -> Bool {
+        guard running, runtimeErrorMessage == nil else { return false }
+        return detail?.isFullyConnected(expectRemotePeers: expectRemotePeers) == true
     }
 }
 
@@ -656,6 +686,28 @@ public struct TrafficSample: Identifiable, Equatable, Sendable {
 }
 
 public extension NetworkInstanceRunningInfo {
+    var isFullyConnected: Bool {
+        isFullyConnected(expectRemotePeers: false)
+    }
+
+    func isFullyConnected(expectRemotePeers: Bool) -> Bool {
+        guard running != false else { return false }
+        guard error_msg?.nilIfEmpty == nil else { return false }
+        guard my_node_info != nil else { return false }
+
+        let remotePairs = (peer_route_pairs ?? []).filter { !$0.representsLocalRoute }
+        if !remotePairs.isEmpty {
+            return remotePairs.allSatisfy(\.hasActiveConnection)
+        }
+
+        let remotePeers = peers ?? []
+        if !remotePeers.isEmpty {
+            return remotePeers.allSatisfy(\.hasActiveConnection)
+        }
+
+        return !expectRemotePeers
+    }
+
     var memberStatuses: [NetworkMemberStatus] {
         var output: [NetworkMemberStatus] = []
 
@@ -700,6 +752,22 @@ public extension NetworkInstanceRunningInfo {
             let totals = peer.trafficTotals
             return (partial.txBytes + totals.txBytes, partial.rxBytes + totals.rxBytes)
         }
+    }
+}
+
+public extension PeerRoutePair {
+    var representsLocalRoute: Bool {
+        route?.cost == 0
+    }
+
+    var hasActiveConnection: Bool {
+        peer?.hasActiveConnection == true
+    }
+}
+
+public extension PeerInfo {
+    var hasActiveConnection: Bool {
+        conns?.isEmpty == false
     }
 }
 

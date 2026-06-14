@@ -169,16 +169,14 @@ struct ContentView: View {
 
     private var selectedConfigIsRunning: Bool {
         guard let config = draftConfigID == store.selectedConfigID ? draftConfig : store.selectedConfig else { return false }
-        return store.instances.contains { instance in
-            instance.name == config.network_name || instance.instance_id == config.instance_id
-        }
+        return store.runningInstance(matching: config) != nil
     }
 
     private func connectionState(for stored: StoredNetworkConfig) -> ConnectionGlyphState {
         if store.lastError != nil, store.selectedConfigID == stored.id { return .error }
         if store.isBusy, store.selectedConfigID == stored.id { return .connecting }
-        if store.instances.contains(where: { $0.name == stored.config.network_name || $0.instance_id == stored.config.instance_id }) {
-            return .connected
+        if let instance = store.runningInstance(matching: stored.config) {
+            return store.instanceIsFullyConnected(instance) ? .connected : .connecting
         }
         return .idle
     }

@@ -29,20 +29,63 @@ struct EasyTierApp: App {
             MenuBarContent()
                 .environment(store)
         } label: {
-            Image(nsImage: MenuBarConnectionIcon.image(for: menuBarConnectionState))
-                .renderingMode(.template)
+            MenuBarConnectionLabel(state: menuBarConnectionState)
         }
         .menuBarExtraStyle(.window)
     }
 
     private var menuBarConnectionState: ConnectionGlyphState {
         if store.isBusy { return .connecting }
-        return store.instances.isEmpty ? .idle : .connected
+        guard !store.instances.isEmpty else { return .idle }
+        return allRunningInstancesConnected ? .connected : .connecting
+    }
+
+    private var allRunningInstancesConnected: Bool {
+        store.instances.allSatisfy { store.instanceIsFullyConnected($0) }
+    }
+}
+
+private struct MenuBarConnectionLabel: View {
+    var state: ConnectionGlyphState
+
+    @State private var activeNodeIndex = 0
+
+    var body: some View {
+        Image(nsImage: MenuBarConnectionIcon.image(for: state, activeNodeIndex: currentActiveNodeIndex))
+            .renderingMode(.template)
+            .task(id: state) {
+                await runConnectingAnimationIfNeeded()
+            }
+    }
+
+    private var currentActiveNodeIndex: Int? {
+        guard state == .connecting else { return nil }
+        return Self.clockwiseNodeIndexes[activeNodeIndex % Self.clockwiseNodeIndexes.count]
+    }
+
+    private static let clockwiseNodeIndexes = [0, 2, 1]
+    private static let stepDurationNanoseconds: UInt64 = 340_000_000
+
+    private func runConnectingAnimationIfNeeded() async {
+        guard state == .connecting else {
+            activeNodeIndex = 0
+            return
+        }
+
+        activeNodeIndex = 0
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(nanoseconds: Self.stepDurationNanoseconds)
+            } catch {
+                break
+            }
+            activeNodeIndex = (activeNodeIndex + 1) % Self.clockwiseNodeIndexes.count
+        }
     }
 }
 
 private enum MenuBarConnectionIcon {
-    static func image(for state: ConnectionGlyphState) -> NSImage {
+    static func image(for state: ConnectionGlyphState, activeNodeIndex: Int? = nil) -> NSImage {
         let image = NSImage(size: NSSize(width: 22, height: 18))
         image.lockFocus()
         defer { image.unlockFocus() }
@@ -74,18 +117,15 @@ private enum MenuBarConnectionIcon {
         switch state {
         case .idle, .error:
             addSegment(from: nodes[0], to: nodes[1])
-        case .connecting:
-            addSegment(from: nodes[0], to: nodes[1])
-            addSegment(from: nodes[1], to: nodes[2])
-        case .connected:
+        case .connecting, .connected:
             addSegment(from: nodes[0], to: nodes[1])
             addSegment(from: nodes[1], to: nodes[2])
             addSegment(from: nodes[2], to: nodes[0])
         }
 
         for (index, point) in nodes.enumerated() {
-            NSColor.black.withAlphaComponent(nodeAlpha(for: state, index: index)).setFill()
-            NSBezierPath(ovalIn: NSRect(x: point.x - 2.7, y: point.y - 2.7, width: 5.4, height: 5.4)).fill()
+            NSColor.black.withAlphaComponent(nodeAlpha(for: state, index: index, activeNodeIndex: activeNodeIndex)).setFill()
+            NSBezierPath(ovalIn: NSRect(x: point.x - 2.45, y: point.y - 2.45, width: 4.9, height: 4.9)).fill()
         }
 
         image.isTemplate = true
@@ -95,18 +135,18 @@ private enum MenuBarConnectionIcon {
     private static func lineAlpha(for state: ConnectionGlyphState) -> CGFloat {
         switch state {
         case .idle: 0.28
-        case .connecting: 0.54
+        case .connecting: 0.42
         case .connected: 0.74
         case .error: 0.42
         }
     }
 
-    private static func nodeAlpha(for state: ConnectionGlyphState, index: Int) -> CGFloat {
+    private static func nodeAlpha(for state: ConnectionGlyphState, index: Int, activeNodeIndex: Int?) -> CGFloat {
         switch state {
         case .idle:
             return 0.42
         case .connecting:
-            return index == 0 ? 0.86 : 0.52
+            return index == activeNodeIndex ? 0.92 : 0.34
         case .connected:
             return 0.92
         case .error:
@@ -118,6 +158,8 @@ private enum MenuBarConnectionIcon {
 private struct MenuBarContent: View {
     @Environment(EasyTierAppStore.self) private var store
     @Environment(\.openWindow) private var openWindow
+    @State private var copiedDeviceAddress = false
+    @State private var copyFeedbackToken = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -125,9 +167,14 @@ private struct MenuBarContent: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("EasyTier")
                         .font(.system(size: 14, weight: .medium))
-                    Text(connectionSubtitle)
-                        .font(.system(size: 13, weight: .regular))
-                        .foregroundStyle(MenuBarPalette.secondaryText)
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(connectionIndicatorColor)
+                            .frame(width: 6, height: 6)
+                        Text(connectionSubtitle)
+                            .font(.system(size: 13, weight: .regular))
+                            .foregroundStyle(MenuBarPalette.secondaryText)
+                    }
                 }
 
                 Spacer(minLength: 0)
@@ -169,7 +216,9 @@ private struct MenuBarContent: View {
 
             MenuBarDivider()
 
-            MenuBarPlainRow(title: deviceTitle)
+            MenuBarCopyRow(title: deviceTitle, isCopied: copiedDeviceAddress, isDisabled: deviceCopyAddress == nil) {
+                copyDeviceAddress()
+            }
             MenuBarPlainRow(title: devicesTitle, isMuted: true)
 
             MenuBarDivider()
@@ -205,18 +254,17 @@ private struct MenuBarContent: View {
     private var selectedNetworkState: ConnectionGlyphState {
         if store.lastError != nil { return .error }
         if store.isBusy { return .connecting }
-        return selectedConfigIsRunning ? .connected : .idle
+        guard let instance = selectedRunningInstance else { return .idle }
+        return store.instanceIsFullyConnected(instance) ? .connected : .connecting
     }
 
-    private var selectedConfigIsRunning: Bool {
-        guard let config = store.selectedConfig else { return false }
+    private var selectedRunningInstance: NetworkInstance? {
+        guard let config = store.selectedConfig else { return nil }
+        return store.runningInstance(matching: config)
+    }
 
-        let networkName = config.network_name
-        let instanceID = config.instance_id
-
-        return store.instances.contains(where: { runningInstance in
-            runningInstance.name == networkName || runningInstance.instance_id == instanceID
-        })
+    private var allRunningInstancesConnected: Bool {
+        store.instances.allSatisfy { store.instanceIsFullyConnected($0) }
     }
 
     private var currentNetworkName: String {
@@ -238,6 +286,11 @@ private struct MenuBarContent: View {
         return firstNonEmpty(node?.virtual_ipv4?.displayString, node?.ipv4_addr) ?? "-"
     }
 
+    private var deviceCopyAddress: String? {
+        let address = deviceAddress.split(separator: "/", maxSplits: 1).first.map(String.init) ?? deviceAddress
+        return address == "-" ? nil : address
+    }
+
     private var devicesTitle: String {
         let count = store.selectedMemberStatuses.count
         if count > 0 { return "\(count) Devices" }
@@ -247,12 +300,21 @@ private struct MenuBarContent: View {
     private var connectionSubtitle: String {
         if store.isBusy { return "Working" }
         if store.lastError != nil { return "Needs Attention" }
-        return hasRunningInstances ? "Connected" : "Not Connected"
+        guard hasRunningInstances else { return "Not Connected" }
+        return allRunningInstancesConnected ? "Connected" : "Connecting"
+    }
+
+    private var connectionIndicatorColor: Color {
+        if store.lastError != nil { return .orange }
+        if store.isBusy { return .yellow.opacity(0.82) }
+        guard hasRunningInstances else { return MenuBarPalette.mutedText }
+        return allRunningInstancesConnected ? MenuBarPalette.connected : .yellow.opacity(0.82)
     }
 
     private var selectedNetworkSubtitle: String {
         if store.selectedConfig == nil { return "Select a network" }
-        return selectedConfigIsRunning ? "Connected" : "Disconnected"
+        guard let instance = selectedRunningInstance else { return "Disconnected" }
+        return store.instanceIsFullyConnected(instance) ? "Connected" : "Connecting"
     }
 
     private func openMainWindow() {
@@ -266,6 +328,24 @@ private struct MenuBarContent: View {
                 await store.stopAll()
             } else {
                 await store.runSelectedConfig()
+            }
+        }
+    }
+
+    private func copyDeviceAddress() {
+        guard let address = deviceCopyAddress else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(address, forType: .string)
+
+        copyFeedbackToken += 1
+        let token = copyFeedbackToken
+        copiedDeviceAddress = true
+        Task {
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            await MainActor.run {
+                if copyFeedbackToken == token {
+                    copiedDeviceAddress = false
+                }
             }
         }
     }
@@ -284,6 +364,7 @@ private enum MenuBarPalette {
     static let mutedText = Color.white.opacity(0.34)
     static let divider = Color.white.opacity(0.16)
     static let rowHighlight = Color.white.opacity(0.08)
+    static let connected = Color(red: 0.35, green: 0.78, blue: 0.42)
 }
 
 private struct MenuBarDivider: View {
@@ -324,7 +405,7 @@ private struct MenuBarConnectionSwitch: View {
     }
 
     private var trackColor: Color {
-        isOn ? Color.white.opacity(0.24) : Color.white.opacity(0.12)
+        isOn ? MenuBarPalette.connected.opacity(0.82) : Color.white.opacity(0.12)
     }
 
     private var knobColor: Color {
@@ -369,6 +450,50 @@ private struct MenuBarPlainRow: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
+    }
+}
+
+private struct MenuBarCopyRow: View {
+    var title: String
+    var isCopied: Bool
+    var isDisabled: Bool
+    var action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(isDisabled ? MenuBarPalette.mutedText : MenuBarPalette.primaryText)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Image(systemName: isCopied ? "checkmark.circle.fill" : "doc.on.doc")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(isCopied ? MenuBarPalette.connected : MenuBarPalette.secondaryText)
+                    .frame(width: 18, height: 18)
+                    .opacity(isDisabled ? 0 : 1)
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .contentShape(Rectangle())
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(rowBackground, in: RoundedRectangle(cornerRadius: 6))
+            .padding(.horizontal, 6)
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .onHover { isHovering = $0 }
+        .animation(.easeOut(duration: 0.14), value: isCopied)
+        .animation(.easeOut(duration: 0.14), value: isHovering)
+        .help("Copy IP address")
+    }
+
+    private var rowBackground: Color {
+        if isCopied { return MenuBarPalette.connected.opacity(0.16) }
+        if isHovering, !isDisabled { return MenuBarPalette.rowHighlight }
+        return .clear
     }
 }
 

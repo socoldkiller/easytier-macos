@@ -42,9 +42,29 @@ public final class EasyTierAppStore {
 
     public var selectedRunningInstance: NetworkInstance? {
         guard let config = selectedConfig else { return nil }
-        if let byID = instances.first(where: { $0.instance_id == config.instance_id }) { return byID }
-        if let byName = instances.first(where: { $0.name == config.network_name }) { return byName }
+        return runningInstance(matching: config)
+    }
+
+    public func runningInstance(matching config: NetworkConfig) -> NetworkInstance? {
+        let instanceID = config.instance_id
+        let networkName = config.network_name
+
+        if let byID = instances.first(where: { instance in instance.instance_id == instanceID }) { return byID }
+        if let byName = instances.first(where: { instance in instance.name == networkName }) { return byName }
         return nil
+    }
+
+    public func config(matching instance: NetworkInstance) -> NetworkConfig? {
+        let instanceID = instance.instance_id
+        let networkName = instance.name
+
+        if let byID = configs.first(where: { stored in stored.config.instance_id == instanceID })?.config { return byID }
+        if let byName = configs.first(where: { stored in stored.config.network_name == networkName })?.config { return byName }
+        return nil
+    }
+
+    public func instanceIsFullyConnected(_ instance: NetworkInstance) -> Bool {
+        instance.isFullyConnected(expectRemotePeers: config(matching: instance)?.expectsRemotePeerConnection == true)
     }
 
     public var selectedMemberStatuses: [NetworkMemberStatus] {
