@@ -1,4 +1,5 @@
 import Foundation
+import TOML
 
 public enum TOMLCodecError: LocalizedError, Equatable {
     case invalidLine(String)
@@ -16,280 +17,314 @@ public enum TOMLCodecError: LocalizedError, Equatable {
 
 public enum NetworkConfigTOMLCodec {
     public static func encode(_ config: NetworkConfig) -> String {
-        let config = config.normalized()
-        var lines: [String] = []
+        let encoder = TOMLEncoder()
+        encoder.outputFormatting = [.prettyPrinted]
 
-        lines.append("instance_name = \(quote(config.network_name.isEmpty ? config.instance_id : config.network_name))")
-        lines.append("instance_id = \(quote(config.instance_id))")
-        lines.append("dhcp = \(config.dhcp)")
-        if !config.dhcp, !config.virtual_ipv4.isEmpty {
-            lines.append("ipv4 = \(quote(config.virtual_ipv4))")
+        do {
+            let toml = try encoder.encodeToString(EasyTierTOMLDocument(config.normalized()))
+            return toml.hasSuffix("\n") ? toml : toml + "\n"
+        } catch {
+            assertionFailure("Failed to encode EasyTier TOML: \(error)")
+            return ""
         }
-        if let hostname = config.hostname, !hostname.isEmpty {
-            lines.append("hostname = \(quote(hostname))")
-        }
-        if !config.listener_urls.isEmpty {
-            lines.append("listeners = \(array(config.listener_urls))")
-        }
-        if !config.mapped_listeners.isEmpty {
-            lines.append("mapped_listeners = \(array(config.mapped_listeners))")
-        }
-        if config.enable_manual_routes, !config.routes.isEmpty {
-            lines.append("routes = \(array(config.routes))")
-        }
-        if !config.exit_nodes.isEmpty {
-            lines.append("exit_nodes = \(array(config.exit_nodes))")
-        }
-        if let mtu = config.mtu {
-            lines.append("mtu = \(mtu)")
-        }
-
-        lines.append("")
-        lines.append("[network_identity]")
-        lines.append("network_name = \(quote(config.network_name))")
-        lines.append("network_secret = \(quote(config.network_secret ?? ""))")
-
-        for peer in config.peer_urls where !peer.isEmpty {
-            lines.append("")
-            lines.append("[[peer]]")
-            lines.append("uri = \(quote(peer))")
-        }
-
-        for cidr in config.proxy_cidrs where !cidr.isEmpty {
-            lines.append("")
-            lines.append("[[proxy_network]]")
-            lines.append("cidr = \(quote(cidr))")
-            lines.append("allow = [\"tcp\", \"udp\", \"icmp\"]")
-        }
-
-        if config.enable_vpn_portal {
-            lines.append("")
-            lines.append("[vpn_portal_config]")
-            lines.append("client_network_addr = \(quote(config.vpn_portal_client_network_addr))")
-            lines.append("client_network_len = \(config.vpn_portal_client_network_len)")
-            lines.append("wireguard_listen = \(quote("wg://0.0.0.0:\(config.vpn_portal_listen_port)"))")
-        }
-
-        if config.enable_socks5 == true {
-            lines.append("")
-            lines.append("socks5_proxy = \(quote("socks5://127.0.0.1:\(config.socks5_port)"))")
-        }
-
-        for forward in config.port_forwards {
-            lines.append("")
-            lines.append("[[port_forward]]")
-            lines.append("proto = \(quote(forward.proto))")
-            lines.append("bind_addr = \(quote("\(forward.bind_ip):\(forward.bind_port)"))")
-            lines.append("dst_addr = \(quote("\(forward.dst_ip):\(forward.dst_port)"))")
-        }
-
-        var flags: [String: Bool] = [:]
-        set(&flags, "latency_first", config.latency_first)
-        set(&flags, "use_smoltcp", config.use_smoltcp)
-        set(&flags, "enable_ipv6", config.disable_ipv6.map { !$0 })
-        set(&flags, "enable_kcp_proxy", config.enable_kcp_proxy)
-        set(&flags, "disable_kcp_input", config.disable_kcp_input)
-        set(&flags, "enable_quic_proxy", config.enable_quic_proxy)
-        set(&flags, "disable_quic_input", config.disable_quic_input)
-        set(&flags, "disable_p2p", config.disable_p2p)
-        set(&flags, "p2p_only", config.p2p_only)
-        set(&flags, "lazy_p2p", config.lazy_p2p)
-        set(&flags, "bind_device", config.bind_device)
-        set(&flags, "no_tun", config.no_tun)
-        set(&flags, "enable_exit_node", config.enable_exit_node)
-        set(&flags, "relay_all_peer_rpc", config.relay_all_peer_rpc)
-        set(&flags, "need_p2p", config.need_p2p)
-        set(&flags, "multi_thread", config.multi_thread)
-        set(&flags, "proxy_forward_by_system", config.proxy_forward_by_system)
-        set(&flags, "enable_encryption", config.disable_encryption.map { !$0 })
-        set(&flags, "disable_tcp_hole_punching", config.disable_tcp_hole_punching)
-        set(&flags, "disable_udp_hole_punching", config.disable_udp_hole_punching)
-        set(&flags, "disable_upnp", config.disable_upnp)
-        set(&flags, "enable_udp_broadcast_relay", config.enable_udp_broadcast_relay)
-        set(&flags, "disable_sym_hole_punching", config.disable_sym_hole_punching)
-        set(&flags, "accept_dns", config.enable_magic_dns)
-        set(&flags, "private_mode", config.enable_private_mode)
-
-        if !flags.isEmpty {
-            lines.append("")
-            lines.append("[flags]")
-            for key in flags.keys.sorted() {
-                lines.append("\(key) = \(flags[key] == true)")
-            }
-        }
-
-        return lines.joined(separator: "\n") + "\n"
     }
 
     public static func decode(_ toml: String) throws -> NetworkConfig {
+        let document = try TOMLDecoder().decode(EasyTierTOMLDocument.self, from: toml)
+        return document.networkConfig().normalized()
+    }
+}
+
+private struct EasyTierTOMLDocument: Codable {
+    var instance_name: String?
+    var instance_id: String?
+    var dhcp: Bool?
+    var ipv4: String?
+    var hostname: String?
+    var listeners: [String]?
+    var mapped_listeners: [String]?
+    var routes: [String]?
+    var exit_nodes: [String]?
+    var mtu: Int?
+    var credential_file: String?
+    var socks5_proxy: String?
+    var network_identity: NetworkIdentityTOML?
+    var peer: [PeerTOML]?
+    var proxy_network: [ProxyNetworkTOML]?
+    var vpn_portal_config: VPNPortalTOML?
+    var port_forward: [PortForwardTOML]?
+    var flags: FlagsTOML?
+
+    init(_ config: NetworkConfig) {
+        instance_name = config.network_name.isEmpty ? config.instance_id : config.network_name
+        instance_id = config.instance_id
+        dhcp = config.dhcp
+        ipv4 = (!config.dhcp && !config.virtual_ipv4.isEmpty) ? config.virtual_ipv4 : nil
+        hostname = config.hostname?.nilIfEmpty
+        listeners = config.listener_urls.nilIfEmpty
+        mapped_listeners = config.mapped_listeners.nilIfEmpty
+        routes = (config.enable_manual_routes && !config.routes.isEmpty) ? config.routes : nil
+        exit_nodes = config.exit_nodes.nilIfEmpty
+        mtu = config.mtu
+        credential_file = config.credential_file?.nilIfEmpty
+        socks5_proxy = config.enable_socks5 == true ? "socks5://127.0.0.1:\(config.socks5_port)" : nil
+        network_identity = NetworkIdentityTOML(
+            network_name: config.network_name,
+            network_secret: config.network_secret ?? ""
+        )
+        peer = config.peer_urls.nilIfEmpty?.map { PeerTOML(uri: $0) }
+        proxy_network = config.proxy_cidrs.nilIfEmpty?.map {
+            ProxyNetworkTOML(cidr: $0, mapped_cidr: nil, allow: ["tcp", "udp", "icmp"])
+        }
+        vpn_portal_config = config.enable_vpn_portal ? VPNPortalTOML(
+            client_cidr: "\(config.vpn_portal_client_network_addr)/\(config.vpn_portal_client_network_len)",
+            wireguard_listen: "0.0.0.0:\(config.vpn_portal_listen_port)"
+        ) : nil
+        port_forward = config.port_forwards.nilIfEmpty?.map {
+            PortForwardTOML(
+                bind_addr: "\($0.bind_ip):\($0.bind_port)",
+                dst_addr: "\($0.dst_ip):\($0.dst_port)",
+                proto: $0.proto
+            )
+        }
+        flags = FlagsTOML(config)
+    }
+
+    func networkConfig() -> NetworkConfig {
         var config = NetworkConfig()
-        var section = "root"
 
-        for rawLine in toml.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = stripComment(String(rawLine)).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !line.isEmpty else { continue }
+        if let instance_id { config.instance_id = instance_id }
+        if let dhcp { config.dhcp = dhcp }
+        if let hostname { config.hostname = hostname }
+        if let listeners { config.listener_urls = listeners }
+        if let mapped_listeners { config.mapped_listeners = mapped_listeners }
+        if let routes {
+            config.routes = routes
+            config.enable_manual_routes = !routes.isEmpty
+        }
+        if let exit_nodes { config.exit_nodes = exit_nodes }
+        if let mtu { config.mtu = mtu }
+        if let credential_file { config.credential_file = credential_file }
 
-            if line == "[network_identity]" {
-                section = "network_identity"
-                continue
-            } else if line == "[[peer]]" {
-                section = "peer"
-                continue
-            } else if line == "[[proxy_network]]" {
-                section = "proxy_network"
-                continue
-            } else if line == "[flags]" {
-                section = "flags"
-                continue
-            } else if line.hasPrefix("[") {
-                section = "other"
-                continue
+        if let instance_name, config.network_name == "easytier" {
+            config.network_name = instance_name
+        }
+        if let identity = network_identity {
+            if let networkName = identity.network_name {
+                config.network_name = networkName
             }
+            config.network_secret = identity.network_secret ?? config.network_secret
+        }
 
-            let parts = line.split(separator: "=", maxSplits: 1).map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-            guard parts.count == 2 else { throw TOMLCodecError.invalidLine(line) }
-            let key = parts[0]
-            let value = parts[1]
+        if let ipv4 {
+            applyIPv4(ipv4, to: &config)
+        }
 
-            switch (section, key) {
-            case (_, "instance_id"):
-                config.instance_id = try parseString(value)
-            case (_, "instance_name"):
-                let name = try parseString(value)
-                if config.network_name == "easytier" { config.network_name = name }
-            case (_, "dhcp"):
-                config.dhcp = try parseBool(value)
-            case (_, "ipv4"):
-                config.virtual_ipv4 = try parseString(value)
-                config.dhcp = false
-            case (_, "hostname"):
-                config.hostname = try parseString(value)
-            case (_, "listeners"):
-                config.listener_urls = try parseStringArray(value)
-            case (_, "mapped_listeners"):
-                config.mapped_listeners = try parseStringArray(value)
-            case (_, "routes"):
-                config.routes = try parseStringArray(value)
-                config.enable_manual_routes = !config.routes.isEmpty
-            case (_, "exit_nodes"):
-                config.exit_nodes = try parseStringArray(value)
-            case (_, "mtu"):
-                config.mtu = Int(value)
-            case ("network_identity", "network_name"):
-                config.network_name = try parseString(value)
-            case ("network_identity", "network_secret"):
-                config.network_secret = try parseString(value)
-            case ("peer", "uri"):
-                config.peer_urls.append(try parseString(value))
-            case ("proxy_network", "cidr"):
-                config.proxy_cidrs.append(try parseString(value))
-            case ("flags", "latency_first"):
-                config.latency_first = try parseBool(value)
-            case ("flags", "disable_p2p"):
-                config.disable_p2p = try parseBool(value)
-            case ("flags", "no_tun"):
-                config.no_tun = try parseBool(value)
-            case ("flags", "accept_dns"), ("flags", "enable_magic_dns"):
-                config.enable_magic_dns = try parseBool(value)
-            case ("flags", "enable_ipv6"):
-                config.disable_ipv6 = try !parseBool(value)
-            case ("flags", "enable_encryption"):
-                config.disable_encryption = try !parseBool(value)
-            case ("flags", "private_mode"), ("flags", "enable_private_mode"):
-                config.enable_private_mode = try parseBool(value)
-            default:
-                continue
+        config.peer_urls = peer?.map(\.uri) ?? []
+        config.proxy_cidrs = proxy_network?.map(\.cidr) ?? []
+
+        if let socks5_proxy, let port = parsePort(fromProxyURL: socks5_proxy) {
+            config.enable_socks5 = true
+            config.socks5_port = port
+        }
+
+        if let vpn = vpn_portal_config {
+            config.enable_vpn_portal = true
+            if let client_cidr = vpn.client_cidr {
+                applyVPNClientCIDR(client_cidr, to: &config)
+            } else if let client_network_addr = vpn.client_network_addr {
+                config.vpn_portal_client_network_addr = client_network_addr
+                config.vpn_portal_client_network_len = vpn.client_network_len ?? config.vpn_portal_client_network_len
+            }
+            if let port = vpn.wireguard_listen.flatMap(parsePort(fromSocketAddress:)) {
+                config.vpn_portal_listen_port = port
             }
         }
 
-        return config.normalized()
-    }
-
-    private static func set(_ flags: inout [String: Bool], _ key: String, _ value: Bool?) {
-        if let value { flags[key] = value }
-    }
-
-    private static func quote(_ value: String) -> String {
-        "\"" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
-    }
-
-    private static func array(_ values: [String]) -> String {
-        "[" + values.map(quote).joined(separator: ", ") + "]"
-    }
-
-    private static func stripComment(_ line: String) -> String {
-        var inString = false
-        var escaped = false
-        var output = ""
-        for character in line {
-            if escaped {
-                output.append(character)
-                escaped = false
-                continue
+        config.port_forwards = port_forward?.compactMap { forward in
+            guard let bind = parseSocketAddress(forward.bind_addr), let dst = parseSocketAddress(forward.dst_addr) else {
+                return nil
             }
-            if character == "\\" {
-                output.append(character)
-                escaped = true
-                continue
-            }
-            if character == "\"" { inString.toggle() }
-            if character == "#", !inString { break }
-            output.append(character)
-        }
-        return output
+            return PortForwardConfig(
+                bind_ip: bind.host,
+                bind_port: bind.port,
+                dst_ip: dst.host,
+                dst_port: dst.port,
+                proto: forward.proto
+            )
+        } ?? []
+
+        flags?.apply(to: &config)
+
+        return config
+    }
+}
+
+private struct NetworkIdentityTOML: Codable {
+    var network_name: String?
+    var network_secret: String?
+}
+
+private struct PeerTOML: Codable {
+    var uri: String
+}
+
+private struct ProxyNetworkTOML: Codable {
+    var cidr: String
+    var mapped_cidr: String?
+    var allow: [String]?
+}
+
+private struct VPNPortalTOML: Codable {
+    var client_cidr: String?
+    var wireguard_listen: String?
+    var client_network_addr: String?
+    var client_network_len: Int?
+}
+
+private struct PortForwardTOML: Codable {
+    var bind_addr: String
+    var dst_addr: String
+    var proto: String
+}
+
+private struct FlagsTOML: Codable {
+    var latency_first: Bool?
+    var use_smoltcp: Bool?
+    var enable_ipv6: Bool?
+    var enable_kcp_proxy: Bool?
+    var disable_kcp_input: Bool?
+    var enable_quic_proxy: Bool?
+    var disable_quic_input: Bool?
+    var disable_p2p: Bool?
+    var p2p_only: Bool?
+    var lazy_p2p: Bool?
+    var bind_device: Bool?
+    var no_tun: Bool?
+    var enable_exit_node: Bool?
+    var relay_all_peer_rpc: Bool?
+    var need_p2p: Bool?
+    var multi_thread: Bool?
+    var proxy_forward_by_system: Bool?
+    var enable_encryption: Bool?
+    var disable_tcp_hole_punching: Bool?
+    var disable_udp_hole_punching: Bool?
+    var disable_upnp: Bool?
+    var enable_udp_broadcast_relay: Bool?
+    var disable_sym_hole_punching: Bool?
+    var accept_dns: Bool?
+    var enable_magic_dns: Bool?
+    var private_mode: Bool?
+    var enable_private_mode: Bool?
+    var dev_name: String?
+    var instance_recv_bps_limit: Int?
+
+    init(_ config: NetworkConfig) {
+        latency_first = config.latency_first
+        use_smoltcp = config.use_smoltcp
+        enable_ipv6 = config.disable_ipv6.map { !$0 }
+        enable_kcp_proxy = config.enable_kcp_proxy
+        disable_kcp_input = config.disable_kcp_input
+        enable_quic_proxy = config.enable_quic_proxy
+        disable_quic_input = config.disable_quic_input
+        disable_p2p = config.disable_p2p
+        p2p_only = config.p2p_only
+        lazy_p2p = config.lazy_p2p
+        bind_device = config.bind_device
+        no_tun = config.no_tun
+        enable_exit_node = config.enable_exit_node
+        relay_all_peer_rpc = config.relay_all_peer_rpc
+        need_p2p = config.need_p2p
+        multi_thread = config.multi_thread
+        proxy_forward_by_system = config.proxy_forward_by_system
+        enable_encryption = config.disable_encryption.map { !$0 }
+        disable_tcp_hole_punching = config.disable_tcp_hole_punching
+        disable_udp_hole_punching = config.disable_udp_hole_punching
+        disable_upnp = config.disable_upnp
+        enable_udp_broadcast_relay = config.enable_udp_broadcast_relay
+        disable_sym_hole_punching = config.disable_sym_hole_punching
+        accept_dns = config.enable_magic_dns
+        private_mode = config.enable_private_mode
+        dev_name = config.dev_name.nilIfEmpty
+        instance_recv_bps_limit = config.instance_recv_bps_limit
     }
 
-    private static func parseString(_ value: String) throws -> String {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix("\""), trimmed.hasSuffix("\"") else {
-            throw TOMLCodecError.invalidValue(value)
-        }
-        let inner = trimmed.dropFirst().dropLast()
-        return inner.replacingOccurrences(of: "\\\"", with: "\"").replacingOccurrences(of: "\\\\", with: "\\")
+    func apply(to config: inout NetworkConfig) {
+        if let latency_first { config.latency_first = latency_first }
+        if let use_smoltcp { config.use_smoltcp = use_smoltcp }
+        if let enable_ipv6 { config.disable_ipv6 = !enable_ipv6 }
+        if let enable_kcp_proxy { config.enable_kcp_proxy = enable_kcp_proxy }
+        if let disable_kcp_input { config.disable_kcp_input = disable_kcp_input }
+        if let enable_quic_proxy { config.enable_quic_proxy = enable_quic_proxy }
+        if let disable_quic_input { config.disable_quic_input = disable_quic_input }
+        if let disable_p2p { config.disable_p2p = disable_p2p }
+        if let p2p_only { config.p2p_only = p2p_only }
+        if let lazy_p2p { config.lazy_p2p = lazy_p2p }
+        if let bind_device { config.bind_device = bind_device }
+        if let no_tun { config.no_tun = no_tun }
+        if let enable_exit_node { config.enable_exit_node = enable_exit_node }
+        if let relay_all_peer_rpc { config.relay_all_peer_rpc = relay_all_peer_rpc }
+        if let need_p2p { config.need_p2p = need_p2p }
+        if let multi_thread { config.multi_thread = multi_thread }
+        if let proxy_forward_by_system { config.proxy_forward_by_system = proxy_forward_by_system }
+        if let enable_encryption { config.disable_encryption = !enable_encryption }
+        if let disable_tcp_hole_punching { config.disable_tcp_hole_punching = disable_tcp_hole_punching }
+        if let disable_udp_hole_punching { config.disable_udp_hole_punching = disable_udp_hole_punching }
+        if let disable_upnp { config.disable_upnp = disable_upnp }
+        if let enable_udp_broadcast_relay { config.enable_udp_broadcast_relay = enable_udp_broadcast_relay }
+        if let disable_sym_hole_punching { config.disable_sym_hole_punching = disable_sym_hole_punching }
+        if let accept_dns { config.enable_magic_dns = accept_dns }
+        if let enable_magic_dns { config.enable_magic_dns = enable_magic_dns }
+        if let private_mode { config.enable_private_mode = private_mode }
+        if let enable_private_mode { config.enable_private_mode = enable_private_mode }
+        if let dev_name { config.dev_name = dev_name }
+        if let instance_recv_bps_limit { config.instance_recv_bps_limit = instance_recv_bps_limit }
     }
+}
 
-    private static func parseBool(_ value: String) throws -> Bool {
-        switch value.trimmingCharacters(in: .whitespacesAndNewlines) {
-        case "true": true
-        case "false": false
-        default: throw TOMLCodecError.invalidValue(value)
-        }
+private func applyIPv4(_ value: String, to config: inout NetworkConfig) {
+    let parts = value.split(separator: "/", maxSplits: 1).map(String.init)
+    config.virtual_ipv4 = parts[0]
+    if parts.count == 2, let networkLength = Int(parts[1]) {
+        config.network_length = networkLength
     }
+    config.dhcp = false
+}
 
-    private static func parseStringArray(_ value: String) throws -> [String] {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix("["), trimmed.hasSuffix("]") else {
-            throw TOMLCodecError.invalidValue(value)
-        }
-        let body = trimmed.dropFirst().dropLast()
-        var values: [String] = []
-        var current = ""
-        var inString = false
-        var escaped = false
+private func applyVPNClientCIDR(_ value: String, to config: inout NetworkConfig) {
+    let parts = value.split(separator: "/", maxSplits: 1).map(String.init)
+    config.vpn_portal_client_network_addr = parts[0]
+    if parts.count == 2, let networkLength = Int(parts[1]) {
+        config.vpn_portal_client_network_len = networkLength
+    }
+}
 
-        for character in body {
-            if escaped {
-                current.append(character)
-                escaped = false
-                continue
-            }
-            if character == "\\" {
-                current.append(character)
-                escaped = true
-                continue
-            }
-            if character == "\"" { inString.toggle() }
-            if character == ",", !inString {
-                let part = current.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !part.isEmpty { values.append(try parseString(part)) }
-                current = ""
-            } else {
-                current.append(character)
-            }
-        }
+private func parsePort(fromProxyURL value: String) -> Int? {
+    URLComponents(string: value)?.port ?? parsePort(fromSocketAddress: value)
+}
 
-        let part = current.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !part.isEmpty { values.append(try parseString(part)) }
-        return values
+private func parsePort(fromSocketAddress value: String) -> Int? {
+    if let port = URLComponents(string: "tcp://\(value)")?.port {
+        return port
+    }
+    return Int(value.split(separator: ":").last.map(String.init) ?? "")
+}
+
+private func parseSocketAddress(_ value: String) -> (host: String, port: Int)? {
+    guard let components = URLComponents(string: "tcp://\(value)"), let host = components.host, let port = components.port else {
+        return nil
+    }
+    return (host, port)
+}
+
+private extension Array {
+    var nilIfEmpty: [Element]? {
+        isEmpty ? nil : self
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }

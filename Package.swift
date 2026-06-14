@@ -13,6 +13,9 @@ let package = Package(
         .executable(name: "EasyTierValidator", targets: ["EasyTierValidator"]),
         .executable(name: "EasyTierPrivilegedHelper", targets: ["EasyTierPrivilegedHelper"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/mattt/swift-toml.git", from: "2.0.0"),
+    ],
     targets: [
         .target(
             name: "CEasyTierFFI",
@@ -24,7 +27,10 @@ let package = Package(
         ),
         .target(
             name: "EasyTierCore",
-            dependencies: ["CEasyTierFFI"],
+            dependencies: [
+                "CEasyTierFFI",
+                .product(name: "TOML", package: "swift-toml"),
+            ],
             linkerSettings: [
                 .linkedLibrary("System"),
             ]

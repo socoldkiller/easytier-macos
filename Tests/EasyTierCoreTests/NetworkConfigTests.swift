@@ -70,6 +70,64 @@ import Testing
     #expect(decoded.enable_private_mode == true)
 }
 
+@Test func tomlRoundTripsPortalProxyAndPortForwardFields() throws {
+    var config = NetworkConfig(network_name: "edge")
+    config.enable_vpn_portal = true
+    config.vpn_portal_client_network_addr = "10.14.14.0"
+    config.vpn_portal_client_network_len = 24
+    config.vpn_portal_listen_port = 22_121
+    config.enable_socks5 = true
+    config.socks5_port = 1_081
+    config.port_forwards = [
+        PortForwardConfig(bind_ip: "0.0.0.0", bind_port: 11_011, dst_ip: "10.144.144.2", dst_port: 80, proto: "tcp"),
+    ]
+
+    let toml = NetworkConfigTOMLCodec.encode(config)
+
+    #expect(toml.contains("[vpn_portal_config]"))
+    #expect(toml.contains("client_cidr = \"10.14.14.0/24\""))
+    #expect(toml.contains("wireguard_listen = \"0.0.0.0:22121\""))
+    #expect(toml.contains("socks5_proxy = \"socks5://127.0.0.1:1081\""))
+    #expect(toml.contains("[[port_forward]]"))
+
+    let decoded = try NetworkConfigTOMLCodec.decode(toml)
+    #expect(decoded.enable_vpn_portal)
+    #expect(decoded.vpn_portal_client_network_addr == "10.14.14.0")
+    #expect(decoded.vpn_portal_client_network_len == 24)
+    #expect(decoded.vpn_portal_listen_port == 22_121)
+    #expect(decoded.enable_socks5 == true)
+    #expect(decoded.socks5_port == 1_081)
+    #expect(decoded.port_forwards.count == 1)
+    #expect(decoded.port_forwards.first?.bind_ip == "0.0.0.0")
+    #expect(decoded.port_forwards.first?.bind_port == 11_011)
+    #expect(decoded.port_forwards.first?.dst_ip == "10.144.144.2")
+    #expect(decoded.port_forwards.first?.dst_port == 80)
+    #expect(decoded.port_forwards.first?.proto == "tcp")
+}
+
+@Test func tomlDecodesCurrentEasyTierPortalSchema() throws {
+    let toml = """
+    instance_name = "edge"
+    instance_id = "11111111-1111-1111-1111-111111111111"
+    dhcp = true
+
+    [network_identity]
+    network_name = "edge"
+    network_secret = ""
+
+    [vpn_portal_config]
+    client_cidr = "10.14.14.0/24"
+    wireguard_listen = "0.0.0.0:22121"
+    """
+
+    let decoded = try NetworkConfigTOMLCodec.decode(toml)
+
+    #expect(decoded.enable_vpn_portal)
+    #expect(decoded.vpn_portal_client_network_addr == "10.14.14.0")
+    #expect(decoded.vpn_portal_client_network_len == 24)
+    #expect(decoded.vpn_portal_listen_port == 22_121)
+}
+
 @Test func storagePersistsSnapshot() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let storage = EasyTierStorage(baseDirectory: directory)
