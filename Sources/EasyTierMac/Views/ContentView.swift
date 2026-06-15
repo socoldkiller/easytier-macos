@@ -127,6 +127,15 @@ struct ContentView: View {
             }
 
             Button {
+                commitDraft(saveImmediately: true)
+                Task { await store.validateSelectedConfig() }
+            } label: {
+                Label("Check", systemImage: "checkmark.shield")
+            }
+            .disabled(store.selectedConfig == nil || store.isBusy)
+            .help("Check selected network")
+
+            Button {
                 let runningInstanceToRestart = draftIsDirty ? store.selectedRunningInstance : nil
                 commitDraft(saveImmediately: true)
                 Task {

@@ -169,7 +169,7 @@ public final class EasyTierAppStore {
     public func validateSelectedConfig() async {
         guard let config = selectedConfig else { return }
         await busy {
-            try NetworkConfigValidator.validate(config)
+            try validateConfigForCurrentRuntime(config)
             try await client.validate(toml: NetworkConfigTOMLCodec.encode(config))
             log("Validated \(config.network_name).")
         }
@@ -179,7 +179,7 @@ public final class EasyTierAppStore {
         guard let config = selectedConfig else { return }
         await busy {
             log("Starting \(config.network_name)...")
-            try NetworkConfigValidator.validate(config)
+            try validateConfigForCurrentRuntime(config)
             try await client.run(config: config)
             recordPendingStart(for: config)
             log("Started \(config.network_name).")
@@ -203,7 +203,7 @@ public final class EasyTierAppStore {
         guard let config = selectedConfig else { return }
         await busy {
             log("Restarting \(config.network_name)...")
-            try NetworkConfigValidator.validate(config)
+            try validateConfigForCurrentRuntime(config, replacing: instance)
             try await client.validate(toml: NetworkConfigTOMLCodec.encode(config))
             try await client.stop(instanceNames: [instance.name])
             clearPendingStart(for: config)
@@ -220,6 +220,21 @@ public final class EasyTierAppStore {
         } else {
             await runSelectedConfig()
         }
+    }
+
+    private func validateConfigForCurrentRuntime(_ config: NetworkConfig, replacing instance: NetworkInstance? = nil) throws {
+        try NetworkConfigValidator.validate(config, activeConfigs: activeConfigsForValidation(excluding: instance))
+    }
+
+    private func activeConfigsForValidation(excluding excludedInstance: NetworkInstance?) -> [NetworkConfig] {
+        instances.compactMap { instance in
+            if let excludedInstance, isSameRuntimeInstance(instance, excludedInstance) { return nil }
+            return config(matching: instance)
+        }
+    }
+
+    private func isSameRuntimeInstance(_ lhs: NetworkInstance, _ rhs: NetworkInstance) -> Bool {
+        lhs.instance_id == rhs.instance_id && lhs.name == rhs.name
     }
 
     public func stopAll() async {

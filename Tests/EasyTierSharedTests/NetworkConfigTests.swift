@@ -147,6 +147,53 @@ import Testing
     #expect(decoded.vpn_portal_listen_port == 22_121)
 }
 
+@Test func validatorAllowsSamePortOnDifferentTransports() throws {
+    var config = NetworkConfig(network_name: "edge")
+    config.listener_urls = ["tcp://0.0.0.0:11010", "udp://0.0.0.0:11010"]
+
+    try NetworkConfigValidator.validate(config)
+}
+
+@Test func validatorReportsConflictingActiveConfigPorts() throws {
+    var running = NetworkConfig(instance_id: "running-id", network_name: "running")
+    running.listener_urls = ["tcp://0.0.0.0:11010"]
+
+    var selected = NetworkConfig(instance_id: "selected-id", network_name: "selected")
+    selected.listener_urls = ["tcp://127.0.0.1:11010"]
+
+    do {
+        try NetworkConfigValidator.validate(selected, activeConfigs: [running])
+        Issue.record("validator should report conflicting TCP listener ports")
+    } catch NetworkConfigValidationError.issues(let issues) {
+        let message = issues.joined(separator: "\n")
+        #expect(message.contains("Port conflict"))
+        #expect(message.contains("running"))
+        #expect(message.contains("selected"))
+        #expect(message.contains("TCP 127.0.0.1:11010"))
+    } catch {
+        Issue.record("unexpected error: \(error)")
+    }
+}
+
+@Test func validatorReportsConflictingPortForwardAndListener() throws {
+    var config = NetworkConfig(instance_id: "edge-id", network_name: "edge")
+    config.listener_urls = ["tcp://0.0.0.0:11010"]
+    config.port_forwards = [
+        PortForwardConfig(bind_ip: "0.0.0.0", bind_port: 11_010, dst_ip: "10.144.144.2", dst_port: 80, proto: "tcp"),
+    ]
+
+    do {
+        try NetworkConfigValidator.validate(config)
+        Issue.record("validator should report duplicate local TCP bindings")
+    } catch NetworkConfigValidationError.issues(let issues) {
+        let message = issues.joined(separator: "\n")
+        #expect(message.contains("Listener tcp://0.0.0.0:11010"))
+        #expect(message.contains("Port forward #1"))
+    } catch {
+        Issue.record("unexpected error: \(error)")
+    }
+}
+
 @Test func storagePersistsSnapshot() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let storage = EasyTierStorage(baseDirectory: directory)
@@ -379,7 +426,8 @@ import Testing
 @MainActor
 @Test func toggleSelectedConfigConnectionRunsSelectedStoppedNetwork() async {
     let first = NetworkConfig(instance_id: "first-id", network_name: "first-network")
-    let second = NetworkConfig(instance_id: "second-id", network_name: "second-network")
+    var second = NetworkConfig(instance_id: "second-id", network_name: "second-network")
+    second.listener_urls = ["tcp://0.0.0.0:12010", "udp://0.0.0.0:12010", "wg://0.0.0.0:12011"]
     let client = RecordingToggleClient()
     let store = EasyTierAppStore(client: client)
 
@@ -413,6 +461,26 @@ import Testing
     #expect(client.stoppedInstanceNames == [[second.network_name]])
     #expect(client.retainedInstanceNames.isEmpty)
     #expect(client.runConfigs.isEmpty)
+}
+
+@MainActor
+@Test func runSelectedConfigReportsRunningPortConflictBeforeStarting() async {
+    var running = NetworkConfig(instance_id: "running-id", network_name: "running")
+    running.listener_urls = ["tcp://0.0.0.0:11010"]
+    var selected = NetworkConfig(instance_id: "selected-id", network_name: "selected")
+    selected.listener_urls = ["tcp://127.0.0.1:11010"]
+    let client = RecordingToggleClient()
+    let store = EasyTierAppStore(client: client)
+
+    store.configs = [StoredNetworkConfig(config: running), StoredNetworkConfig(config: selected)]
+    store.selectedConfigID = selected.instance_id
+    store.instances = [NetworkInstance(instance_id: running.instance_id, name: running.network_name, running: true)]
+
+    await store.runSelectedConfig()
+
+    #expect(client.runConfigs.isEmpty)
+    #expect(store.lastError?.contains("Port conflict") == true)
+    #expect(store.lastError?.contains("TCP 127.0.0.1:11010") == true)
 }
 
 @Test func unavailableClientReportsClearRuntimeFailure() async {
