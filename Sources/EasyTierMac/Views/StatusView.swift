@@ -81,40 +81,96 @@ struct StatusView: View {
                             .lineLimit(1)
                     }
                 }
+                .padding(.vertical, 5)
             }
+            .width(min: 220, ideal: 260, max: 360)
+
             TableColumn("IPv4") { member in
                 CopyableIPv4Cell(member: member)
             }
+            .width(ipv4ColumnWidth)
+
             TableColumn("Route") { member in
                 RouteCostBadge(member: member)
             }
+            .width(min: 74, ideal: 86, max: 112)
+
             TableColumn("Tunnel") { member in
                 Text(member.tunnelProto)
             }
+            .width(min: 80, ideal: 92, max: 120)
+
             TableColumn("Latency") { member in
                 Text(member.latency)
                     .monospacedDigit()
             }
+            .width(min: 78, ideal: 90, max: 118)
+
             TableColumn("Upload") { member in
                 Text(member.uploadTotal)
                     .monospacedDigit()
             }
+            .width(min: 84, ideal: 96, max: 124)
+
             TableColumn("Download") { member in
                 Text(member.downloadTotal)
                     .monospacedDigit()
             }
+            .width(min: 96, ideal: 108, max: 138)
+
             TableColumn("Loss") { member in
                 Text(member.lossRate)
                     .monospacedDigit()
             }
+            .width(min: 66, ideal: 78, max: 100)
+
             TableColumn("NAT") { member in
                 Text(member.natType)
             }
+            .width(min: 86, ideal: 104, max: 150)
+
             TableColumn("Version") { member in
                 Text(member.version)
                     .lineLimit(1)
             }
+            .width(min: 120, ideal: 150, max: 220)
         }
+    }
+
+    private var ipv4ColumnWidth: CGFloat {
+        IPv4CellMetrics.columnWidth(for: members.map(\.displayedIPv4Address))
+    }
+}
+
+private enum IPv4CellMetrics {
+    static let horizontalPadding: CGFloat = 10
+    static let verticalPadding: CGFloat = 6
+    static let trailingReservation: CGFloat = 28
+    static let minimumWidth: CGFloat = 148
+    static let maximumWidth: CGFloat = 220
+
+    static func columnWidth(for values: [String]) -> CGFloat {
+        let longest = values.max { textWidth(for: $0) < textWidth(for: $1) } ?? "255.255.255.255"
+        return width(for: longest)
+    }
+
+    static func width(for value: String) -> CGFloat {
+        let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let measuredTextWidth = textWidth(for: text.isEmpty ? "255.255.255.255" : text)
+        let targetWidth = measuredTextWidth + horizontalPadding * 2 + trailingReservation
+        return min(max(ceil(targetWidth), minimumWidth), maximumWidth)
+    }
+
+    private static func textWidth(for value: String) -> CGFloat {
+        let font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        return ceil((value as NSString).size(withAttributes: [.font: font]).width)
+    }
+}
+
+private extension NetworkMemberStatus {
+    var displayedIPv4Address: String {
+        let value = copyableIPv4Address ?? virtualIPv4.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? "-" : value
     }
 }
 
@@ -133,10 +189,11 @@ private struct CopyableIPv4Cell: View {
                     .monospacedDigit()
                     .lineLimit(1)
                     .truncationMode(.tail)
-                    .padding(.trailing, 20)
+                    .padding(.trailing, IPv4CellMetrics.trailingReservation)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, IPv4CellMetrics.horizontalPadding)
+                    .padding(.vertical, IPv4CellMetrics.verticalPadding)
+                    .frame(minWidth: IPv4CellMetrics.width(for: ip), alignment: .leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                     .background {
@@ -149,7 +206,7 @@ private struct CopyableIPv4Cell: View {
                     }
                     .overlay(alignment: .trailing) {
                         trailingIndicator
-                            .padding(.trailing, 7)
+                            .padding(.trailing, IPv4CellMetrics.horizontalPadding)
                     }
             }
             .buttonStyle(CopyFeedbackButtonStyle())
