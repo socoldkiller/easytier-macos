@@ -580,7 +580,7 @@ import Testing
     #expect(!instance.isFullyConnected(expectRemotePeers: true))
 }
 
-@Test func runtimeInfoWaitsUntilRemotePeerRoutesHaveConnections() throws {
+@Test func runtimeInfoTreatsRemotePeerRoutesWithIPv4AsUsable() throws {
     let waitingJSON = """
     {
       "my_node_info": {

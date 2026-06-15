@@ -709,7 +709,12 @@ public extension NetworkInstanceRunningInfo {
 
         let remotePairs = (peer_route_pairs ?? []).filter { !$0.representsLocalRoute }
         if !remotePairs.isEmpty {
-            return remotePairs.allSatisfy(\.hasActiveConnection)
+            return remotePairs.allSatisfy(\.hasUsableRoute)
+        }
+
+        let remoteRoutes = (routes ?? []).filter { !$0.representsLocalRoute }
+        if !remoteRoutes.isEmpty {
+            return remoteRoutes.allSatisfy(\.hasUsableMachineAddress)
         }
 
         let remotePeers = peers ?? []
@@ -769,11 +774,25 @@ public extension NetworkInstanceRunningInfo {
 
 public extension PeerRoutePair {
     var representsLocalRoute: Bool {
-        route?.cost == 0
+        route?.representsLocalRoute == true
+    }
+
+    var hasUsableRoute: Bool {
+        route?.hasUsableMachineAddress == true || hasActiveConnection
     }
 
     var hasActiveConnection: Bool {
         peer?.hasActiveConnection == true
+    }
+}
+
+public extension Route {
+    var representsLocalRoute: Bool {
+        cost == 0
+    }
+
+    var hasUsableMachineAddress: Bool {
+        ipv4_addr?.displayString.nilIfEmpty != nil
     }
 }
 
