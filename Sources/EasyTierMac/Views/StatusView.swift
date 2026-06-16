@@ -4,6 +4,7 @@ import SwiftUI
 
 struct StatusView: View {
     @Environment(EasyTierAppStore.self) private var store
+    @State private var publicServerGroupExpanded = false
 
     private var instance: NetworkInstance? { store.selectedRunningInstance }
     private var members: [NetworkMemberStatus] { store.selectedMemberStatuses }
@@ -57,88 +58,381 @@ struct StatusView: View {
     }
 
     private var memberTable: some View {
-        Table(members) {
-            TableColumn("Member") { member in
-                HStack(spacing: 8) {
-                    ZStack(alignment: .bottomTrailing) {
-                        Image(systemName: member.memberSystemImage)
-                            .foregroundStyle(member.memberIconColor)
-                            .frame(width: 20)
-                        Circle()
-                            .fill(member.memberStateColor)
-                            .frame(width: 7, height: 7)
-                            .overlay {
-                                Circle()
-                                    .stroke(.background, lineWidth: 1.5)
-                            }
-                    }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(member.hostname)
-                            .lineLimit(1)
-                        Text("\(member.memberStateLabel) · Peer \(member.peerID)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                .padding(.vertical, 5)
+        Table(of: MemberTableRow.self) {
+            TableColumn("Member") { row in
+                MemberIdentityCell(row: row)
             }
             .width(min: 220, ideal: 260, max: 360)
 
-            TableColumn("IPv4") { member in
-                CopyableIPv4Cell(member: member)
+            TableColumn("IPv4") { row in
+                MemberIPv4Cell(row: row)
             }
             .width(ipv4ColumnWidth)
 
-            TableColumn("Route") { member in
-                RouteCostBadge(member: member)
+            TableColumn("Route") { row in
+                MemberRouteCell(row: row)
             }
-            .width(min: 74, ideal: 86, max: 112)
+            .width(min: 74, ideal: 96, max: 140)
 
-            TableColumn("Tunnel") { member in
-                Text(member.tunnelProto)
+            TableColumn("Tunnel") { row in
+                Text(row.tunnelProto)
             }
             .width(min: 80, ideal: 92, max: 120)
 
-            TableColumn("Latency") { member in
-                Text(member.latency)
+            TableColumn("Latency") { row in
+                Text(row.latency)
                     .monospacedDigit()
             }
             .width(min: 78, ideal: 90, max: 118)
 
-            TableColumn("Upload") { member in
-                Text(member.uploadTotal)
+            TableColumn("Upload") { row in
+                Text(row.uploadTotal)
                     .monospacedDigit()
             }
             .width(min: 84, ideal: 96, max: 124)
 
-            TableColumn("Download") { member in
-                Text(member.downloadTotal)
+            TableColumn("Download") { row in
+                Text(row.downloadTotal)
                     .monospacedDigit()
             }
             .width(min: 96, ideal: 108, max: 138)
 
-            TableColumn("Loss") { member in
-                Text(member.lossRate)
+            TableColumn("Loss") { row in
+                Text(row.lossRate)
                     .monospacedDigit()
             }
             .width(min: 66, ideal: 78, max: 100)
 
-            TableColumn("NAT") { member in
-                Text(member.natType)
+            TableColumn("NAT") { row in
+                Text(row.natType)
             }
             .width(min: 86, ideal: 104, max: 150)
 
-            TableColumn("Version") { member in
-                Text(member.version)
+            TableColumn("Version") { row in
+                Text(row.version)
                     .lineLimit(1)
             }
             .width(min: 120, ideal: 150, max: 220)
+        } rows: {
+            ForEach(memberTableRows) { row in
+                if let children = row.children {
+                    DisclosureTableRow(row, isExpanded: $publicServerGroupExpanded) {
+                        ForEach(children) { child in
+                            TableRow(child)
+                        }
+                    }
+                } else {
+                    TableRow(row)
+                }
+            }
+        }
+    }
+
+    private var memberTableRows: [MemberTableRow] {
+        let publicServers = members.filter { !$0.isLocal && $0.isPublicServer }
+        guard publicServers.count > 1 else {
+            return members.map(MemberTableRow.member)
+        }
+
+        let publicServerIDs = Set(publicServers.map(\.id))
+        var insertedPublicServerGroup = false
+
+        return members.compactMap { member in
+            guard publicServerIDs.contains(member.id) else {
+                return .member(member)
+            }
+
+            guard !insertedPublicServerGroup else { return nil }
+            insertedPublicServerGroup = true
+            return .publicServerGroup(publicServers)
         }
     }
 
     private var ipv4ColumnWidth: CGFloat {
         IPv4CellMetrics.columnWidth(for: members.map(\.displayedIPv4Address))
+    }
+}
+
+private struct MemberTableRow: Identifiable, Equatable {
+    enum Kind: Equatable {
+        case member(NetworkMemberStatus)
+        case publicServerGroup(PublicServerGroupSummary)
+    }
+
+    var kind: Kind
+    var children: [MemberTableRow]?
+
+    var id: String {
+        switch kind {
+        case .member(let member):
+            return member.id
+        case .publicServerGroup:
+            return "public-server-group"
+        }
+    }
+
+    static func member(_ member: NetworkMemberStatus) -> MemberTableRow {
+        MemberTableRow(kind: .member(member), children: nil)
+    }
+
+    static func publicServerGroup(_ members: [NetworkMemberStatus]) -> MemberTableRow {
+        MemberTableRow(
+            kind: .publicServerGroup(PublicServerGroupSummary(members: members)),
+            children: members.map(MemberTableRow.member)
+        )
+    }
+}
+
+private struct PublicServerGroupSummary: Equatable {
+    var members: [NetworkMemberStatus]
+
+    var count: Int { members.count }
+
+    var subtitle: String {
+        ["\(count) online", routeSummary, latencySummary]
+            .filter { !$0.isEmpty && $0 != "-" }
+            .joined(separator: " · ")
+    }
+
+    var routeSummary: String {
+        let p2pCount = members.count { $0.routeCost == "P2P" }
+        let relayCount = members.count { $0.routeCost.hasPrefix("Relay") }
+        let localCount = members.count { $0.routeCost == "Local" }
+        let otherCount = max(0, count - p2pCount - relayCount - localCount)
+
+        var parts: [String] = []
+        if p2pCount > 0 { parts.append("\(p2pCount) P2P") }
+        if relayCount > 0 { parts.append("\(relayCount) Relay") }
+        if otherCount > 0 { parts.append("\(otherCount) Other") }
+        return parts.isEmpty ? "-" : parts.joined(separator: " + ")
+    }
+
+    var routeSummaryColor: Color {
+        if members.allSatisfy({ $0.routeCost == "P2P" }) { return Color.green }
+        if members.contains(where: { $0.routeCost.hasPrefix("Relay") }) { return Color.orange }
+        return Color.secondary
+    }
+
+    var tunnelProto: String {
+        collapsedUniqueValue(members.map(\.tunnelProto))
+    }
+
+    var latencySummary: String {
+        let values = members.compactMap { $0.latency.millisecondsValue }
+        guard let min = values.min(), let max = values.max() else { return "-" }
+        return min == max ? "\(min) ms" : "\(min)-\(max) ms"
+    }
+
+    var uploadTotal: String {
+        totalBytes(members.map(\.txBytes))
+    }
+
+    var downloadTotal: String {
+        totalBytes(members.map(\.rxBytes))
+    }
+
+    var lossRate: String {
+        let values = members.compactMap { $0.lossRate.percentValue }
+        guard !values.isEmpty else { return "-" }
+        let average = Double(values.reduce(0, +)) / Double(values.count)
+        return "\(Int(average.rounded()))%"
+    }
+
+    var natType: String {
+        collapsedUniqueValue(members.map(\.natType), mixedLabel: "Mixed")
+    }
+
+    var version: String {
+        let versions = normalizedUniqueValues(members.map(\.version))
+        guard !versions.isEmpty else { return "-" }
+        return versions.count == 1 ? versions[0] : "\(versions.count) versions"
+    }
+
+    private func collapsedUniqueValue(_ values: [String], mixedLabel: String = "Mixed") -> String {
+        let uniqueValues = normalizedUniqueValues(values)
+        guard !uniqueValues.isEmpty else { return "-" }
+        return uniqueValues.count == 1 ? uniqueValues[0] : mixedLabel
+    }
+
+    private func normalizedUniqueValues(_ values: [String]) -> [String] {
+        Array(Set(values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty && $0 != "-" })).sorted()
+    }
+
+    private func totalBytes(_ values: [Int64]) -> String {
+        let total = values.reduce(0, +)
+        return total > 0 ? ByteFormatter.format(total) : "-"
+    }
+}
+
+private extension MemberTableRow {
+    var tunnelProto: String {
+        switch kind {
+        case .member(let member): member.tunnelProto
+        case .publicServerGroup(let group): group.tunnelProto
+        }
+    }
+
+    var latency: String {
+        switch kind {
+        case .member(let member): member.latency
+        case .publicServerGroup(let group): group.latencySummary
+        }
+    }
+
+    var uploadTotal: String {
+        switch kind {
+        case .member(let member): member.uploadTotal
+        case .publicServerGroup(let group): group.uploadTotal
+        }
+    }
+
+    var downloadTotal: String {
+        switch kind {
+        case .member(let member): member.downloadTotal
+        case .publicServerGroup(let group): group.downloadTotal
+        }
+    }
+
+    var lossRate: String {
+        switch kind {
+        case .member(let member): member.lossRate
+        case .publicServerGroup(let group): group.lossRate
+        }
+    }
+
+    var natType: String {
+        switch kind {
+        case .member(let member): member.natType
+        case .publicServerGroup(let group): group.natType
+        }
+    }
+
+    var version: String {
+        switch kind {
+        case .member(let member): member.version
+        case .publicServerGroup(let group): group.version
+        }
+    }
+}
+
+private struct MemberIdentityCell: View {
+    var row: MemberTableRow
+
+    var body: some View {
+        switch row.kind {
+        case .member(let member):
+            MemberStatusIdentity(member: member)
+        case .publicServerGroup(let group):
+            PublicServerGroupIdentity(group: group)
+        }
+    }
+}
+
+private struct MemberStatusIdentity: View {
+    var member: NetworkMemberStatus
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ZStack(alignment: .bottomTrailing) {
+                Image(systemName: member.memberSystemImage)
+                    .foregroundStyle(member.memberIconColor)
+                    .frame(width: 20)
+                Circle()
+                    .fill(member.memberStateColor)
+                    .frame(width: 7, height: 7)
+                    .overlay {
+                        Circle()
+                            .stroke(.background, lineWidth: 1.5)
+                    }
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(member.hostname)
+                    .lineLimit(1)
+                Text("\(member.memberStateLabel) · Peer \(member.peerID)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.vertical, 5)
+    }
+}
+
+private struct PublicServerGroupIdentity: View {
+    var group: PublicServerGroupSummary
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "server.rack")
+                .foregroundStyle(Color.green)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Public Servers")
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                Text(group.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.vertical, 5)
+    }
+}
+
+private struct MemberIPv4Cell: View {
+    var row: MemberTableRow
+
+    var body: some View {
+        switch row.kind {
+        case .member(let member):
+            CopyableIPv4Cell(member: member)
+        case .publicServerGroup:
+            Text("-")
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct MemberRouteCell: View {
+    var row: MemberTableRow
+
+    var body: some View {
+        switch row.kind {
+        case .member(let member):
+            RouteCostBadge(member: member)
+        case .publicServerGroup(let group):
+            SummaryBadge(text: group.routeSummary, color: group.routeSummaryColor)
+        }
+    }
+}
+
+private struct SummaryBadge: View {
+    var text: String
+    var color: Color
+
+    var body: some View {
+        Text(text)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.13), in: Capsule())
+    }
+}
+
+private extension String {
+    var millisecondsValue: Int? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasSuffix("ms") else { return nil }
+        return Int(trimmed.replacingOccurrences(of: "ms", with: "").trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    var percentValue: Int? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasSuffix("%") else { return nil }
+        return Int(trimmed.dropLast())
     }
 }
 
