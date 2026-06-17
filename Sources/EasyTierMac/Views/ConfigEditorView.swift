@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ConfigEditorView: View {
     @Binding var config: NetworkConfig
+    var members: [NetworkMemberStatus] = []
 
     var body: some View {
         ScrollView {
@@ -108,11 +109,12 @@ struct ConfigEditorView: View {
                 }
 
                 CardSection("Port Forwarding") {
-                    PortForwardEditor(portForwards: $config.port_forwards)
+                    PortForwardEditor(portForwards: $config.port_forwards, members: members)
                 }
             }
             .padding(18)
         }
+        .hiddenScrollIndicators()
     }
 
     private func optionalBool(_ binding: Binding<Bool?>, defaultValue: Bool) -> Binding<Bool> {
@@ -265,6 +267,15 @@ private struct PortForwardEditor: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @Binding var portForwards: [PortForwardConfig]
+    var members: [NetworkMemberStatus]
+
+    private var destinationOptions: [PortForwardDestinationOption] {
+        var seenAddresses = Set<String>()
+        return members.compactMap { member in
+            guard let address = member.copyableIPv4Address, seenAddresses.insert(address).inserted else { return nil }
+            return PortForwardDestinationOption(member: member, address: address)
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -288,12 +299,12 @@ private struct PortForwardEditor: View {
                             Text("udp").tag("udp")
                         }
                         .labelsHidden()
-                        TextField("Bind IP", text: $rule.bind_ip)
+                        PortForwardBindField(address: $rule.bind_ip)
                         TextField("Bind port", value: $rule.bind_port, format: .number)
                             .frame(width: 90)
                         Text("->")
                             .foregroundStyle(.secondary)
-                        TextField("Destination IP", text: $rule.dst_ip)
+                        PortForwardDestinationField(address: $rule.dst_ip, options: destinationOptions)
                         TextField("Port", value: $rule.dst_port, format: .number)
                             .frame(width: 90)
                         Button(role: .destructive) {
@@ -310,6 +321,92 @@ private struct PortForwardEditor: View {
             }
         }
         .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: portForwards.count)
+    }
+}
+
+private struct PortForwardBindField: View {
+    @Binding var address: String
+
+    private let options = [
+        PortForwardBindOption(address: "127.0.0.1", title: "Localhost", systemImage: "desktopcomputer"),
+        PortForwardBindOption(address: "0.0.0.0", title: "All interfaces", systemImage: "network"),
+    ]
+
+    var body: some View {
+        HStack(spacing: 6) {
+            TextField("Bind IP", text: $address)
+
+            Menu {
+                ForEach(options) { option in
+                    Button {
+                        address = option.address
+                    } label: {
+                        Label(option.menuTitle, systemImage: option.systemImage)
+                    }
+                }
+            } label: {
+                Image(systemName: "scope")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Choose a common bind address")
+        }
+    }
+}
+
+private struct PortForwardBindOption: Identifiable, Equatable {
+    var address: String
+    var title: String
+    var systemImage: String
+
+    var id: String { address }
+    var menuTitle: String { "\(title) - \(address)" }
+}
+
+private struct PortForwardDestinationField: View {
+    @Binding var address: String
+    var options: [PortForwardDestinationOption]
+
+    var body: some View {
+        HStack(spacing: 6) {
+            TextField("Destination IP", text: $address)
+
+            if !options.isEmpty {
+                Menu {
+                    ForEach(options) { option in
+                        Button {
+                            address = option.address
+                        } label: {
+                            Label(option.menuTitle, systemImage: option.systemImage)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "person.2")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Choose from current network members")
+            }
+        }
+    }
+}
+
+private struct PortForwardDestinationOption: Identifiable, Equatable {
+    var member: NetworkMemberStatus
+    var address: String
+
+    var id: String { address }
+
+    var menuTitle: String {
+        let hostname = member.hostname.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !hostname.isEmpty, hostname != "-" else { return address }
+        return "\(hostname) - \(address)"
+    }
+
+    var systemImage: String {
+        member.isLocal ? "desktopcomputer" : "network"
     }
 }
 

@@ -26,6 +26,7 @@ struct LogsView: View {
                 }
                 .padding(12)
             }
+            .hiddenScrollIndicators()
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
         }
         .padding()

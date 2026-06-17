@@ -86,7 +86,7 @@ struct ContentView: View {
             TrafficView()
         case .config:
             if let config = draftConfigBinding() {
-                ConfigEditorView(config: config)
+                ConfigEditorView(config: config, members: store.selectedMemberStatuses)
             } else if store.selectedConfigID != nil {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -113,6 +113,7 @@ struct ContentView: View {
                 }
             }
         }
+        .hiddenScrollIndicators()
         .safeAreaInset(edge: .bottom) {
             HStack {
                 Button {

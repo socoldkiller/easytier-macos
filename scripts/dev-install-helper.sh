@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_PATH="${EASYTIER_EXPORT_APP_DIR:-$HOME/Applications/EasyTier.app}"
+APP_PATH="${EASYTIER_EXPORT_APP_DIR:-/Applications/EasyTier.app}"
 PACKAGE_FIRST="${EASYTIER_PACKAGE_FIRST:-1}"
 OPEN_APP="${EASYTIER_OPEN_APP:-0}"
 APP_BINARY="$APP_PATH/Contents/MacOS/EasyTierMac"
@@ -31,7 +31,7 @@ needs_user_approval() {
 cd "$ROOT_DIR"
 
 if [[ "$PACKAGE_FIRST" == "1" ]]; then
-  APP_PATH="$(EASYTIER_CLEAN_HELPER_STATE=1 EASYTIER_RESET_BTM="$RESET_BTM_STATE" ./scripts/package-app.sh | tail -n 1)"
+  APP_PATH="$(EASYTIER_CLEAN_HELPER_STATE=1 EASYTIER_RESET_BTM="$RESET_BTM_STATE" EASYTIER_EXPORT_APP_DIR="$APP_PATH" ./scripts/package-app.sh | tail -n 1)"
   APP_BINARY="$APP_PATH/Contents/MacOS/EasyTierMac"
 fi
 

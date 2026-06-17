@@ -85,53 +85,73 @@ struct StatusView: View {
     private var memberTable: some View {
         Table(of: MemberTableRow.self) {
             TableColumn("Member") { row in
-                MemberIdentityCell(row: row)
+                expandablePublicServerCell(for: row) {
+                    MemberIdentityCell(row: row)
+                }
             }
             .width(min: 220, ideal: 260, max: 360)
 
             TableColumn("IPv4") { row in
-                MemberIPv4Cell(row: row)
+                expandablePublicServerCell(for: row) {
+                    MemberIPv4Cell(row: row)
+                }
             }
             .width(ipv4ColumnWidth)
 
             TableColumn("Route") { row in
-                MemberRouteCell(row: row)
+                expandablePublicServerCell(for: row) {
+                    MemberRouteCell(row: row)
+                }
             }
             .width(min: 74, ideal: 96, max: 140)
 
             TableColumn("Tunnel") { row in
-                Text(row.tunnelProto)
+                expandablePublicServerCell(for: row) {
+                    Text(row.tunnelProto)
+                }
             }
             .width(min: 80, ideal: 92, max: 120)
 
             TableColumn("Latency") { row in
-                LatencyMetricText(value: row.latency)
+                expandablePublicServerCell(for: row) {
+                    LatencyMetricText(value: row.latency)
+                }
             }
             .width(min: 78, ideal: 90, max: 118)
 
             TableColumn("Upload") { row in
-                AnimatedMetricText(value: row.uploadTotal)
+                expandablePublicServerCell(for: row) {
+                    AnimatedMetricText(value: row.uploadTotal)
+                }
             }
             .width(min: 84, ideal: 96, max: 124)
 
             TableColumn("Download") { row in
-                AnimatedMetricText(value: row.downloadTotal)
+                expandablePublicServerCell(for: row) {
+                    AnimatedMetricText(value: row.downloadTotal)
+                }
             }
             .width(min: 96, ideal: 108, max: 138)
 
             TableColumn("Loss") { row in
-                AnimatedMetricText(value: row.lossRate)
+                expandablePublicServerCell(for: row) {
+                    AnimatedMetricText(value: row.lossRate)
+                }
             }
             .width(min: 66, ideal: 78, max: 100)
 
             TableColumn("NAT") { row in
-                Text(row.natType)
+                expandablePublicServerCell(for: row) {
+                    Text(row.natType)
+                }
             }
             .width(min: 86, ideal: 104, max: 150)
 
             TableColumn("Version") { row in
-                Text(row.version)
-                    .lineLimit(1)
+                expandablePublicServerCell(for: row) {
+                    Text(row.version)
+                        .lineLimit(1)
+                }
             }
             .width(min: 120, ideal: 150, max: 220)
         } rows: {
@@ -147,6 +167,7 @@ struct StatusView: View {
                 }
             }
         }
+        .hiddenScrollIndicators()
     }
 
     private var memberTableRows: [MemberTableRow] {
@@ -172,6 +193,34 @@ struct StatusView: View {
     private var ipv4ColumnWidth: CGFloat {
         IPv4CellMetrics.columnWidth(for: members.map(\.displayedIPv4Address))
     }
+
+    @ViewBuilder
+    private func expandablePublicServerCell<Content: View>(
+        for row: MemberTableRow,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        if row.isPublicServerGroup {
+            content()
+                .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    togglePublicServerGroup()
+                }
+                .help(publicServerGroupExpanded ? "Collapse public servers" : "Show public servers")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction {
+                    togglePublicServerGroup()
+                }
+        } else {
+            content()
+        }
+    }
+
+    private func togglePublicServerGroup() {
+        withAnimation(EasyTierMotion.quick(reduceMotion: reduceMotion)) {
+            publicServerGroupExpanded.toggle()
+        }
+    }
 }
 
 private struct MemberTableRow: Identifiable, Equatable {
@@ -182,6 +231,11 @@ private struct MemberTableRow: Identifiable, Equatable {
 
     var kind: Kind
     var children: [MemberTableRow]?
+
+    var isPublicServerGroup: Bool {
+        if case .publicServerGroup = kind { return true }
+        return false
+    }
 
     var id: String {
         switch kind {
