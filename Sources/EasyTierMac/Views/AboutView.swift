@@ -8,11 +8,8 @@ struct AboutView: View {
     private let appInfo = AppVersionInfo.current
     private let revisions = SourceRevisionInfo.current
 
-    private let background = Color(red: 0.19, green: 0.21, blue: 0.21)
-    private let primaryText = Color.white.opacity(0.86)
-    private let secondaryText = Color.white.opacity(0.56)
-    private let divider = Color.white.opacity(0.13)
-    private let linkBlue = Color(red: 0.10, green: 0.55, blue: 0.95)
+    private let background = Color(nsColor: .windowBackgroundColor)
+    private let divider = Color(nsColor: .separatorColor).opacity(0.72)
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,8 +23,7 @@ struct AboutView: View {
         }
         .frame(width: 620, height: 400)
         .background(background)
-        .foregroundStyle(primaryText)
-        .environment(\.colorScheme, .dark)
+        .foregroundStyle(.primary)
         .presentedSurfaceMotion()
     }
 
@@ -41,10 +37,9 @@ struct AboutView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("EasyTier for macOS")
                             .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(Color.white.opacity(0.90))
                         Text("Native GUI for managing EasyTier networks.")
                             .font(.system(size: 11, weight: .regular))
-                            .foregroundStyle(secondaryText)
+                            .foregroundStyle(.secondary)
                     }
 
                     VStack(alignment: .leading, spacing: 5) {
@@ -54,16 +49,18 @@ struct AboutView: View {
                     }
 
                     HStack(spacing: 14) {
-                        AboutLink("Docs", url: "https://easytier.cn", color: linkBlue)
-                        AboutLink("Releases", url: "https://github.com/socoldkiller/easytier-swift/releases", color: linkBlue)
-                        AboutLink("GitHub", url: "https://github.com/socoldkiller/easytier-swift", color: linkBlue)
-                        AboutLink("License", url: "https://github.com/socoldkiller/easytier-swift/blob/main/LICENSE", color: linkBlue)
+                        Link("Docs", destination: URL(string: "https://easytier.cn")!)
+                        Link("Releases", destination: URL(string: "https://github.com/socoldkiller/easytier-swift/releases")!)
+                        Link("GitHub", destination: URL(string: "https://github.com/socoldkiller/easytier-swift")!)
+                        Link("License", destination: URL(string: "https://github.com/socoldkiller/easytier-swift/blob/main/LICENSE")!)
                     }
+                    .font(.system(size: 11, weight: .regular))
+                    .controlSize(.small)
                     .padding(.top, 2)
 
-                    Button("Report an Issue...") {}
+                    Link("Report an Issue...", destination: URL(string: "https://github.com/socoldkiller/easytier-swift/issues")!)
                         .font(.system(size: 12, weight: .regular))
-                        .disabled(true)
+                        .controlSize(.small)
                         .padding(.top, 1)
                 }
                 .frame(width: 300, alignment: .leading)
@@ -71,7 +68,7 @@ struct AboutView: View {
 
             Text("EasyTier is distributed under LGPL-3.0. © 2026 EasyTier contributors.")
                 .font(.system(size: 11, weight: .regular))
-                .foregroundStyle(secondaryText)
+                .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -83,10 +80,9 @@ struct AboutView: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text("Software Update")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(primaryText)
                 Text("Manual stable release checks from GitHub.")
                     .font(.system(size: 11, weight: .regular))
-                    .foregroundStyle(secondaryText)
+                    .foregroundStyle(.secondary)
             }
 
             Spacer(minLength: 0)
@@ -94,6 +90,7 @@ struct AboutView: View {
             VStack(alignment: .trailing, spacing: 7) {
                 Button(updater.isChecking ? "Checking..." : "Check Now") { updater.checkForUpdates(presentsWindow: false) }
                     .font(.system(size: 12, weight: .regular))
+                    .controlSize(.small)
                     .disabled(updater.isChecking)
                 updateStatusLine
             }
@@ -111,7 +108,7 @@ struct AboutView: View {
             }
             Text(updateStatusText)
                 .font(.system(size: 10, weight: .regular))
-                .foregroundStyle(secondaryText)
+                .foregroundStyle(.secondary)
         }
         .frame(minHeight: 13, alignment: .trailing)
         .contentTransition(.opacity)
@@ -144,12 +141,14 @@ struct AboutView: View {
 }
 
 struct EasyTierMark: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
         Image(nsImage: Self.iconImage)
             .resizable()
             .interpolation(.high)
             .aspectRatio(contentMode: .fit)
-            .shadow(color: Color.black.opacity(0.24), radius: 10, x: 0, y: 5)
+            .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.24 : 0.12), radius: 10, x: 0, y: 5)
             .accessibilityLabel(Text("EasyTier app icon"))
     }
 
@@ -170,40 +169,14 @@ private struct MetadataRow: View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(label)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(Color.white.opacity(0.52))
+                .foregroundStyle(.secondary)
                 .frame(width: 54, alignment: .leading)
             Text(value)
                 .font(.system(size: 13, weight: .regular, design: .monospaced))
-                .foregroundStyle(Color.white.opacity(0.82))
+                .foregroundStyle(.primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
         }
-    }
-}
-
-private struct AboutLink: View {
-    var title: String
-    var url: String
-    var color: Color
-
-    init(_ title: String, url: String, color: Color) {
-        self.title = title
-        self.url = url
-        self.color = color
-    }
-
-    var body: some View {
-        Button(action: openURL) {
-            Text(title)
-                .font(.system(size: 11, weight: .regular))
-                .foregroundStyle(color)
-        }
-        .buttonStyle(QuietPressButtonStyle(pressedScale: 0.96, pressedOpacity: 0.72))
-    }
-
-    private func openURL() {
-        guard let url = URL(string: url) else { return }
-        NSWorkspace.shared.open(url)
     }
 }
 

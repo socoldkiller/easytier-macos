@@ -7,6 +7,7 @@ import SwiftUI
 struct EasyTierApp: App {
     @State private var store = EasyTierAppStore()
     @State private var updater = SoftwareUpdateController()
+    @State private var menuBarController = MenuBarStatusItemController()
 
     init() {
         Self.runHelperCommandIfRequested()
@@ -17,6 +18,15 @@ struct EasyTierApp: App {
             ContentView()
                 .environment(store)
                 .environment(updater)
+                .background(
+                    MenuBarStatusItemBridge(
+                        controller: menuBarController,
+                        store: store,
+                        updater: updater,
+                        connectionState: menuBarConnectionState
+                    )
+                    .frame(width: 0, height: 0)
+                )
                 .frame(minWidth: 900, minHeight: 620)
                 .task { await store.load() }
         }
@@ -35,13 +45,6 @@ struct EasyTierApp: App {
                 Button("Check for Updates...") { updater.checkForUpdates() }
             }
         }
-
-        MenuBarExtra("EasyTier", image: "MenuBarConnectionGlyphTemplate") {
-            MenuBarContent()
-                .environment(store)
-                .environment(updater)
-        }
-        .menuBarExtraStyle(.window)
     }
 
     private var menuBarConnectionState: ConnectionGlyphState {
@@ -120,6 +123,360 @@ struct EasyTierApp: App {
         fputs("helper command timed out\n", stderr)
         Foundation.exit(EXIT_FAILURE)
     }
+}
+
+private struct MenuBarStatusItemBridge: NSViewRepresentable {
+    @Environment(\.openWindow) private var openWindow
+
+    var controller: MenuBarStatusItemController
+    var store: EasyTierAppStore
+    var updater: SoftwareUpdateController
+    var connectionState: ConnectionGlyphState
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        controller.update(
+            store: store,
+            updater: updater,
+            connectionState: connectionState,
+            openMainWindow: openMainWindow
+        )
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        controller.update(
+            store: store,
+            updater: updater,
+            connectionState: connectionState,
+            openMainWindow: openMainWindow
+        )
+    }
+
+    private func openMainWindow() {
+        openWindow(id: "main")
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+@MainActor
+private final class MenuBarStatusItemController: NSObject {
+    private var statusItem: NSStatusItem?
+    private let popover = NSPopover()
+    private var hostingController: NSHostingController<AnyView>?
+    private var connectionState: ConnectionGlyphState = .idle
+    private var activeNodeIndex = 0
+    private var animationTask: Task<Void, Never>?
+    private var localEventMonitor: Any?
+    private var globalEventMonitor: Any?
+    private var resignActiveObserver: NSObjectProtocol?
+    private var openMainWindowAction: (() -> Void)?
+
+    private static let popoverSize = NSSize(width: 292, height: 302)
+    private static let counterclockwiseNodeIndexes = [0, 1, 2]
+    private static let stepDurationNanoseconds: UInt64 = 340_000_000
+
+    override init() {
+        super.init()
+        popover.delegate = self
+        popover.behavior = .transient
+        popover.animates = true
+        popover.contentSize = Self.popoverSize
+    }
+
+    func update(
+        store: EasyTierAppStore,
+        updater: SoftwareUpdateController,
+        connectionState: ConnectionGlyphState,
+        openMainWindow: @escaping () -> Void
+    ) {
+        installStatusItemIfNeeded()
+        openMainWindowAction = openMainWindow
+
+        if self.connectionState != connectionState {
+            self.connectionState = connectionState
+            activeNodeIndex = 0
+            updateAnimation()
+        }
+
+        refreshStatusImage()
+        updatePopoverContent(store: store, updater: updater)
+    }
+
+    func closePopover() {
+        popover.performClose(nil)
+        removeDismissHandlers()
+    }
+
+    private func installStatusItemIfNeeded() {
+        guard statusItem == nil else { return }
+
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        if let button = item.button {
+            button.target = self
+            button.action = #selector(statusItemClicked(_:))
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            button.imagePosition = .imageOnly
+            button.imageScaling = .scaleProportionallyDown
+        }
+        statusItem = item
+    }
+
+    private func updatePopoverContent(store: EasyTierAppStore, updater: SoftwareUpdateController) {
+        guard hostingController == nil else {
+            popover.contentSize = Self.popoverSize
+            return
+        }
+
+        let content = MenuBarContent(
+            openMainWindowAction: { [weak self] in self?.openMainWindowAction?() },
+            dismissMenuBarAction: { [weak self] in self?.closePopover() }
+        )
+        .environment(store)
+        .environment(updater)
+
+        let rootView = AnyView(content)
+        let controller = NSHostingController(rootView: rootView)
+        controller.view.frame = NSRect(origin: .zero, size: Self.popoverSize)
+        hostingController = controller
+        popover.contentViewController = controller
+        popover.contentSize = Self.popoverSize
+    }
+
+    private func refreshStatusImage() {
+        let currentActiveNodeIndex: Int?
+        if connectionState == .connecting {
+            currentActiveNodeIndex = Self.counterclockwiseNodeIndexes[activeNodeIndex % Self.counterclockwiseNodeIndexes.count]
+        } else {
+            currentActiveNodeIndex = nil
+        }
+
+        guard let button = statusItem?.button else { return }
+        button.image = MenuBarConnectionIcon.image(
+            for: connectionState,
+            activeNodeIndex: currentActiveNodeIndex,
+            appearance: button.effectiveAppearance
+        )
+    }
+
+    private func updateAnimation() {
+        animationTask?.cancel()
+
+        guard connectionState == .connecting else { return }
+        animationTask = Task { [weak self] in
+            await self?.runConnectingAnimation()
+        }
+    }
+
+    private func runConnectingAnimation() async {
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(nanoseconds: Self.stepDurationNanoseconds)
+            } catch {
+                break
+            }
+            activeNodeIndex = (activeNodeIndex + 1) % Self.counterclockwiseNodeIndexes.count
+            refreshStatusImage()
+        }
+    }
+
+    @objc private func statusItemClicked(_ sender: Any?) {
+        guard let button = statusItem?.button else { return }
+
+        if popover.isShown {
+            closePopover()
+        } else {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            installDismissHandlers()
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    private func installDismissHandlers() {
+        removeDismissHandlers()
+
+        localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            self?.closePopoverIfClickIsOutside(event)
+            return event
+        }
+
+        globalEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.closePopover()
+            }
+        }
+
+        resignActiveObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: NSApp,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.closePopover()
+            }
+        }
+    }
+
+    private func removeDismissHandlers() {
+        if let localEventMonitor {
+            NSEvent.removeMonitor(localEventMonitor)
+            self.localEventMonitor = nil
+        }
+        if let globalEventMonitor {
+            NSEvent.removeMonitor(globalEventMonitor)
+            self.globalEventMonitor = nil
+        }
+        if let resignActiveObserver {
+            NotificationCenter.default.removeObserver(resignActiveObserver)
+            self.resignActiveObserver = nil
+        }
+    }
+
+    private func closePopoverIfClickIsOutside(_ event: NSEvent) {
+        guard popover.isShown else { return }
+        guard !eventIsInsidePopover(event), !eventIsInsideStatusItem(event) else { return }
+        closePopover()
+    }
+
+    private func eventIsInsidePopover(_ event: NSEvent) -> Bool {
+        guard let popoverWindow = popover.contentViewController?.view.window else { return false }
+        return event.window === popoverWindow
+    }
+
+    private func eventIsInsideStatusItem(_ event: NSEvent) -> Bool {
+        guard let button = statusItem?.button, event.window === button.window else { return false }
+        let point = button.convert(event.locationInWindow, from: nil)
+        return button.bounds.contains(point)
+    }
+}
+
+extension MenuBarStatusItemController: NSPopoverDelegate {
+    func popoverDidClose(_ notification: Notification) {
+        removeDismissHandlers()
+    }
+}
+
+private enum MenuBarConnectionIcon {
+    static func image(
+        for state: ConnectionGlyphState,
+        activeNodeIndex: Int? = nil,
+        appearance: NSAppearance
+    ) -> NSImage {
+        let image = NSImage(size: NSSize(width: 22, height: 18))
+        image.lockFocus()
+        defer { image.unlockFocus() }
+
+        appearance.performAsCurrentDrawingAppearance {
+            let nodeCenters = [
+                CGPoint(x: 11, y: 14),
+                CGPoint(x: 5, y: 4),
+                CGPoint(x: 17, y: 4),
+            ]
+
+            drawDashedSegment(from: nodeCenters[0], to: nodeCenters[1], state: state)
+            drawDashedSegment(from: nodeCenters[1], to: nodeCenters[2], state: state)
+            drawDashedSegment(from: nodeCenters[2], to: nodeCenters[0], state: state)
+
+            for (index, point) in nodeCenters.enumerated() {
+                drawNode(at: point, state: state, index: index, activeNodeIndex: activeNodeIndex)
+            }
+        }
+
+        image.isTemplate = false
+        return image
+    }
+
+    private static func drawDashedSegment(from start: CGPoint, to end: CGPoint, state: ConnectionGlyphState) {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let length = max(sqrt(dx * dx + dy * dy), 0.001)
+        let inset = min(CGFloat(4.35), length * 0.43)
+        let unit = CGPoint(x: dx / length, y: dy / length)
+        let path = NSBezierPath()
+
+        path.lineWidth = 1.25
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        path.setLineDash([1.3, 1.75], count: 2, phase: 0)
+        path.move(to: CGPoint(x: start.x + unit.x * inset, y: start.y + unit.y * inset))
+        path.line(to: CGPoint(x: end.x - unit.x * inset, y: end.y - unit.y * inset))
+
+        baseColor(for: state).withAlphaComponent(lineAlpha(for: state)).setStroke()
+        path.stroke()
+    }
+
+    private static func drawNode(at point: CGPoint, state: ConnectionGlyphState, index: Int, activeNodeIndex: Int?) {
+        let radius: CGFloat = 2.5
+        let stroke = nodeStrokeColor(for: state, index: index)
+            .withAlphaComponent(nodeStrokeAlpha(for: state, index: index, activeNodeIndex: activeNodeIndex))
+        let fill = nodeFillColor(for: state, index: index, activeNodeIndex: activeNodeIndex)
+
+        drawCircle(center: point, radius: radius, fill: fill, stroke: (stroke, 1.55))
+    }
+
+    private static func drawCircle(center: CGPoint, radius: CGFloat, fill: NSColor?, stroke: (color: NSColor, width: CGFloat)?) {
+        let rect = NSRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
+        let path = NSBezierPath(ovalIn: rect)
+
+        if let fill {
+            fill.setFill()
+            path.fill()
+        }
+
+        if let stroke {
+            stroke.color.setStroke()
+            path.lineWidth = stroke.width
+            path.stroke()
+        }
+    }
+
+    private static func nodeFillColor(for state: ConnectionGlyphState, index: Int, activeNodeIndex: Int?) -> NSColor? {
+        switch state {
+        case .idle:
+            return nil
+        case .connecting:
+            return index == activeNodeIndex ? baseColor(for: state) : nil
+        case .connected:
+            return .systemGreen
+        case .error:
+            return index == errorNodeIndex ? .systemRed : nil
+        }
+    }
+
+    private static func nodeStrokeColor(for state: ConnectionGlyphState, index: Int) -> NSColor {
+        return baseColor(for: state)
+    }
+
+    private static func nodeStrokeAlpha(for state: ConnectionGlyphState, index: Int, activeNodeIndex: Int?) -> CGFloat {
+        switch state {
+        case .idle:
+            return 0.92
+        case .connecting:
+            return index == activeNodeIndex ? 1.0 : 0.80
+        case .connected:
+            return 1.0
+        case .error:
+            return index == errorNodeIndex ? 1.0 : 0.80
+        }
+    }
+
+    private static func lineAlpha(for state: ConnectionGlyphState) -> CGFloat {
+        switch state {
+        case .idle: 0.58
+        case .connecting: 0.68
+        case .connected: 1.0
+        case .error: 0.68
+        }
+    }
+
+    private static func baseColor(for state: ConnectionGlyphState) -> NSColor {
+        switch state {
+        case .idle, .connecting, .connected, .error:
+            return .labelColor
+        }
+    }
+
+    private static let errorNodeIndex = 2
 }
 
 private struct MenuBarContent: View {
@@ -208,7 +565,7 @@ private struct MenuBarContent: View {
         }
         .frame(width: 292)
         .foregroundStyle(MenuBarPalette.primaryText)
-        .background(.ultraThinMaterial)
+        .background(MenuBarPanelBackground())
         .presentedSurfaceMotion()
     }
 
@@ -355,6 +712,25 @@ private enum MenuBarPalette {
     static let selectedRowVerticalInset: CGFloat = 5
     static let selectedRowContentVerticalPadding: CGFloat = 4
     static let connected = Color(red: 0.35, green: 0.78, blue: 0.42)
+}
+
+private struct MenuBarPanelBackground: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        configure(view)
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {
+        configure(view)
+    }
+
+    private func configure(_ view: NSVisualEffectView) {
+        view.material = .popover
+        view.blendingMode = .behindWindow
+        view.state = .active
+        view.alphaValue = 0.92
+    }
 }
 
 private struct MenuBarDivider: View {
