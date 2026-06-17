@@ -12,7 +12,11 @@ struct ContentView: View {
     @State private var draftConfig = NetworkConfig()
     @State private var draftConfigID: String?
     @State private var draftIsDirty = false
-    @State private var tabTransitionEdge: Edge = .trailing
+    @State private var workspaceTransitionEdge: Edge = .trailing
+    @State private var workspaceTransitionDistance: CGFloat = Self.tabTransitionDistance
+
+    private static let tabTransitionDistance: CGFloat = 14
+    private static let networkTransitionDistance: CGFloat = 7
 
     var body: some View {
         @Bindable var store = store
@@ -23,12 +27,11 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 PermissionBanner(controller: permissionController)
 
-                WorkspaceTabBar(selection: tabSelectionBinding)
-                .padding([.horizontal, .top])
-
-                Divider().padding(.top, 12)
-
-                MotionSwitch(id: store.selectedTab.id, insertionEdge: tabTransitionEdge) {
+                MotionSwitch(
+                    id: workspaceMotionID,
+                    insertionEdge: workspaceTransitionEdge,
+                    distance: workspaceTransitionDistance
+                ) {
                     workspaceContent
                 }
             }
@@ -52,14 +55,21 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showingTOML) {
-            TOMLSheet(mode: tomlMode, initialText: tomlMode == .export ? store.exportSelectedTOML() : "") { text in
+            TOMLSheet(
+                mode: tomlMode,
+                initialText: tomlMode == .export ? store.exportSelectedTOML() : ""
+            ) { text in
                 if tomlMode == .import { store.importTOML(text) }
             }
         }
         .sheet(isPresented: $store.isShowingAbout) {
             AboutView()
         }
-        .alert("EasyTier", isPresented: Binding(get: { store.lastError != nil }, set: { if !$0 { store.lastError = nil } })) {
+        .alert(
+            "EasyTier",
+            isPresented: Binding(
+                get: { store.lastError != nil }, set: { if !$0 { store.lastError = nil } })
+        ) {
             Button("OK") { store.lastError = nil }
         } message: {
             Text(store.lastError ?? "")
@@ -81,7 +91,11 @@ struct ContentView: View {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ContentUnavailableView("No Network", systemImage: "network", description: Text("Create a network config to begin."))
+                ContentUnavailableView(
+                    "No Network",
+                    systemImage: "network",
+                    description: Text("Create a network config to begin.")
+                )
             }
         case .logs:
             LogsView()
@@ -104,17 +118,25 @@ struct ContentView: View {
                 Button {
                     commitDraft(saveImmediately: true)
                     store.addConfig()
-                } label: { Image(systemName: "plus") }
-                    .help("Add network")
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .help("Add network")
                 Button(role: .destructive) {
                     draftIsDirty = false
                     Task { await store.deleteSelectedConfig() }
-                } label: { Image(systemName: "trash") }
+                } label: {
+                    Image(systemName: "trash")
+                }
                 .help("Delete selected network")
                 .disabled(store.selectedConfigID == nil)
                 Spacer()
-                Button { Task { await store.refreshRuntime() } } label: { Image(systemName: "arrow.clockwise") }
-                    .help("Refresh runtime state")
+                Button {
+                    Task { await store.refreshRuntime() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help("Refresh runtime state")
             }
             .buttonStyle(.borderless)
             .padding(8)
@@ -124,19 +146,17 @@ struct ContentView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        ToolbarItemGroup {
-            Button { showingModeSettings = true } label: {
+        ToolbarItem(placement: .principal) {
+            WorkspaceTabPicker(selection: tabSelectionBinding)
+                .frame(width: 420)
+        }
+
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button {
+                showingModeSettings = true
+            } label: {
                 Label(store.mode.label, systemImage: "switch.2")
             }
-
-            Button {
-                commitDraft(saveImmediately: true)
-                Task { await store.validateSelectedConfig() }
-            } label: {
-                Label("Check", systemImage: "checkmark.shield")
-            }
-            .disabled(store.selectedConfig == nil || store.isBusy)
-            .help("Check selected network")
 
             Button {
                 let runningInstanceToRestart = draftIsDirty ? store.selectedRunningInstance : nil
@@ -161,7 +181,10 @@ struct ContentView: View {
                     systemImage: connectionActionSystemImage
                 )
             }
-            .disabled(store.selectedConfig == nil || store.isBusy || permissionController.state != .enabled)
+            .disabled(
+                store.selectedConfig == nil || store.isBusy
+                    || permissionController.state != .enabled
+            )
             .help("Run selected network")
 
             Menu {
@@ -179,7 +202,9 @@ struct ContentView: View {
                 Label("TOML", systemImage: "doc.text")
             }
 
-            Button { store.isShowingAbout = true } label: {
+            Button {
+                store.isShowingAbout = true
+            } label: {
                 Label("About", systemImage: "info.circle")
             }
             .help("About EasyTier")
@@ -195,12 +220,19 @@ struct ContentView: View {
 
     private var selectedConfigIsRunning: Bool {
         if draftIsDirty, store.selectedConfigIsRunning { return true }
-        guard let config = draftConfigID == store.selectedConfigID ? draftConfig : store.selectedConfig else { return false }
+        guard
+            let config = draftConfigID == store.selectedConfigID
+                ? draftConfig : store.selectedConfig
+        else { return false }
         return store.runningInstance(matching: config) != nil
     }
 
     private var selectedConfigNeedsRestart: Bool {
         draftIsDirty && store.selectedConfigIsRunning
+    }
+
+    private var workspaceMotionID: String {
+        "\(store.selectedTab.id)-\(store.selectedConfigID ?? "none")"
     }
 
     private var connectionActionTitle: String {
@@ -228,7 +260,12 @@ struct ContentView: View {
         Binding(
             get: { store.selectedConfigID },
             set: { newValue in
+                let previousValue = store.selectedConfigID
+                guard newValue != previousValue else { return }
+
                 commitDraft(saveImmediately: true)
+                workspaceTransitionEdge = networkTransitionEdge(from: previousValue, to: newValue)
+                workspaceTransitionDistance = Self.networkTransitionDistance
                 withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
                     store.selectedConfigID = newValue
                     loadDraft(for: newValue)
@@ -242,7 +279,9 @@ struct ContentView: View {
             get: { store.selectedTab },
             set: { newValue in
                 guard newValue != store.selectedTab else { return }
-                tabTransitionEdge = newValue.motionIndex > store.selectedTab.motionIndex ? .trailing : .leading
+                workspaceTransitionEdge =
+                    newValue.motionIndex > store.selectedTab.motionIndex ? .trailing : .leading
+                workspaceTransitionDistance = Self.tabTransitionDistance
                 withAnimation(EasyTierMotion.selection(reduceMotion: reduceMotion)) {
                     store.selectedTab = newValue
                 }
@@ -250,9 +289,26 @@ struct ContentView: View {
         )
     }
 
+    private func networkTransitionEdge(from oldID: String?, to newID: String?) -> Edge {
+        guard
+            let oldIndex = configIndex(for: oldID),
+            let newIndex = configIndex(for: newID),
+            oldIndex != newIndex
+        else {
+            return .bottom
+        }
+
+        return newIndex > oldIndex ? .bottom : .top
+    }
+
+    private func configIndex(for id: String?) -> Int? {
+        guard let id else { return nil }
+        return store.configs.firstIndex { $0.id == id }
+    }
+
     private func draftConfigBinding() -> Binding<NetworkConfig>? {
         guard let selectedID = store.selectedConfigID,
-              store.configs.contains(where: { $0.id == selectedID })
+            store.configs.contains(where: { $0.id == selectedID })
         else { return nil }
         guard draftConfigID == selectedID else { return nil }
 
@@ -267,7 +323,7 @@ struct ContentView: View {
 
     private func loadDraft(for selectedID: String?) {
         guard let selectedID,
-              let config = store.configs.first(where: { $0.id == selectedID })?.config
+            let config = store.configs.first(where: { $0.id == selectedID })?.config
         else {
             draftConfig = NetworkConfig()
             draftConfigID = nil
@@ -291,66 +347,22 @@ struct ContentView: View {
     }
 }
 
-private struct WorkspaceTabBar: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+private struct WorkspaceTabPicker: View {
     @Binding var selection: WorkspaceTab
-    @Namespace private var selectionNamespace
 
     private let tabs = WorkspaceTab.allCases
 
     var body: some View {
-        HStack(spacing: 12) {
-            Text("View")
-                .font(.system(size: 13.5, weight: .semibold))
-                .foregroundStyle(.primary)
-                .frame(width: 44, alignment: .leading)
-
-            HStack(spacing: 0) {
-                ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
-                    tabButton(tab)
-
-                    if index < tabs.count - 1 {
-                        Divider()
-                            .frame(height: 16)
-                            .opacity(selection == tab || selection == tabs[index + 1] ? 0 : 0.55)
-                    }
-                }
-            }
-            .padding(2)
-            .frame(maxWidth: .infinity)
-            .background(.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(.primary.opacity(0.06), lineWidth: 1)
-            }
-            .animation(EasyTierMotion.selection(reduceMotion: reduceMotion), value: selection.id)
-        }
-    }
-
-    private func tabButton(_ tab: WorkspaceTab) -> some View {
-        let isSelected = selection == tab
-
-        return Button {
-            selection = tab
-        } label: {
-            Text(tab.rawValue)
-                .font(.system(size: 13.5, weight: isSelected ? .semibold : .medium))
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, minHeight: 24)
-                .contentShape(Rectangle())
-        }
-        .foregroundStyle(isSelected ? Color.white : Color.primary.opacity(0.82))
-        .background {
-            if isSelected {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(Color.accentColor)
-                    .matchedGeometryEffect(id: "workspace-tab-selection", in: selectionNamespace)
-                    .shadow(color: Color.accentColor.opacity(0.22), radius: 4, y: 1)
+        Picker("View", selection: $selection) {
+            ForEach(tabs) { tab in
+                Label(tab.rawValue, systemImage: tab.systemImage)
+                    .tag(tab)
             }
         }
-        .buttonStyle(QuietPressButtonStyle(pressedScale: 0.97, pressedOpacity: 0.88))
-        .accessibilityLabel(Text(tab.rawValue))
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .pickerStyle(.segmented)
+        .controlSize(.regular)
+        .labelsHidden()
+        .help("Switch workspace view")
     }
 }
 
@@ -423,9 +435,22 @@ private struct PermissionBanner: View {
     private static let approvalRefreshIntervalNanoseconds: UInt64 = 2_000_000_000
 }
 
-private extension WorkspaceTab {
-    var motionIndex: Int {
+extension WorkspaceTab {
+    fileprivate var motionIndex: Int {
         WorkspaceTab.allCases.firstIndex(where: { $0.id == id }) ?? 0
+    }
+
+    fileprivate var systemImage: String {
+        switch self {
+        case .status:
+            return "dot.radiowaves.left.and.right"
+        case .view:
+            return "chart.xyaxis.line"
+        case .config:
+            return "slider.horizontal.3"
+        case .logs:
+            return "doc.text.magnifyingglass"
+        }
     }
 }
 
@@ -452,20 +477,40 @@ private struct NetworkStatusGlyph: View {
     var state: ConnectionGlyphState
 
     var body: some View {
-        ConnectionGlyph(state: state, size: 18, statusNodeColor: statusNodeColor)
-            .frame(width: 18, height: 18)
-        .frame(width: 22, height: 22)
-        .accessibilityLabel(accessibilityLabel)
+        ZStack(alignment: .bottomTrailing) {
+            Image(systemName: "network")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(iconColor)
+                .frame(width: 18, height: 18)
+
+            Circle()
+                .fill(statusColor)
+                .frame(width: 5.5, height: 5.5)
+                .offset(x: 1.5, y: 1.5)
+        }
+            .frame(width: 22, height: 22)
+            .accessibilityLabel(accessibilityLabel)
     }
 
-    private var statusNodeColor: Color {
+    private var iconColor: Color {
+        switch state {
+        case .connected, .connecting:
+            return .primary.opacity(0.82)
+        case .idle, .error:
+            return .secondary
+        }
+    }
+
+    private var statusColor: Color {
         switch state {
         case .connected:
             return .green
         case .idle:
-            return .red
-        case .connecting, .error:
+            return .secondary
+        case .connecting:
             return .orange
+        case .error:
+            return .red
         }
     }
 
@@ -475,8 +520,10 @@ private struct NetworkStatusGlyph: View {
             return Text("Running")
         case .idle:
             return Text("Stopped")
-        case .connecting, .error:
-            return Text("Unknown")
+        case .connecting:
+            return Text("Connecting")
+        case .error:
+            return Text("Connection error")
         }
     }
 }

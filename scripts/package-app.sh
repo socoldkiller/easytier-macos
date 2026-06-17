@@ -591,6 +591,9 @@ strip_release_macho "$MACOS_DIR/EasyTierMac"
 strip_release_macho "$MACOS_DIR/EasyTierPrivilegedHelper"
 cp "$ROOT_DIR/Assets/easytier-icon.icns" "$RESOURCES_DIR/EasyTier.icns"
 cp "$ROOT_DIR/Sources/EasyTierMac/Resources/easytier-icon.png" "$RESOURCES_DIR/easytier-icon.png"
+cp "$ROOT_DIR/Sources/EasyTierMac/Resources/MenuBarConnectionGlyphTemplate.png" "$RESOURCES_DIR/MenuBarConnectionGlyphTemplate.png"
+cp "$ROOT_DIR/Sources/EasyTierMac/Resources/MenuBarConnectionGlyphTemplate@2x.png" "$RESOURCES_DIR/MenuBarConnectionGlyphTemplate@2x.png"
+cp "$ROOT_DIR/Sources/EasyTierMac/Resources/MenuBarConnectionGlyphTemplate@3x.png" "$RESOURCES_DIR/MenuBarConnectionGlyphTemplate@3x.png"
 
 cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

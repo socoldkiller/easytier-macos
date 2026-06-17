@@ -74,17 +74,20 @@ struct MotionSwitch<ID: Hashable, Content: View>: View {
 
     var id: ID
     var insertionEdge: Edge
+    var distance: CGFloat
     var fillsAvailableSpace: Bool
     var content: Content
 
     init(
         id: ID,
         insertionEdge: Edge = .trailing,
+        distance: CGFloat = 14,
         fillsAvailableSpace: Bool = true,
         @ViewBuilder content: () -> Content
     ) {
         self.id = id
         self.insertionEdge = insertionEdge
+        self.distance = distance
         self.fillsAvailableSpace = fillsAvailableSpace
         self.content = content()
     }
@@ -109,8 +112,12 @@ struct MotionSwitch<ID: Hashable, Content: View>: View {
     private var transition: AnyTransition {
         guard !reduceMotion else { return .opacity }
         return .asymmetric(
-            insertion: .easyTierSlideFade(edge: insertionEdge),
-            removal: .easyTierSlideFade(edge: EasyTierMotion.opposite(of: insertionEdge), distance: 8, scale: 0.999)
+            insertion: .easyTierSlideFade(edge: insertionEdge, distance: distance),
+            removal: .easyTierSlideFade(
+                edge: EasyTierMotion.opposite(of: insertionEdge),
+                distance: max(distance * 0.55, 4),
+                scale: 0.999
+            )
         )
     }
 }

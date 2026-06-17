@@ -162,6 +162,9 @@ verify_app_bundle() {
   [[ "$bundle_icon" == "EasyTier.icns" ]] || fail "Packaged app must use the official EasyTier dock icon: $bundle_icon"
   [[ -f "$APP_PATH/Contents/Resources/$bundle_icon" ]] || fail "Missing dock icon resource: Contents/Resources/$bundle_icon"
   [[ -f "$APP_PATH/Contents/Resources/easytier-icon.png" ]] || fail "Missing About icon resource: Contents/Resources/easytier-icon.png"
+  [[ -f "$APP_PATH/Contents/Resources/MenuBarConnectionGlyphTemplate.png" ]] || fail "Missing menu bar icon resource: Contents/Resources/MenuBarConnectionGlyphTemplate.png"
+  [[ -f "$APP_PATH/Contents/Resources/MenuBarConnectionGlyphTemplate@2x.png" ]] || fail "Missing menu bar icon resource: Contents/Resources/MenuBarConnectionGlyphTemplate@2x.png"
+  [[ -f "$APP_PATH/Contents/Resources/MenuBarConnectionGlyphTemplate@3x.png" ]] || fail "Missing menu bar icon resource: Contents/Resources/MenuBarConnectionGlyphTemplate@3x.png"
 
   local build_time
   build_time="$(/usr/libexec/PlistBuddy -c 'Print :EasyTierBuildTime' "$APP_PATH/Contents/Info.plist")" || fail "Packaged app must include EasyTierBuildTime."

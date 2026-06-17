@@ -65,10 +65,19 @@ struct StatusView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            StatusBadge(title: "Network", value: instance?.name ?? store.selectedConfig?.network_name ?? "-", connectionState: connectionState)
-            StatusBadge(title: "Members", value: "\(members.count)", systemImage: "person.2")
-            StatusBadge(title: "Device", value: instance?.detail?.dev_name ?? "-", systemImage: "dot.radiowaves.left.and.right")
-            StatusBadge(title: "Mode", value: store.mode.label, systemImage: "switch.2")
+            StatusBadge(
+                title: "Network",
+                value: instance?.name ?? store.selectedConfig?.network_name ?? "-",
+                systemImage: "globe"
+            )
+            StatusBadge(title: "Members", value: "\(members.count)", systemImage: "person.2.fill", width: 136)
+            StatusBadge(
+                title: "Device",
+                value: instance?.detail?.dev_name ?? "-",
+                systemImage: "desktopcomputer",
+                width: 152
+            )
+            StatusBadge(title: "Mode", value: store.mode.label, systemImage: "slider.horizontal.3")
             Spacer(minLength: 0)
         }
     }
@@ -96,26 +105,22 @@ struct StatusView: View {
             .width(min: 80, ideal: 92, max: 120)
 
             TableColumn("Latency") { row in
-                Text(row.latency)
-                    .monospacedDigit()
+                LatencyMetricText(value: row.latency)
             }
             .width(min: 78, ideal: 90, max: 118)
 
             TableColumn("Upload") { row in
-                Text(row.uploadTotal)
-                    .monospacedDigit()
+                AnimatedMetricText(value: row.uploadTotal)
             }
             .width(min: 84, ideal: 96, max: 124)
 
             TableColumn("Download") { row in
-                Text(row.downloadTotal)
-                    .monospacedDigit()
+                AnimatedMetricText(value: row.downloadTotal)
             }
             .width(min: 96, ideal: 108, max: 138)
 
             TableColumn("Loss") { row in
-                Text(row.lossRate)
-                    .monospacedDigit()
+                AnimatedMetricText(value: row.lossRate)
             }
             .width(min: 66, ideal: 78, max: 100)
 
@@ -423,6 +428,123 @@ private struct MemberRouteCell: View {
     }
 }
 
+private struct LatencyMetricText: View {
+    var value: String
+
+    private var quality: LatencyQuality {
+        LatencyQuality(value)
+    }
+
+    var body: some View {
+        AnimatedMetricText(
+            value: value,
+            color: quality.color,
+            fontWeight: .regular
+        )
+        .help(quality.helpText(for: value))
+    }
+}
+
+private struct AnimatedMetricText: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var value: String
+    var color: Color = .primary
+    var fontWeight: Font.Weight = .regular
+
+    @State private var isPulsing = false
+    @State private var pulseToken = 0
+
+    var body: some View {
+        Text(value)
+            .fontWeight(fontWeight)
+            .foregroundStyle(color)
+            .monospacedDigit()
+            .lineLimit(1)
+            .minimumScaleFactor(0.82)
+            .contentTransition(reduceMotion ? .opacity : .numericText())
+            .scaleEffect(reduceMotion || !isPulsing ? 1 : 1.035, anchor: .leading)
+            .opacity(reduceMotion || !isPulsing ? 1 : 0.9)
+            .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: value)
+            .animation(reduceMotion ? .easeOut(duration: 0.06) : .easeOut(duration: 0.18), value: isPulsing)
+            .onChange(of: value) { oldValue, newValue in
+                guard oldValue != newValue else { return }
+                triggerPulse()
+            }
+    }
+
+    private func triggerPulse() {
+        guard !reduceMotion else { return }
+
+        pulseToken += 1
+        let token = pulseToken
+
+        withAnimation(.easeOut(duration: 0.14)) {
+            isPulsing = true
+        }
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(0.18))
+            guard token == pulseToken else { return }
+            withAnimation(.easeOut(duration: 0.36)) {
+                isPulsing = false
+            }
+        }
+    }
+}
+
+private enum LatencyQuality: Equatable {
+    case unknown
+    case good
+    case warning
+    case poor
+
+    init(_ value: String) {
+        guard let upperBound = value.latencyMillisecondsBounds?.upperBound else {
+            self = .unknown
+            return
+        }
+
+        if upperBound <= 50 {
+            self = .good
+        } else if upperBound <= 150 {
+            self = .warning
+        } else {
+            self = .poor
+        }
+    }
+
+    var isKnown: Bool {
+        self != .unknown
+    }
+
+    var color: Color {
+        switch self {
+        case .unknown:
+            return .secondary
+        case .good:
+            return .green
+        case .warning:
+            return .orange
+        case .poor:
+            return .red
+        }
+    }
+
+    func helpText(for value: String) -> String {
+        switch self {
+        case .unknown:
+            return "Latency unavailable"
+        case .good:
+            return "Latency \(value): good"
+        case .warning:
+            return "Latency \(value): moderate"
+        case .poor:
+            return "Latency \(value): high"
+        }
+    }
+}
+
 private struct SummaryBadge: View {
     var text: String
     var color: Color
@@ -440,9 +562,26 @@ private struct SummaryBadge: View {
 
 private extension String {
     var millisecondsValue: Int? {
+        guard let bounds = latencyMillisecondsBounds, bounds.lowerBound == bounds.upperBound else { return nil }
+        return bounds.lowerBound
+    }
+
+    var latencyMillisecondsBounds: ClosedRange<Int>? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasSuffix("ms") else { return nil }
-        return Int(trimmed.replacingOccurrences(of: "ms", with: "").trimmingCharacters(in: .whitespacesAndNewlines))
+
+        let valueText = String(trimmed.dropLast(2)).trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = valueText
+            .split(separator: "-", maxSplits: 1)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard !parts.isEmpty else { return nil }
+
+        let values = parts.compactMap(Int.init)
+        guard values.count == parts.count else { return nil }
+
+        guard let first = values.first else { return nil }
+        guard let last = values.last else { return first...first }
+        return min(first, last)...max(first, last)
     }
 
     var percentValue: Int? {
@@ -673,24 +812,23 @@ private struct StatusBadge: View {
 
     var title: String
     var value: String
-    var icon: StatusBadgeIcon
+    var systemImage: String
+    var width: CGFloat? = nil
 
-    init(title: String, value: String, systemImage: String) {
+    init(title: String, value: String, systemImage: String, width: CGFloat? = nil) {
         self.title = title
         self.value = value
-        self.icon = .system(systemImage)
-    }
-
-    init(title: String, value: String, connectionState: ConnectionGlyphState) {
-        self.title = title
-        self.value = value
-        self.icon = .connection(connectionState)
+        self.systemImage = systemImage
+        self.width = width
     }
 
     var body: some View {
         HStack(spacing: 9) {
-            iconView
-                .frame(width: 24, height: 24)
+            Image(systemName: systemImage)
+                .font(.title3)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.tint)
+                .frame(width: 22)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.caption)
@@ -700,29 +838,15 @@ private struct StatusBadge: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
                     .contentTransition(.opacity)
+                    .monospacedDigit()
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .frame(width: width, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: value)
     }
-
-    @ViewBuilder
-    private var iconView: some View {
-        switch icon {
-        case .system(let systemImage):
-            Image(systemName: systemImage)
-                .font(.title3)
-                .foregroundStyle(.tint)
-        case .connection(let state):
-            ConnectionGlyph(state: state, size: 22)
-        }
-    }
-}
-
-private enum StatusBadgeIcon {
-    case system(String)
-    case connection(ConnectionGlyphState)
 }
 
 private struct ErrorBanner: View {

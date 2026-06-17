@@ -7,7 +7,6 @@ import SwiftUI
 struct EasyTierApp: App {
     @State private var store = EasyTierAppStore()
     @State private var updater = SoftwareUpdateController()
-    @State private var menuBarController = MenuBarStatusItemController()
 
     init() {
         Self.runHelperCommandIfRequested()
@@ -18,15 +17,6 @@ struct EasyTierApp: App {
             ContentView()
                 .environment(store)
                 .environment(updater)
-                .background(
-                    MenuBarStatusItemBridge(
-                        controller: menuBarController,
-                        store: store,
-                        updater: updater,
-                        connectionState: menuBarConnectionState
-                    )
-                    .frame(width: 0, height: 0)
-                )
                 .frame(minWidth: 900, minHeight: 620)
                 .task { await store.load() }
         }
@@ -45,6 +35,13 @@ struct EasyTierApp: App {
                 Button("Check for Updates...") { updater.checkForUpdates() }
             }
         }
+
+        MenuBarExtra("EasyTier", image: "MenuBarConnectionGlyphTemplate") {
+            MenuBarContent()
+                .environment(store)
+                .environment(updater)
+        }
+        .menuBarExtraStyle(.window)
     }
 
     private var menuBarConnectionState: ConnectionGlyphState {
@@ -125,321 +122,10 @@ struct EasyTierApp: App {
     }
 }
 
-private struct MenuBarStatusItemBridge: NSViewRepresentable {
-    @Environment(\.openWindow) private var openWindow
-
-    var controller: MenuBarStatusItemController
-    var store: EasyTierAppStore
-    var updater: SoftwareUpdateController
-    var connectionState: ConnectionGlyphState
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
-        controller.update(
-            store: store,
-            updater: updater,
-            connectionState: connectionState,
-            openMainWindow: openMainWindow
-        )
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        controller.update(
-            store: store,
-            updater: updater,
-            connectionState: connectionState,
-            openMainWindow: openMainWindow
-        )
-    }
-
-    private func openMainWindow() {
-        openWindow(id: "main")
-        NSApp.activate(ignoringOtherApps: true)
-    }
-}
-
-@MainActor
-private final class MenuBarStatusItemController: NSObject {
-    private var statusItem: NSStatusItem?
-    private let popover = NSPopover()
-    private var hostingController: NSHostingController<AnyView>?
-    private var connectionState: ConnectionGlyphState = .idle
-    private var activeNodeIndex = 0
-    private var animationTask: Task<Void, Never>?
-    private var openMainWindowAction: (() -> Void)?
-
-    private static let popoverSize = NSSize(width: 292, height: 302)
-    private static let counterclockwiseNodeIndexes = [0, 1, 2]
-    private static let stepDurationNanoseconds: UInt64 = 340_000_000
-
-    override init() {
-        super.init()
-        popover.behavior = .transient
-        popover.animates = true
-        popover.contentSize = Self.popoverSize
-    }
-
-    func update(
-        store: EasyTierAppStore,
-        updater: SoftwareUpdateController,
-        connectionState: ConnectionGlyphState,
-        openMainWindow: @escaping () -> Void
-    ) {
-        installStatusItemIfNeeded()
-        openMainWindowAction = openMainWindow
-
-        if self.connectionState != connectionState {
-            self.connectionState = connectionState
-            activeNodeIndex = 0
-            updateAnimation()
-        }
-
-        refreshStatusImage()
-        updatePopoverContent(store: store, updater: updater)
-    }
-
-    func closePopover() {
-        popover.performClose(nil)
-    }
-
-    private func installStatusItemIfNeeded() {
-        guard statusItem == nil else { return }
-
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        if let button = item.button {
-            button.target = self
-            button.action = #selector(statusItemClicked(_:))
-            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-            button.imagePosition = .imageOnly
-            button.imageScaling = .scaleProportionallyDown
-        }
-        statusItem = item
-    }
-
-    private func updatePopoverContent(store: EasyTierAppStore, updater: SoftwareUpdateController) {
-        guard hostingController == nil else {
-            popover.contentSize = Self.popoverSize
-            return
-        }
-
-        let content = MenuBarContent(
-            openMainWindowAction: { [weak self] in self?.openMainWindowAction?() },
-            dismissMenuBarAction: { [weak self] in self?.closePopover() }
-        )
-        .environment(store)
-        .environment(updater)
-
-        let rootView = AnyView(content)
-        let controller = NSHostingController(rootView: rootView)
-        controller.view.frame = NSRect(origin: .zero, size: Self.popoverSize)
-        hostingController = controller
-        popover.contentViewController = controller
-        popover.contentSize = Self.popoverSize
-    }
-
-    private func refreshStatusImage() {
-        let currentActiveNodeIndex: Int?
-        if connectionState == .connecting {
-            currentActiveNodeIndex = Self.counterclockwiseNodeIndexes[activeNodeIndex % Self.counterclockwiseNodeIndexes.count]
-        } else {
-            currentActiveNodeIndex = nil
-        }
-
-        statusItem?.button?.image = MenuBarConnectionIcon.image(for: connectionState, activeNodeIndex: currentActiveNodeIndex)
-    }
-
-    private func updateAnimation() {
-        animationTask?.cancel()
-
-        guard connectionState == .connecting else { return }
-        animationTask = Task { [weak self] in
-            await self?.runConnectingAnimation()
-        }
-    }
-
-    private func runConnectingAnimation() async {
-        while !Task.isCancelled {
-            do {
-                try await Task.sleep(nanoseconds: Self.stepDurationNanoseconds)
-            } catch {
-                break
-            }
-            activeNodeIndex = (activeNodeIndex + 1) % Self.counterclockwiseNodeIndexes.count
-            refreshStatusImage()
-        }
-    }
-
-    @objc private func statusItemClicked(_ sender: Any?) {
-        guard let button = statusItem?.button else { return }
-
-        if popover.isShown {
-            closePopover()
-        } else {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            NSApp.activate(ignoringOtherApps: true)
-        }
-    }
-}
-
-private struct MenuBarConnectionLabel: View {
-    var state: ConnectionGlyphState
-
-    @State private var activeNodeIndex = 0
-
-    var body: some View {
-        Image(nsImage: MenuBarConnectionIcon.image(for: state, activeNodeIndex: currentActiveNodeIndex))
-            .task(id: state) {
-                await runConnectingAnimationIfNeeded()
-            }
-    }
-
-    private var currentActiveNodeIndex: Int? {
-        guard state == .connecting else { return nil }
-        return Self.counterclockwiseNodeIndexes[activeNodeIndex % Self.counterclockwiseNodeIndexes.count]
-    }
-
-    private static let counterclockwiseNodeIndexes = [0, 1, 2]
-    private static let stepDurationNanoseconds: UInt64 = 340_000_000
-
-    private func runConnectingAnimationIfNeeded() async {
-        guard state == .connecting else {
-            activeNodeIndex = 0
-            return
-        }
-
-        activeNodeIndex = 0
-        while !Task.isCancelled {
-            do {
-                try await Task.sleep(nanoseconds: Self.stepDurationNanoseconds)
-            } catch {
-                break
-            }
-            activeNodeIndex = (activeNodeIndex + 1) % Self.counterclockwiseNodeIndexes.count
-        }
-    }
-}
-
-private enum MenuBarConnectionIcon {
-    static func image(for state: ConnectionGlyphState, activeNodeIndex: Int? = nil) -> NSImage {
-        let image = NSImage(size: NSSize(width: 22, height: 18))
-        image.lockFocus()
-        defer { image.unlockFocus() }
-
-        let nodeCenters = [
-            CGPoint(x: 11, y: 14),
-            CGPoint(x: 5, y: 4),
-            CGPoint(x: 17, y: 4),
-        ]
-
-        drawDashedSegment(from: nodeCenters[0], to: nodeCenters[1], state: state)
-        drawDashedSegment(from: nodeCenters[1], to: nodeCenters[2], state: state)
-        drawDashedSegment(from: nodeCenters[2], to: nodeCenters[0], state: state)
-
-        for (index, point) in nodeCenters.enumerated() {
-            drawNode(at: point, state: state, index: index, activeNodeIndex: activeNodeIndex)
-        }
-
-        image.isTemplate = false
-        return image
-    }
-
-    private static func drawDashedSegment(from start: CGPoint, to end: CGPoint, state: ConnectionGlyphState) {
-        let dx = end.x - start.x
-        let dy = end.y - start.y
-        let length = max(sqrt(dx * dx + dy * dy), 0.001)
-        let inset = min(CGFloat(4.35), length * 0.43)
-        let unit = CGPoint(x: dx / length, y: dy / length)
-        let path = NSBezierPath()
-
-        path.lineWidth = 1.25
-        path.lineCapStyle = .round
-        path.lineJoinStyle = .round
-        path.setLineDash([1.3, 1.75], count: 2, phase: 0)
-        path.move(to: CGPoint(x: start.x + unit.x * inset, y: start.y + unit.y * inset))
-        path.line(to: CGPoint(x: end.x - unit.x * inset, y: end.y - unit.y * inset))
-
-        baseColor(for: state).withAlphaComponent(lineAlpha(for: state)).setStroke()
-        path.stroke()
-    }
-
-    private static func drawNode(at point: CGPoint, state: ConnectionGlyphState, index: Int, activeNodeIndex: Int?) {
-        let radius: CGFloat = 2.5
-        let stroke = nodeStrokeColor(for: state, index: index)
-            .withAlphaComponent(nodeStrokeAlpha(for: state, index: index, activeNodeIndex: activeNodeIndex))
-        let fill = nodeFillColor(for: state, index: index, activeNodeIndex: activeNodeIndex)
-
-        drawCircle(center: point, radius: radius, fill: fill, stroke: (stroke, 1.55))
-    }
-
-    private static func drawCircle(center: CGPoint, radius: CGFloat, fill: NSColor?, stroke: (color: NSColor, width: CGFloat)?) {
-        let rect = NSRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
-        let path = NSBezierPath(ovalIn: rect)
-
-        if let fill {
-            fill.setFill()
-            path.fill()
-        }
-
-        if let stroke {
-            stroke.color.setStroke()
-            path.lineWidth = stroke.width
-            path.stroke()
-        }
-    }
-
-    private static func nodeFillColor(for state: ConnectionGlyphState, index: Int, activeNodeIndex: Int?) -> NSColor? {
-        switch state {
-        case .idle:
-            return nil
-        case .connecting:
-            return index == activeNodeIndex ? baseColor(for: state) : nil
-        case .connected:
-            return .systemGreen
-        case .error:
-            return index == errorNodeIndex ? .systemRed : nil
-        }
-    }
-
-    private static func nodeStrokeColor(for state: ConnectionGlyphState, index: Int) -> NSColor {
-        return baseColor(for: state)
-    }
-
-    private static func nodeStrokeAlpha(for state: ConnectionGlyphState, index: Int, activeNodeIndex: Int?) -> CGFloat {
-        switch state {
-        case .idle:
-            return 0.92
-        case .connecting:
-            return index == activeNodeIndex ? 1.0 : 0.80
-        case .connected:
-            return 1.0
-        case .error:
-            return index == errorNodeIndex ? 1.0 : 0.80
-        }
-    }
-
-    private static func lineAlpha(for state: ConnectionGlyphState) -> CGFloat {
-        switch state {
-        case .idle: 0.58
-        case .connecting: 0.68
-        case .connected: 1.0
-        case .error: 0.68
-        }
-    }
-
-    private static func baseColor(for state: ConnectionGlyphState) -> NSColor {
-        switch state {
-        case .idle, .connecting, .connected, .error:
-            return .black
-        }
-    }
-
-    private static let errorNodeIndex = 2
-}
-
 private struct MenuBarContent: View {
     @Environment(EasyTierAppStore.self) private var store
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismiss) private var dismiss
 
     var openMainWindowAction: (() -> Void)?
     var dismissMenuBarAction: (() -> Void)?
@@ -523,7 +209,6 @@ private struct MenuBarContent: View {
         .frame(width: 292)
         .foregroundStyle(MenuBarPalette.primaryText)
         .background(.ultraThinMaterial)
-        .environment(\.colorScheme, .dark)
         .presentedSurfaceMotion()
     }
 
@@ -616,6 +301,7 @@ private struct MenuBarContent: View {
 
     private func dismissMenuBar() {
         dismissMenuBarAction?()
+        dismiss()
     }
 
     private func toggleConnection() {
@@ -659,11 +345,11 @@ private struct MenuBarContent: View {
 }
 
 private enum MenuBarPalette {
-    static let primaryText = Color.white.opacity(0.88)
-    static let secondaryText = Color.white.opacity(0.58)
-    static let mutedText = Color.white.opacity(0.34)
-    static let divider = Color.white.opacity(0.16)
-    static let rowHighlight = Color.white.opacity(0.08)
+    static let primaryText = Color.primary.opacity(0.88)
+    static let secondaryText = Color.primary.opacity(0.58)
+    static let mutedText = Color.primary.opacity(0.34)
+    static let divider = Color.primary.opacity(0.14)
+    static let rowHighlight = Color.primary.opacity(0.08)
     static let selectedRow = Color(red: 0.10, green: 0.37, blue: 0.78)
     static let selectedRowHorizontalInset: CGFloat = 12
     static let selectedRowVerticalInset: CGFloat = 5
@@ -692,7 +378,7 @@ private struct MenuBarConnectionSwitch: View {
                 .fill(trackColor)
                 .overlay {
                     Capsule()
-                        .stroke(Color.white.opacity(0.12), lineWidth: 0.6)
+                        .stroke(MenuBarPalette.divider, lineWidth: 0.6)
                 }
 
             Circle()
@@ -711,7 +397,7 @@ private struct MenuBarConnectionSwitch: View {
     }
 
     private var trackColor: Color {
-        isOn ? MenuBarPalette.connected.opacity(0.82) : Color.white.opacity(0.12)
+        isOn ? MenuBarPalette.connected.opacity(0.82) : MenuBarPalette.rowHighlight
     }
 
     private var knobColor: Color {
@@ -734,10 +420,10 @@ private struct MenuBarNetworkAvatar: View {
 
     private var avatarColor: Color {
         switch state {
-        case .connected: Color.white.opacity(0.16)
-        case .connecting: Color.white.opacity(0.13)
-        case .error: Color.white.opacity(0.12)
-        case .idle: Color.white.opacity(0.09)
+        case .connected: Color.primary.opacity(0.16)
+        case .connecting: Color.primary.opacity(0.13)
+        case .error: Color.primary.opacity(0.12)
+        case .idle: Color.primary.opacity(0.09)
         }
     }
 }
@@ -754,9 +440,11 @@ private struct MenuBarNetworkRow: View {
     var next: () -> Void
 
     @State private var isOpenHovering = false
+    @State private var isPreviousHovering = false
+    @State private var isNextHovering = false
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 0) {
             Button(action: open) {
                 HStack(spacing: 10) {
                     MenuBarNetworkAvatar(state: state)
@@ -779,66 +467,77 @@ private struct MenuBarNetworkRow: View {
                     }
                 }
                 .contentShape(Rectangle())
-                .padding(.horizontal, 8)
+                .padding(.leading, 8)
+                .padding(.trailing, canSwitch ? 0 : 8)
                 .padding(.vertical, 6)
-                .background(rowBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .buttonStyle(QuietPressButtonStyle(pressedScale: 0.985, pressedOpacity: 0.82))
             .frame(maxWidth: .infinity)
             .onHover { isOpenHovering = $0 }
 
             if canSwitch {
-                HStack(spacing: 2) {
-                    MenuBarIconButton(systemName: "chevron.left", help: "Previous network", action: previous)
-                    MenuBarIconButton(systemName: "chevron.right", help: "Next network", action: next)
+                HStack(spacing: 0) {
+                    inlineChevronButton(
+                        systemName: "chevron.left",
+                        help: "Previous network",
+                        isHovering: $isPreviousHovering,
+                        action: previous
+                    )
+                    inlineChevronButton(
+                        systemName: "chevron.right",
+                        help: "Next network",
+                        isHovering: $isNextHovering,
+                        action: next
+                    )
                 }
+                .padding(.trailing, 4)
             }
         }
+        .background(rowBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .padding(.horizontal, MenuBarPalette.selectedRowHorizontalInset)
         .padding(.vertical, MenuBarPalette.selectedRowVerticalInset)
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: isOpenHovering)
+        .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: isPreviousHovering)
+        .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: isNextHovering)
         .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: name)
     }
 
-    private var primaryTextColor: Color {
-        isOpenHovering ? Color.white.opacity(0.96) : MenuBarPalette.primaryText
-    }
-
-    private var secondaryTextColor: Color {
-        isOpenHovering ? Color.white.opacity(0.78) : MenuBarPalette.secondaryText
-    }
-
-    private var rowBackground: Color {
-        isOpenHovering ? MenuBarPalette.selectedRow : .clear
-    }
-}
-
-private struct MenuBarIconButton: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var systemName: String
-    var help: String
-    var action: () -> Void
-
-    @State private var isHovering = false
-
-    var body: some View {
+    private func inlineChevronButton(
+        systemName: String,
+        help: String,
+        isHovering: Binding<Bool>,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(isHovering ? Color.white.opacity(0.96) : MenuBarPalette.primaryText)
-                .frame(width: 24, height: 28)
-                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .background(buttonBackground, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(inlineChevronColor(isHovering: isHovering.wrappedValue))
+                .frame(width: 24, height: 32)
+                .contentShape(Rectangle())
         }
-        .buttonStyle(QuietPressButtonStyle(pressedScale: 0.9, pressedOpacity: 0.82))
-        .onHover { isHovering = $0 }
-        .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: isHovering)
+        .buttonStyle(QuietPressButtonStyle(pressedScale: 0.9, pressedOpacity: 0.76))
+        .onHover { isHovering.wrappedValue = $0 }
         .help(help)
     }
 
-    private var buttonBackground: Color {
-        isHovering ? MenuBarPalette.selectedRow : Color.white.opacity(0.04)
+    private var primaryTextColor: Color {
+        isRowActive ? Color.white.opacity(0.96) : MenuBarPalette.primaryText
+    }
+
+    private var secondaryTextColor: Color {
+        isRowActive ? Color.white.opacity(0.78) : MenuBarPalette.secondaryText
+    }
+
+    private var rowBackground: Color {
+        isRowActive ? MenuBarPalette.selectedRow : .clear
+    }
+
+    private var isRowActive: Bool {
+        isOpenHovering || isPreviousHovering || isNextHovering
+    }
+
+    private func inlineChevronColor(isHovering: Bool) -> Color {
+        isRowActive ? Color.white.opacity(isHovering ? 1.0 : 0.92) : MenuBarPalette.primaryText
     }
 }
 
