@@ -2,6 +2,23 @@ import Foundation
 import Testing
 @testable import EasyTierShared
 
+@Test func searchQueryMatchesAcrossCaseAndSeparators() {
+    let fields = ["ctwdeMac-mini.local", "Office Mac mini", "Peer 1428946557"]
+
+    #expect(SearchQuery("office mac").matches(fields))
+    #expect(SearchQuery("CTWDEMACMINI").matches(fields))
+    #expect(SearchQuery("peer:1428946557").matches(fields))
+    #expect(!SearchQuery("office linux").matches(fields))
+}
+
+@Test func searchQueryRequiresEveryToken() {
+    let fields = ["backend-dev", "10.126.126.7", "public server"]
+
+    #expect(SearchQuery("backend 10.126").matches(fields))
+    #expect(SearchQuery("backenddev public").matches(fields))
+    #expect(!SearchQuery("backend singapore").matches(fields))
+}
+
 @Test func defaultNetworkConfigMatchesWebDefaults() {
     let config = NetworkConfig()
 
@@ -197,7 +214,18 @@ import Testing
 @Test func storagePersistsSnapshot() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let storage = EasyTierStorage(baseDirectory: directory)
-    let snapshot = AppSnapshot(configs: [StoredNetworkConfig(config: NetworkConfig(network_name: "lab"))], mode: .remote(remoteRPCAddress: "tcp://127.0.0.1:15999"), lastSelectedConfigID: "abc")
+    let alias = DeviceAlias(
+        networkID: "abc",
+        peerID: "1428946557",
+        hostname: "ctwdeMac-mini.local",
+        displayName: "Office Mac mini"
+    )
+    let snapshot = AppSnapshot(
+        configs: [StoredNetworkConfig(config: NetworkConfig(network_name: "lab"))],
+        mode: .remote(remoteRPCAddress: "tcp://127.0.0.1:15999"),
+        lastSelectedConfigID: "abc",
+        deviceAliases: [alias]
+    )
 
     try storage.save(snapshot)
     let loaded = try storage.load()
@@ -205,10 +233,24 @@ import Testing
     #expect(loaded.configs.first?.config.network_name == "lab")
     #expect(loaded.mode == .remote(remoteRPCAddress: "tcp://127.0.0.1:15999"))
     #expect(loaded.lastSelectedConfigID == "abc")
+    #expect(loaded.deviceAliases == [alias])
 }
 
 @Test func defaultStorageUsesBundleSpecificAppSupportDirectory() {
     #expect(EasyTierStorage.default.baseDirectory.lastPathComponent == "com.kkrainbow.easytier.mac")
+}
+
+@Test func storageLoadsSnapshotWithoutDeviceAliases() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let stateURL = directory.appendingPathComponent("state.json")
+    try Data(#"{"configs":[]}"#.utf8).write(to: stateURL)
+
+    let storage = EasyTierStorage(baseDirectory: directory)
+    let loaded = try storage.load()
+
+    #expect(loaded.configs.isEmpty)
+    #expect(loaded.deviceAliases.isEmpty)
 }
 
 @Test func storageMigratesLegacySnapshotIntoPrimaryDirectory() throws {

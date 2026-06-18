@@ -1,3 +1,4 @@
+@preconcurrency import AppKit
 import EasyTierShared
 import SwiftUI
 
@@ -14,6 +15,10 @@ struct ContentView: View {
     @State private var draftIsDirty = false
     @State private var workspaceTransitionEdge: Edge = .trailing
     @State private var workspaceTransitionDistance: CGFloat = Self.tabTransitionDistance
+    @State private var networkSearchText = ""
+    @State private var highlightedSearchPeerID: String?
+    @State private var highlightToken = 0
+    @State private var selectedSearchResultID: String?
 
     private static let tabTransitionDistance: CGFloat = 14
     private static let networkTransitionDistance: CGFloat = 7
@@ -81,7 +86,7 @@ struct ContentView: View {
     private var workspaceContent: some View {
         switch store.selectedTab {
         case .status:
-            StatusView {
+            StatusView(highlightedMemberPeerID: highlightedSearchPeerID) {
                 selectWorkspaceTab(.config)
             }
         case .view:
@@ -107,13 +112,56 @@ struct ContentView: View {
     private var sidebar: some View {
         @Bindable var store = store
 
-        return List(selection: selectedConfigIDBinding) {
-            Section("Networks") {
-                ForEach(store.configs) { stored in
-                    NetworkRow(stored: stored, state: connectionState(for: stored))
-                        .tag(stored.id as String?)
+        return Group {
+            if networkSearchQuery.isEmpty {
+                List(selection: selectedConfigIDBinding) {
+                    Section("Networks") {
+                        ForEach(store.configs) { stored in
+                            NetworkRow(stored: stored, state: connectionState(for: stored))
+                                .tag(stored.id as String?)
+                        }
+                    }
+                }
+            } else {
+                List(selection: $selectedSearchResultID) {
+                    Section("Search Results") {
+                        if networkSearchResults.isEmpty {
+                            Label("No results", systemImage: "magnifyingglass")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .padding(.vertical, 6)
+                        } else {
+                            ForEach(networkSearchResults) { result in
+                                NetworkSearchResultRow(result: result)
+                                    .contentShape(Rectangle())
+                                    .tag(result.id)
+                                    .onTapGesture {
+                                        selectSearchResult(result)
+                                    }
+                            }
+                        }
+                    }
                 }
             }
+        }
+        .searchable(
+            text: $networkSearchText,
+            placement: .sidebar,
+            prompt: "Search everything"
+        )
+        .onChange(of: networkSearchText) { _, _ in
+            selectDefaultSearchResult()
+        }
+        .onChange(of: networkSearchResultIDs) { _, ids in
+            reconcileSearchSelection(with: ids)
+        }
+        .background {
+            SearchKeyboardBridge(
+                isActive: !networkSearchQuery.isEmpty,
+                onUp: { moveSelectedSearchResult(by: -1) },
+                onDown: { moveSelectedSearchResult(by: 1) },
+                onReturn: openSelectedSearchResult
+            )
         }
         .hiddenScrollIndicators()
         .safeAreaInset(edge: .bottom) {
@@ -258,20 +306,232 @@ struct ContentView: View {
         return .idle
     }
 
+    private var networkSearchQuery: SearchQuery {
+        SearchQuery(networkSearchText)
+    }
+
+    private var networkSearchResults: [NetworkSearchResult] {
+        let query = networkSearchQuery
+        guard !query.isEmpty else { return [] }
+
+        return store.configs.flatMap { stored -> [NetworkSearchResult] in
+            let config = stored.config
+            let instance = store.runningInstance(matching: config)
+            let aliases = store.deviceAliases.filter { $0.networkID == stored.id }
+            var results: [NetworkSearchResult] = []
+
+            if query.matches(networkDirectSearchFields(for: stored, instance: instance)) {
+                results.append(.network(
+                    id: "network-\(stored.id)",
+                    networkID: stored.id,
+                    title: config.network_name,
+                    subtitle: networkResultSubtitle(for: stored, instance: instance),
+                    state: connectionState(for: stored)
+                ))
+            }
+
+            var matchedPeerIDs = Set<String>()
+            for member in instance?.detail?.memberStatuses ?? [] {
+                let alias = aliases.first { $0.peerID == member.peerID }
+                guard query.matches(member.searchFields(alias: alias)) else { continue }
+
+                matchedPeerIDs.insert(member.peerID)
+                results.append(.device(
+                    id: "device-\(stored.id)-\(member.id)",
+                    networkID: stored.id,
+                    title: alias?.displayName ?? member.hostname,
+                    subtitle: deviceResultSubtitle(for: member, alias: alias, networkName: config.network_name),
+                    systemImage: member.searchResultSystemImage,
+                    targetTab: .status,
+                    highlightedPeerID: member.peerID
+                ))
+            }
+
+            for alias in aliases where !matchedPeerIDs.contains(alias.peerID) {
+                guard query.matches([alias.displayName, alias.hostname, alias.peerID]) else { continue }
+                results.append(.device(
+                    id: "alias-\(stored.id)-\(alias.peerID)",
+                    networkID: stored.id,
+                    title: alias.displayName,
+                    subtitle: "Saved alias · \(config.network_name) · \(alias.hostname) · Peer \(alias.peerID)",
+                    systemImage: "tag",
+                    targetTab: .status,
+                    highlightedPeerID: alias.peerID
+                ))
+            }
+
+            return results
+        }
+    }
+
+    private var networkSearchResultIDs: [String] {
+        networkSearchResults.map(\.id)
+    }
+
+    private var selectedSearchResult: NetworkSearchResult? {
+        guard let selectedSearchResultID else { return nil }
+        return networkSearchResults.first { $0.id == selectedSearchResultID }
+    }
+
+    private func selectDefaultSearchResult() {
+        guard !networkSearchQuery.isEmpty else {
+            selectedSearchResultID = nil
+            return
+        }
+        selectedSearchResultID = networkSearchResults.first?.id
+    }
+
+    private func reconcileSearchSelection(with resultIDs: [String]) {
+        guard !networkSearchQuery.isEmpty else {
+            selectedSearchResultID = nil
+            return
+        }
+
+        if let selectedSearchResultID, resultIDs.contains(selectedSearchResultID) { return }
+        selectedSearchResultID = resultIDs.first
+    }
+
+    private func moveSelectedSearchResult(by offset: Int) {
+        guard !networkSearchQuery.isEmpty else { return }
+        let results = networkSearchResults
+        guard !results.isEmpty else {
+            selectedSearchResultID = nil
+            return
+        }
+
+        let currentIndex = selectedSearchResultID.flatMap { selectedID in
+            results.firstIndex { $0.id == selectedID }
+        } ?? (offset > 0 ? -1 : results.count)
+        let nextIndex = min(max(currentIndex + offset, 0), results.count - 1)
+        selectedSearchResultID = results[nextIndex].id
+    }
+
+    private func openSelectedSearchResult() {
+        guard !networkSearchQuery.isEmpty else { return }
+        let result = selectedSearchResult ?? networkSearchResults.first
+        guard let result else { return }
+        selectSearchResult(result)
+    }
+
+    private func networkDirectSearchFields(for stored: StoredNetworkConfig, instance: NetworkInstance?) -> [String] {
+        let config = stored.config
+        var fields = [
+            config.network_name,
+            config.instance_id,
+            stored.source.rawValue,
+            connectionState(for: stored).searchLabel,
+            instance?.name ?? "",
+            instance?.instance_id ?? "",
+            instance?.detail?.dev_name ?? "",
+            instance?.detail?.error_msg ?? "",
+        ]
+
+        fields.append(contentsOf: [
+            config.hostname ?? "",
+            config.virtual_ipv4,
+            String(config.network_length),
+            config.public_server_url,
+            config.dev_name,
+            config.vpn_portal_client_network_addr,
+            String(config.vpn_portal_listen_port),
+            String(config.vpn_portal_client_network_len),
+            String(config.socks5_port),
+            config.networking_method.searchLabel,
+        ])
+        fields.append(contentsOf: config.peer_urls)
+        fields.append(contentsOf: config.listener_urls)
+        fields.append(contentsOf: config.proxy_cidrs)
+        fields.append(contentsOf: config.routes)
+        fields.append(contentsOf: config.exit_nodes)
+        fields.append(contentsOf: config.mapped_listeners)
+        fields.append(contentsOf: config.relay_network_whitelist)
+        fields.append(contentsOf: config.enabledSearchFeatureLabels)
+        for portForward in config.port_forwards {
+            fields.append(contentsOf: [
+                portForward.bind_ip,
+                String(portForward.bind_port),
+                portForward.dst_ip,
+                String(portForward.dst_port),
+                portForward.proto,
+                "port forward forwarding",
+            ])
+        }
+
+        return fields
+    }
+
+    private func networkResultSubtitle(for stored: StoredNetworkConfig, instance: NetworkInstance?) -> String {
+        [
+            stored.source.rawValue.capitalized,
+            connectionState(for: stored).displayLabel,
+            instance?.detail?.dev_name,
+        ]
+        .compactMap { $0?.nilIfEmptyForSearchResult }
+        .joined(separator: " · ")
+    }
+
+    private func deviceResultSubtitle(for member: NetworkMemberStatus, alias: DeviceAlias?, networkName: String) -> String {
+        var parts = ["Device", networkName]
+        if let alias, alias.displayName != member.hostname {
+            parts.append(member.hostname)
+        }
+        parts.append("Peer \(member.peerID)")
+        if let ip = member.copyableIPv4Address {
+            parts.append(ip)
+        }
+        if member.isPublicServer {
+            parts.append("Public Server")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func selectSearchResult(_ result: NetworkSearchResult) {
+        selectConfig(id: result.networkID)
+        if let targetTab = result.targetTab {
+            selectWorkspaceTab(targetTab)
+        }
+        if let highlightedPeerID = result.highlightedPeerID {
+            highlightSearchResult(peerID: highlightedPeerID)
+        }
+        networkSearchText = ""
+        selectedSearchResultID = nil
+    }
+
+    private func highlightSearchResult(peerID: String) {
+        highlightToken += 1
+        let token = highlightToken
+
+        withAnimation(EasyTierMotion.quick(reduceMotion: reduceMotion)) {
+            highlightedSearchPeerID = peerID
+        }
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.6))
+            guard token == highlightToken else { return }
+            withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
+                highlightedSearchPeerID = nil
+            }
+        }
+    }
+
+    private func selectConfig(id newValue: String?) {
+        let previousValue = store.selectedConfigID
+        guard newValue != previousValue else { return }
+
+        commitDraft(saveImmediately: true)
+        workspaceTransitionEdge = networkTransitionEdge(from: previousValue, to: newValue)
+        workspaceTransitionDistance = Self.networkTransitionDistance
+        withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
+            store.selectedConfigID = newValue
+            loadDraft(for: newValue)
+        }
+    }
+
     private var selectedConfigIDBinding: Binding<String?> {
         Binding(
             get: { store.selectedConfigID },
             set: { newValue in
-                let previousValue = store.selectedConfigID
-                guard newValue != previousValue else { return }
-
-                commitDraft(saveImmediately: true)
-                workspaceTransitionEdge = networkTransitionEdge(from: previousValue, to: newValue)
-                workspaceTransitionDistance = Self.networkTransitionDistance
-                withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
-                    store.selectedConfigID = newValue
-                    loadDraft(for: newValue)
-                }
+                selectConfig(id: newValue)
             }
         )
     }
@@ -372,6 +632,162 @@ private struct WorkspaceTabPicker: View {
         .labelsHidden()
         .frame(width: Self.preferredWidth)
         .help("Switch workspace view")
+    }
+}
+
+private struct NetworkSearchResult: Identifiable {
+    var id: String
+    var networkID: String
+    var title: String
+    var subtitle: String
+    var systemImage: String
+    var state: ConnectionGlyphState?
+    var targetTab: WorkspaceTab?
+    var highlightedPeerID: String?
+
+    static func network(
+        id: String,
+        networkID: String,
+        title: String,
+        subtitle: String,
+        state: ConnectionGlyphState
+    ) -> NetworkSearchResult {
+        NetworkSearchResult(
+            id: id,
+            networkID: networkID,
+            title: title,
+            subtitle: subtitle,
+            systemImage: "network",
+            state: state,
+            targetTab: nil,
+            highlightedPeerID: nil
+        )
+    }
+
+    static func device(
+        id: String,
+        networkID: String,
+        title: String,
+        subtitle: String,
+        systemImage: String,
+        targetTab: WorkspaceTab,
+        highlightedPeerID: String?
+    ) -> NetworkSearchResult {
+        NetworkSearchResult(
+            id: id,
+            networkID: networkID,
+            title: title,
+            subtitle: subtitle,
+            systemImage: systemImage,
+            state: nil,
+            targetTab: targetTab,
+            highlightedPeerID: highlightedPeerID
+        )
+    }
+}
+
+private struct NetworkSearchResultRow: View {
+    var result: NetworkSearchResult
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if let state = result.state {
+                NetworkStatusGlyph(state: state)
+            } else {
+                Image(systemName: result.systemImage)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.tint)
+                    .frame(width: 22, height: 22)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(result.title)
+                    .lineLimit(1)
+                Text(result.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+private struct SearchKeyboardBridge: NSViewRepresentable {
+    nonisolated(unsafe) var isActive: Bool
+    nonisolated(unsafe) var onUp: () -> Void
+    nonisolated(unsafe) var onDown: () -> Void
+    nonisolated(unsafe) var onReturn: () -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.view = view
+        context.coordinator.installMonitor()
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.view = nsView
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    final class Coordinator {
+        nonisolated(unsafe) var parent: SearchKeyboardBridge
+        nonisolated(unsafe) weak var view: NSView?
+        private var monitor: Any?
+
+        init(parent: SearchKeyboardBridge) {
+            self.parent = parent
+        }
+
+        deinit {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+        }
+
+        func installMonitor() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                self?.handle(event) ?? event
+            }
+        }
+
+        private func handle(_ event: NSEvent) -> NSEvent? {
+            guard parent.isActive else { return event }
+            guard !event.modifierFlags.containsAny(of: [.command, .option, .control]) else {
+                return event
+            }
+
+            switch event.keyCode {
+            case Self.upArrowKeyCode:
+                parent.onUp()
+                return nil
+            case Self.downArrowKeyCode:
+                parent.onDown()
+                return nil
+            case Self.returnKeyCode, Self.keypadEnterKeyCode:
+                parent.onReturn()
+                return nil
+            default:
+                return event
+            }
+        }
+
+        private static let returnKeyCode: UInt16 = 36
+        private static let keypadEnterKeyCode: UInt16 = 76
+        private static let downArrowKeyCode: UInt16 = 125
+        private static let upArrowKeyCode: UInt16 = 126
+    }
+}
+
+private extension NSEvent.ModifierFlags {
+    func containsAny(of flags: NSEvent.ModifierFlags) -> Bool {
+        !intersection(flags).isEmpty
     }
 }
 

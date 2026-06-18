@@ -16,6 +16,7 @@ public final class EasyTierAppStore {
     public var isShowingAbout = false
     public var isConfigServerConnected = false
     public var trafficSamplesByInstance: [String: [TrafficSample]] = [:]
+    public var deviceAliases: [DeviceAlias] = []
 
     private let client: any EasyTierCoreClient
     private let storage: EasyTierStorage
@@ -74,6 +75,44 @@ public final class EasyTierAppStore {
         selectedRunningInstance?.detail?.memberStatuses ?? []
     }
 
+    public func deviceAlias(for member: NetworkMemberStatus, in networkID: String? = nil) -> DeviceAlias? {
+        guard let key = deviceAliasKey(for: member, in: networkID) else { return nil }
+        return deviceAliases.first { $0.networkID == key.networkID && $0.peerID == key.peerID }
+    }
+
+    public func deviceDisplayName(for member: NetworkMemberStatus, in networkID: String? = nil) -> String {
+        deviceAlias(for: member, in: networkID)?.displayName ?? member.hostname
+    }
+
+    public func setDeviceAlias(_ displayName: String, for member: NetworkMemberStatus, in networkID: String? = nil) {
+        guard let key = deviceAliasKey(for: member, in: networkID) else { return }
+        let trimmedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hostname = member.hostname.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty, trimmedName != hostname else {
+            clearDeviceAlias(for: member, in: networkID)
+            return
+        }
+
+        if let index = deviceAliases.firstIndex(where: { $0.networkID == key.networkID && $0.peerID == key.peerID }) {
+            deviceAliases[index].displayName = trimmedName
+            deviceAliases[index].hostname = member.hostname
+        } else {
+            deviceAliases.append(DeviceAlias(
+                networkID: key.networkID,
+                peerID: key.peerID,
+                hostname: member.hostname,
+                displayName: trimmedName
+            ))
+        }
+        save()
+    }
+
+    public func clearDeviceAlias(for member: NetworkMemberStatus, in networkID: String? = nil) {
+        guard let key = deviceAliasKey(for: member, in: networkID) else { return }
+        deviceAliases.removeAll { $0.networkID == key.networkID && $0.peerID == key.peerID }
+        save()
+    }
+
     public var selectedTrafficSamples: [TrafficSample] {
         guard let name = selectedRunningInstance?.name else { return [] }
         return trafficSamplesByInstance[name] ?? []
@@ -83,6 +122,7 @@ public final class EasyTierAppStore {
         do {
             let snapshot = try storage.load()
             configs = snapshot.configs.isEmpty ? [StoredNetworkConfig(config: NetworkConfig())] : snapshot.configs
+            deviceAliases = snapshot.deviceAliases
             let loadedMode = snapshot.mode ?? .default
             if case .service = loadedMode {
                 mode = .default
@@ -100,6 +140,7 @@ public final class EasyTierAppStore {
             log("Loaded \(configs.count) saved network config(s).")
         } catch {
             configs = [StoredNetworkConfig(config: NetworkConfig())]
+            deviceAliases = []
             selectedConfigID = configs.first?.id
             lastError = error.localizedDescription
             log("Failed to load state: \(error.localizedDescription)")
@@ -109,7 +150,12 @@ public final class EasyTierAppStore {
 
     public func save() {
         do {
-            try storage.save(AppSnapshot(configs: configs, mode: mode, lastSelectedConfigID: selectedConfigID))
+            try storage.save(AppSnapshot(
+                configs: configs,
+                mode: mode,
+                lastSelectedConfigID: selectedConfigID,
+                deviceAliases: deviceAliases
+            ))
             log("Saved app state.")
         } catch {
             lastError = error.localizedDescription
@@ -135,6 +181,7 @@ public final class EasyTierAppStore {
             log("Stop before delete skipped: \(error.localizedDescription)")
         }
         clearPendingStart(for: config)
+        deviceAliases.removeAll { $0.networkID == selectedConfigID }
         configs.remove(at: index)
         if configs.isEmpty { configs.append(StoredNetworkConfig(config: NetworkConfig())) }
         self.selectedConfigID = configs.first?.id
@@ -235,6 +282,13 @@ public final class EasyTierAppStore {
 
     private func isSameRuntimeInstance(_ lhs: NetworkInstance, _ rhs: NetworkInstance) -> Bool {
         lhs.instance_id == rhs.instance_id && lhs.name == rhs.name
+    }
+
+    private func deviceAliasKey(for member: NetworkMemberStatus, in networkID: String?) -> (networkID: String, peerID: String)? {
+        guard let networkID = networkID ?? selectedConfigID else { return nil }
+        let peerID = member.peerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !peerID.isEmpty, peerID != "-" else { return nil }
+        return (networkID, peerID)
     }
 
     public func stopAll() async {
@@ -547,15 +601,53 @@ public enum WorkspaceTab: String, CaseIterable, Identifiable, Sendable {
     public var id: String { rawValue }
 }
 
+public struct DeviceAlias: Codable, Equatable, Identifiable, Sendable {
+    public var networkID: String
+    public var peerID: String
+    public var hostname: String
+    public var displayName: String
+
+    public var id: String { "\(networkID)-\(peerID)" }
+
+    public init(networkID: String, peerID: String, hostname: String, displayName: String) {
+        self.networkID = networkID
+        self.peerID = peerID
+        self.hostname = hostname
+        self.displayName = displayName
+    }
+}
+
 public struct AppSnapshot: Codable, Equatable, Sendable {
     public var configs: [StoredNetworkConfig]
     public var mode: AppMode?
     public var lastSelectedConfigID: String?
+    public var deviceAliases: [DeviceAlias]
 
-    public init(configs: [StoredNetworkConfig], mode: AppMode?, lastSelectedConfigID: String?) {
+    public init(
+        configs: [StoredNetworkConfig],
+        mode: AppMode?,
+        lastSelectedConfigID: String?,
+        deviceAliases: [DeviceAlias] = []
+    ) {
         self.configs = configs
         self.mode = mode
         self.lastSelectedConfigID = lastSelectedConfigID
+        self.deviceAliases = deviceAliases
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case configs
+        case mode
+        case lastSelectedConfigID
+        case deviceAliases
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        configs = try container.decode([StoredNetworkConfig].self, forKey: .configs)
+        mode = try container.decodeIfPresent(AppMode.self, forKey: .mode)
+        lastSelectedConfigID = try container.decodeIfPresent(String.self, forKey: .lastSelectedConfigID)
+        deviceAliases = try container.decodeIfPresent([DeviceAlias].self, forKey: .deviceAliases) ?? []
     }
 }
 

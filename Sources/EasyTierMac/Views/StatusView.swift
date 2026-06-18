@@ -6,7 +6,10 @@ struct StatusView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(EasyTierAppStore.self) private var store
     @State private var publicServerGroupExpanded = false
+    @State private var renameRequest: RenameDeviceRequest?
+    @State private var memberSearchText = ""
 
+    var highlightedMemberPeerID: String? = nil
     var onConfigureLocalMember: () -> Void = {}
 
     private var instance: NetworkInstance? { store.selectedRunningInstance }
@@ -25,6 +28,14 @@ struct StatusView: View {
         VStack(alignment: .leading, spacing: 14) {
             header
 
+            if instance != nil, !members.isEmpty || !memberSearchQuery.isEmpty {
+                MemberSearchField(
+                    text: $memberSearchText,
+                    resultCount: filteredMembers.count,
+                    totalCount: members.count
+                )
+            }
+
             if let runtimeError {
                 ErrorBanner(message: runtimeError)
                     .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 8))
@@ -36,6 +47,11 @@ struct StatusView: View {
         }
         .padding()
         .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: runtimeError)
+        .sheet(item: $renameRequest) { request in
+            RenameDeviceSheet(request: request) { displayName in
+                store.setDeviceAlias(displayName, for: request.member, in: request.networkID)
+            }
+        }
     }
 
     @ViewBuilder
@@ -54,6 +70,13 @@ struct StatusView: View {
                 description: Text(runtimeError ?? "EasyTier is running, but runtime member details have not arrived yet.")
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if !memberSearchQuery.isEmpty, filteredMembers.isEmpty {
+            ContentUnavailableView(
+                "No Search Results",
+                systemImage: "magnifyingglass",
+                description: Text("Try a network name, device name, alias, server role, IP address, route, NAT type, version, or Peer ID.")
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             memberTable
         }
@@ -62,7 +85,7 @@ struct StatusView: View {
     private var contentMotionID: String {
         if instance == nil { return "empty-no-running" }
         if members.isEmpty { return "empty-no-members" }
-        return "members"
+        return "members-\(memberSearchQuery.isEmpty ? "all" : "search")-\(filteredMembers.count)"
     }
 
     private var header: some View {
@@ -90,6 +113,13 @@ struct StatusView: View {
                 expandablePublicServerCell(for: row) {
                     MemberIdentityCell(
                         row: row,
+                        aliasForMember: { member in
+                            store.deviceAlias(for: member)
+                        },
+                        onRenameMember: beginRenaming,
+                        onClearMemberAlias: { member in
+                            store.clearDeviceAlias(for: member)
+                        },
                         onConfigureLocalMember: onConfigureLocalMember
                     )
                 }
@@ -176,15 +206,20 @@ struct StatusView: View {
     }
 
     private var memberTableRows: [MemberTableRow] {
-        let publicServers = members.filter { !$0.isLocal && $0.isPublicServer }
+        let visibleMembers = filteredMembers
+        if !memberSearchQuery.isEmpty {
+            return visibleMembers.map(MemberTableRow.member)
+        }
+
+        let publicServers = visibleMembers.filter { !$0.isLocal && $0.isPublicServer }
         guard publicServers.count > 1 else {
-            return members.map(MemberTableRow.member)
+            return visibleMembers.map(MemberTableRow.member)
         }
 
         let publicServerIDs = Set(publicServers.map(\.id))
         var insertedPublicServerGroup = false
 
-        return members.compactMap { member in
+        return visibleMembers.compactMap { member in
             guard publicServerIDs.contains(member.id) else {
                 return .member(member)
             }
@@ -196,7 +231,52 @@ struct StatusView: View {
     }
 
     private var ipv4ColumnWidth: CGFloat {
-        IPv4CellMetrics.columnWidth(for: members.map(\.displayedIPv4Address))
+        IPv4CellMetrics.columnWidth(for: filteredMembers.map(\.displayedIPv4Address))
+    }
+
+    private var memberSearchQuery: SearchQuery {
+        SearchQuery(memberSearchText)
+    }
+
+    private var filteredMembers: [NetworkMemberStatus] {
+        let query = memberSearchQuery
+        guard !query.isEmpty else { return members }
+        if query.matches(networkSearchFields) { return members }
+        return members.filter { member in
+            query.matches(member.searchFields(alias: store.deviceAlias(for: member)))
+        }
+    }
+
+    private var networkSearchFields: [String] {
+        var fields = [
+            instance?.name ?? "",
+            instance?.instance_id ?? "",
+            instance?.detail?.dev_name ?? "",
+            instance?.detail?.error_msg ?? "",
+            store.selectedConfigID ?? "",
+            store.selectedConfig?.network_name ?? "",
+            store.selectedConfig?.instance_id ?? "",
+            store.mode.label,
+            connectionState.searchLabel,
+        ]
+
+        if let config = store.selectedConfig {
+            fields.append(contentsOf: [
+                config.hostname ?? "",
+                config.virtual_ipv4,
+                config.public_server_url,
+                config.dev_name,
+                config.networking_method.searchLabel,
+            ])
+            fields.append(contentsOf: config.peer_urls)
+            fields.append(contentsOf: config.listener_urls)
+            fields.append(contentsOf: config.proxy_cidrs)
+            fields.append(contentsOf: config.routes)
+            fields.append(contentsOf: config.exit_nodes)
+            fields.append(contentsOf: config.enabledSearchFeatureLabels)
+        }
+
+        return fields
     }
 
     @ViewBuilder
@@ -218,6 +298,7 @@ struct StatusView: View {
                 }
         } else {
             content()
+                .memberSearchResultHighlight(isHighlighted: row.peerID == highlightedMemberPeerID)
         }
     }
 
@@ -225,6 +306,14 @@ struct StatusView: View {
         withAnimation(EasyTierMotion.quick(reduceMotion: reduceMotion)) {
             publicServerGroupExpanded.toggle()
         }
+    }
+
+    private func beginRenaming(_ member: NetworkMemberStatus) {
+        renameRequest = RenameDeviceRequest(
+            networkID: store.selectedConfigID,
+            member: member,
+            initialName: store.deviceAlias(for: member)?.displayName ?? member.hostname
+        )
     }
 }
 
@@ -260,6 +349,144 @@ private struct MemberTableRow: Identifiable, Equatable {
             kind: .publicServerGroup(PublicServerGroupSummary(members: members)),
             children: members.map(MemberTableRow.member)
         )
+    }
+}
+
+private extension MemberTableRow {
+    var peerID: String? {
+        guard case .member(let member) = kind else { return nil }
+        return member.peerID
+    }
+}
+
+private struct MemberSearchResultHighlight: ViewModifier {
+    var isHighlighted: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+            .background {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(isHighlighted ? Color.accentColor.opacity(0.18) : Color.clear)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(isHighlighted ? Color.accentColor.opacity(0.35) : Color.clear, lineWidth: 1)
+            }
+    }
+}
+
+private extension View {
+    func memberSearchResultHighlight(isHighlighted: Bool) -> some View {
+        modifier(MemberSearchResultHighlight(isHighlighted: isHighlighted))
+    }
+}
+
+private struct RenameDeviceRequest: Identifiable {
+    var networkID: String?
+    var member: NetworkMemberStatus
+    var initialName: String
+
+    var id: String {
+        "\(networkID ?? "none")-\(member.peerID)-\(member.hostname)"
+    }
+}
+
+private struct RenameDeviceSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var isNameFieldFocused: Bool
+
+    var request: RenameDeviceRequest
+    var onSave: (String) -> Void
+
+    @State private var displayName: String
+
+    init(request: RenameDeviceRequest, onSave: @escaping (String) -> Void) {
+        self.request = request
+        self.onSave = onSave
+        _displayName = State(initialValue: request.initialName)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Rename Device")
+                    .font(.headline)
+                Text(request.member.hostname)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            TextField("Display name", text: $displayName)
+                .textFieldStyle(.roundedBorder)
+                .focused($isNameFieldFocused)
+                .onSubmit(save)
+
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    dismiss()
+                }
+                Button("Save") {
+                    save()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 360)
+        .onAppear {
+            isNameFieldFocused = true
+        }
+    }
+
+    private func save() {
+        onSave(displayName)
+        dismiss()
+    }
+}
+
+private struct MemberSearchField: View {
+    @Binding var text: String
+    var resultCount: Int
+    var totalCount: Int
+
+    private var isSearching: Bool {
+        !SearchQuery(text).isEmpty
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.secondary)
+
+            TextField("Search networks, devices, servers, aliases, IPs, Peer IDs", text: $text)
+                .textFieldStyle(.plain)
+
+            if isSearching {
+                Text("\(resultCount)/\(totalCount)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Clear search")
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(.primary.opacity(0.055), lineWidth: 1)
+        }
     }
 }
 
@@ -397,13 +624,21 @@ private extension MemberTableRow {
 
 private struct MemberIdentityCell: View {
     var row: MemberTableRow
+    var aliasForMember: (NetworkMemberStatus) -> DeviceAlias?
+    var onRenameMember: (NetworkMemberStatus) -> Void
+    var onClearMemberAlias: (NetworkMemberStatus) -> Void
     var onConfigureLocalMember: () -> Void
 
     var body: some View {
         switch row.kind {
         case .member(let member):
+            let alias = aliasForMember(member)
             MemberStatusIdentity(
                 member: member,
+                displayName: alias?.displayName ?? member.hostname,
+                hasCustomName: alias != nil,
+                renameAction: { onRenameMember(member) },
+                clearAliasAction: { onClearMemberAlias(member) },
                 configureAction: member.isLocal ? onConfigureLocalMember : nil
             )
         case .publicServerGroup(let group):
@@ -414,6 +649,10 @@ private struct MemberIdentityCell: View {
 
 private struct MemberStatusIdentity: View {
     var member: NetworkMemberStatus
+    var displayName: String
+    var hasCustomName: Bool
+    var renameAction: () -> Void
+    var clearAliasAction: () -> Void
     var configureAction: (() -> Void)? = nil
 
     var body: some View {
@@ -428,9 +667,11 @@ private struct MemberStatusIdentity: View {
             .pointingHandOnHover()
             .help("Open Config for this device")
             .accessibilityHint(Text("Opens the Config page for this network."))
+            .contextMenu { memberContextMenu }
         } else {
             identityContent
                 .padding(.vertical, 5)
+                .contextMenu { memberContextMenu }
         }
     }
 
@@ -449,14 +690,39 @@ private struct MemberStatusIdentity: View {
                     }
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text(member.hostname)
+                Text(displayName)
                     .lineLimit(1)
-                Text("\(member.memberStateLabel) · Peer \(member.peerID)")
+                Text(memberSubtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
         }
+    }
+
+    @ViewBuilder
+    private var memberContextMenu: some View {
+        Button("Rename Device...") {
+            renameAction()
+        }
+        if hasCustomName {
+            Button("Clear Custom Name") {
+                clearAliasAction()
+            }
+        }
+        if configureAction != nil {
+            Divider()
+            Button("Open Config") {
+                configureAction?()
+            }
+        }
+    }
+
+    private var memberSubtitle: String {
+        let identityParts = hasCustomName ? [member.hostname, member.memberStateLabel] : [member.memberStateLabel]
+        return (identityParts + ["Peer \(member.peerID)"])
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0 != "-" }
+            .joined(separator: " · ")
     }
 }
 
