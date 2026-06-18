@@ -250,17 +250,10 @@ import Testing
 @Test func storagePersistsSnapshot() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let storage = EasyTierStorage(baseDirectory: directory)
-    let alias = DeviceAlias(
-        networkID: "abc",
-        peerID: "1428946557",
-        hostname: "ctwdeMac-mini.local",
-        displayName: "Office Mac mini"
-    )
     let snapshot = AppSnapshot(
         configs: [StoredNetworkConfig(config: NetworkConfig(network_name: "lab"))],
         mode: .remote(remoteRPCAddress: "tcp://127.0.0.1:15999"),
-        lastSelectedConfigID: "abc",
-        deviceAliases: [alias]
+        lastSelectedConfigID: "abc"
     )
 
     try storage.save(snapshot)
@@ -269,24 +262,22 @@ import Testing
     #expect(loaded.configs.first?.config.network_name == "lab")
     #expect(loaded.mode == .remote(remoteRPCAddress: "tcp://127.0.0.1:15999"))
     #expect(loaded.lastSelectedConfigID == "abc")
-    #expect(loaded.deviceAliases == [alias])
 }
 
 @Test func defaultStorageUsesBundleSpecificAppSupportDirectory() {
     #expect(EasyTierStorage.default.baseDirectory.lastPathComponent == "com.kkrainbow.easytier.mac")
 }
 
-@Test func storageLoadsSnapshotWithoutDeviceAliases() throws {
+@Test func storageIgnoresLegacyDeviceAliases() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let stateURL = directory.appendingPathComponent("state.json")
-    try Data(#"{"configs":[]}"#.utf8).write(to: stateURL)
+    try Data(#"{"configs":[],"deviceAliases":[{"networkID":"abc","peerID":"1","hostname":"old","displayName":"Old"}]}"#.utf8).write(to: stateURL)
 
     let storage = EasyTierStorage(baseDirectory: directory)
     let loaded = try storage.load()
 
     #expect(loaded.configs.isEmpty)
-    #expect(loaded.deviceAliases.isEmpty)
 }
 
 @Test func storageMigratesLegacySnapshotIntoPrimaryDirectory() throws {

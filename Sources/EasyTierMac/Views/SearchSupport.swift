@@ -1,11 +1,8 @@
 import EasyTierShared
 
 extension NetworkMemberStatus {
-    func searchFields(alias: DeviceAlias?) -> [String] {
+    var searchFields: [String] {
         var fields = [
-            alias?.displayName ?? "",
-            alias?.hostname ?? "",
-            alias?.peerID ?? "",
             hostname,
             peerID,
             virtualIPv4,
@@ -72,6 +69,17 @@ extension NetworkingMethod {
             return "manual peer peers"
         case .standalone:
             return "standalone local"
+        }
+    }
+
+    var displayLabel: String {
+        switch self {
+        case .publicServer:
+            return "Public Server"
+        case .manual:
+            return "Manual Peers"
+        case .standalone:
+            return "Standalone"
         }
     }
 }

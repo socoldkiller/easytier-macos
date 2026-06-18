@@ -87,7 +87,10 @@ struct ContentView: View {
     private var workspaceContent: some View {
         switch store.selectedTab {
         case .status:
-            StatusView(highlightedMemberPeerID: highlightedSearchPeerID) {
+            StatusView(
+                highlightedMemberPeerID: highlightedSearchPeerID,
+                onRenameLocalHostname: renameSelectedHostname
+            ) {
                 selectWorkspaceTab(.config)
             }
         case .view:
@@ -316,46 +319,34 @@ struct ContentView: View {
         return store.configs.flatMap { stored -> [NetworkSearchResult] in
             let config = stored.config
             let instance = store.runningInstance(matching: config)
-            let aliases = store.deviceAliases.filter { $0.networkID == stored.id }
             var results: [NetworkSearchResult] = []
 
-            if query.matches(networkDirectSearchFields(for: stored, instance: instance)) {
+            let networkFields = networkDirectSearchFields(for: stored, instance: instance)
+            if query.matches(networkFields.searchValues) {
                 results.append(.network(
                     id: "network-\(stored.id)",
                     networkID: stored.id,
                     title: config.network_name,
                     subtitle: networkResultSubtitle(for: stored, instance: instance),
-                    state: connectionState(for: stored)
+                    state: connectionState(for: stored),
+                    matchDescription: searchMatchDescription(in: networkFields, query: query)
                 ))
             }
 
-            var matchedPeerIDs = Set<String>()
             for member in instance?.detail?.memberStatuses ?? [] {
-                let alias = aliases.first { $0.peerID == member.peerID }
-                guard query.matches(member.searchFields(alias: alias)) else { continue }
+                let memberFields = memberSearchResultFields(for: member)
+                guard query.matches(memberFields.searchValues) else { continue }
 
-                matchedPeerIDs.insert(member.peerID)
                 results.append(.device(
                     id: "device-\(stored.id)-\(member.id)",
                     networkID: stored.id,
-                    title: alias?.displayName ?? member.hostname,
-                    subtitle: deviceResultSubtitle(for: member, alias: alias, networkName: config.network_name),
+                    title: member.hostname,
+                    subtitle: deviceResultSubtitle(for: member, networkName: config.network_name),
+                    sourceLabel: "Device",
+                    matchDescription: searchMatchDescription(in: memberFields, query: query),
                     systemImage: member.searchResultSystemImage,
                     targetTab: .status,
                     highlightedPeerID: member.peerID
-                ))
-            }
-
-            for alias in aliases where !matchedPeerIDs.contains(alias.peerID) {
-                guard query.matches([alias.displayName, alias.hostname, alias.peerID]) else { continue }
-                results.append(.device(
-                    id: "alias-\(stored.id)-\(alias.peerID)",
-                    networkID: stored.id,
-                    title: alias.displayName,
-                    subtitle: "Saved alias · \(config.network_name) · \(alias.hostname) · Peer \(alias.peerID)",
-                    systemImage: "tag",
-                    targetTab: .status,
-                    highlightedPeerID: alias.peerID
                 ))
             }
 
@@ -412,51 +403,97 @@ struct ContentView: View {
         selectSearchResult(result)
     }
 
-    private func networkDirectSearchFields(for stored: StoredNetworkConfig, instance: NetworkInstance?) -> [String] {
+    private func networkDirectSearchFields(for stored: StoredNetworkConfig, instance: NetworkInstance?) -> [SearchResultField] {
         let config = stored.config
-        var fields = [
-            config.network_name,
-            config.instance_id,
-            stored.source.rawValue,
-            connectionState(for: stored).searchLabel,
-            instance?.name ?? "",
-            instance?.instance_id ?? "",
-            instance?.detail?.dev_name ?? "",
-            instance?.detail?.error_msg ?? "",
+        var fields: [SearchResultField] = [
+            SearchResultField("Network", config.network_name),
+            SearchResultField("Instance ID", config.instance_id),
+            SearchResultField("Source", stored.source.rawValue),
+            SearchResultField(
+                "Status",
+                connectionState(for: stored).searchLabel,
+                displayValue: connectionState(for: stored).displayLabel
+            ),
+            SearchResultField("Runtime", instance?.name ?? ""),
+            SearchResultField("Runtime ID", instance?.instance_id ?? ""),
+            SearchResultField("Device", instance?.detail?.dev_name ?? ""),
+            SearchResultField("Error", instance?.detail?.error_msg ?? ""),
         ]
 
         fields.append(contentsOf: [
-            config.hostname ?? "",
-            config.virtual_ipv4,
-            String(config.network_length),
-            config.public_server_url,
-            config.dev_name,
-            config.vpn_portal_client_network_addr,
-            String(config.vpn_portal_listen_port),
-            String(config.vpn_portal_client_network_len),
-            String(config.socks5_port),
-            config.networking_method.searchLabel,
+            SearchResultField("Hostname", config.hostname ?? ""),
+            SearchResultField("Virtual IPv4", config.virtual_ipv4),
+            SearchResultField("Network Length", String(config.network_length)),
+            SearchResultField("Public Server", config.public_server_url),
+            SearchResultField("Device Name", config.dev_name),
+            SearchResultField("VPN Portal", config.vpn_portal_client_network_addr),
+            SearchResultField("VPN Portal Port", String(config.vpn_portal_listen_port)),
+            SearchResultField("VPN Portal Length", String(config.vpn_portal_client_network_len)),
+            SearchResultField("SOCKS5 Port", String(config.socks5_port)),
+            SearchResultField(
+                "Mode",
+                config.networking_method.searchLabel,
+                displayValue: config.networking_method.displayLabel
+            ),
         ])
-        fields.append(contentsOf: config.peer_urls)
-        fields.append(contentsOf: config.listener_urls)
-        fields.append(contentsOf: config.proxy_cidrs)
-        fields.append(contentsOf: config.routes)
-        fields.append(contentsOf: config.exit_nodes)
-        fields.append(contentsOf: config.mapped_listeners)
-        fields.append(contentsOf: config.relay_network_whitelist)
-        fields.append(contentsOf: config.enabledSearchFeatureLabels)
+        fields.append(contentsOf: config.peer_urls.map { SearchResultField("Peer URL", $0) })
+        fields.append(contentsOf: config.listener_urls.map { SearchResultField("Listener", $0) })
+        fields.append(contentsOf: config.proxy_cidrs.map { SearchResultField("Proxy CIDR", $0) })
+        fields.append(contentsOf: config.routes.map { SearchResultField("Route", $0) })
+        fields.append(contentsOf: config.exit_nodes.map { SearchResultField("Exit Node", $0) })
+        fields.append(contentsOf: config.mapped_listeners.map { SearchResultField("Mapped Listener", $0) })
+        fields.append(contentsOf: config.relay_network_whitelist.map { SearchResultField("Relay Whitelist", $0) })
+        fields.append(contentsOf: config.enabledSearchFeatureLabels.map { SearchResultField("Feature", $0) })
         for portForward in config.port_forwards {
             fields.append(contentsOf: [
-                portForward.bind_ip,
-                String(portForward.bind_port),
-                portForward.dst_ip,
-                String(portForward.dst_port),
-                portForward.proto,
-                "port forward forwarding",
+                SearchResultField("Port Forward Bind IP", portForward.bind_ip),
+                SearchResultField("Port Forward Bind Port", String(portForward.bind_port)),
+                SearchResultField("Port Forward Target IP", portForward.dst_ip),
+                SearchResultField("Port Forward Target Port", String(portForward.dst_port)),
+                SearchResultField("Port Forward Protocol", portForward.proto),
+                SearchResultField("Feature", "port forward forwarding", displayValue: "Port Forward"),
             ])
         }
 
         return fields
+    }
+
+    private func memberSearchResultFields(for member: NetworkMemberStatus) -> [SearchResultField] {
+        var fields = [
+            SearchResultField("Hostname", member.hostname),
+            SearchResultField("Peer ID", member.peerID),
+            SearchResultField("Virtual IPv4", member.virtualIPv4),
+            SearchResultField("IPv4", member.copyableIPv4Address ?? ""),
+            SearchResultField("Version", member.version),
+            SearchResultField("Route Cost", member.routeCost),
+            SearchResultField("Protocol", member.tunnelProto),
+            SearchResultField("Latency", member.latency),
+            SearchResultField("Upload", member.uploadTotal),
+            SearchResultField("Download", member.downloadTotal),
+            SearchResultField("Loss", member.lossRate),
+            SearchResultField("NAT", member.natType),
+            SearchResultField(
+                "Role",
+                member.isLocal ? "local this device self" : "online remote peer device",
+                displayValue: member.isLocal ? "This Device" : "Remote Device"
+            ),
+        ]
+
+        if member.isPublicServer {
+            fields.append(SearchResultField("Role", "public server public servers server relay", displayValue: "Public Server"))
+        }
+
+        return fields
+    }
+
+    private func searchMatchDescription(in fields: [SearchResultField], query: SearchQuery) -> String? {
+        let matches = fields.matchingTokens(from: query)
+        guard !matches.isEmpty else { return nil }
+
+        let summary = matches.prefix(2)
+            .map { "\($0.label.lowercased()): \($0.displayValue)" }
+            .joined(separator: " · ")
+        return "Matched \(summary)"
     }
 
     private func networkResultSubtitle(for stored: StoredNetworkConfig, instance: NetworkInstance?) -> String {
@@ -469,14 +506,11 @@ struct ContentView: View {
         .joined(separator: " · ")
     }
 
-    private func deviceResultSubtitle(for member: NetworkMemberStatus, alias: DeviceAlias?, networkName: String) -> String {
-        var parts = ["Device", networkName]
-        if let alias, alias.displayName != member.hostname {
-            parts.append(member.hostname)
-        }
+    private func deviceResultSubtitle(for member: NetworkMemberStatus, networkName: String) -> String {
+        var parts = ["Network \(networkName)"]
         parts.append("Peer \(member.peerID)")
         if let ip = member.copyableIPv4Address {
-            parts.append(ip)
+            parts.append("IPv4 \(ip)")
         }
         if member.isPublicServer {
             parts.append("Public Server")
@@ -551,6 +585,39 @@ struct ContentView: View {
         workspaceTransitionDistance = Self.tabTransitionDistance
         withAnimation(EasyTierMotion.selection(reduceMotion: reduceMotion)) {
             store.selectedTab = tab
+        }
+    }
+
+    private func renameSelectedHostname(_ hostname: String) {
+        guard let selectedID = store.selectedConfigID,
+            let storedConfig = store.configs.first(where: { $0.id == selectedID })?.config
+        else { return }
+
+        let trimmed = hostname.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newHostname = trimmed.isEmpty ? nil : trimmed
+        let previousHostname = storedConfig.hostname?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmptyForSearchResult
+        guard previousHostname != newHostname else { return }
+
+        let runningInstanceToRestart = draftIsDirty ? nil : store.runningInstance(matching: storedConfig)
+        var updatedConfig = storedConfig
+        updatedConfig.hostname = newHostname
+        store.updateConfig(id: selectedID, with: updatedConfig, saveImmediately: true)
+
+        guard draftConfigID == selectedID else { return }
+        if draftIsDirty {
+            draftConfig.hostname = newHostname
+        } else {
+            draftConfig = updatedConfig
+        }
+
+        guard let runningInstanceToRestart else { return }
+        Task {
+            await permissionController.refresh()
+            guard permissionController.state == .enabled else {
+                store.clearHelperPermissionError()
+                return
+            }
+            await store.restartSelectedConfig(replacing: runningInstanceToRestart)
         }
     }
 
@@ -655,6 +722,8 @@ private struct NetworkSearchResult: Identifiable {
     var networkID: String
     var title: String
     var subtitle: String
+    var sourceLabel: String
+    var matchDescription: String?
     var systemImage: String
     var state: ConnectionGlyphState?
     var targetTab: WorkspaceTab?
@@ -665,13 +734,16 @@ private struct NetworkSearchResult: Identifiable {
         networkID: String,
         title: String,
         subtitle: String,
-        state: ConnectionGlyphState
+        state: ConnectionGlyphState,
+        matchDescription: String?
     ) -> NetworkSearchResult {
         NetworkSearchResult(
             id: id,
             networkID: networkID,
             title: title,
             subtitle: subtitle,
+            sourceLabel: "Network",
+            matchDescription: matchDescription,
             systemImage: "network",
             state: state,
             targetTab: nil,
@@ -684,8 +756,10 @@ private struct NetworkSearchResult: Identifiable {
         networkID: String,
         title: String,
         subtitle: String,
+        sourceLabel: String,
+        matchDescription: String?,
         systemImage: String,
-        targetTab: WorkspaceTab,
+        targetTab: WorkspaceTab?,
         highlightedPeerID: String?
     ) -> NetworkSearchResult {
         NetworkSearchResult(
@@ -693,6 +767,8 @@ private struct NetworkSearchResult: Identifiable {
             networkID: networkID,
             title: title,
             subtitle: subtitle,
+            sourceLabel: sourceLabel,
+            matchDescription: matchDescription,
             systemImage: systemImage,
             state: nil,
             targetTab: targetTab,
@@ -716,15 +792,66 @@ private struct NetworkSearchResultRow: View {
             }
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(result.title)
-                    .lineLimit(1)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(result.title)
+                        .lineLimit(1)
+                    Text(result.sourceLabel)
+                        .font(.caption2)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background {
+                            Capsule(style: .continuous)
+                                .fill(.secondary.opacity(0.13))
+                        }
+                }
+                if let matchDescription = result.matchDescription {
+                    Text(matchDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
                 Text(result.subtitle)
-                    .font(.caption)
+                    .font(result.matchDescription == nil ? .caption : .caption2)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(result.matchDescription == nil ? 2 : 1)
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+private struct SearchResultField: Equatable {
+    var label: String
+    var searchValue: String
+    var displayValue: String
+
+    init(_ label: String, _ searchValue: String, displayValue: String? = nil) {
+        self.label = label
+        self.searchValue = searchValue
+        self.displayValue = displayValue ?? searchValue
+    }
+}
+
+private extension Array where Element == SearchResultField {
+    var searchValues: [String] {
+        map(\.searchValue)
+    }
+
+    func matchingTokens(from query: SearchQuery) -> [SearchResultField] {
+        var seen = Set<String>()
+
+        return filter { field in
+            guard !field.searchValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+            let key = "\(field.label)\u{0}\(field.displayValue)"
+            guard seen.insert(key).inserted else { return false }
+
+            return query.tokens.contains { token in
+                SearchQuery(token).matches([field.searchValue])
+            }
+        }
     }
 }
 

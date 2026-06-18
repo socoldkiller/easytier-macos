@@ -6,10 +6,11 @@ struct StatusView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(EasyTierAppStore.self) private var store
     @State private var publicServerGroupExpanded = false
-    @State private var renameRequest: RenameDeviceRequest?
+    @State private var renameHostnameRequest: RenameHostnameRequest?
     @State private var memberSearchText = ""
 
     var highlightedMemberPeerID: String? = nil
+    var onRenameLocalHostname: (String) -> Void = { _ in }
     var onConfigureLocalMember: () -> Void = {}
 
     private var instance: NetworkInstance? { store.selectedRunningInstance }
@@ -47,9 +48,9 @@ struct StatusView: View {
         }
         .padding()
         .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: runtimeError)
-        .sheet(item: $renameRequest) { request in
-            RenameDeviceSheet(request: request) { displayName in
-                store.setDeviceAlias(displayName, for: request.member, in: request.networkID)
+        .sheet(item: $renameHostnameRequest) { request in
+            RenameHostnameSheet(request: request) { hostname in
+                onRenameLocalHostname(hostname)
             }
         }
     }
@@ -74,7 +75,7 @@ struct StatusView: View {
             ContentUnavailableView(
                 "No Search Results",
                 systemImage: "magnifyingglass",
-                description: Text("Try a network name, device name, alias, server role, IP address, route, NAT type, version, or Peer ID.")
+                description: Text("Try a network name, hostname, server role, IP address, route, NAT type, version, or Peer ID.")
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -113,13 +114,8 @@ struct StatusView: View {
                 expandablePublicServerCell(for: row) {
                     MemberIdentityCell(
                         row: row,
-                        aliasForMember: { member in
-                            store.deviceAlias(for: member)
-                        },
-                        onRenameMember: beginRenaming,
-                        onClearMemberAlias: { member in
-                            store.clearDeviceAlias(for: member)
-                        },
+                        isHighlighted: row.contains(peerID: highlightedMemberPeerID),
+                        onRenameLocalHostname: beginRenamingLocalHostname,
                         onConfigureLocalMember: onConfigureLocalMember
                     )
                 }
@@ -243,7 +239,7 @@ struct StatusView: View {
         guard !query.isEmpty else { return members }
         if query.matches(networkSearchFields) { return members }
         return members.filter { member in
-            query.matches(member.searchFields(alias: store.deviceAlias(for: member)))
+            query.matches(member.searchFields)
         }
     }
 
@@ -298,7 +294,6 @@ struct StatusView: View {
                 }
         } else {
             content()
-                .memberSearchResultHighlight(isHighlighted: row.peerID == highlightedMemberPeerID)
         }
     }
 
@@ -308,13 +303,21 @@ struct StatusView: View {
         }
     }
 
-    private func beginRenaming(_ member: NetworkMemberStatus) {
-        renameRequest = RenameDeviceRequest(
-            networkID: store.selectedConfigID,
+    private func beginRenamingLocalHostname(_ member: NetworkMemberStatus) {
+        guard member.isLocal else { return }
+        let configuredHostname = store.selectedConfig?.hostname?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let initialHostname: String
+        if let configuredHostname, !configuredHostname.isEmpty {
+            initialHostname = configuredHostname
+        } else {
+            initialHostname = member.hostname
+        }
+        renameHostnameRequest = RenameHostnameRequest(
             member: member,
-            initialName: store.deviceAlias(for: member)?.displayName ?? member.hostname
+            initialHostname: initialHostname
         )
     }
+
 }
 
 private struct MemberTableRow: Identifiable, Equatable {
@@ -353,64 +356,45 @@ private struct MemberTableRow: Identifiable, Equatable {
 }
 
 private extension MemberTableRow {
-    var peerID: String? {
-        guard case .member(let member) = kind else { return nil }
-        return member.peerID
+    func contains(peerID: String?) -> Bool {
+        guard let peerID else { return false }
+        switch kind {
+        case .member(let member):
+            return member.peerID == peerID
+        case .publicServerGroup:
+            return children?.contains { $0.contains(peerID: peerID) } == true
+        }
     }
 }
 
-private struct MemberSearchResultHighlight: ViewModifier {
-    var isHighlighted: Bool
-
-    func body(content: Content) -> some View {
-        content
-            .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
-            .background {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(isHighlighted ? Color.accentColor.opacity(0.18) : Color.clear)
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .strokeBorder(isHighlighted ? Color.accentColor.opacity(0.35) : Color.clear, lineWidth: 1)
-            }
-    }
-}
-
-private extension View {
-    func memberSearchResultHighlight(isHighlighted: Bool) -> some View {
-        modifier(MemberSearchResultHighlight(isHighlighted: isHighlighted))
-    }
-}
-
-private struct RenameDeviceRequest: Identifiable {
-    var networkID: String?
+private struct RenameHostnameRequest: Identifiable {
     var member: NetworkMemberStatus
-    var initialName: String
+    var initialHostname: String
 
     var id: String {
-        "\(networkID ?? "none")-\(member.peerID)-\(member.hostname)"
+        "\(member.peerID)-\(member.hostname)"
     }
 }
 
-private struct RenameDeviceSheet: View {
+private struct RenameHostnameSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @FocusState private var isNameFieldFocused: Bool
+    @FocusState private var isHostnameFieldFocused: Bool
 
-    var request: RenameDeviceRequest
+    var request: RenameHostnameRequest
     var onSave: (String) -> Void
 
-    @State private var displayName: String
+    @State private var hostname: String
 
-    init(request: RenameDeviceRequest, onSave: @escaping (String) -> Void) {
+    init(request: RenameHostnameRequest, onSave: @escaping (String) -> Void) {
         self.request = request
         self.onSave = onSave
-        _displayName = State(initialValue: request.initialName)
+        _hostname = State(initialValue: request.initialHostname)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Rename Device")
+                Text("Rename Hostname")
                     .font(.headline)
                 Text(request.member.hostname)
                     .font(.caption)
@@ -418,9 +402,9 @@ private struct RenameDeviceSheet: View {
                     .lineLimit(1)
             }
 
-            TextField("Display name", text: $displayName)
+            TextField("Hostname", text: $hostname)
                 .textFieldStyle(.roundedBorder)
-                .focused($isNameFieldFocused)
+                .focused($isHostnameFieldFocused)
                 .onSubmit(save)
 
             HStack {
@@ -437,12 +421,12 @@ private struct RenameDeviceSheet: View {
         .padding(20)
         .frame(width: 360)
         .onAppear {
-            isNameFieldFocused = true
+            isHostnameFieldFocused = true
         }
     }
 
     private func save() {
-        onSave(displayName)
+        onSave(hostname)
         dismiss()
     }
 }
@@ -462,7 +446,7 @@ private struct MemberSearchField: View {
                 .font(.callout.weight(.medium))
                 .foregroundStyle(.secondary)
 
-            TextField("Search networks, devices, servers, aliases, IPs, Peer IDs", text: $text)
+            TextField("Search networks, hostnames, servers, IPs, Peer IDs", text: $text)
                 .textFieldStyle(.plain)
 
             if isSearching {
@@ -624,54 +608,51 @@ private extension MemberTableRow {
 
 private struct MemberIdentityCell: View {
     var row: MemberTableRow
-    var aliasForMember: (NetworkMemberStatus) -> DeviceAlias?
-    var onRenameMember: (NetworkMemberStatus) -> Void
-    var onClearMemberAlias: (NetworkMemberStatus) -> Void
+    var isHighlighted: Bool
+    var onRenameLocalHostname: (NetworkMemberStatus) -> Void
     var onConfigureLocalMember: () -> Void
 
     var body: some View {
         switch row.kind {
         case .member(let member):
-            let alias = aliasForMember(member)
             MemberStatusIdentity(
                 member: member,
-                displayName: alias?.displayName ?? member.hostname,
-                hasCustomName: alias != nil,
-                renameAction: { onRenameMember(member) },
-                clearAliasAction: { onClearMemberAlias(member) },
+                isHighlighted: isHighlighted,
+                renameAction: member.isLocal ? { onRenameLocalHostname(member) } : nil,
                 configureAction: member.isLocal ? onConfigureLocalMember : nil
             )
         case .publicServerGroup(let group):
-            PublicServerGroupIdentity(group: group)
+            PublicServerGroupIdentity(group: group, isHighlighted: isHighlighted)
         }
     }
 }
 
 private struct MemberStatusIdentity: View {
     var member: NetworkMemberStatus
-    var displayName: String
-    var hasCustomName: Bool
-    var renameAction: () -> Void
-    var clearAliasAction: () -> Void
+    var isHighlighted: Bool
+    var renameAction: (() -> Void)? = nil
     var configureAction: (() -> Void)? = nil
 
     var body: some View {
         if let configureAction {
             Button(action: configureAction) {
                 identityContent
-                .padding(.vertical, 5)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+                    .padding(.vertical, 5)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .pointingHandOnHover()
             .help("Open Config for this device")
             .accessibilityHint(Text("Opens the Config page for this network."))
             .contextMenu { memberContextMenu }
-        } else {
+        } else if renameAction != nil {
             identityContent
                 .padding(.vertical, 5)
                 .contextMenu { memberContextMenu }
+        } else {
+            identityContent
+                .padding(.vertical, 5)
         }
     }
 
@@ -690,7 +671,7 @@ private struct MemberStatusIdentity: View {
                     }
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text(displayName)
+                Text(member.hostname)
                     .lineLimit(1)
                 Text(memberSubtitle)
                     .font(.caption)
@@ -698,29 +679,25 @@ private struct MemberStatusIdentity: View {
                     .lineLimit(1)
             }
         }
+        .memberIdentityHighlight(isHighlighted: isHighlighted)
     }
 
     @ViewBuilder
     private var memberContextMenu: some View {
-        Button("Rename Device...") {
-            renameAction()
-        }
-        if hasCustomName {
-            Button("Clear Custom Name") {
-                clearAliasAction()
+        if let renameAction {
+            Button("Rename Hostname...") {
+                renameAction()
             }
         }
-        if configureAction != nil {
-            Divider()
+        if let configureAction {
             Button("Open Config") {
-                configureAction?()
+                configureAction()
             }
         }
     }
 
     private var memberSubtitle: String {
-        let identityParts = hasCustomName ? [member.hostname, member.memberStateLabel] : [member.memberStateLabel]
-        return (identityParts + ["Peer \(member.peerID)"])
+        [member.memberStateLabel, "Peer \(member.peerID)"]
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0 != "-" }
             .joined(separator: " · ")
     }
@@ -757,6 +734,7 @@ private extension View {
 
 private struct PublicServerGroupIdentity: View {
     var group: PublicServerGroupSummary
+    var isHighlighted: Bool = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -774,6 +752,31 @@ private struct PublicServerGroupIdentity: View {
             }
         }
         .padding(.vertical, 5)
+        .memberIdentityHighlight(isHighlighted: isHighlighted)
+    }
+}
+
+private struct MemberIdentityHighlight: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var isHighlighted: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.accentColor.opacity(isHighlighted ? 0.08 : 0))
+                    .padding(.horizontal, -7)
+                    .padding(.vertical, -3)
+                    .shadow(color: Color.accentColor.opacity(isHighlighted ? 0.08 : 0), radius: 8, y: 1)
+            }
+            .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: isHighlighted)
+    }
+}
+
+private extension View {
+    func memberIdentityHighlight(isHighlighted: Bool) -> some View {
+        modifier(MemberIdentityHighlight(isHighlighted: isHighlighted))
     }
 }
 
