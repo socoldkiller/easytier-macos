@@ -81,7 +81,9 @@ struct ContentView: View {
     private var workspaceContent: some View {
         switch store.selectedTab {
         case .status:
-            StatusView()
+            StatusView {
+                selectWorkspaceTab(.config)
+            }
         case .view:
             TrafficView()
         case .config:
@@ -149,7 +151,6 @@ struct ContentView: View {
     private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .principal) {
             WorkspaceTabPicker(selection: tabSelectionBinding)
-                .frame(width: 420)
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
@@ -279,15 +280,19 @@ struct ContentView: View {
         Binding(
             get: { store.selectedTab },
             set: { newValue in
-                guard newValue != store.selectedTab else { return }
-                workspaceTransitionEdge =
-                    newValue.motionIndex > store.selectedTab.motionIndex ? .trailing : .leading
-                workspaceTransitionDistance = Self.tabTransitionDistance
-                withAnimation(EasyTierMotion.selection(reduceMotion: reduceMotion)) {
-                    store.selectedTab = newValue
-                }
+                selectWorkspaceTab(newValue)
             }
         )
+    }
+
+    private func selectWorkspaceTab(_ tab: WorkspaceTab) {
+        guard tab != store.selectedTab else { return }
+        workspaceTransitionEdge =
+            tab.motionIndex > store.selectedTab.motionIndex ? .trailing : .leading
+        workspaceTransitionDistance = Self.tabTransitionDistance
+        withAnimation(EasyTierMotion.selection(reduceMotion: reduceMotion)) {
+            store.selectedTab = tab
+        }
     }
 
     private func networkTransitionEdge(from oldID: String?, to newID: String?) -> Edge {
@@ -351,6 +356,7 @@ struct ContentView: View {
 private struct WorkspaceTabPicker: View {
     @Binding var selection: WorkspaceTab
 
+    private static let preferredWidth: CGFloat = 184
     private let tabs = WorkspaceTab.allCases
 
     var body: some View {
@@ -362,7 +368,9 @@ private struct WorkspaceTabPicker: View {
         }
         .pickerStyle(.segmented)
         .controlSize(.regular)
+        .labelStyle(.iconOnly)
         .labelsHidden()
+        .frame(width: Self.preferredWidth)
         .help("Switch workspace view")
     }
 }

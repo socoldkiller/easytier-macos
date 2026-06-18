@@ -7,6 +7,8 @@ struct StatusView: View {
     @Environment(EasyTierAppStore.self) private var store
     @State private var publicServerGroupExpanded = false
 
+    var onConfigureLocalMember: () -> Void = {}
+
     private var instance: NetworkInstance? { store.selectedRunningInstance }
     private var members: [NetworkMemberStatus] { store.selectedMemberStatuses }
     private var runtimeError: String? {
@@ -86,7 +88,10 @@ struct StatusView: View {
         Table(of: MemberTableRow.self) {
             TableColumn("Member") { row in
                 expandablePublicServerCell(for: row) {
-                    MemberIdentityCell(row: row)
+                    MemberIdentityCell(
+                        row: row,
+                        onConfigureLocalMember: onConfigureLocalMember
+                    )
                 }
             }
             .width(min: 220, ideal: 260, max: 360)
@@ -392,11 +397,15 @@ private extension MemberTableRow {
 
 private struct MemberIdentityCell: View {
     var row: MemberTableRow
+    var onConfigureLocalMember: () -> Void
 
     var body: some View {
         switch row.kind {
         case .member(let member):
-            MemberStatusIdentity(member: member)
+            MemberStatusIdentity(
+                member: member,
+                configureAction: member.isLocal ? onConfigureLocalMember : nil
+            )
         case .publicServerGroup(let group):
             PublicServerGroupIdentity(group: group)
         }
@@ -405,8 +414,27 @@ private struct MemberIdentityCell: View {
 
 private struct MemberStatusIdentity: View {
     var member: NetworkMemberStatus
+    var configureAction: (() -> Void)? = nil
 
     var body: some View {
+        if let configureAction {
+            Button(action: configureAction) {
+                identityContent
+                .padding(.vertical, 5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .pointingHandOnHover()
+            .help("Open Config for this device")
+            .accessibilityHint(Text("Opens the Config page for this network."))
+        } else {
+            identityContent
+                .padding(.vertical, 5)
+        }
+    }
+
+    private var identityContent: some View {
         HStack(spacing: 8) {
             ZStack(alignment: .bottomTrailing) {
                 Image(systemName: member.memberSystemImage)
@@ -429,7 +457,35 @@ private struct MemberStatusIdentity: View {
                     .lineLimit(1)
             }
         }
-        .padding(.vertical, 5)
+    }
+}
+
+private struct PointingHandOnHover: ViewModifier {
+    @State private var isHovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { hovering in
+                guard hovering != isHovering else { return }
+                isHovering = hovering
+                if hovering {
+                    NSCursor.pointingHand.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            .onDisappear {
+                if isHovering {
+                    NSCursor.pop()
+                    isHovering = false
+                }
+            }
+    }
+}
+
+private extension View {
+    func pointingHandOnHover() -> some View {
+        modifier(PointingHandOnHover())
     }
 }
 
