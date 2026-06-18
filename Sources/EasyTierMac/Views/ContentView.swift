@@ -10,6 +10,7 @@ struct ContentView: View {
     @State private var showingModeSettings = false
     @State private var showingTOML = false
     @State private var tomlMode: TOMLSheet.Mode = .export
+    @State private var tomlText = ""
     @State private var draftConfig = NetworkConfig()
     @State private var draftConfigID: String?
     @State private var draftIsDirty = false
@@ -62,7 +63,7 @@ struct ContentView: View {
         .sheet(isPresented: $showingTOML) {
             TOMLSheet(
                 mode: tomlMode,
-                initialText: tomlMode == .export ? store.exportSelectedTOML() : ""
+                initialText: tomlText
             ) { text in
                 if tomlMode == .import { store.importTOML(text) }
             }
@@ -240,13 +241,11 @@ struct ContentView: View {
             Menu {
                 Button("Import TOML") {
                     commitDraft(saveImmediately: true)
-                    tomlMode = .import
-                    showingTOML = true
+                    openImportTOML()
                 }
                 Button("Export TOML") {
                     commitDraft(saveImmediately: true)
-                    tomlMode = .export
-                    showingTOML = true
+                    openExportTOML()
                 }
             } label: {
                 Label("TOML", systemImage: "doc.text")
@@ -610,6 +609,22 @@ struct ContentView: View {
         store.updateConfig(id: draftConfigID, with: draftConfig, saveImmediately: saveImmediately)
         self.draftConfigID = store.selectedConfigID
         draftIsDirty = false
+    }
+
+    private func openImportTOML() {
+        tomlMode = .import
+        tomlText = ""
+        showingTOML = true
+    }
+
+    private func openExportTOML() {
+        do {
+            tomlText = try store.exportSelectedTOML()
+            tomlMode = .export
+            showingTOML = true
+        } catch {
+            store.lastError = error.localizedDescription
+        }
     }
 }
 

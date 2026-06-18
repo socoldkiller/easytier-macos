@@ -14,7 +14,7 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
     }
 
     public func run(config: NetworkConfig) async throws {
-        let toml = NetworkConfigTOMLCodec.encode(config)
+        let toml = try NetworkConfigTOMLCodec.encode(config)
         try await validate(toml: toml)
         try run(toml: toml)
     }
@@ -92,7 +92,7 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
     }
 
     public func isConfigServerClientConnected() async throws -> Bool {
-        false
+        throw EasyTierCoreError.operationFailed("Config-server client mode is not available with EasyTier Core v2.6.4 FFI.")
     }
 
     public static func validateDirect(toml: String) throws {
@@ -113,12 +113,22 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
             }
             if count < 0 { throw lastError() }
             if count < capacity {
-                return pairs.prefix(Int(count)).map { pair in
-                    let key = pair.key.map(String.init(cString:)) ?? ""
-                    let value = pair.value.map(String.init(cString:)) ?? ""
-                    free_string(pair.key)
-                    free_string(pair.value)
-                    return (key: key, value: value)
+                let returnedPairs = Array(pairs.prefix(Int(count)))
+                defer {
+                    for pair in returnedPairs {
+                        free_string(pair.key)
+                        free_string(pair.value)
+                    }
+                }
+
+                return try returnedPairs.enumerated().map { index, pair in
+                    guard let keyPointer = pair.key else {
+                        throw EasyTierCoreError.invalidResponse("runtime info pair #\(index + 1) has a null key")
+                    }
+                    guard let valuePointer = pair.value else {
+                        throw EasyTierCoreError.invalidResponse("runtime info pair #\(index + 1) has a null value")
+                    }
+                    return (key: String(cString: keyPointer), value: String(cString: valuePointer))
                 }
             }
             for pair in pairs {

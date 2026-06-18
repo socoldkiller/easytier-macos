@@ -64,7 +64,7 @@ import Testing
     config.disable_p2p = true
     config.enable_magic_dns = true
 
-    let toml = NetworkConfigTOMLCodec.encode(config)
+    let toml = try NetworkConfigTOMLCodec.encode(config)
     let decoded = try NetworkConfigTOMLCodec.decode(toml)
 
     #expect(decoded.instance_id == config.instance_id)
@@ -87,7 +87,7 @@ import Testing
     config.enable_magic_dns = true
     config.enable_private_mode = true
 
-    let toml = NetworkConfigTOMLCodec.encode(config)
+    let toml = try NetworkConfigTOMLCodec.encode(config)
 
     #expect(toml.contains("enable_encryption = false"))
     #expect(toml.contains("enable_ipv6 = false"))
@@ -118,7 +118,7 @@ import Testing
         PortForwardConfig(bind_ip: "0.0.0.0", bind_port: 11_011, dst_ip: "10.144.144.2", dst_port: 80, proto: "tcp"),
     ]
 
-    let toml = NetworkConfigTOMLCodec.encode(config)
+    let toml = try NetworkConfigTOMLCodec.encode(config)
 
     #expect(toml.contains("[vpn_portal_config]"))
     #expect(toml.contains("client_cidr = \"10.14.14.0/24\""))
@@ -162,6 +162,42 @@ import Testing
     #expect(decoded.vpn_portal_client_network_addr == "10.14.14.0")
     #expect(decoded.vpn_portal_client_network_len == 24)
     #expect(decoded.vpn_portal_listen_port == 22_121)
+}
+
+@Test func tomlRejectsMalformedPortForwardInsteadOfDroppingIt() {
+    let toml = """
+    instance_name = "edge"
+
+    [[port_forward]]
+    bind_addr = "0.0.0.0"
+    dst_addr = "10.144.144.2:80"
+    proto = "tcp"
+    """
+
+    do {
+        _ = try NetworkConfigTOMLCodec.decode(toml)
+        Issue.record("malformed port_forward should not be dropped silently")
+    } catch TOMLCodecError.invalidValue(let message) {
+        #expect(message.contains("port_forward #1"))
+    } catch {
+        Issue.record("unexpected error: \(error)")
+    }
+}
+
+@Test func tomlRejectsMalformedIPv4InsteadOfDefaultingIt() {
+    let toml = """
+    instance_name = "edge"
+    ipv4 = "/24"
+    """
+
+    do {
+        _ = try NetworkConfigTOMLCodec.decode(toml)
+        Issue.record("malformed ipv4 should not be accepted")
+    } catch TOMLCodecError.invalidValue(let message) {
+        #expect(message.contains("ipv4"))
+    } catch {
+        Issue.record("unexpected error: \(error)")
+    }
 }
 
 @Test func validatorAllowsSamePortOnDifferentTransports() throws {
@@ -564,12 +600,58 @@ import Testing
     #expect(store.lastError?.contains("TCP 127.0.0.1:11010") == true)
 }
 
+@MainActor
+@Test func deleteSelectedConfigKeepsConfigWhenRunningInstanceCannotStop() async {
+    let config = NetworkConfig(instance_id: "running-id", network_name: "running-network")
+    let client = RecordingToggleClient()
+    client.stopError = EasyTierCoreError.operationFailed("stop failed")
+    let store = EasyTierAppStore(client: client)
+
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.selectedConfigID = config.instance_id
+    store.instances = [NetworkInstance(instance_id: config.instance_id, name: config.network_name, running: true)]
+
+    await store.deleteSelectedConfig()
+
+    #expect(store.configs.map(\.id) == [config.instance_id])
+    #expect(store.selectedConfigID == config.instance_id)
+    #expect(client.stoppedInstanceNames == [[config.network_name]])
+    #expect(store.lastError?.contains("stop failed") == true)
+}
+
 @Test func unavailableClientReportsClearRuntimeFailure() async {
     let client = UnavailableEasyTierCoreClient(reason: "missing dylib")
 
     do {
         try await client.validate(toml: "")
         Issue.record("validate should fail when FFI is unavailable")
+    } catch let error as EasyTierCoreError {
+        #expect(error == .ffiUnavailable("missing dylib"))
+    } catch {
+        Issue.record("unexpected error: \(error)")
+    }
+
+    do {
+        _ = try await client.listInstances()
+        Issue.record("listInstances should fail when FFI is unavailable")
+    } catch let error as EasyTierCoreError {
+        #expect(error == .ffiUnavailable("missing dylib"))
+    } catch {
+        Issue.record("unexpected error: \(error)")
+    }
+
+    do {
+        _ = try await client.collectNetworkInfos()
+        Issue.record("collectNetworkInfos should fail when FFI is unavailable")
+    } catch let error as EasyTierCoreError {
+        #expect(error == .ffiUnavailable("missing dylib"))
+    } catch {
+        Issue.record("unexpected error: \(error)")
+    }
+
+    do {
+        _ = try await client.isConfigServerClientConnected()
+        Issue.record("isConfigServerClientConnected should fail when FFI is unavailable")
     } catch let error as EasyTierCoreError {
         #expect(error == .ffiUnavailable("missing dylib"))
     } catch {
@@ -986,6 +1068,7 @@ private final class RecordingToggleClient: EasyTierCoreClient, @unchecked Sendab
     var retainedInstanceNames: [[String]] = []
     var listedInstances: [NetworkInstance] = []
     var networkInfos: [String: NetworkInstanceRunningInfo] = [:]
+    var stopError: Error?
 
     func version() async throws -> String { "test" }
     func validate(toml _: String) async throws {}
@@ -996,6 +1079,7 @@ private final class RecordingToggleClient: EasyTierCoreClient, @unchecked Sendab
 
     func stop(instanceNames: [String]) async throws {
         stoppedInstanceNames.append(instanceNames)
+        if let stopError { throw stopError }
     }
 
     func retain(instanceNames: [String]) async throws {

@@ -16,22 +16,19 @@ public enum TOMLCodecError: LocalizedError, Equatable {
 }
 
 public enum NetworkConfigTOMLCodec {
-    public static func encode(_ config: NetworkConfig) -> String {
+    public static func encode(_ config: NetworkConfig) throws -> String {
         let encoder = TOMLEncoder()
         encoder.outputFormatting = [.prettyPrinted]
 
-        do {
-            let toml = try encoder.encodeToString(EasyTierTOMLDocument(config.normalized()))
-            return toml.hasSuffix("\n") ? toml : toml + "\n"
-        } catch {
-            assertionFailure("Failed to encode EasyTier TOML: \(error)")
-            return ""
-        }
+        let toml = try encoder.encodeToString(EasyTierTOMLDocument(config.normalized()))
+        return toml.hasSuffix("\n") ? toml : toml + "\n"
     }
 
     public static func decode(_ toml: String) throws -> NetworkConfig {
         let document = try TOMLDecoder().decode(EasyTierTOMLDocument.self, from: toml)
-        return document.networkConfig().normalized()
+        let config = try document.networkConfig().normalized()
+        try NetworkConfigValidator.validate(config)
+        return config
     }
 }
 
@@ -90,7 +87,7 @@ private struct EasyTierTOMLDocument: Codable {
         flags = FlagsTOML(config)
     }
 
-    func networkConfig() -> NetworkConfig {
+    func networkConfig() throws -> NetworkConfig {
         var config = NetworkConfig()
 
         if let instance_id { config.instance_id = instance_id }
@@ -117,13 +114,16 @@ private struct EasyTierTOMLDocument: Codable {
         }
 
         if let ipv4 {
-            applyIPv4(ipv4, to: &config)
+            try applyIPv4(ipv4, to: &config)
         }
 
         config.peer_urls = peer?.map(\.uri) ?? []
         config.proxy_cidrs = proxy_network?.map(\.cidr) ?? []
 
-        if let socks5_proxy, let port = parsePort(fromProxyURL: socks5_proxy) {
+        if let socks5_proxy {
+            guard let port = parsePort(fromProxyURL: socks5_proxy) else {
+                throw TOMLCodecError.invalidValue("socks5_proxy must include a valid port.")
+            }
             config.enable_socks5 = true
             config.socks5_port = port
         }
@@ -131,19 +131,22 @@ private struct EasyTierTOMLDocument: Codable {
         if let vpn = vpn_portal_config {
             config.enable_vpn_portal = true
             if let client_cidr = vpn.client_cidr {
-                applyVPNClientCIDR(client_cidr, to: &config)
+                try applyVPNClientCIDR(client_cidr, to: &config)
             } else if let client_network_addr = vpn.client_network_addr {
                 config.vpn_portal_client_network_addr = client_network_addr
                 config.vpn_portal_client_network_len = vpn.client_network_len ?? config.vpn_portal_client_network_len
             }
-            if let port = vpn.wireguard_listen.flatMap(parsePort(fromSocketAddress:)) {
+            if let wireguardListen = vpn.wireguard_listen {
+                guard let port = parsePort(fromSocketAddress: wireguardListen) else {
+                    throw TOMLCodecError.invalidValue("vpn_portal_config.wireguard_listen must include a valid port.")
+                }
                 config.vpn_portal_listen_port = port
             }
         }
 
-        config.port_forwards = port_forward?.compactMap { forward in
+        config.port_forwards = try port_forward?.enumerated().map { index, forward in
             guard let bind = parseSocketAddress(forward.bind_addr), let dst = parseSocketAddress(forward.dst_addr) else {
-                return nil
+                throw TOMLCodecError.invalidValue("port_forward #\(index + 1) must include valid bind_addr and dst_addr socket addresses.")
             }
             return PortForwardConfig(
                 bind_ip: bind.host,
@@ -282,19 +285,31 @@ private struct FlagsTOML: Codable {
     }
 }
 
-private func applyIPv4(_ value: String, to config: inout NetworkConfig) {
-    let parts = value.split(separator: "/", maxSplits: 1).map(String.init)
-    config.virtual_ipv4 = parts[0]
-    if parts.count == 2, let networkLength = Int(parts[1]) {
+private func applyIPv4(_ value: String, to config: inout NetworkConfig) throws {
+    let parts = value.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+    guard let address = parts.first, !address.isEmpty else {
+        throw TOMLCodecError.invalidValue("ipv4 must include an address.")
+    }
+    config.virtual_ipv4 = address
+    if parts.count == 2 {
+        guard let networkLength = Int(parts[1]) else {
+            throw TOMLCodecError.invalidValue("ipv4 prefix must be a number.")
+        }
         config.network_length = networkLength
     }
     config.dhcp = false
 }
 
-private func applyVPNClientCIDR(_ value: String, to config: inout NetworkConfig) {
-    let parts = value.split(separator: "/", maxSplits: 1).map(String.init)
-    config.vpn_portal_client_network_addr = parts[0]
-    if parts.count == 2, let networkLength = Int(parts[1]) {
+private func applyVPNClientCIDR(_ value: String, to config: inout NetworkConfig) throws {
+    let parts = value.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+    guard let address = parts.first, !address.isEmpty else {
+        throw TOMLCodecError.invalidValue("vpn_portal_config.client_cidr must include an address.")
+    }
+    config.vpn_portal_client_network_addr = address
+    if parts.count == 2 {
+        guard let networkLength = Int(parts[1]) else {
+            throw TOMLCodecError.invalidValue("vpn_portal_config.client_cidr prefix must be a number.")
+        }
         config.vpn_portal_client_network_len = networkLength
     }
 }

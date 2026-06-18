@@ -40,7 +40,7 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
     func listInstances(reply: @escaping (String?, String?) -> Void) {
         do {
             let instances = try client.listInstancesSync()
-            reply(String(data: try encoder.encode(instances), encoding: .utf8) ?? "[]", nil)
+            reply(String(decoding: try encoder.encode(instances), as: UTF8.self), nil)
         } catch {
             replyFailure(error, code: "listInstancesFailed", reply: reply)
         }
@@ -54,7 +54,7 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
                 object[info.key] = try JSONSerialization.jsonObject(with: Data(info.value.utf8))
             }
             let data = try JSONSerialization.data(withJSONObject: object)
-            reply(String(data: data, encoding: .utf8) ?? "{}", nil)
+            reply(String(decoding: data, as: UTF8.self), nil)
         } catch {
             replyFailure(error, code: "collectNetworkInfosFailed", reply: reply)
         }

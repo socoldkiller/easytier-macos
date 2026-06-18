@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 import Observation
 
@@ -174,11 +173,14 @@ public final class EasyTierAppStore {
     public func deleteSelectedConfig() async {
         guard let selectedConfigID, let index = configs.firstIndex(where: { $0.id == selectedConfigID }) else { return }
         let config = configs[index].config
-        let name = runningInstance(matching: config)?.name ?? config.network_name
-        do {
-            try await client.stop(instanceNames: [name])
-        } catch {
-            log("Stop before delete skipped: \(error.localizedDescription)")
+        if let runningInstance = runningInstance(matching: config) {
+            do {
+                try await client.stop(instanceNames: [runningInstance.name])
+            } catch {
+                lastError = error.localizedDescription
+                log("Delete canceled because \(config.network_name) could not be stopped: \(error.localizedDescription)")
+                return
+            }
         }
         clearPendingStart(for: config)
         deviceAliases.removeAll { $0.networkID == selectedConfigID }
@@ -217,7 +219,7 @@ public final class EasyTierAppStore {
         guard let config = selectedConfig else { return }
         await busy {
             try validateConfigForCurrentRuntime(config)
-            try await client.validate(toml: NetworkConfigTOMLCodec.encode(config))
+            try await client.validate(toml: try NetworkConfigTOMLCodec.encode(config))
             log("Validated \(config.network_name).")
         }
     }
@@ -238,8 +240,11 @@ public final class EasyTierAppStore {
         guard let config = selectedConfig else { return }
         await busy {
             log("Stopping \(config.network_name)...")
-            let instanceName = runningInstance(matching: config)?.name ?? config.network_name
-            try await client.stop(instanceNames: [instanceName])
+            guard let runningInstance = runningInstance(matching: config) else {
+                log("Stop skipped because \(config.network_name) is not running.")
+                return
+            }
+            try await client.stop(instanceNames: [runningInstance.name])
             clearPendingStart(for: config)
             log("Stopped \(config.network_name).")
             try await refreshRuntimeThrowing()
@@ -251,7 +256,7 @@ public final class EasyTierAppStore {
         await busy {
             log("Restarting \(config.network_name)...")
             try validateConfigForCurrentRuntime(config, replacing: instance)
-            try await client.validate(toml: NetworkConfigTOMLCodec.encode(config))
+            try await client.validate(toml: try NetworkConfigTOMLCodec.encode(config))
             try await client.stop(instanceNames: [instance.name])
             clearPendingStart(for: config)
             try await client.run(config: config)
@@ -346,8 +351,9 @@ public final class EasyTierAppStore {
         }
     }
 
-    public func exportSelectedTOML() -> String {
-        selectedConfig.map(NetworkConfigTOMLCodec.encode) ?? ""
+    public func exportSelectedTOML() throws -> String {
+        guard let selectedConfig else { return "" }
+        return try NetworkConfigTOMLCodec.encode(selectedConfig)
     }
 
     public func importTOML(_ toml: String) {
@@ -396,7 +402,11 @@ public final class EasyTierAppStore {
         mergePendingStarts(into: &running)
         recordTrafficSamples(for: running)
         instances = running
-        isConfigServerConnected = (try? await client.isConfigServerClientConnected()) ?? false
+        if mode.configServerURL == nil {
+            isConfigServerConnected = false
+        } else {
+            isConfigServerConnected = try await client.isConfigServerClientConnected()
+        }
     }
 
     private func runtimeInfo(for instance: NetworkInstance, in infos: [String: NetworkInstanceRunningInfo]) -> NetworkInstanceRunningInfo? {
@@ -590,169 +600,4 @@ public final class EasyTierAppStore {
 private struct PendingNetworkStart: Sendable {
     var instanceID: String
     var name: String
-}
-
-public enum WorkspaceTab: String, CaseIterable, Identifiable, Sendable {
-    case status = "Status"
-    case view = "View"
-    case config = "Config"
-    case logs = "Logs"
-
-    public var id: String { rawValue }
-}
-
-public struct DeviceAlias: Codable, Equatable, Identifiable, Sendable {
-    public var networkID: String
-    public var peerID: String
-    public var hostname: String
-    public var displayName: String
-
-    public var id: String { "\(networkID)-\(peerID)" }
-
-    public init(networkID: String, peerID: String, hostname: String, displayName: String) {
-        self.networkID = networkID
-        self.peerID = peerID
-        self.hostname = hostname
-        self.displayName = displayName
-    }
-}
-
-public struct AppSnapshot: Codable, Equatable, Sendable {
-    public var configs: [StoredNetworkConfig]
-    public var mode: AppMode?
-    public var lastSelectedConfigID: String?
-    public var deviceAliases: [DeviceAlias]
-
-    public init(
-        configs: [StoredNetworkConfig],
-        mode: AppMode?,
-        lastSelectedConfigID: String?,
-        deviceAliases: [DeviceAlias] = []
-    ) {
-        self.configs = configs
-        self.mode = mode
-        self.lastSelectedConfigID = lastSelectedConfigID
-        self.deviceAliases = deviceAliases
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case configs
-        case mode
-        case lastSelectedConfigID
-        case deviceAliases
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        configs = try container.decode([StoredNetworkConfig].self, forKey: .configs)
-        mode = try container.decodeIfPresent(AppMode.self, forKey: .mode)
-        lastSelectedConfigID = try container.decodeIfPresent(String.self, forKey: .lastSelectedConfigID)
-        deviceAliases = try container.decodeIfPresent([DeviceAlias].self, forKey: .deviceAliases) ?? []
-    }
-}
-
-public struct EasyTierStorage: Sendable {
-    public var baseDirectory: URL
-    public var legacyBaseDirectories: [URL]
-
-    public static let `default` = EasyTierStorage(
-        baseDirectory: defaultBaseDirectory(),
-        legacyBaseDirectories: defaultLegacyBaseDirectories()
-    )
-
-    public init(baseDirectory: URL, legacyBaseDirectories: [URL] = []) {
-        self.baseDirectory = baseDirectory
-        self.legacyBaseDirectories = legacyBaseDirectories
-    }
-
-    public func load() throws -> AppSnapshot {
-        let url = stateURL(in: baseDirectory)
-        if FileManager.default.fileExists(atPath: url.path) {
-            return try loadSnapshot(from: url)
-        }
-        if let legacySnapshot = try loadLegacySnapshot() {
-            return legacySnapshot
-        }
-        return AppSnapshot(configs: [], mode: nil, lastSelectedConfigID: nil)
-    }
-
-    public func save(_ snapshot: AppSnapshot) throws {
-        try FileManager.default.createDirectory(at: baseDirectory, withIntermediateDirectories: true)
-        let data = try encoder.encode(snapshot)
-        let stateURL = stateURL(in: baseDirectory)
-        try data.write(to: stateURL, options: .atomic)
-        repairOriginalUserOwnership(for: baseDirectory)
-        repairOriginalUserOwnership(for: stateURL)
-    }
-
-    static func defaultBaseDirectory(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
-        appSupportDirectory(environment: environment)
-            .appendingPathComponent(appSupportDirectoryName, isDirectory: true)
-    }
-
-    static func defaultLegacyBaseDirectories(environment: [String: String] = ProcessInfo.processInfo.environment) -> [URL] {
-        let appSupport = appSupportDirectory(environment: environment)
-        return legacyAppSupportDirectoryNames.map { name in
-            appSupport.appendingPathComponent(name, isDirectory: true)
-        }
-    }
-
-    private static func appSupportDirectory(environment: [String: String]) -> URL {
-        if let originalHome = environment["EASYTIER_ORIGINAL_HOME"], !originalHome.isEmpty {
-            return URL(fileURLWithPath: originalHome, isDirectory: true)
-                .appendingPathComponent("Library", isDirectory: true)
-                .appendingPathComponent("Application Support", isDirectory: true)
-        }
-        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-    }
-
-    private func loadLegacySnapshot() throws -> AppSnapshot? {
-        var firstError: Error?
-
-        for legacyBaseDirectory in legacyBaseDirectories {
-            let url = stateURL(in: legacyBaseDirectory)
-            guard FileManager.default.fileExists(atPath: url.path) else { continue }
-            do {
-                let snapshot = try loadSnapshot(from: url)
-                try? save(snapshot)
-                return snapshot
-            } catch {
-                if firstError == nil { firstError = error }
-            }
-        }
-
-        if let firstError { throw firstError }
-        return nil
-    }
-
-    private func loadSnapshot(from url: URL) throws -> AppSnapshot {
-        let data = try Data(contentsOf: url)
-        return try decoder.decode(AppSnapshot.self, from: data)
-    }
-
-    private func stateURL(in directory: URL) -> URL {
-        directory.appendingPathComponent("state.json")
-    }
-
-    private func repairOriginalUserOwnership(for url: URL) {
-        guard let uidString = ProcessInfo.processInfo.environment["EASYTIER_ORIGINAL_UID"],
-              let gidString = ProcessInfo.processInfo.environment["EASYTIER_ORIGINAL_GID"],
-              let uid = uid_t(uidString),
-              let gid = gid_t(gidString)
-        else { return }
-        _ = chown(url.path, uid, gid)
-    }
-
-    private var encoder: JSONEncoder {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        return encoder
-    }
-
-    private var decoder: JSONDecoder { JSONDecoder() }
-
-    private static let appSupportDirectoryName = "com.kkrainbow.easytier.mac"
-    // Older builds used these names; on case-insensitive volumes, "EasyTier" can
-    // also resolve to EasyTier Core's legacy "easytier" runtime directory.
-    private static let legacyAppSupportDirectoryNames = ["EasyTier", "easytier", "com.kkrainbow.easytier"]
 }

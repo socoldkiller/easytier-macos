@@ -25,7 +25,7 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, @unchecked Send
     }
 
     public func run(config: NetworkConfig) async throws {
-        let toml = NetworkConfigTOMLCodec.encode(config)
+        let toml = try NetworkConfigTOMLCodec.encode(config)
         try await validate(toml: toml)
         try await callHelper { service, reply in
             service.run(configTOML: toml, reply: reply)
@@ -119,8 +119,10 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, @unchecked Send
             body(service) { payload, error in
                 if let error, !error.isEmpty {
                     state.finish(.failure(PrivilegedHelperError.helperReported(PrivilegedHelperErrorPayload.decode(from: error))))
+                } else if let payload {
+                    state.finish(.success(payload))
                 } else {
-                    state.finish(.success(payload ?? ""))
+                    state.finish(.failure(PrivilegedHelperError.invalidPayload("Helper returned no payload.")))
                 }
             }
         }

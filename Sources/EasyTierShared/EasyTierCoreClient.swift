@@ -43,12 +43,12 @@ public struct UnavailableEasyTierCoreClient: EasyTierCoreClient {
     public func run(config _: NetworkConfig) async throws { throw unavailable() }
     public func stop(instanceNames _: [String]) async throws { throw unavailable() }
     public func retain(instanceNames _: [String]) async throws { throw unavailable() }
-    public func listInstances() async throws -> [NetworkInstance] { [] }
-    public func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] { [:] }
+    public func listInstances() async throws -> [NetworkInstance] { throw unavailable() }
+    public func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] { throw unavailable() }
     public func callJSONRPC(service _: String, method _: String, domain _: String?, payload _: String) async throws -> String { throw unavailable() }
     public func startConfigServerClient(url _: URL) async throws { throw unavailable() }
     public func stopConfigServerClient() async throws { throw unavailable() }
-    public func isConfigServerClientConnected() async throws -> Bool { false }
+    public func isConfigServerClientConnected() async throws -> Bool { throw unavailable() }
 
     private func unavailable() -> EasyTierCoreError {
         .ffiUnavailable(reason)
