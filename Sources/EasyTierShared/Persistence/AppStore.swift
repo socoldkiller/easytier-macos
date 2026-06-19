@@ -13,6 +13,7 @@ public final class EasyTierAppStore {
     public var isBusy = false
     public var lastError: String?
     public var isShowingAbout = false
+    public var isShowingLinuxInstallGuide = false
     public var isConfigServerConnected = false
     public var trafficSamplesByInstance: [String: [TrafficSample]] = [:]
 

@@ -68,6 +68,9 @@ struct ContentView: View {
                 if tomlMode == .import { store.importTOML(text) }
             }
         }
+        .sheet(isPresented: $store.isShowingLinuxInstallGuide) {
+            LinuxInstallGuideView()
+        }
         .sheet(isPresented: $store.isShowingAbout) {
             AboutView()
         }
@@ -251,6 +254,16 @@ struct ContentView: View {
                 }
             } label: {
                 Label("TOML", systemImage: "doc.text")
+            }
+
+            Menu {
+                Button("Install on Linux") {
+                    store.isShowingLinuxInstallGuide = true
+                }
+                Link("Online Docs", destination: URL(string: "https://easytier.cn")!)
+                Link("Releases", destination: URL(string: "https://github.com/EasyTier/EasyTier/releases")!)
+            } label: {
+                Label("Help", systemImage: "questionmark.circle")
             }
 
             Button {
