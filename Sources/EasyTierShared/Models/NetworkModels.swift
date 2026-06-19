@@ -1,4 +1,5 @@
 import Foundation
+import SystemConfiguration
 
 public enum NetworkingMethod: Int, Codable, CaseIterable, Identifiable, Sendable {
     case publicServer = 0
@@ -235,6 +236,57 @@ public extension NetworkConfig {
         case .manual:
             return peer_urls.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         }
+    }
+}
+
+public enum HostProxyCIDR {
+    public static func first(excluding existing: [String] = []) -> String {
+        let existing = Set(existing.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+        return cidrs(from: hostIPv4Interfaces(), primaryInterface: primaryIPv4Interface()).first { !existing.contains($0) } ?? ""
+    }
+
+    static func cidrs(from interfaces: [(name: String, address: UInt32, netmask: UInt32)], primaryInterface: String?) -> [String] {
+        interfaces
+            .sorted { lhs, rhs in lhs.name == primaryInterface && rhs.name != primaryInterface }
+            .map { cidr(address: $0.address, netmask: $0.netmask) }
+    }
+
+    static func cidr(address: UInt32, netmask: UInt32) -> String {
+        "\(ipv4String(address & netmask))/\(netmask.nonzeroBitCount)"
+    }
+
+    private static func hostIPv4Interfaces() -> [(name: String, address: UInt32, netmask: UInt32)] {
+        var head: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&head) == 0, let head else { return [] }
+        defer { freeifaddrs(head) }
+
+        var interfaces: [(name: String, address: UInt32, netmask: UInt32)] = []
+        var item: UnsafeMutablePointer<ifaddrs>? = head
+        while let current = item {
+            defer { item = current.pointee.ifa_next }
+
+            let flags = current.pointee.ifa_flags
+            guard flags & UInt32(IFF_UP) != 0, flags & UInt32(IFF_LOOPBACK) == 0, flags & UInt32(IFF_POINTOPOINT) == 0 else { continue }
+            guard let addr = current.pointee.ifa_addr, let netmask = current.pointee.ifa_netmask else { continue }
+            guard addr.pointee.sa_family == UInt8(AF_INET), netmask.pointee.sa_family == UInt8(AF_INET) else { continue }
+
+            let name = String(cString: current.pointee.ifa_name)
+            let address = addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
+            let mask = netmask.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
+            interfaces.append((name, address, mask))
+        }
+        return interfaces
+    }
+
+    private static func primaryIPv4Interface() -> String? {
+        guard let store = SCDynamicStoreCreate(nil, "EasyTier" as CFString, nil, nil),
+              let value = SCDynamicStoreCopyValue(store, "State:/Network/Global/IPv4" as CFString) as? [String: Any]
+        else { return nil }
+        return value["PrimaryInterface"] as? String
+    }
+
+    private static func ipv4String(_ value: UInt32) -> String {
+        [24, 16, 8, 0].map { String((value >> UInt32($0)) & 0xff) }.joined(separator: ".")
     }
 }
 

@@ -22,7 +22,7 @@ public final class EasyTierAppStore {
     private var lastTrafficCounters: [String: (timestamp: Date, txBytes: Int64, rxBytes: Int64)] = [:]
     private var pendingStarts: [String: PendingNetworkStart] = [:]
 
-    public init(client: any EasyTierCoreClient = EasyTierClientFactory.makeDefault(), storage: EasyTierStorage = .default) {
+    public init(client: any EasyTierCoreClient = PrivilegedEasyTierClient(), storage: EasyTierStorage = .default) {
         self.client = client
         self.storage = storage
     }

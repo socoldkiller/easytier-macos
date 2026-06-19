@@ -25,7 +25,7 @@ struct TOMLSheet: View {
             TextEditor(text: $text)
                 .font(.system(.body, design: .monospaced))
                 .textEditorStyle(.plain)
-                .hiddenScrollIndicators()
+                .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
                 .padding(8)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
 

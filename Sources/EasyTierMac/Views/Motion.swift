@@ -1,10 +1,6 @@
-import AppKit
-import QuartzCore
 import SwiftUI
 
 enum EasyTierMotion {
-    static let windowCloseDuration: TimeInterval = 0.16
-
     static func quick(reduceMotion: Bool) -> Animation {
         reduceMotion ? .easeOut(duration: 0.06) : .easeOut(duration: 0.14)
     }
@@ -140,13 +136,6 @@ extension View {
     func presentedSurfaceMotion() -> some View {
         modifier(PresentedSurfaceMotionModifier())
     }
-
-    func windowMotion(role: EasyTierWindowRole = .document, animatesClose: Bool = true) -> some View {
-        background {
-            WindowMotionBridge(role: role, animatesClose: animatesClose)
-                .frame(width: 0, height: 0)
-        }
-    }
 }
 
 private struct PresentedSurfaceMotionModifier: ViewModifier {
@@ -165,140 +154,5 @@ private struct PresentedSurfaceMotionModifier: ViewModifier {
                     isPresented = true
                 }
             }
-    }
-}
-
-enum EasyTierWindowRole {
-    case document
-    case utilityPanel
-
-    var animationBehavior: NSWindow.AnimationBehavior {
-        switch self {
-        case .document:
-            .documentWindow
-        case .utilityPanel:
-            .utilityWindow
-        }
-    }
-}
-
-private struct WindowMotionBridge: NSViewRepresentable {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var role: EasyTierWindowRole
-    var animatesClose: Bool
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(role: role, animatesClose: animatesClose)
-    }
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
-        context.coordinator.reduceMotion = reduceMotion
-        DispatchQueue.main.async {
-            context.coordinator.attach(to: view.window)
-        }
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.role = role
-        context.coordinator.animatesClose = animatesClose
-        context.coordinator.reduceMotion = reduceMotion
-        DispatchQueue.main.async {
-            context.coordinator.attach(to: nsView.window)
-        }
-    }
-
-    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
-        coordinator.detach()
-    }
-
-    @MainActor
-    final class Coordinator: NSObject, NSWindowDelegate {
-        var role: EasyTierWindowRole
-        var animatesClose: Bool
-        var reduceMotion = false
-
-        private weak var window: NSWindow?
-        private weak var previousDelegate: NSWindowDelegate?
-        private var isFinishingAnimatedClose = false
-
-        init(role: EasyTierWindowRole, animatesClose: Bool) {
-            self.role = role
-            self.animatesClose = animatesClose
-        }
-
-        func attach(to window: NSWindow?) {
-            guard let window else { return }
-
-            if self.window !== window {
-                detach()
-                previousDelegate = window.delegate
-                self.window = window
-                window.delegate = self
-            }
-
-            configure(window)
-        }
-
-        func detach() {
-            if window?.delegate === self {
-                window?.delegate = previousDelegate
-            }
-            window = nil
-            previousDelegate = nil
-        }
-
-        func windowShouldClose(_ sender: NSWindow) -> Bool {
-            if let previousDecision = previousDelegate?.windowShouldClose?(sender), previousDecision == false {
-                return false
-            }
-
-            guard animatesClose, !reduceMotion, !isFinishingAnimatedClose else {
-                return true
-            }
-
-            animateClose(sender)
-            return false
-        }
-
-        func windowWillClose(_ notification: Notification) {
-            previousDelegate?.windowWillClose?(notification)
-            if let closingWindow = notification.object as? NSWindow {
-                restore(closingWindow, to: closingWindow.frame)
-            }
-            isFinishingAnimatedClose = false
-        }
-
-        private func configure(_ window: NSWindow) {
-            window.animationBehavior = role.animationBehavior
-        }
-
-        private func animateClose(_ window: NSWindow) {
-            isFinishingAnimatedClose = true
-            let originalFrame = window.frame
-            let targetFrame = originalFrame.offsetBy(dx: 0, dy: -6)
-
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = EasyTierMotion.windowCloseDuration
-                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 0.0, 0.0, 1.0)
-                window.animator().alphaValue = 0
-                window.animator().setFrame(targetFrame, display: false)
-            } completionHandler: { [weak window] in
-                Task { @MainActor in
-                    guard let window else { return }
-                    window.orderOut(nil)
-                    window.alphaValue = 1
-                    window.setFrame(originalFrame, display: false)
-                    window.close()
-                }
-            }
-        }
-
-        private func restore(_ window: NSWindow, to frame: NSRect) {
-            window.alphaValue = 1
-            window.setFrame(frame, display: false)
-        }
     }
 }

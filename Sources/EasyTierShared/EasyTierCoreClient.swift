@@ -54,9 +54,3 @@ public struct UnavailableEasyTierCoreClient: EasyTierCoreClient {
         .ffiUnavailable(reason)
     }
 }
-
-public enum EasyTierClientFactory {
-    public static func makeDefault() -> any EasyTierCoreClient {
-        PrivilegedEasyTierClient()
-    }
-}

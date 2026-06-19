@@ -198,7 +198,7 @@ struct StatusView: View {
                 }
             }
         }
-        .hiddenScrollIndicators()
+        .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
     }
 
     private var memberTableRows: [MemberTableRow] {

@@ -52,6 +52,15 @@ import Testing
     #expect(config.expectsRemotePeerConnection)
 }
 
+@Test func hostProxyCIDRUsesPrimaryHostRouteNetwork() {
+    let interfaces: [(name: String, address: UInt32, netmask: UInt32)] = [
+        ("en1", 0x0a00_022a, 0xff00_0000),
+        ("en0", 0xc0a8_012a, 0xffff_ff00),
+    ]
+
+    #expect(HostProxyCIDR.cidrs(from: interfaces, primaryInterface: "en0") == ["192.168.1.0/24", "10.0.0.0/8"])
+}
+
 @Test func tomlRoundTripsCommonConfigFields() throws {
     var config = NetworkConfig(network_name: "office", network_secret: "secret")
     config.dhcp = false

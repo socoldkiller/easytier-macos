@@ -80,7 +80,6 @@ struct ContentView: View {
         } message: {
             Text(store.lastError ?? "")
         }
-        .windowMotion(role: .document)
     }
 
     @ViewBuilder
@@ -167,7 +166,7 @@ struct ContentView: View {
                 onReturn: openSelectedSearchResult
             )
         }
-        .hiddenScrollIndicators()
+        .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
         .safeAreaInset(edge: .bottom) {
             HStack {
                 Button {

@@ -77,12 +77,18 @@ identity_names_matching() {
 run_with_timeout() {
   local seconds="$1"
   shift
-
-  if command -v perl >/dev/null 2>&1; then
-    perl -e 'my $seconds = shift @ARGV; alarm $seconds; exec @ARGV or die "exec failed: $!\n";' "$seconds" "$@"
-  else
-    "$@"
-  fi
+  "$@" &
+  local command_pid="$!"
+  (
+    sleep "$seconds"
+    kill "$command_pid" >/dev/null 2>&1 || true
+  ) &
+  local watchdog_pid="$!"
+  wait "$command_pid"
+  local status="$?"
+  kill "$watchdog_pid" >/dev/null 2>&1 || true
+  wait "$watchdog_pid" 2>/dev/null || true
+  return "$status"
 }
 
 security_step() {
@@ -539,23 +545,6 @@ clean_development_helper_state() {
     echo "This is a global development cleanup for stale SMAppService/LWCR records." >&2
     run_with_timeout 10 sfltool resetbtm >/dev/null 2>&1 || true
   fi
-}
-
-run_with_timeout() {
-  local seconds="$1"
-  shift
-  "$@" &
-  local command_pid="$!"
-  (
-    sleep "$seconds"
-    kill "$command_pid" >/dev/null 2>&1 || true
-  ) &
-  local watchdog_pid="$!"
-  wait "$command_pid"
-  local status="$?"
-  kill "$watchdog_pid" >/dev/null 2>&1 || true
-  wait "$watchdog_pid" 2>/dev/null || true
-  return "$status"
 }
 
 cd "$ROOT_DIR"

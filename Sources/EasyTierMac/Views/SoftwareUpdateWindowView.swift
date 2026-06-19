@@ -54,7 +54,6 @@ struct SoftwareUpdateWindowView: View {
         .environment(\.colorScheme, .dark)
         .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: controller.state.titleMotionID)
         .presentedSurfaceMotion()
-        .windowMotion(role: .utilityPanel)
     }
 
     @ViewBuilder

@@ -190,72 +190,14 @@ private struct SourceRevisionInfo: Equatable {
         let bundledCoreTag = normalized(info["EasyTierCoreTag"] as? String)
         let bundledCore = normalized(info["EasyTierCoreCommit"] as? String)
 
-        if Bundle.main.bundleURL.pathExtension == "app" {
-            return SourceRevisionInfo(
-                guiCommit: bundledGUI ?? "unknown",
-                coreVersion: bundledCoreTag ?? bundledCore ?? "unknown"
-            )
-        }
-
-        let guiRoot = GitRevision.repositoryRoot(from: FileManager.default.currentDirectoryPath)
-        let coreRoot = guiRoot.map { ($0 as NSString).appendingPathComponent("Vendor/EasyTier") }
-
         return SourceRevisionInfo(
-            guiCommit: bundledGUI ?? guiRoot.flatMap { GitRevision.revision(at: $0) } ?? "unknown",
-            coreVersion: bundledCoreTag ?? coreRoot.flatMap { GitRevision.exactTag(at: $0) } ?? bundledCore ?? coreRoot.flatMap { GitRevision.revision(at: $0) } ?? "unknown"
+            guiCommit: bundledGUI ?? "unknown",
+            coreVersion: bundledCoreTag ?? bundledCore ?? "unknown"
         )
     }
 
     private static func normalized(_ value: String?) -> String? {
         guard let value, !value.isEmpty, value != "unknown" else { return nil }
         return value
-    }
-}
-
-private enum GitRevision {
-    static func repositoryRoot(from startPath: String) -> String? {
-        var url = URL(fileURLWithPath: startPath, isDirectory: true)
-        for _ in 0..<8 {
-            if FileManager.default.fileExists(atPath: url.appendingPathComponent(".git").path) {
-                return url.path
-            }
-            let parent = url.deletingLastPathComponent()
-            if parent.path == url.path { break }
-            url = parent
-        }
-        return nil
-    }
-
-    static func revision(at path: String) -> String? {
-        guard let commit = runGit(["-C", path, "rev-parse", "--short", "HEAD"]), !commit.isEmpty else { return nil }
-        let status = runGit(["-C", path, "status", "--short", "--untracked-files=no"])
-        return status?.isEmpty == false ? "\(commit)-dirty" : commit
-    }
-
-    static func exactTag(at path: String) -> String? {
-        guard let tag = runGit(["-C", path, "describe", "--tags", "--exact-match", "HEAD"]), !tag.isEmpty else { return nil }
-        let status = runGit(["-C", path, "status", "--short", "--untracked-files=no"])
-        return status?.isEmpty == false ? "\(tag)-dirty" : tag
-    }
-
-    private static func runGit(_ arguments: [String]) -> String? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["git"] + arguments
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return nil
-        }
-
-        guard process.terminationStatus == 0 else { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

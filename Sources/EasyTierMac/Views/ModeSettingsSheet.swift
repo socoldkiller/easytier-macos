@@ -63,7 +63,7 @@ struct ModeSettingsSheet: View {
                     modeFields
                 }
                 .formStyle(.grouped)
-                .hiddenScrollIndicators()
+                .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
             }
 
             HStack {

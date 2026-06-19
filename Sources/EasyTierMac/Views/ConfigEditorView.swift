@@ -44,8 +44,18 @@ struct ConfigEditorView: View {
                 CardSection("Advanced") {
                     ExpandableSettingsGroup("Network routing") {
                         VStack(alignment: .leading, spacing: 12) {
-                            StringListEditor(title: "Listeners", placeholder: "tcp://0.0.0.0:11010", values: $config.listener_urls)
-                            StringListEditor(title: "Proxy CIDRs", placeholder: "10.0.0.0/24", values: $config.proxy_cidrs)
+                            StringListEditor(
+                                title: "Listeners",
+                                placeholder: "tcp://0.0.0.0:11010",
+                                values: $config.listener_urls,
+                                defaultNewValue: nextDefaultListenerURL
+                            )
+                            StringListEditor(
+                                title: "Proxy CIDRs",
+                                placeholder: "10.0.0.0/24",
+                                values: $config.proxy_cidrs,
+                                defaultNewValue: { HostProxyCIDR.first(excluding: $0) }
+                            )
                             Toggle("Manual routes", isOn: $config.enable_manual_routes)
                             StringListEditor(title: "Routes", placeholder: "192.168.0.0/16", values: $config.routes)
                                 .disabled(!config.enable_manual_routes)
@@ -114,7 +124,7 @@ struct ConfigEditorView: View {
             }
             .padding(18)
         }
-        .hiddenScrollIndicators()
+        .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
     }
 
     private func optionalBool(_ binding: Binding<Bool?>, defaultValue: Bool) -> Binding<Bool> {
@@ -222,6 +232,7 @@ private struct StringListEditor: View {
     var title: String
     var placeholder: String
     @Binding var values: [String]
+    var defaultNewValue: ([String]) -> String = { _ in "" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -231,7 +242,7 @@ private struct StringListEditor: View {
                 Spacer()
                 Button {
                     withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
-                        values.append("")
+                        values.append(defaultNewValue(values))
                     }
                 } label: { Image(systemName: "plus") }
                     .buttonStyle(.borderless)
@@ -261,6 +272,16 @@ private struct StringListEditor: View {
         .padding(.vertical, 3)
         .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: values.count)
     }
+}
+
+private let defaultListenerURLs = [
+    "tcp://0.0.0.0:11010",
+    "udp://0.0.0.0:11010",
+    "wg://0.0.0.0:11011",
+]
+
+private func nextDefaultListenerURL(existing values: [String]) -> String {
+    defaultListenerURLs.first { !values.contains($0) } ?? ""
 }
 
 private struct PortForwardEditor: View {
