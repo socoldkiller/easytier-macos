@@ -711,7 +711,12 @@ import Testing
 
 @MainActor
 @Test func helperPermissionErrorsDoNotBecomeModalLastError() async throws {
-    let client = HelperRequiresApprovalClient()
+    let client = HelperRunErrorClient(
+        payload: PrivilegedHelperErrorPayload(
+            code: "helperRequiresApproval",
+            message: "Privileged helper is installed but macOS has not allowed it to run in the background."
+        )
+    )
     let config = NetworkConfig(instance_id: "approval-id", network_name: "approval-network")
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
@@ -723,6 +728,26 @@ import Testing
 
     #expect(store.lastError == nil)
     #expect(store.logLines.contains { $0.contains("Privileged helper needs user approval") })
+}
+
+@MainActor
+@Test func helperUnavailableErrorBecomesModalLastError() async throws {
+    let client = HelperRunErrorClient(
+        payload: PrivilegedHelperErrorPayload(
+            code: "helperUnavailable",
+            message: "Privileged helper is enabled but is not responding."
+        )
+    )
+    let config = NetworkConfig(instance_id: "helper-down-id", network_name: "helper-down-network")
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.selectedConfigID = config.instance_id
+
+    await store.runSelectedConfig()
+
+    #expect(store.lastError?.contains("not responding") == true)
 }
 
 @Test func runtimeInfoDerivesLocalAndPeerMembers() throws {
@@ -1101,18 +1126,18 @@ private final class RecordingToggleClient: EasyTierCoreClient, @unchecked Sendab
     func isConfigServerClientConnected() async throws -> Bool { false }
 }
 
-private final class HelperRequiresApprovalClient: EasyTierCoreClient, @unchecked Sendable {
+private final class HelperRunErrorClient: EasyTierCoreClient, @unchecked Sendable {
+    let payload: PrivilegedHelperErrorPayload
+
+    init(payload: PrivilegedHelperErrorPayload) {
+        self.payload = payload
+    }
+
     func version() async throws -> String { "test" }
     func validate(toml _: String) async throws {}
 
     func run(config _: NetworkConfig) async throws {
-        throw PrivilegedHelperError.helperReported(
-            PrivilegedHelperErrorPayload(
-                code: "helperRequiresApproval",
-                message: "Privileged helper is installed but macOS has not allowed it to run in the background.",
-                recoverySuggestion: "Open System Settings > General > Login Items & Extensions, allow EasyTier, then return to EasyTier and try again."
-            )
-        )
+        throw PrivilegedHelperError.helperReported(payload)
     }
 
     func stop(instanceNames _: [String]) async throws {}

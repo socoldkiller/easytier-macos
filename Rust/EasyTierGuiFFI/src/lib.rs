@@ -2,6 +2,7 @@ use std::{
     ffi::{CStr, CString, c_char, c_int},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::Mutex,
+    time::Duration,
 };
 
 use anyhow::{Context, anyhow};
@@ -25,7 +26,7 @@ use easytier::{
 };
 use once_cell::sync::Lazy;
 use serde_json::Value;
-use tokio::runtime::Runtime;
+use tokio::{runtime::Runtime, time::timeout};
 use url::{Host, Url};
 
 type RpcClient = StandAloneClient<TcpTunnelConnector>;
@@ -35,6 +36,7 @@ static INSTANCE_MANAGER: Lazy<NetworkInstanceManager> = Lazy::new(NetworkInstanc
 static RPC_CLIENTS: Lazy<DashMap<String, RpcClientEntry>> = Lazy::new(DashMap::new);
 static RPC_RUNTIME: Lazy<Runtime> =
     Lazy::new(|| Runtime::new().expect("failed to create EasyTier RPC runtime"));
+const RPC_CALL_TIMEOUT: Duration = Duration::from_secs(8);
 
 static ERROR_MSG: Lazy<Mutex<Vec<u8>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
@@ -532,13 +534,20 @@ pub unsafe extern "C" fn call_json_rpc(
             .map_err(|_| "RPC client lock is poisoned".to_string())?;
 
         let response = RPC_RUNTIME
-            .block_on(call_rpc_by_service(
-                &mut client,
-                &service_name,
-                &method_name,
-                domain,
-                payload,
-            ))
+            .block_on(async {
+                timeout(
+                    RPC_CALL_TIMEOUT,
+                    call_rpc_by_service(&mut client, &service_name, &method_name, domain, payload),
+                )
+                .await
+            })
+            .map_err(|_| {
+                RPC_CLIENTS.remove(&client_id);
+                format!(
+                    "EasyTier RPC request timed out after {} seconds.",
+                    RPC_CALL_TIMEOUT.as_secs()
+                )
+            })?
             .map_err(|e| {
                 RPC_CLIENTS.remove(&client_id);
                 e.to_string()

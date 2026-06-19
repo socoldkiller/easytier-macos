@@ -81,8 +81,15 @@ final class PermissionController {
     }
 
     private func refreshAfterRegistrationFailure(_ error: Error) {
+        let message = error.localizedDescription
+        if service.status == .requiresApproval || message.localizedCaseInsensitiveContains("operation not permitted") {
+            state = .requiresApproval
+            detail = "Approve EasyTier in System Settings to enable TUN networking."
+            return
+        }
+
         state = .error
-        detail = error.localizedDescription
+        detail = message
     }
 
     private func verifyEnabledHelper() async {

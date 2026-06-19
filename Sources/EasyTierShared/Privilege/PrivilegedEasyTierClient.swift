@@ -83,7 +83,7 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, @unchecked Send
     }
 
     public func callJSONRPC(clientID: String, service: String, method: String, domain: String?, payload: String) async throws -> String {
-        try await callHelperReturningPayload { helper, reply in
+        try await callHelperReturningPayload(timeoutError: Self.rpcTimeoutError) { helper, reply in
             helper.callJSONRPC(clientID: clientID, service: service, method: method, domain: domain, payload: payload, reply: reply)
         }
     }
@@ -113,6 +113,10 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, @unchecked Send
     }
 
     private func callHelperReturningPayload(_ body: @escaping (EasyTierPrivilegedServiceProtocol, @escaping (String?, String?) -> Void) -> Void) async throws -> String {
+        try await callHelperReturningPayload(timeoutError: Self.timeoutError, body)
+    }
+
+    private func callHelperReturningPayload(timeoutError: @escaping @Sendable () -> PrivilegedHelperError, _ body: @escaping (EasyTierPrivilegedServiceProtocol, @escaping (String?, String?) -> Void) -> Void) async throws -> String {
         try ensureHelperIsEnabled()
 
         let connection = Self.makeConnection()
@@ -122,16 +126,16 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, @unchecked Send
             let state = HelperCallState(connection: connection, continuation: continuation)
 
             DispatchQueue.global().asyncAfter(deadline: .now() + 15) {
-                state.finish(.failure(Self.timeoutError()))
+                state.finish(.failure(timeoutError()))
             }
 
             let proxy = connection.remoteObjectProxyWithErrorHandler { _ in
                 let status = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName).status
-                state.finish(.failure(status == .enabled ? PrivilegedHelperError.unavailable : Self.statusError(status)))
+                state.finish(.failure(status == .enabled ? Self.helperUnavailableError() : Self.statusError(status)))
             }
             guard let service = proxy as? EasyTierPrivilegedServiceProtocol else {
                 let status = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName).status
-                state.finish(.failure(status == .enabled ? PrivilegedHelperError.unavailable : Self.statusError(status)))
+                state.finish(.failure(status == .enabled ? Self.helperUnavailableError() : Self.statusError(status)))
                 return
             }
             body(service) { payload, error in
@@ -180,6 +184,31 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, @unchecked Send
                 code: "helperTimeout",
                 message: "Privileged helper is enabled but did not respond within 15 seconds.",
                 recoverySuggestion: "Quit and reopen EasyTier, then try installing the helper again. If this continues, remove and reinstall EasyTier."
+            )
+        )
+    }
+
+    private static func rpcTimeoutError() -> PrivilegedHelperError {
+        let service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
+        if service.status != .enabled {
+            return statusError(service.status)
+        }
+
+        return .helperReported(
+            PrivilegedHelperErrorPayload(
+                code: "remoteRPCTimeout",
+                message: "Remote EasyTier RPC did not respond within 15 seconds.",
+                recoverySuggestion: "Check that the remote device is online, rpc_portal is enabled, and the RPC URL uses the EasyTier virtual IP."
+            )
+        )
+    }
+
+    private static func helperUnavailableError() -> PrivilegedHelperError {
+        .helperReported(
+            PrivilegedHelperErrorPayload(
+                code: "helperUnavailable",
+                message: "Privileged helper is enabled but is not responding.",
+                recoverySuggestion: "Quit and reopen EasyTier. If this continues, reinstall the helper."
             )
         )
     }
