@@ -91,7 +91,8 @@ struct ContentView: View {
         case .status:
             StatusView(
                 highlightedMemberPeerID: highlightedSearchPeerID,
-                onRenameLocalHostname: renameSelectedHostname
+                onRenameLocalHostname: renameSelectedHostname,
+                onRenameRemoteHostname: renameRemoteHostname
             ) {
                 selectWorkspaceTab(.config)
             }
@@ -630,6 +631,37 @@ struct ContentView: View {
                 return
             }
             await store.restartSelectedConfig(replacing: runningInstanceToRestart)
+        }
+    }
+
+    private func renameRemoteHostname(_ member: NetworkMemberStatus, hostname: String) {
+        let trimmed = hostname.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            store.lastError = "Remote hostname cannot be empty."
+            return
+        }
+        guard trimmed != member.hostname else { return }
+        guard let instanceID = member.instanceID else {
+            store.lastError = "Remote instance ID is unavailable for \(member.hostname)."
+            return
+        }
+        guard let ip = member.copyableIPv4Address, let rpcURL = URL(string: "tcp://\(ip):15888") else {
+            store.lastError = "Remote RPC URL is unavailable for \(member.hostname)."
+            return
+        }
+
+        Task {
+            await permissionController.refresh()
+            guard permissionController.state == .enabled else {
+                store.clearHelperPermissionError()
+                return
+            }
+            do {
+                try await EasyTierRemoteRPCClient.patchHostname(rpcURL: rpcURL, instanceID: instanceID, hostname: trimmed)
+                await store.refreshRuntime()
+            } catch {
+                store.lastError = error.localizedDescription
+            }
         }
     }
 

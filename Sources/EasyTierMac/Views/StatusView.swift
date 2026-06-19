@@ -11,6 +11,7 @@ struct StatusView: View {
 
     var highlightedMemberPeerID: String? = nil
     var onRenameLocalHostname: (String) -> Void = { _ in }
+    var onRenameRemoteHostname: (NetworkMemberStatus, String) -> Void = { _, _ in }
     var onConfigureLocalMember: () -> Void = {}
 
     private var instance: NetworkInstance? { store.selectedRunningInstance }
@@ -50,7 +51,11 @@ struct StatusView: View {
         .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: runtimeError)
         .sheet(item: $renameHostnameRequest) { request in
             RenameHostnameSheet(request: request) { hostname in
-                onRenameLocalHostname(hostname)
+                if request.member.isLocal {
+                    onRenameLocalHostname(hostname)
+                } else {
+                    onRenameRemoteHostname(request.member, hostname)
+                }
             }
         }
     }
@@ -115,7 +120,7 @@ struct StatusView: View {
                     MemberIdentityCell(
                         row: row,
                         isHighlighted: row.contains(peerID: highlightedMemberPeerID),
-                        onRenameLocalHostname: beginRenamingLocalHostname,
+                        onRenameHostname: beginRenamingHostname,
                         onConfigureLocalMember: onConfigureLocalMember
                     )
                 }
@@ -303,11 +308,10 @@ struct StatusView: View {
         }
     }
 
-    private func beginRenamingLocalHostname(_ member: NetworkMemberStatus) {
-        guard member.isLocal else { return }
+    private func beginRenamingHostname(_ member: NetworkMemberStatus) {
         let configuredHostname = store.selectedConfig?.hostname?.trimmingCharacters(in: .whitespacesAndNewlines)
         let initialHostname: String
-        if let configuredHostname, !configuredHostname.isEmpty {
+        if member.isLocal, let configuredHostname, !configuredHostname.isEmpty {
             initialHostname = configuredHostname
         } else {
             initialHostname = member.hostname
@@ -609,7 +613,7 @@ private extension MemberTableRow {
 private struct MemberIdentityCell: View {
     var row: MemberTableRow
     var isHighlighted: Bool
-    var onRenameLocalHostname: (NetworkMemberStatus) -> Void
+    var onRenameHostname: (NetworkMemberStatus) -> Void
     var onConfigureLocalMember: () -> Void
 
     var body: some View {
@@ -618,7 +622,7 @@ private struct MemberIdentityCell: View {
             MemberStatusIdentity(
                 member: member,
                 isHighlighted: isHighlighted,
-                renameAction: member.isLocal ? { onRenameLocalHostname(member) } : nil,
+                renameAction: { onRenameHostname(member) },
                 configureAction: member.isLocal ? onConfigureLocalMember : nil
             )
         case .publicServerGroup(let group):

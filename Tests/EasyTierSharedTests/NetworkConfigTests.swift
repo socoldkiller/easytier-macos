@@ -769,6 +769,7 @@ import Testing
             "next_hop_peer_id": 200,
             "cost": 1,
             "hostname": "office-mini",
+            "inst_id": "22222222-2222-2222-2222-222222222222",
             "stun_info": { "udp_nat_type": 6, "tcp_nat_type": 0, "last_update_time": 0 },
             "version": "2.4.0"
           },
@@ -804,6 +805,7 @@ import Testing
     #expect(members[0].natType == "Open Internet")
 
     #expect(!members[1].isLocal)
+    #expect(members[1].instanceID == "22222222-2222-2222-2222-222222222222")
     #expect(members[1].peerID == "200")
     #expect(members[1].virtualIPv4 == "10.10.0.2/24")
     #expect(members[1].copyableIPv4Address == "10.10.0.2")

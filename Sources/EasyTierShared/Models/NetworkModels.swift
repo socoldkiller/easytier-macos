@@ -709,6 +709,7 @@ public struct NetworkMemberStatus: Identifiable, Equatable, Sendable {
     public var id: String
     public var isLocal: Bool
     public var peerID: String
+    public var instanceID: String?
     public var virtualIPv4: String
     public var hostname: String
     public var version: String
@@ -786,6 +787,7 @@ public extension NetworkInstanceRunningInfo {
                 id: "local-\(peerID)",
                 isLocal: true,
                 peerID: peerID,
+                instanceID: nil,
                 virtualIPv4: myNode.displayIPv4,
                 hostname: myNode.hostname?.nilIfEmpty ?? "Local Node",
                 version: myNode.version?.nilIfEmpty ?? "unknown",
@@ -865,6 +867,7 @@ public extension NetworkMemberStatus {
             id: "peer-\(peerID.map(String.init) ?? UUID().uuidString)",
             isLocal: false,
             peerID: peerID.map(String.init) ?? "-",
+            instanceID: route?.inst_id?.nilIfEmpty,
             virtualIPv4: route?.ipv4_addr?.displayString.nilIfEmpty ?? "-",
             hostname: route?.hostname?.nilIfEmpty ?? "-",
             version: route?.version?.nilIfEmpty ?? "unknown",
