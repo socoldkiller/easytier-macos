@@ -67,7 +67,25 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, @unchecked Send
     }
 
     public func callJSONRPC(service: String, method: String, domain: String?, payload: String) async throws -> String {
-        throw unsupported("JSON-RPC bridge")
+        try await callJSONRPC(clientID: "default", service: service, method: method, domain: domain, payload: payload)
+    }
+
+    public func connectRPCClient(clientID: String, url: URL) async throws {
+        try await callHelper { service, reply in
+            service.connectRPCClient(clientID: clientID, url: url.absoluteString, reply: reply)
+        }
+    }
+
+    public func disconnectRPCClient(clientID: String) async throws {
+        try await callHelper { service, reply in
+            service.disconnectRPCClient(clientID: clientID, reply: reply)
+        }
+    }
+
+    public func callJSONRPC(clientID: String, service: String, method: String, domain: String?, payload: String) async throws -> String {
+        try await callHelperReturningPayload { helper, reply in
+            helper.callJSONRPC(clientID: clientID, service: service, method: method, domain: domain, payload: payload, reply: reply)
+        }
     }
 
     public func startConfigServerClient(url: URL) async throws {

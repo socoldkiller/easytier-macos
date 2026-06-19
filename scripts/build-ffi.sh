@@ -3,12 +3,13 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EASYTIER_DIR="$ROOT_DIR/Vendor/EasyTier"
+GUI_FFI_DIR="$ROOT_DIR/Rust/EasyTierGuiFFI"
 OUT_DIR="$ROOT_DIR/Vendor/Frameworks"
 HEADER_DIR="$OUT_DIR/include"
 STATIC_DIR="$OUT_DIR/static"
 CORE_TAG="${EASYTIER_CORE_TAG:-v2.6.4}"
 FFI_CACHE_DIR="${EASYTIER_FFI_CACHE_DIR:-$HOME/Library/Caches/easytier-swift/ffi}"
-FFI_CACHE_VERSION="3"
+FFI_CACHE_VERSION="4"
 USE_FFI_CACHE="${EASYTIER_USE_FFI_CACHE:-1}"
 RUST_RELEASE_OPT_LEVEL="${EASYTIER_RUST_OPT_LEVEL:-z}"
 RUST_RELEASE_LTO="${EASYTIER_RUST_LTO:-fat}"
@@ -47,15 +48,17 @@ sha256_files() {
 }
 
 ffi_cache_key() {
-  local core_rev cargo_lock_hash script_hash rustc_hash profile_hash
+  local core_rev cargo_lock_hash gui_ffi_hash script_hash rustc_hash profile_hash
   core_rev="$(git -C "$EASYTIER_DIR" rev-parse HEAD)"
   cargo_lock_hash="$(sha256_files "$EASYTIER_DIR/Cargo.lock")"
+  gui_ffi_hash="$(sha256_files "$GUI_FFI_DIR/Cargo.toml" "$GUI_FFI_DIR/Cargo.lock" "$GUI_FFI_DIR/src/lib.rs")"
   script_hash="$(sha256_files "$ROOT_DIR/scripts/build-ffi.sh")"
   rustc_hash="$(rustc -vV | shasum -a 256 | awk '{ print $1 }')"
   profile_hash="$(printf '%s\n' \
     "cache=$FFI_CACHE_VERSION" \
     "core=$core_rev" \
     "cargo-lock=$cargo_lock_hash" \
+    "gui-ffi=$gui_ffi_hash" \
     "script=$script_hash" \
     "rustc=$rustc_hash" \
     "deployment=$MACOSX_DEPLOYMENT_TARGET" \
@@ -157,13 +160,22 @@ int32_t retain_network_instance(const char **inst_names, uintptr_t length);
 int32_t collect_network_infos(KeyValuePair *infos, uintptr_t max_length);
 void get_error_msg(const char **out);
 void free_string(const char *s);
+int32_t connect_rpc_client(const char *client_id, const char *url);
+int32_t disconnect_rpc_client(const char *client_id);
+int32_t call_json_rpc(
+  const char *client_id,
+  const char *service_name,
+  const char *method_name,
+  const char *domain,
+  const char *payload_json,
+  const char **out_json
+);
 HEADER
 
 build_target() {
   local target="$1"
   rustup target add "$target" >/dev/null
-  cargo rustc --manifest-path "$EASYTIER_DIR/Cargo.toml" \
-    -p easytier-ffi \
+  cargo rustc --manifest-path "$GUI_FFI_DIR/Cargo.toml" \
     --release \
     --target "$target" \
     --lib \
@@ -173,8 +185,8 @@ build_target() {
 build_target aarch64-apple-darwin
 build_target x86_64-apple-darwin
 
-ARM_STATIC="$EASYTIER_DIR/target/aarch64-apple-darwin/release/libeasytier_ffi.a"
-X64_STATIC="$EASYTIER_DIR/target/x86_64-apple-darwin/release/libeasytier_ffi.a"
+ARM_STATIC="$GUI_FFI_DIR/target/aarch64-apple-darwin/release/libeasytier_ffi.a"
+X64_STATIC="$GUI_FFI_DIR/target/x86_64-apple-darwin/release/libeasytier_ffi.a"
 UNIVERSAL_STATIC="$STATIC_DIR/libeasytier_ffi.a"
 
 strip_static_library "$ARM_STATIC"

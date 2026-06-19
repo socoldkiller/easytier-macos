@@ -80,7 +80,48 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
     }
 
     public func callJSONRPC(service: String, method: String, domain: String?, payload: String) async throws -> String {
-        throw EasyTierCoreError.operationFailed("JSON-RPC bridge is not available with EasyTier Core v2.6.4 FFI.")
+        try callJSONRPC(clientID: Self.defaultRPCClientID, service: service, method: method, domain: domain, payload: payload)
+    }
+
+    public func connectRPCClient(clientID: String, url: URL) throws {
+        let result = clientID.withCString { clientIDPointer in
+            url.absoluteString.withCString { urlPointer in
+                connect_rpc_client(clientIDPointer, urlPointer)
+            }
+        }
+        if result != 0 { throw lastError() }
+    }
+
+    public func disconnectRPCClient(clientID: String) throws {
+        let result = clientID.withCString { clientIDPointer in
+            disconnect_rpc_client(clientIDPointer)
+        }
+        if result != 0 { throw lastError() }
+    }
+
+    public func callJSONRPC(clientID: String, service: String, method: String, domain: String?, payload: String) throws -> String {
+        var output: UnsafePointer<CChar>?
+        let result = clientID.withCString { clientIDPointer in
+            service.withCString { servicePointer in
+                method.withCString { methodPointer in
+                    payload.withCString { payloadPointer in
+                        if let domain {
+                            domain.withCString { domainPointer in
+                                call_json_rpc(clientIDPointer, servicePointer, methodPointer, domainPointer, payloadPointer, &output)
+                            }
+                        } else {
+                            call_json_rpc(clientIDPointer, servicePointer, methodPointer, nil, payloadPointer, &output)
+                        }
+                    }
+                }
+            }
+        }
+        if result != 0 { throw lastError() }
+        guard let output else {
+            throw EasyTierCoreError.invalidResponse("JSON-RPC FFI returned a null response")
+        }
+        defer { free_string(output) }
+        return String(cString: output)
     }
 
     public func startConfigServerClient(url: URL) async throws {
@@ -98,6 +139,8 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
     public static func validateDirect(toml: String) throws {
         try StaticEasyTierFFIClient().ffiCall(parse_config, withCString: toml)
     }
+
+    private static let defaultRPCClientID = "default"
 
     private func ffiCall(_ body: (UnsafePointer<CChar>?) -> CInt, withCString value: String) throws {
         let result = value.withCString { body($0) }

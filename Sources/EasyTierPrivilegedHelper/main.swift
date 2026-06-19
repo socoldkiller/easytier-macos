@@ -60,6 +60,36 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
         }
     }
 
+    func connectRPCClient(clientID: String, url: String, reply: @escaping (String?, String?) -> Void) {
+        do {
+            guard let url = URL(string: url) else {
+                throw EasyTierCoreError.operationFailed("Invalid EasyTier RPC URL.")
+            }
+            try client.connectRPCClient(clientID: clientID, url: url)
+            reply("ok", nil)
+        } catch {
+            replyFailure(error, code: "connectRPCClientFailed", reply: reply)
+        }
+    }
+
+    func disconnectRPCClient(clientID: String, reply: @escaping (String?, String?) -> Void) {
+        do {
+            try client.disconnectRPCClient(clientID: clientID)
+            reply("ok", nil)
+        } catch {
+            replyFailure(error, code: "disconnectRPCClientFailed", reply: reply)
+        }
+    }
+
+    func callJSONRPC(clientID: String, service: String, method: String, domain: String?, payload: String, reply: @escaping (String?, String?) -> Void) {
+        do {
+            let response = try client.callJSONRPC(clientID: clientID, service: service, method: method, domain: domain, payload: payload)
+            reply(response, nil)
+        } catch {
+            replyFailure(error, code: "callJSONRPCFailed", reply: reply)
+        }
+    }
+
     private func run(reply: @escaping (String?, String?) -> Void, _ operation: () throws -> Void) {
         do {
             try operation()
@@ -87,6 +117,8 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
             "Check helper permissions and the EasyTier runtime error, then try starting the network again."
         case "collectNetworkInfosFailed", "listInstancesFailed":
             "The network may still be starting. Refresh again in a few seconds."
+        case "connectRPCClientFailed", "callJSONRPCFailed":
+            "Check that the remote device has rpc_portal enabled and that the RPC URL uses a private EasyTier IP address."
         default:
             nil
         }
