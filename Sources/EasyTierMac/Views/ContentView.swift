@@ -634,34 +634,34 @@ struct ContentView: View {
         }
     }
 
-    private func renameRemoteHostname(_ member: NetworkMemberStatus, hostname: String) {
+    private func renameRemoteHostname(_ member: NetworkMemberStatus, hostname: String) async -> Bool {
         let trimmed = hostname.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             store.lastError = "Remote hostname cannot be empty."
-            return
+            return false
         }
-        guard trimmed != member.hostname else { return }
+        guard trimmed != member.hostname else { return true }
         guard let instanceID = member.instanceID else {
             store.lastError = "Remote instance ID is unavailable for \(member.hostname)."
-            return
+            return false
         }
         guard let ip = member.copyableIPv4Address, let rpcURL = URL(string: "tcp://\(ip):15888") else {
             store.lastError = "Remote RPC URL is unavailable for \(member.hostname)."
-            return
+            return false
         }
 
-        Task {
-            await permissionController.refresh()
-            guard permissionController.state == .enabled else {
-                store.clearHelperPermissionError()
-                return
-            }
-            do {
-                try await EasyTierRemoteRPCClient.patchHostname(rpcURL: rpcURL, instanceID: instanceID, hostname: trimmed)
-                await store.refreshRuntime()
-            } catch {
-                store.lastError = error.localizedDescription
-            }
+        await permissionController.refresh()
+        guard permissionController.state == .enabled else {
+            store.clearHelperPermissionError()
+            return false
+        }
+        do {
+            try await EasyTierRemoteRPCClient.patchHostname(rpcURL: rpcURL, instanceID: instanceID, hostname: trimmed)
+            await store.refreshRuntime()
+            return true
+        } catch {
+            store.lastError = error.localizedDescription
+            return false
         }
     }
 

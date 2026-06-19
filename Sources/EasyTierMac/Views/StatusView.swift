@@ -11,7 +11,7 @@ struct StatusView: View {
 
     var highlightedMemberPeerID: String? = nil
     var onRenameLocalHostname: (String) -> Void = { _ in }
-    var onRenameRemoteHostname: (NetworkMemberStatus, String) -> Void = { _, _ in }
+    var onRenameRemoteHostname: (NetworkMemberStatus, String) async -> Bool = { _, _ in false }
     var onConfigureLocalMember: () -> Void = {}
 
     private var instance: NetworkInstance? { store.selectedRunningInstance }
@@ -53,8 +53,9 @@ struct StatusView: View {
             RenameHostnameSheet(request: request) { hostname in
                 if request.member.isLocal {
                     onRenameLocalHostname(hostname)
+                    return true
                 } else {
-                    onRenameRemoteHostname(request.member, hostname)
+                    return await onRenameRemoteHostname(request.member, hostname)
                 }
             }
         }
@@ -381,15 +382,18 @@ private struct RenameHostnameRequest: Identifiable {
 }
 
 private struct RenameHostnameSheet: View {
+    @Environment(EasyTierAppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @FocusState private var isHostnameFieldFocused: Bool
 
     var request: RenameHostnameRequest
-    var onSave: (String) -> Void
+    var onSave: (String) async -> Bool
 
     @State private var hostname: String
+    @State private var isSaving = false
+    @State private var saveError: String?
 
-    init(request: RenameHostnameRequest, onSave: @escaping (String) -> Void) {
+    init(request: RenameHostnameRequest, onSave: @escaping (String) async -> Bool) {
         self.request = request
         self.onSave = onSave
         _hostname = State(initialValue: request.initialHostname)
@@ -409,6 +413,7 @@ private struct RenameHostnameSheet: View {
             TextField("Hostname", text: $hostname)
                 .textFieldStyle(.roundedBorder)
                 .focused($isHostnameFieldFocused)
+                .disabled(isSaving)
                 .onSubmit(save)
 
             HStack {
@@ -416,10 +421,19 @@ private struct RenameHostnameSheet: View {
                 Button("Cancel") {
                     dismiss()
                 }
-                Button("Save") {
+                .disabled(isSaving)
+                Button {
                     save()
+                } label: {
+                    if isSaving {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Text("Save")
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
+                .disabled(isSaving)
             }
         }
         .padding(20)
@@ -427,11 +441,28 @@ private struct RenameHostnameSheet: View {
         .onAppear {
             isHostnameFieldFocused = true
         }
+        .alert("EasyTier", isPresented: Binding(
+            get: { saveError != nil },
+            set: { if !$0 { saveError = nil } }
+        )) {
+            Button("OK") { saveError = nil }
+        } message: {
+            Text(saveError ?? "")
+        }
     }
 
     private func save() {
-        onSave(hostname)
-        dismiss()
+        guard !isSaving else { return }
+        isSaving = true
+        Task {
+            if await onSave(hostname) {
+                dismiss()
+            } else {
+                saveError = store.lastError ?? "Rename hostname failed."
+                store.lastError = nil
+            }
+            isSaving = false
+        }
     }
 }
 
