@@ -437,9 +437,9 @@ private enum MenuBarConnectionIcon {
         case .connecting:
             return index == activeNodeIndex ? baseColor(for: state) : nil
         case .connected:
-            return .systemGreen
+            return baseColor(for: state)
         case .error:
-            return index == errorNodeIndex ? .systemRed : nil
+            return index == errorNodeIndex ? baseColor(for: state) : nil
         }
     }
 
@@ -471,8 +471,14 @@ private enum MenuBarConnectionIcon {
 
     private static func baseColor(for state: ConnectionGlyphState) -> NSColor {
         switch state {
-        case .idle, .connecting, .connected, .error:
-            return .labelColor
+        case .idle:
+            return .secondaryLabelColor
+        case .connecting:
+            return .systemBlue
+        case .connected:
+            return NSColor(srgbRed: 0.35, green: 0.78, blue: 0.42, alpha: 1)
+        case .error:
+            return .systemRed
         }
     }
 
