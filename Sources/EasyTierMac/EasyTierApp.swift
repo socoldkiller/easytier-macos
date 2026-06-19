@@ -172,7 +172,7 @@ private final class MenuBarStatusItemController: NSObject {
     private var resignActiveObserver: NSObjectProtocol?
     private var openMainWindowAction: (() -> Void)?
 
-    private static let popoverSize = NSSize(width: 292, height: 302)
+    private static let popoverSize = NSSize(width: 292, height: 334)
     private static let counterclockwiseNodeIndexes = [0, 1, 2]
     private static let stepDurationNanoseconds: UInt64 = 340_000_000
 
@@ -546,6 +546,12 @@ private struct MenuBarContent: View {
             MenuBarListButton(title: "About EasyTier") {
                 openMainWindow()
                 store.isShowingAbout = true
+                dismissMenuBar()
+            }
+
+            MenuBarListButton(title: "Install on Linux") {
+                openMainWindow()
+                store.isShowingLinuxInstallGuide = true
                 dismissMenuBar()
             }
 
