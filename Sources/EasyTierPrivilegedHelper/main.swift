@@ -60,9 +60,9 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
         }
     }
 
-    func configureRPCPortal(rpcPortal: String?, reply: @escaping (String?, String?) -> Void) {
+    func configureRPCPortal(rpcPortal: String?, whitelist: [String]?, reply: @escaping (String?, String?) -> Void) {
         do {
-            try client.configureRPCPortalSync(rpcPortal)
+            try client.configureRPCPortalSync(rpcPortal, whitelist: whitelist)
             reply("ok", nil)
         } catch {
             replyFailure(error, code: "configureRPCPortalFailed", reply: reply)

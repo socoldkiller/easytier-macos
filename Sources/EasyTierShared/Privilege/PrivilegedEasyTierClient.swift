@@ -66,9 +66,9 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, @unchecked Send
         }
     }
 
-    public func configureRPCPortal(_ rpcPortal: String?) async throws {
+    public func configureRPCPortal(_ rpcPortal: String?, whitelist: [String]?) async throws {
         try await callHelper { service, reply in
-            service.configureRPCPortal(rpcPortal: rpcPortal, reply: reply)
+            service.configureRPCPortal(rpcPortal: rpcPortal, whitelist: whitelist, reply: reply)
         }
     }
 

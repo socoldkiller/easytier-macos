@@ -11,22 +11,24 @@ public enum LogLevel: String, Codable, CaseIterable, Identifiable, Sendable {
 }
 
 public enum AppMode: Codable, Equatable, Sendable {
-    case normal(rpcPortal: String?, rpcListenEnabled: Bool, rpcListenPort: Int, configServerURL: URL?)
+    case normal(rpcPortal: String?, rpcListenEnabled: Bool, rpcListenPort: Int, rpcPortalWhitelist: [String]?, configServerURL: URL?)
     case remote(remoteRPCAddress: String)
     case service(configDir: URL, rpcPortal: String, fileLogLevel: LogLevel, fileLogDir: URL, configServerURL: URL?)
 
     public static let defaultRPCListenPort = 15_888
+    public static let defaultRPCPortalWhitelist = ["127.0.0.0/8", "::1/128"]
 
     public static let `default`: AppMode = .normal(
         rpcPortal: nil,
         rpcListenEnabled: true,
         rpcListenPort: defaultRPCListenPort,
+        rpcPortalWhitelist: defaultRPCPortalWhitelist,
         configServerURL: nil
     )
 
     public var label: String {
         switch self {
-        case let .normal(_, _, _, configServerURL):
+        case let .normal(_, _, _, _, configServerURL):
             configServerURL == nil ? "Normal" : "Remote"
         case .remote:
             "Remote"
@@ -37,7 +39,7 @@ public enum AppMode: Codable, Equatable, Sendable {
 
     public var configServerURL: URL? {
         switch self {
-        case let .normal(_, _, _, url), let .service(_, _, _, _, url):
+        case let .normal(_, _, _, _, url), let .service(_, _, _, _, url):
             url
         case .remote:
             nil
@@ -46,10 +48,21 @@ public enum AppMode: Codable, Equatable, Sendable {
 
     public var rpcPortal: String? {
         switch self {
-        case let .normal(rpcPortal, _, _, _):
+        case let .normal(rpcPortal, _, _, _, _):
             rpcPortal
         case let .service(_, rpcPortal, _, _, _):
             rpcPortal
+        case .remote:
+            nil
+        }
+    }
+
+    public var rpcPortalWhitelist: [String]? {
+        switch self {
+        case let .normal(_, _, _, whitelist, _):
+            whitelist
+        case .service:
+            Self.defaultRPCPortalWhitelist
         case .remote:
             nil
         }

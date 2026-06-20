@@ -79,20 +79,40 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
         try readPairs(command: collect_network_infos)
     }
 
-    public func configureRPCPortal(_ rpcPortal: String?) async throws {
-        try configureRPCPortalSync(rpcPortal)
+    public func configureRPCPortal(_ rpcPortal: String?, whitelist: [String]?) async throws {
+        try configureRPCPortalSync(rpcPortal, whitelist: whitelist)
     }
 
-    public func configureRPCPortalSync(_ rpcPortal: String?) throws {
+    public func configureRPCPortalSync(_ rpcPortal: String?, whitelist: [String]? = nil) throws {
         let result: CInt
         if let rpcPortal {
+            let whitelist = whitelist?.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
             result = rpcPortal.withCString { pointer in
-                configure_rpc_portal(1, pointer, nil, 0)
+                guard let whitelist, !whitelist.isEmpty else {
+                    return configure_rpc_portal(1, pointer, nil, 0)
+                }
+                return Self.withCStringArray(whitelist) { pointers in
+                    var pointers = pointers
+                    return pointers.withUnsafeMutableBufferPointer { buffer in
+                        configure_rpc_portal(1, pointer, buffer.baseAddress, UInt(buffer.count))
+                    }
+                }
             }
         } else {
             result = configure_rpc_portal(0, nil, nil, 0)
         }
         if result != 0 { throw lastError() }
+    }
+
+    private static func withCStringArray<Result>(_ strings: [String], _ body: ([UnsafePointer<CChar>?]) -> Result) -> Result {
+        func appendCString(at index: Int, pointers: [UnsafePointer<CChar>?]) -> Result {
+            guard index < strings.count else { return body(pointers) }
+            return strings[index].withCString { pointer in
+                appendCString(at: index + 1, pointers: pointers + [pointer])
+            }
+        }
+
+        return appendCString(at: 0, pointers: [])
     }
 
     public func callJSONRPC(service: String, method: String, domain: String?, payload: String) async throws -> String {

@@ -31,6 +31,7 @@ struct EasyTierSettingsSheet: View {
     @State private var kind: ModeKind
     @State private var rpcListenEnabled: Bool
     @State private var rpcListenPort: Int
+    @State private var rpcPortalWhitelist: [String]
     @State private var configServerURL: String
     @State private var remoteRPCAddress: String
     @State private var listenersExpanded = false
@@ -44,22 +45,25 @@ struct EasyTierSettingsSheet: View {
         _selectedTab = State(initialValue: initialTab)
 
         switch mode {
-        case let .normal(_, rpcListenEnabled, rpcListenPort, configServerURL):
+        case let .normal(_, rpcListenEnabled, rpcListenPort, rpcPortalWhitelist, configServerURL):
             _kind = State(initialValue: configServerURL == nil ? .normal : .remote)
             _rpcListenEnabled = State(initialValue: rpcListenEnabled)
             _rpcListenPort = State(initialValue: rpcListenPort)
+            _rpcPortalWhitelist = State(initialValue: rpcPortalWhitelist ?? AppMode.defaultRPCPortalWhitelist)
             _configServerURL = State(initialValue: configServerURL?.absoluteString ?? "")
             _remoteRPCAddress = State(initialValue: Self.defaultRemoteRPCAddress)
         case let .remote(remoteRPCAddress):
             _kind = State(initialValue: .normal)
             _rpcListenEnabled = State(initialValue: true)
             _rpcListenPort = State(initialValue: AppMode.defaultRPCListenPort)
+            _rpcPortalWhitelist = State(initialValue: AppMode.defaultRPCPortalWhitelist)
             _configServerURL = State(initialValue: "")
             _remoteRPCAddress = State(initialValue: remoteRPCAddress)
         case let .service(_, _, _, _, configServerURL):
             _kind = State(initialValue: .normal)
             _rpcListenEnabled = State(initialValue: true)
             _rpcListenPort = State(initialValue: AppMode.defaultRPCListenPort)
+            _rpcPortalWhitelist = State(initialValue: AppMode.defaultRPCPortalWhitelist)
             _configServerURL = State(initialValue: configServerURL?.absoluteString ?? "")
             _remoteRPCAddress = State(initialValue: Self.defaultRemoteRPCAddress)
         }
@@ -230,7 +234,17 @@ struct EasyTierSettingsSheet: View {
                 ControlRow("TCP Listen") { Toggle("", isOn: rpcListenBinding).labelsHidden() }
                 ControlRow("Portal") { CodeText(rpcListenEnabled ? "tcp://0.0.0.0:\(rpcListenPort)" : "Off") }
                 ControlRow("Listen Port") {
-                    Stepper("\(rpcListenPort)", value: $rpcListenPort, in: 1...65_535)
+                    HStack(spacing: 6) {
+                        TextField("15888", value: $rpcListenPort, format: .number)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 72)
+                        Stepper("", value: $rpcListenPort, in: 1...65_535)
+                            .labelsHidden()
+                    }
+                        .disabled(!rpcListenEnabled)
+                }
+                ControlRow("Whitelist") {
+                    RPCPortalWhitelistEditor(values: $rpcPortalWhitelist)
                         .disabled(!rpcListenEnabled)
                 }
                 ControlRow("Remote RPC") {
@@ -302,6 +316,7 @@ struct EasyTierSettingsSheet: View {
                 rpcPortal: rpcListenEnabled ? "tcp://0.0.0.0:\(rpcListenPort)" : nil,
                 rpcListenEnabled: rpcListenEnabled,
                 rpcListenPort: rpcListenPort,
+                rpcPortalWhitelist: normalizedRPCPortalWhitelist,
                 configServerURL: nil
             )
         case .remote:
@@ -309,9 +324,15 @@ struct EasyTierSettingsSheet: View {
                 rpcPortal: nil,
                 rpcListenEnabled: false,
                 rpcListenPort: AppMode.defaultRPCListenPort,
+                rpcPortalWhitelist: normalizedRPCPortalWhitelist,
                 configServerURL: URL(string: configServerURL.trimmingCharacters(in: .whitespacesAndNewlines))
             )
         }
+    }
+
+    private var normalizedRPCPortalWhitelist: [String]? {
+        let values = rpcPortalWhitelist.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        return values.isEmpty ? nil : values
     }
 
     private static let defaultRemoteRPCAddress = "tcp://127.0.0.1:\(AppMode.defaultRPCListenPort)"
@@ -573,6 +594,53 @@ private struct ControlRow<Content: View>: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .controlSize(.small)
+    }
+}
+
+private struct RPCPortalWhitelistEditor: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Binding var values: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(values.indices, id: \.self) { index in
+                HStack(spacing: 5) {
+                    TextField("10.126.126.0/24", text: Binding(
+                        get: { values.indices.contains(index) ? values[index] : "" },
+                        set: { newValue in
+                            guard values.indices.contains(index) else { return }
+                            values[index] = newValue
+                        }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 13, design: .monospaced))
+                    .frame(width: 190)
+
+                    Button(role: .destructive) {
+                        guard values.indices.contains(index) else { return }
+                        _ = withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
+                            values.remove(at: index)
+                        }
+                    } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                }
+                .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 6))
+            }
+
+            Button {
+                withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
+                    values.append("")
+                }
+            } label: {
+                Label("Add CIDR", systemImage: "plus.circle")
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 13.5))
+        }
+        .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: values.count)
     }
 }
 

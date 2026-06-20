@@ -203,6 +203,7 @@ public final class EasyTierAppStore {
                 log("Stop skipped because \(config.network_name) is not running.")
                 return
             }
+            persistRuntimeHostname(from: runningInstance, forConfigID: config.instance_id)
             try await client.stop(instanceNames: [runningInstance.name])
             clearPendingStart(for: config)
             log("Stopped \(config.network_name).")
@@ -289,7 +290,7 @@ public final class EasyTierAppStore {
         save()
 
         await busy {
-            try await client.configureRPCPortal(effectiveMode.rpcPortal)
+            try await client.configureRPCPortal(effectiveMode.rpcPortal, whitelist: effectiveMode.rpcPortalWhitelist)
             if let rpcPortal = effectiveMode.rpcPortal {
                 log("RPC portal listening: \(rpcPortal)")
             } else {
@@ -365,6 +366,24 @@ public final class EasyTierAppStore {
         } else {
             isConfigServerConnected = try await client.isConfigServerClientConnected()
         }
+    }
+
+    private func persistRuntimeHostname(from instance: NetworkInstance, forConfigID configID: String) {
+        guard let runtimeHostname = nonEmptyTrimmed(instance.detail?.my_node_info?.hostname) else { return }
+        guard let index = configs.firstIndex(where: { $0.id == configID }) else { return }
+        let storedHostname = nonEmptyTrimmed(configs[index].config.hostname)
+        guard storedHostname != runtimeHostname else { return }
+
+        configs[index].config.hostname = runtimeHostname
+        if selectedConfigID == configID {
+            selectedConfigID = configs[index].id
+        }
+        save()
+    }
+
+    private func nonEmptyTrimmed(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private func uniquelyMatchedInstance(named networkName: String) -> NetworkInstance? {

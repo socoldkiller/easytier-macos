@@ -279,6 +279,25 @@ import Testing
     #expect(loaded.lastSelectedConfigID == "abc")
 }
 
+@Test func storageLoadsLegacyNormalModeWithoutRPCPortalWhitelist() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let stateURL = directory.appendingPathComponent("state.json")
+    try Data(#"{"configs":[],"mode":{"normal":{"rpcPortal":"tcp://0.0.0.0:15888","rpcListenEnabled":true,"rpcListenPort":15888,"configServerURL":null}}}"#.utf8).write(to: stateURL)
+
+    let loaded = try EasyTierStorage(baseDirectory: directory).load()
+
+    guard case let .normal(rpcPortal, rpcListenEnabled, rpcListenPort, rpcPortalWhitelist, configServerURL) = loaded.mode else {
+        Issue.record("expected legacy normal mode to decode")
+        return
+    }
+    #expect(rpcPortal == "tcp://0.0.0.0:15888")
+    #expect(rpcListenEnabled)
+    #expect(rpcListenPort == 15_888)
+    #expect(rpcPortalWhitelist == nil)
+    #expect(configServerURL == nil)
+}
+
 @Test func defaultStorageUsesBundleSpecificAppSupportDirectory() {
     #expect(EasyTierStorage.default.baseDirectory.lastPathComponent == "com.kkrainbow.easytier.mac")
 }
@@ -477,16 +496,19 @@ import Testing
         rpcPortal: "tcp://0.0.0.0:15998",
         rpcListenEnabled: true,
         rpcListenPort: 15_998,
+        rpcPortalWhitelist: ["127.0.0.0/8", "10.126.126.0/24"],
         configServerURL: nil
     ))
     await store.applyMode(.normal(
         rpcPortal: nil,
         rpcListenEnabled: false,
         rpcListenPort: 15_998,
+        rpcPortalWhitelist: ["127.0.0.0/8"],
         configServerURL: nil
     ))
 
     #expect(client.configuredRPCPortals == ["tcp://0.0.0.0:15998", nil])
+    #expect(client.configuredRPCPortalWhitelists == [["127.0.0.0/8", "10.126.126.0/24"], ["127.0.0.0/8"]])
 }
 
 @MainActor
@@ -605,6 +627,31 @@ import Testing
     #expect(client.stoppedInstanceNames == [[second.network_name]])
     #expect(client.retainedInstanceNames.isEmpty)
     #expect(client.runConfigs.isEmpty)
+}
+
+@MainActor
+@Test func stopSelectedConfigPersistsRuntimeHostnameBeforeStopping() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let storage = EasyTierStorage(baseDirectory: directory)
+    var config = NetworkConfig(instance_id: "device-id", hostname: "old-host", network_name: "office")
+    config.listener_urls = ["tcp://0.0.0.0:13010", "udp://0.0.0.0:13010", "wg://0.0.0.0:13011"]
+    let client = RecordingToggleClient()
+    let store = EasyTierAppStore(client: client, storage: storage)
+
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.selectedConfigID = config.instance_id
+    store.instances = [NetworkInstance(
+        instance_id: config.instance_id,
+        name: config.network_name,
+        running: true,
+        detail: NetworkInstanceRunningInfo(my_node_info: NodeInfo(hostname: "new-host"))
+    )]
+
+    await store.stopSelectedConfig()
+
+    #expect(store.configs.first?.config.hostname == "new-host")
+    #expect(try storage.load().configs.first?.config.hostname == "new-host")
+    #expect(client.stoppedInstanceNames == [[config.network_name]])
 }
 
 @MainActor
@@ -1103,7 +1150,7 @@ private final class PendingStartClient: EasyTierCoreClient, @unchecked Sendable 
     func retain(instanceNames _: [String]) async throws {}
     func listInstances() async throws -> [NetworkInstance] { [] }
     func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] { [:] }
-    func configureRPCPortal(_ rpcPortal: String?) async throws {
+    func configureRPCPortal(_ rpcPortal: String?, whitelist _: [String]?) async throws {
         if rpcPortal != nil { throw EasyTierCoreError.operationFailed("unsupported") }
     }
 
@@ -1126,6 +1173,7 @@ private final class RecordingToggleClient: EasyTierCoreClient, @unchecked Sendab
     var listedInstances: [NetworkInstance] = []
     var networkInfos: [String: NetworkInstanceRunningInfo] = [:]
     var configuredRPCPortals: [String?] = []
+    var configuredRPCPortalWhitelists: [[String]?] = []
     var stopError: Error?
 
     func version() async throws -> String { "test" }
@@ -1146,8 +1194,9 @@ private final class RecordingToggleClient: EasyTierCoreClient, @unchecked Sendab
 
     func listInstances() async throws -> [NetworkInstance] { listedInstances }
     func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] { networkInfos }
-    func configureRPCPortal(_ rpcPortal: String?) async throws {
+    func configureRPCPortal(_ rpcPortal: String?, whitelist: [String]?) async throws {
         configuredRPCPortals.append(rpcPortal)
+        configuredRPCPortalWhitelists.append(whitelist)
     }
 
     func callJSONRPC(service _: String, method _: String, domain _: String?, payload _: String) async throws -> String {
@@ -1180,7 +1229,7 @@ private final class HelperRunErrorClient: EasyTierCoreClient, @unchecked Sendabl
     func retain(instanceNames _: [String]) async throws {}
     func listInstances() async throws -> [NetworkInstance] { [] }
     func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] { [:] }
-    func configureRPCPortal(_: String?) async throws {}
+    func configureRPCPortal(_: String?, whitelist _: [String]?) async throws {}
     func callJSONRPC(service _: String, method _: String, domain _: String?, payload _: String) async throws -> String { "" }
     func startConfigServerClient(url _: URL) async throws {}
     func stopConfigServerClient() async throws {}
