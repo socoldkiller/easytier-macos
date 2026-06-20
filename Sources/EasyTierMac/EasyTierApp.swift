@@ -41,6 +41,11 @@ struct EasyTierApp: App {
                     .keyboardShortcut("s")
             }
 
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings...") { store.isShowingSettings = true }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
+
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates...") { updater.checkForUpdates() }
             }
@@ -564,8 +569,8 @@ private struct MenuBarContent: View {
             MenuBarDivider()
 
             MenuBarListButton(title: "Settings...", shortcut: "⌘ ,") {
-                store.selectedTab = .config
                 openMainWindow()
+                store.isShowingSettings = true
                 dismissMenuBar()
             }
 

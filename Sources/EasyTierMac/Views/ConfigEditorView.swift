@@ -48,7 +48,7 @@ struct ConfigEditorView: View {
                                 title: "Listeners",
                                 placeholder: "tcp://0.0.0.0:11010",
                                 values: $config.listener_urls,
-                                defaultNewValue: nextDefaultListenerURL
+                                defaultNewValue: ListenerURLDefaults.next
                             )
                             StringListEditor(
                                 title: "Proxy CIDRs",
@@ -272,16 +272,6 @@ private struct StringListEditor: View {
         .padding(.vertical, 3)
         .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: values.count)
     }
-}
-
-private let defaultListenerURLs = [
-    "tcp://0.0.0.0:11010",
-    "udp://0.0.0.0:11010",
-    "wg://0.0.0.0:11011",
-]
-
-private func nextDefaultListenerURL(existing values: [String]) -> String {
-    defaultListenerURLs.first { !values.contains($0) } ?? ""
 }
 
 private struct PortForwardEditor: View {

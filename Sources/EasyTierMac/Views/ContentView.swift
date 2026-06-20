@@ -7,7 +7,6 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(EasyTierAppStore.self) private var store
     @State private var permissionController = PermissionController()
-    @State private var showingModeSettings = false
     @State private var showingTOML = false
     @State private var tomlMode: TOMLSheet.Mode = .export
     @State private var tomlText = ""
@@ -55,8 +54,8 @@ struct ContentView: View {
                 Task { await permissionController.refresh() }
             }
         }
-        .sheet(isPresented: $showingModeSettings) {
-            ModeSettingsSheet(mode: store.mode) { mode in
+        .sheet(isPresented: $store.isShowingSettings) {
+            EasyTierSettingsSheet(initialTab: .general, mode: store.mode) { mode in
                 Task { await store.applyMode(mode) }
             }
         }
@@ -72,7 +71,9 @@ struct ContentView: View {
             LinuxInstallGuideView()
         }
         .sheet(isPresented: $store.isShowingAbout) {
-            AboutView()
+            EasyTierSettingsSheet(initialTab: .about, mode: store.mode) { mode in
+                Task { await store.applyMode(mode) }
+            }
         }
         .alert(
             "EasyTier",
@@ -210,10 +211,11 @@ struct ContentView: View {
 
         ToolbarItemGroup(placement: .primaryAction) {
             Button {
-                showingModeSettings = true
+                store.isShowingSettings = true
             } label: {
-                Label(store.mode.label, systemImage: "switch.2")
+                Label("Settings", systemImage: "gearshape")
             }
+            .help("EasyTier Settings")
 
             Button {
                 let runningInstanceToRestart = draftIsDirty ? store.selectedRunningInstance : nil

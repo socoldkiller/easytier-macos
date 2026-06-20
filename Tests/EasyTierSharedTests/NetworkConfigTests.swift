@@ -33,6 +33,12 @@ import Testing
     #expect(config.multi_thread == true)
 }
 
+@Test func listenerURLDefaultsSuggestNextMissingProtocol() {
+    #expect(ListenerURLDefaults.next(excluding: NetworkConfig().listener_urls) == "ws://0.0.0.0:11011")
+    #expect(ListenerURLDefaults.next(excluding: [" TCP://0.0.0.0:11010 "]) == "udp://0.0.0.0:11010")
+    #expect(ListenerURLDefaults.next(excluding: ListenerURLDefaults.addSuggestions) == "")
+}
+
 @Test func networkConfigTracksWhetherRemotePeerConnectionIsExpected() {
     var config = NetworkConfig(networking_method: .standalone)
     #expect(!config.expectsRemotePeerConnection)

@@ -205,7 +205,7 @@ struct StatusView: View {
                 }
             }
         }
-        .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
+        .scrollIndicators(.never, axes: [.vertical, .horizontal])
         .trackScrollPhase(isScrolling: $memberTableIsScrolling)
     }
 

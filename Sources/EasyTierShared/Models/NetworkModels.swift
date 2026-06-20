@@ -30,6 +30,23 @@ public struct PortForwardConfig: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+public enum ListenerURLDefaults {
+    public static let addSuggestions = [
+        "tcp://0.0.0.0:11010",
+        "udp://0.0.0.0:11010",
+        "wg://0.0.0.0:11011",
+        "ws://0.0.0.0:11011",
+        "wss://0.0.0.0:11012",
+        "quic://0.0.0.0:11012",
+        "faketcp://0.0.0.0:11013",
+    ]
+
+    public static func next(excluding existing: [String]) -> String {
+        let existing = Set(existing.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+        return addSuggestions.first { !existing.contains($0) } ?? ""
+    }
+}
+
 public struct NetworkConfig: Codable, Equatable, Identifiable, Sendable {
     public var id: String { instance_id }
 

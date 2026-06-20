@@ -15,17 +15,19 @@ public enum AppMode: Codable, Equatable, Sendable {
     case remote(remoteRPCAddress: String)
     case service(configDir: URL, rpcPortal: String, fileLogLevel: LogLevel, fileLogDir: URL, configServerURL: URL?)
 
+    public static let defaultRPCListenPort = 15_888
+
     public static let `default`: AppMode = .normal(
         rpcPortal: nil,
-        rpcListenEnabled: false,
-        rpcListenPort: 15_999,
+        rpcListenEnabled: true,
+        rpcListenPort: defaultRPCListenPort,
         configServerURL: nil
     )
 
     public var label: String {
         switch self {
-        case .normal:
-            "Normal"
+        case let .normal(_, _, _, configServerURL):
+            configServerURL == nil ? "Normal" : "Remote"
         case .remote:
             "Remote"
         case .service:

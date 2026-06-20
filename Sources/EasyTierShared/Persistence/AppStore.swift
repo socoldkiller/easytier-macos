@@ -12,6 +12,7 @@ public final class EasyTierAppStore {
     public var logLines: [String] = []
     public var isBusy = false
     public var lastError: String?
+    public var isShowingSettings = false
     public var isShowingAbout = false
     public var isShowingLinuxInstallGuide = false
     public var isConfigServerConnected = false
