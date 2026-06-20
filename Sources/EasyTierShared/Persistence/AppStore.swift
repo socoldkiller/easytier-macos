@@ -348,18 +348,14 @@ public final class EasyTierAppStore {
     }
 
     private func refreshRuntimeThrowing() async throws {
-        var running = try await client.listInstances()
         let infos = try await client.collectNetworkInfos()
-        for index in running.indices {
-            if let detail = runtimeInfo(for: running[index], in: infos) {
-                running[index].detail = detail
-            } else {
-                running[index].detail = NetworkInstanceRunningInfo(
-                    running: true,
-                    error_msg: "Runtime detail is missing for \(running[index].name). EasyTier may still be starting, or the privileged helper is older than the GUI."
-                )
-            }
-            running[index].running = true
+        var running = infos.keys.sorted().map { key in
+            NetworkInstance(
+                instance_id: key,
+                name: key,
+                running: true,
+                detail: infos[key]
+            )
         }
         mergePendingStarts(into: &running)
         recordTrafficSamples(for: running)
@@ -369,12 +365,6 @@ public final class EasyTierAppStore {
         } else {
             isConfigServerConnected = try await client.isConfigServerClientConnected()
         }
-    }
-
-    private func runtimeInfo(for instance: NetworkInstance, in infos: [String: NetworkInstanceRunningInfo]) -> NetworkInstanceRunningInfo? {
-        if let byID = infos[instance.instance_id] { return byID }
-        if let byName = infos[instance.name] { return byName }
-        return nil
     }
 
     private func uniquelyMatchedInstance(named networkName: String) -> NetworkInstance? {

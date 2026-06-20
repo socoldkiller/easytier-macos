@@ -427,8 +427,8 @@ pub unsafe extern "C" fn collect_network_infos(
         // SAFETY: `infos` is checked for null and caller promises `max_length` writable entries.
         let infos = unsafe { std::slice::from_raw_parts_mut(infos, max_length) };
 
-        let collected_infos = INSTANCE_MANAGER
-            .collect_network_infos_sync()
+        let collected_infos = RPC_RUNTIME
+            .block_on(INSTANCE_MANAGER.collect_network_infos())
             .map_err(|e| format!("failed to collect network infos: {e}"))?;
 
         let mut index = 0;
@@ -493,7 +493,9 @@ pub unsafe extern "C" fn configure_rpc_portal(
         let listen_addr = normalize_rpc_portal(&listen_addr)?;
 
         if whitelist_count > 0 && whitelist.is_null() {
-            return Err("whitelist must not be null when whitelist_count is greater than zero".to_string());
+            return Err(
+                "whitelist must not be null when whitelist_count is greater than zero".to_string(),
+            );
         }
         let whitelist = if whitelist_count == 0 {
             None
@@ -512,19 +514,14 @@ pub unsafe extern "C" fn configure_rpc_portal(
             Some(values)
         };
 
-        let server = RPC_RUNTIME
-            .block_on(async {
-                let server = ApiRpcServer::new(
-                    Some(listen_addr),
-                    whitelist,
-                    INSTANCE_MANAGER.clone(),
-                )
+        let server = RPC_RUNTIME.block_on(async {
+            let server = ApiRpcServer::new(Some(listen_addr), whitelist, INSTANCE_MANAGER.clone())
                 .map_err(|e| format!("failed to create RPC portal: {e}"))?;
-                server
-                    .serve()
-                    .await
-                    .map_err(|e| format!("failed to start RPC portal: {e}"))
-            })?;
+            server
+                .serve()
+                .await
+                .map_err(|e| format!("failed to start RPC portal: {e}"))
+        })?;
         *slot = Some(server);
         Ok(())
     })
@@ -718,11 +715,13 @@ mod tests {
     fn rpc_payload_shape_matches_easytier_generated_types() {
         let payload = serde_json::json!({
             "instance": {
-                "id": {
-                    "part1": 0x11111111u32,
-                    "part2": 0x22222222u32,
-                    "part3": 0x33333333u32,
-                    "part4": 0x44444444u32
+                "selector": {
+                    "Id": {
+                        "part1": 0x11111111u32,
+                        "part2": 0x22222222u32,
+                        "part3": 0x33333333u32,
+                        "part4": 0x44444444u32
+                    }
                 }
             }
         });
@@ -741,15 +740,19 @@ mod tests {
                 "connectors": []
             },
             "instance": {
-                "id": {
-                    "part1": 0x11111111u32,
-                    "part2": 0x22222222u32,
-                    "part3": 0x33333333u32,
-                    "part4": 0x44444444u32
+                "selector": {
+                    "Id": {
+                        "part1": 0x11111111u32,
+                        "part2": 0x22222222u32,
+                        "part3": 0x33333333u32,
+                        "part4": 0x44444444u32
+                    }
                 }
             }
         });
         let request: PatchConfigRequest = serde_json::from_value(payload).unwrap();
         assert_eq!(request.patch.unwrap().hostname.as_deref(), Some("edge-mac"));
+        let selector = request.instance.unwrap().selector.unwrap();
+        assert!(matches!(selector, Selector::Id(_)));
     }
 }
