@@ -79,6 +79,22 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
         try readPairs(command: collect_network_infos)
     }
 
+    public func configureRPCPortal(_ rpcPortal: String?) async throws {
+        try configureRPCPortalSync(rpcPortal)
+    }
+
+    public func configureRPCPortalSync(_ rpcPortal: String?) throws {
+        let result: CInt
+        if let rpcPortal {
+            result = rpcPortal.withCString { pointer in
+                configure_rpc_portal(1, pointer, nil, 0)
+            }
+        } else {
+            result = configure_rpc_portal(0, nil, nil, 0)
+        }
+        if result != 0 { throw lastError() }
+    }
+
     public func callJSONRPC(service: String, method: String, domain: String?, payload: String) async throws -> String {
         try callJSONRPC(clientID: Self.defaultRPCClientID, service: service, method: method, domain: domain, payload: payload)
     }

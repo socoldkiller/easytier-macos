@@ -43,6 +43,17 @@ public enum AppMode: Codable, Equatable, Sendable {
             nil
         }
     }
+
+    public var rpcPortal: String? {
+        switch self {
+        case let .normal(rpcPortal, _, _, _):
+            rpcPortal
+        case let .service(_, rpcPortal, _, _, _):
+            rpcPortal
+        case .remote:
+            nil
+        }
+    }
 }
 
 public enum ConfigSource: String, Codable, CaseIterable, Sendable {

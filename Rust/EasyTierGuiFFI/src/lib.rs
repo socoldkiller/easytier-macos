@@ -1,7 +1,7 @@
 use std::{
     ffi::{CStr, CString, c_char, c_int},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -22,7 +22,8 @@ use easytier::{
         rpc_impl::standalone::StandAloneClient,
         rpc_types::controller::BaseController,
     },
-    tunnel::tcp::TcpTunnelConnector,
+    rpc_service::ApiRpcServer,
+    tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener},
 };
 use once_cell::sync::Lazy;
 use serde_json::Value;
@@ -30,10 +31,13 @@ use tokio::{runtime::Runtime, time::timeout};
 use url::{Host, Url};
 
 type RpcClient = StandAloneClient<TcpTunnelConnector>;
+type RpcPortalServer = ApiRpcServer<TcpTunnelListener>;
 
 static INSTANCE_NAME_ID_MAP: Lazy<DashMap<String, uuid::Uuid>> = Lazy::new(DashMap::new);
-static INSTANCE_MANAGER: Lazy<NetworkInstanceManager> = Lazy::new(NetworkInstanceManager::new);
+static INSTANCE_MANAGER: Lazy<Arc<NetworkInstanceManager>> =
+    Lazy::new(|| Arc::new(NetworkInstanceManager::new()));
 static RPC_CLIENTS: Lazy<DashMap<String, RpcClientEntry>> = Lazy::new(DashMap::new);
+static RPC_PORTAL_SERVER: Lazy<Mutex<Option<RpcPortalServer>>> = Lazy::new(|| Mutex::new(None));
 static RPC_RUNTIME: Lazy<Runtime> =
     Lazy::new(|| Runtime::new().expect("failed to create EasyTier RPC runtime"));
 const RPC_CALL_TIMEOUT: Duration = Duration::from_secs(8);
@@ -136,6 +140,30 @@ fn validate_rpc_url(raw: &str) -> Result<Url, String> {
     }
 
     Ok(url)
+}
+
+fn normalize_rpc_portal(raw: &str) -> Result<String, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("RPC portal listen address must not be empty".to_string());
+    }
+    if !raw.contains("://") {
+        return Ok(raw.to_string());
+    }
+
+    let url = Url::parse(raw).map_err(|e| format!("invalid RPC portal URL: {e}"))?;
+    if url.scheme() != "tcp" {
+        return Err("RPC portal must use tcp://".to_string());
+    }
+    let port = url
+        .port()
+        .ok_or_else(|| "RPC portal must include a port".to_string())?;
+    match url.host() {
+        Some(Host::Ipv4(addr)) => Ok(format!("{addr}:{port}")),
+        Some(Host::Ipv6(addr)) => Ok(format!("[{addr}]:{port}")),
+        Some(Host::Domain(host)) => Ok(format!("{host}:{port}")),
+        None => Err("RPC portal must include a host".to_string()),
+    }
 }
 
 fn is_allowed_rpc_ip(ip: IpAddr) -> bool {
@@ -441,6 +469,68 @@ pub unsafe extern "C" fn collect_network_infos(
 }
 
 /// # Safety
+/// When `enabled != 0`, `listen_addr` must be a valid NUL-terminated C string pointer.
+/// When `whitelist_count > 0`, `whitelist` must point to an array of valid C string pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn configure_rpc_portal(
+    enabled: c_int,
+    listen_addr: *const c_char,
+    whitelist: *const *const c_char,
+    whitelist_count: usize,
+) -> c_int {
+    ffi_result(|| {
+        let mut slot = RPC_PORTAL_SERVER
+            .lock()
+            .map_err(|_| "RPC portal lock is poisoned".to_string())?;
+        *slot = None;
+
+        if enabled == 0 {
+            return Ok(());
+        }
+
+        // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
+        let listen_addr = unsafe { cstr_arg(listen_addr, "listen_addr") }?;
+        let listen_addr = normalize_rpc_portal(&listen_addr)?;
+
+        if whitelist_count > 0 && whitelist.is_null() {
+            return Err("whitelist must not be null when whitelist_count is greater than zero".to_string());
+        }
+        let whitelist = if whitelist_count == 0 {
+            None
+        } else {
+            // SAFETY: `whitelist` is checked for null and caller promises `whitelist_count` entries.
+            let values = unsafe { std::slice::from_raw_parts(whitelist, whitelist_count) }
+                .iter()
+                .enumerate()
+                .map(|(index, &value)| {
+                    // SAFETY: Each entry is a caller-owned C string pointer; null/UTF-8 are checked.
+                    unsafe { cstr_arg(value, &format!("whitelist[{index}]")) }?
+                        .parse()
+                        .map_err(|e| format!("invalid RPC portal whitelist entry #{index}: {e}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Some(values)
+        };
+
+        let server = RPC_RUNTIME
+            .block_on(async {
+                let server = ApiRpcServer::new(
+                    Some(listen_addr),
+                    whitelist,
+                    INSTANCE_MANAGER.clone(),
+                )
+                .map_err(|e| format!("failed to create RPC portal: {e}"))?;
+                server
+                    .serve()
+                    .await
+                    .map_err(|e| format!("failed to start RPC portal: {e}"))
+            })?;
+        *slot = Some(server);
+        Ok(())
+    })
+}
+
+/// # Safety
 /// `client_id` and `url` must be valid NUL-terminated C string pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn connect_rpc_client(client_id: *const c_char, url: *const c_char) -> c_int {
@@ -628,13 +718,11 @@ mod tests {
     fn rpc_payload_shape_matches_easytier_generated_types() {
         let payload = serde_json::json!({
             "instance": {
-                "selector": {
-                    "Id": {
-                        "part1": 0x11111111u32,
-                        "part2": 0x22222222u32,
-                        "part3": 0x33333333u32,
-                        "part4": 0x44444444u32
-                    }
+                "id": {
+                    "part1": 0x11111111u32,
+                    "part2": 0x22222222u32,
+                    "part3": 0x33333333u32,
+                    "part4": 0x44444444u32
                 }
             }
         });
@@ -653,13 +741,11 @@ mod tests {
                 "connectors": []
             },
             "instance": {
-                "selector": {
-                    "Id": {
-                        "part1": 0x11111111u32,
-                        "part2": 0x22222222u32,
-                        "part3": 0x33333333u32,
-                        "part4": 0x44444444u32
-                    }
+                "id": {
+                    "part1": 0x11111111u32,
+                    "part2": 0x22222222u32,
+                    "part3": 0x33333333u32,
+                    "part4": 0x44444444u32
                 }
             }
         });

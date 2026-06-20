@@ -469,6 +469,27 @@ import Testing
 }
 
 @MainActor
+@Test func applyModeConfiguresRPCPortal() async throws {
+    let client = RecordingToggleClient()
+    let store = EasyTierAppStore(client: client)
+
+    await store.applyMode(.normal(
+        rpcPortal: "tcp://0.0.0.0:15998",
+        rpcListenEnabled: true,
+        rpcListenPort: 15_998,
+        configServerURL: nil
+    ))
+    await store.applyMode(.normal(
+        rpcPortal: nil,
+        rpcListenEnabled: false,
+        rpcListenPort: 15_998,
+        configServerURL: nil
+    ))
+
+    #expect(client.configuredRPCPortals == ["tcp://0.0.0.0:15998", nil])
+}
+
+@MainActor
 @Test func selectedRunningInstanceDoesNotFallBackToFirstInstance() {
     let first = NetworkConfig(instance_id: "first-id", network_name: "first-network")
     let second = NetworkConfig(instance_id: "second-id", network_name: "second-network")
@@ -1082,6 +1103,9 @@ private final class PendingStartClient: EasyTierCoreClient, @unchecked Sendable 
     func retain(instanceNames _: [String]) async throws {}
     func listInstances() async throws -> [NetworkInstance] { [] }
     func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] { [:] }
+    func configureRPCPortal(_ rpcPortal: String?) async throws {
+        if rpcPortal != nil { throw EasyTierCoreError.operationFailed("unsupported") }
+    }
 
     func callJSONRPC(service _: String, method _: String, domain _: String?, payload _: String) async throws -> String {
         throw EasyTierCoreError.operationFailed("unsupported")
@@ -1101,6 +1125,7 @@ private final class RecordingToggleClient: EasyTierCoreClient, @unchecked Sendab
     var retainedInstanceNames: [[String]] = []
     var listedInstances: [NetworkInstance] = []
     var networkInfos: [String: NetworkInstanceRunningInfo] = [:]
+    var configuredRPCPortals: [String?] = []
     var stopError: Error?
 
     func version() async throws -> String { "test" }
@@ -1121,6 +1146,9 @@ private final class RecordingToggleClient: EasyTierCoreClient, @unchecked Sendab
 
     func listInstances() async throws -> [NetworkInstance] { listedInstances }
     func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] { networkInfos }
+    func configureRPCPortal(_ rpcPortal: String?) async throws {
+        configuredRPCPortals.append(rpcPortal)
+    }
 
     func callJSONRPC(service _: String, method _: String, domain _: String?, payload _: String) async throws -> String {
         throw EasyTierCoreError.operationFailed("unsupported")
@@ -1152,6 +1180,7 @@ private final class HelperRunErrorClient: EasyTierCoreClient, @unchecked Sendabl
     func retain(instanceNames _: [String]) async throws {}
     func listInstances() async throws -> [NetworkInstance] { [] }
     func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] { [:] }
+    func configureRPCPortal(_: String?) async throws {}
     func callJSONRPC(service _: String, method _: String, domain _: String?, payload _: String) async throws -> String { "" }
     func startConfigServerClient(url _: URL) async throws {}
     func stopConfigServerClient() async throws {}

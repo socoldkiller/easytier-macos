@@ -66,6 +66,12 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, @unchecked Send
         }
     }
 
+    public func configureRPCPortal(_ rpcPortal: String?) async throws {
+        try await callHelper { service, reply in
+            service.configureRPCPortal(rpcPortal: rpcPortal, reply: reply)
+        }
+    }
+
     public func callJSONRPC(service: String, method: String, domain: String?, payload: String) async throws -> String {
         try await callJSONRPC(clientID: "default", service: service, method: method, domain: domain, payload: payload)
     }
@@ -93,7 +99,7 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, @unchecked Send
     }
 
     public func stopConfigServerClient() async throws {
-        throw unsupported("Config-server client mode")
+        // Core v2.6.4 has no config-server client in this helper; stopping is a no-op.
     }
 
     public func isConfigServerClientConnected() async throws -> Bool {

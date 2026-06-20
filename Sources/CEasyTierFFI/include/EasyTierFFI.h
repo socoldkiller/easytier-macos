@@ -23,3 +23,9 @@ int32_t call_json_rpc(
   const char *payload_json,
   const char **out_json
 );
+int32_t configure_rpc_portal(
+  int32_t enabled,
+  const char *listen_addr,
+  const char **whitelist,
+  uintptr_t whitelist_count
+);

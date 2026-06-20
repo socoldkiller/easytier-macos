@@ -287,6 +287,16 @@ public final class EasyTierAppStore {
 
         self.mode = effectiveMode
         save()
+
+        await busy {
+            try await client.configureRPCPortal(effectiveMode.rpcPortal)
+            if let rpcPortal = effectiveMode.rpcPortal {
+                log("RPC portal listening: \(rpcPortal)")
+            } else {
+                log("RPC portal disabled.")
+            }
+        }
+
         if let url = effectiveMode.configServerURL {
             await busy {
                 try await client.startConfigServerClient(url: url)

@@ -60,6 +60,15 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
         }
     }
 
+    func configureRPCPortal(rpcPortal: String?, reply: @escaping (String?, String?) -> Void) {
+        do {
+            try client.configureRPCPortalSync(rpcPortal)
+            reply("ok", nil)
+        } catch {
+            replyFailure(error, code: "configureRPCPortalFailed", reply: reply)
+        }
+    }
+
     func connectRPCClient(clientID: String, url: String, reply: @escaping (String?, String?) -> Void) {
         do {
             guard let url = URL(string: url) else {
@@ -117,6 +126,8 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
             "Check helper permissions and the EasyTier runtime error, then try starting the network again."
         case "collectNetworkInfosFailed", "listInstancesFailed":
             "The network may still be starting. Refresh again in a few seconds."
+        case "configureRPCPortalFailed":
+            "Check that the selected RPC listen port is free, then try saving the mode again."
         case "connectRPCClientFailed", "callJSONRPCFailed":
             "Check that the remote device has rpc_portal enabled and that the RPC URL uses a private EasyTier IP address."
         default:

@@ -151,18 +151,10 @@ private struct EmptyPatch: Encodable {
 }
 
 private struct InstanceIdentifierPayload: Encodable {
-    var selector: InstanceSelectorPayload
-
-    init(id: RPCUUID) {
-        self.selector = InstanceSelectorPayload(id: id)
-    }
-}
-
-private struct InstanceSelectorPayload: Encodable {
     var id: RPCUUID
 
-    enum CodingKeys: String, CodingKey {
-        case id = "Id"
+    init(id: RPCUUID) {
+        self.id = id
     }
 }
 

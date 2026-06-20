@@ -53,7 +53,7 @@ private actor SpyRPCTransport: EasyTierRPCTransport {
     #expect((patch?["mapped_listeners"] as? [Any])?.isEmpty == true)
     #expect((patch?["connectors"] as? [Any])?.isEmpty == true)
 
-    let id = (((object["instance"] as? [String: Any])?["selector"] as? [String: Any])?["Id"] as? [String: Any])
+    let id = (object["instance"] as? [String: Any])?["id"] as? [String: Any]
     #expect(id?["part1"] as? Int == 0x11111111)
     #expect(id?["part2"] as? Int == 0x22223333)
     #expect(id?["part3"] as? Int == 0x44445555)
@@ -75,7 +75,7 @@ private actor SpyRPCTransport: EasyTierRPCTransport {
     #expect(call.service == "api.config.ConfigRpcService")
     #expect(call.method == "get_config")
     let object = try rpcPayloadObject(call.payload)
-    let id = (((object["instance"] as? [String: Any])?["selector"] as? [String: Any])?["Id"] as? [String: Any])
+    let id = (object["instance"] as? [String: Any])?["id"] as? [String: Any]
     #expect(id?["part1"] as? Int == 0xaaaaaaaa)
     #expect(id?["part2"] as? Int == 0xbbbbcccc)
     #expect(id?["part3"] as? Int == 0xddddeeee)
