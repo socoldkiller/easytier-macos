@@ -658,7 +658,7 @@ struct ContentView: View {
             return false
         }
         do {
-            try await EasyTierRemoteRPCClient.patchHostname(rpcURL: rpcURL, instanceID: instanceID, hostname: trimmed)
+            try await EasyTierRemoteRPCClient.renameHostname(rpcURL: rpcURL, instanceID: instanceID, hostname: trimmed)
             await store.refreshRuntime()
             return true
         } catch {

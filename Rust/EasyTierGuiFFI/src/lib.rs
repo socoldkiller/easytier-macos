@@ -18,6 +18,7 @@ use easytier::{
                 PortForwardManageRpc, PortForwardManageRpcClientFactory, StatsRpc,
                 StatsRpcClientFactory,
             },
+            manage::{WebClientService, WebClientServiceClientFactory},
         },
         rpc_impl::standalone::StandAloneClient,
         rpc_types::controller::BaseController,
@@ -227,6 +228,9 @@ fn is_allowed_service_method(service_name: &str, method_name: &str) -> bool {
         "api.instance.PortForwardManageRpcService" => {
             matches!(method_name, "list_port_forward" | "ListPortForward")
         }
+        "api.manage.WebClientService" => {
+            matches!(method_name, "run_network_instance" | "RunNetworkInstance")
+        }
         _ => false,
     }
 }
@@ -265,6 +269,9 @@ async fn call_rpc_by_service(
         }
         "api.instance.PortForwardManageRpcService" => {
             call_service!(PortForwardManageRpcClientFactory<BaseController>)
+        }
+        "api.manage.WebClientService" => {
+            call_service!(WebClientServiceClientFactory<BaseController>)
         }
         _ => Err(anyhow!("Unknown service: {service_name}")),
     }
@@ -651,6 +658,7 @@ mod tests {
     use easytier::proto::api::{
         config::PatchConfigRequest,
         instance::{ListPeerRequest, instance_identifier::Selector},
+        manage::RunNetworkInstanceRequest,
     };
 
     #[test]
@@ -685,6 +693,10 @@ mod tests {
         assert!(is_allowed_service_method(
             "api.instance.PeerManageRpcService",
             "list_peer"
+        ));
+        assert!(is_allowed_service_method(
+            "api.manage.WebClientService",
+            "run_network_instance"
         ));
         assert!(!is_allowed_service_method(
             "api.manage.WebClientService",
@@ -754,5 +766,23 @@ mod tests {
         assert_eq!(request.patch.unwrap().hostname.as_deref(), Some("edge-mac"));
         let selector = request.instance.unwrap().selector.unwrap();
         assert!(matches!(selector, Selector::Id(_)));
+
+        let payload = serde_json::json!({
+            "inst_id": {
+                "part1": 0x11111111u32,
+                "part2": 0x22222222u32,
+                "part3": 0x33333333u32,
+                "part4": 0x44444444u32
+            },
+            "config": {
+                "hostname": "edge-mac",
+                "network_name": "office"
+            },
+            "overwrite": true,
+            "source": 1
+        });
+        let request: RunNetworkInstanceRequest = serde_json::from_value(payload).unwrap();
+        assert_eq!(request.config.unwrap().hostname.as_deref(), Some("edge-mac"));
+        assert!(request.overwrite);
     }
 }

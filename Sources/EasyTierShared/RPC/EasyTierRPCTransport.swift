@@ -70,6 +70,26 @@ public struct EasyTierRemoteRPCClient: Sendable {
         )
     }
 
+    @discardableResult
+    public func persistHostname(instanceID: String, hostname: String) async throws -> String {
+        let response = try await getConfig(instanceID: instanceID)
+        return try await transport.call(
+            service: Self.webClientService,
+            method: "run_network_instance",
+            domain: nil,
+            payload: try Self.persistHostnamePayload(instanceID: instanceID, getConfigResponse: response, hostname: hostname)
+        )
+    }
+
+    @discardableResult
+    public func renameHostname(instanceID: String, hostname: String) async throws -> String {
+        do {
+            return try await persistHostname(instanceID: instanceID, hostname: hostname)
+        } catch {
+            return try await patchHostname(instanceID: instanceID, hostname: hostname)
+        }
+    }
+
     public static func getConfig(rpcURL: URL, instanceID: String, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
         try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).getConfig(instanceID: instanceID)
     }
@@ -82,11 +102,22 @@ public struct EasyTierRemoteRPCClient: Sendable {
     public static func patchHostname(rpcURL: URL, instanceID: String, hostname: String, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
         try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).patchHostname(instanceID: instanceID, hostname: hostname)
     }
+
+    @discardableResult
+    public static func persistHostname(rpcURL: URL, instanceID: String, hostname: String, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
+        try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).persistHostname(instanceID: instanceID, hostname: hostname)
+    }
+
+    @discardableResult
+    public static func renameHostname(rpcURL: URL, instanceID: String, hostname: String, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
+        try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).renameHostname(instanceID: instanceID, hostname: hostname)
+    }
 }
 
 extension EasyTierRemoteRPCClient {
     static let configService = "api.config.ConfigRpcService"
     static let peerManageService = "api.instance.PeerManageRpcService"
+    static let webClientService = "api.manage.WebClientService"
 
     static func instancePayload(instanceID: String) throws -> String {
         try encodePayload(InstanceRequestPayload(instance: instanceIdentifier(instanceID: instanceID)))
@@ -99,11 +130,46 @@ extension EasyTierRemoteRPCClient {
         ))
     }
 
+    static func persistHostnamePayload(instanceID: String, getConfigResponse: String, hostname: String) throws -> String {
+        guard let data = getConfigResponse.data(using: .utf8),
+              let response = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var config = response["config"] as? [String: Any]
+        else {
+            throw EasyTierCoreError.invalidResponse("RPC get_config response did not include a config object")
+        }
+
+        config["hostname"] = hostname
+        let payload: [String: Any] = [
+            "inst_id": try rpcUUIDPayload(instanceID: instanceID),
+            "config": config,
+            "overwrite": true,
+            "source": 1,
+        ]
+        let payloadData = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        guard let json = String(data: payloadData, encoding: .utf8) else {
+            throw EasyTierCoreError.invalidResponse("failed to encode persistent hostname payload as UTF-8")
+        }
+        return json
+    }
+
     private static func instanceIdentifier(instanceID: String) throws -> InstanceIdentifierPayload {
         guard let uuid = UUID(uuidString: instanceID) else {
             throw EasyTierRPCError.invalidInstanceID(instanceID)
         }
         return InstanceIdentifierPayload(id: RPCUUID(uuid: uuid))
+    }
+
+    private static func rpcUUIDPayload(instanceID: String) throws -> [String: Int] {
+        guard let uuid = UUID(uuidString: instanceID) else {
+            throw EasyTierRPCError.invalidInstanceID(instanceID)
+        }
+        let id = RPCUUID(uuid: uuid)
+        return [
+            "part1": Int(id.part1),
+            "part2": Int(id.part2),
+            "part3": Int(id.part3),
+            "part4": Int(id.part4),
+        ]
     }
 
     private static func encodePayload(_ payload: some Encodable) throws -> String {
