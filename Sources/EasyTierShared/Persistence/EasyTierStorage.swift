@@ -3,16 +3,13 @@ import Foundation
 
 public struct EasyTierStorage: Sendable {
     public var baseDirectory: URL
-    public var legacyBaseDirectories: [URL]
 
     public static let `default` = EasyTierStorage(
-        baseDirectory: defaultBaseDirectory(),
-        legacyBaseDirectories: defaultLegacyBaseDirectories()
+        baseDirectory: defaultBaseDirectory()
     )
 
-    public init(baseDirectory: URL, legacyBaseDirectories: [URL] = []) {
+    public init(baseDirectory: URL) {
         self.baseDirectory = baseDirectory
-        self.legacyBaseDirectories = legacyBaseDirectories
     }
 
     public func load() throws -> AppSnapshot {
@@ -20,14 +17,16 @@ public struct EasyTierStorage: Sendable {
         if FileManager.default.fileExists(atPath: url.path) {
             return try loadSnapshot(from: url)
         }
-        if let legacySnapshot = try loadLegacySnapshot() {
-            return legacySnapshot
-        }
-        return AppSnapshot(configs: [], mode: nil, lastSelectedConfigID: nil)
+        let snapshot = AppSnapshot(configs: [StoredNetworkConfig(config: NetworkConfig())], mode: nil, lastSelectedConfigID: nil)
+        try save(snapshot)
+        return snapshot
     }
 
     public func save(_ snapshot: AppSnapshot) throws {
         try FileManager.default.createDirectory(at: baseDirectory, withIntermediateDirectories: true)
+        for stored in snapshot.configs {
+            try saveConfig(stored.config, for: stored)
+        }
         let data = try encoder.encode(snapshot)
         let stateURL = stateURL(in: baseDirectory)
         try data.write(to: stateURL, options: .atomic)
@@ -35,16 +34,33 @@ public struct EasyTierStorage: Sendable {
         repairOriginalUserOwnership(for: stateURL)
     }
 
+    public func configURL(for stored: StoredNetworkConfig) -> URL {
+        baseDirectory.appendingPathComponent(stored.tomlPath)
+    }
+
+    public func loadConfig(_ stored: StoredNetworkConfig) throws -> NetworkConfig {
+        let toml = try String(contentsOf: configURL(for: stored), encoding: .utf8)
+        return try NetworkConfigTOMLCodec.decode(toml)
+    }
+
+    public func saveConfig(_ config: NetworkConfig, for stored: StoredNetworkConfig) throws {
+        let url = configURL(for: stored)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try NetworkConfigTOMLCodec.encode(config).write(to: url, atomically: true, encoding: .utf8)
+        repairOriginalUserOwnership(for: url.deletingLastPathComponent())
+        repairOriginalUserOwnership(for: url)
+    }
+
+    public func deleteConfig(_ stored: StoredNetworkConfig) throws {
+        let url = configURL(for: stored)
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+    }
+
     static func defaultBaseDirectory(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
         appSupportDirectory(environment: environment)
             .appendingPathComponent(appSupportDirectoryName, isDirectory: true)
-    }
-
-    static func defaultLegacyBaseDirectories(environment: [String: String] = ProcessInfo.processInfo.environment) -> [URL] {
-        let appSupport = appSupportDirectory(environment: environment)
-        return legacyAppSupportDirectoryNames.map { name in
-            appSupport.appendingPathComponent(name, isDirectory: true)
-        }
     }
 
     private static func appSupportDirectory(environment: [String: String]) -> URL {
@@ -56,28 +72,13 @@ public struct EasyTierStorage: Sendable {
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     }
 
-    private func loadLegacySnapshot() throws -> AppSnapshot? {
-        var firstError: Error?
-
-        for legacyBaseDirectory in legacyBaseDirectories {
-            let url = stateURL(in: legacyBaseDirectory)
-            guard FileManager.default.fileExists(atPath: url.path) else { continue }
-            do {
-                let snapshot = try loadSnapshot(from: url)
-                try? save(snapshot)
-                return snapshot
-            } catch {
-                if firstError == nil { firstError = error }
-            }
-        }
-
-        if let firstError { throw firstError }
-        return nil
-    }
-
     private func loadSnapshot(from url: URL) throws -> AppSnapshot {
         let data = try Data(contentsOf: url)
-        return try decoder.decode(AppSnapshot.self, from: data)
+        var snapshot = try decoder.decode(AppSnapshot.self, from: data)
+        for index in snapshot.configs.indices {
+            snapshot.configs[index].config = try loadConfig(snapshot.configs[index])
+        }
+        return snapshot
     }
 
     private func stateURL(in directory: URL) -> URL {
@@ -102,7 +103,4 @@ public struct EasyTierStorage: Sendable {
     private var decoder: JSONDecoder { JSONDecoder() }
 
     private static let appSupportDirectoryName = "com.kkrainbow.easytier.mac"
-    // Older builds used these names; on case-insensitive volumes, "EasyTier" can
-    // also resolve to EasyTier Core's legacy "easytier" runtime directory.
-    private static let legacyAppSupportDirectoryNames = ["EasyTier", "easytier", "com.kkrainbow.easytier"]
 }

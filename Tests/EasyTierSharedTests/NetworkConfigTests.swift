@@ -262,16 +262,34 @@ import Testing
     }
 }
 
-@Test func storagePersistsSnapshot() throws {
+@Test func stateJsonStoresTomlReferenceAndConfigLivesInToml() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let storage = EasyTierStorage(baseDirectory: directory)
+    var config = NetworkConfig(instance_id: "lab-id", network_name: "lab", network_secret: "secret")
+    config.port_forwards = [
+        PortForwardConfig(bind_ip: "127.0.0.1", bind_port: 8_080, dst_ip: "10.144.144.2", dst_port: 80, proto: "tcp"),
+    ]
     let snapshot = AppSnapshot(
-        configs: [StoredNetworkConfig(config: NetworkConfig(network_name: "lab"))],
+        configs: [StoredNetworkConfig(config: config)],
         mode: .remote(remoteRPCAddress: "tcp://127.0.0.1:15999"),
         lastSelectedConfigID: "abc"
     )
 
     try storage.save(snapshot)
+
+    let state = try String(contentsOf: directory.appendingPathComponent("state.json"), encoding: .utf8)
+    let tomlURL = directory.appendingPathComponent("configs/lab-id.toml")
+    let toml = try String(contentsOf: tomlURL, encoding: .utf8)
+    let stateObject = try #require(JSONSerialization.jsonObject(with: Data(state.utf8)) as? [String: Any])
+    let stateConfigs = try #require(stateObject["configs"] as? [[String: Any]])
+
+    #expect(stateConfigs.first?["tomlPath"] as? String == "configs/lab-id.toml")
+    #expect(!state.contains("network_name"))
+    #expect(!state.contains("network_secret"))
+    #expect(!state.contains("port_forwards"))
+    #expect(FileManager.default.fileExists(atPath: tomlURL.path))
+    #expect(toml.contains("network_name = \"lab\""))
+
     let loaded = try storage.load()
 
     #expect(loaded.configs.first?.config.network_name == "lab")
@@ -279,74 +297,8 @@ import Testing
     #expect(loaded.lastSelectedConfigID == "abc")
 }
 
-@Test func storageLoadsLegacyNormalModeWithoutRPCPortalWhitelist() throws {
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    let stateURL = directory.appendingPathComponent("state.json")
-    try Data(#"{"configs":[],"mode":{"normal":{"rpcPortal":"tcp://0.0.0.0:15888","rpcListenEnabled":true,"rpcListenPort":15888,"configServerURL":null}}}"#.utf8).write(to: stateURL)
-
-    let loaded = try EasyTierStorage(baseDirectory: directory).load()
-
-    guard case let .normal(rpcPortal, rpcListenEnabled, rpcListenPort, rpcPortalWhitelist, configServerURL) = loaded.mode else {
-        Issue.record("expected legacy normal mode to decode")
-        return
-    }
-    #expect(rpcPortal == "tcp://0.0.0.0:15888")
-    #expect(rpcListenEnabled)
-    #expect(rpcListenPort == 15_888)
-    #expect(rpcPortalWhitelist == nil)
-    #expect(configServerURL == nil)
-}
-
 @Test func defaultStorageUsesBundleSpecificAppSupportDirectory() {
     #expect(EasyTierStorage.default.baseDirectory.lastPathComponent == "com.kkrainbow.easytier.mac")
-}
-
-@Test func storageIgnoresLegacyDeviceAliases() throws {
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    let stateURL = directory.appendingPathComponent("state.json")
-    try Data(#"{"configs":[],"deviceAliases":[{"networkID":"abc","peerID":"1","hostname":"old","displayName":"Old"}]}"#.utf8).write(to: stateURL)
-
-    let storage = EasyTierStorage(baseDirectory: directory)
-    let loaded = try storage.load()
-
-    #expect(loaded.configs.isEmpty)
-}
-
-@Test func storageMigratesLegacySnapshotIntoPrimaryDirectory() throws {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-    defer { try? FileManager.default.removeItem(at: root) }
-
-    let primaryDirectory = root.appendingPathComponent("com.kkrainbow.easytier.mac", isDirectory: true)
-    let legacyDirectory = root.appendingPathComponent("EasyTier", isDirectory: true)
-    let legacyStorage = EasyTierStorage(baseDirectory: legacyDirectory)
-    let storage = EasyTierStorage(baseDirectory: primaryDirectory, legacyBaseDirectories: [legacyDirectory])
-    let snapshot = AppSnapshot(configs: [StoredNetworkConfig(config: NetworkConfig(network_name: "legacy"))], mode: .default, lastSelectedConfigID: "legacy-id")
-
-    try legacyStorage.save(snapshot)
-
-    let loaded = try storage.load()
-
-    #expect(loaded.configs.first?.config.network_name == "legacy")
-    #expect(try storage.load().lastSelectedConfigID == "legacy-id")
-    #expect(FileManager.default.fileExists(atPath: primaryDirectory.appendingPathComponent("state.json").path))
-}
-
-@Test func storageSavesOnlyToPrimaryDirectoryWhenLegacyDirectoryExists() throws {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-    defer { try? FileManager.default.removeItem(at: root) }
-
-    let primaryDirectory = root.appendingPathComponent("com.kkrainbow.easytier.mac", isDirectory: true)
-    let legacyDirectory = root.appendingPathComponent("EasyTier", isDirectory: true)
-    let legacyStorage = EasyTierStorage(baseDirectory: legacyDirectory)
-    let storage = EasyTierStorage(baseDirectory: primaryDirectory, legacyBaseDirectories: [legacyDirectory])
-
-    try legacyStorage.save(AppSnapshot(configs: [StoredNetworkConfig(config: NetworkConfig(network_name: "legacy"))], mode: .default, lastSelectedConfigID: "legacy-id"))
-    try storage.save(AppSnapshot(configs: [StoredNetworkConfig(config: NetworkConfig(network_name: "primary"))], mode: .default, lastSelectedConfigID: "primary-id"))
-
-    #expect(try storage.load().configs.first?.config.network_name == "primary")
-    #expect(try legacyStorage.load().configs.first?.config.network_name == "legacy")
 }
 
 @MainActor

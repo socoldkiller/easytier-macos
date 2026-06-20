@@ -76,13 +76,40 @@ public enum ConfigSource: String, Codable, CaseIterable, Sendable {
 }
 
 public struct StoredNetworkConfig: Codable, Identifiable, Equatable, Sendable {
+    public var tomlPath: String
     public var config: NetworkConfig
     public var source: ConfigSource
 
     public var id: String { config.instance_id }
 
-    public init(config: NetworkConfig, source: ConfigSource = .user) {
+    public init(config: NetworkConfig, source: ConfigSource = .user, tomlPath: String? = nil) {
+        self.tomlPath = tomlPath ?? Self.defaultTOMLPath(for: config.instance_id)
         self.config = config
         self.source = source
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case tomlPath
+        case source
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let id = try container.decode(String.self, forKey: .id)
+        tomlPath = try container.decode(String.self, forKey: .tomlPath)
+        source = try container.decode(ConfigSource.self, forKey: .source)
+        config = NetworkConfig(instance_id: id)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(tomlPath, forKey: .tomlPath)
+        try container.encode(source, forKey: .source)
+    }
+
+    public static func defaultTOMLPath(for id: String) -> String {
+        "configs/\(id).toml"
     }
 }

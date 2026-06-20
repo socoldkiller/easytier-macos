@@ -143,7 +143,13 @@ public final class EasyTierAppStore {
             }
         }
         clearPendingStart(for: config)
-        configs.remove(at: index)
+        let removed = configs.remove(at: index)
+        do {
+            try storage.deleteConfig(removed)
+        } catch {
+            lastError = error.localizedDescription
+            log("Config TOML delete failed: \(error.localizedDescription)")
+        }
         if configs.isEmpty { configs.append(StoredNetworkConfig(config: NetworkConfig())) }
         self.selectedConfigID = configs.first?.id
         save()
