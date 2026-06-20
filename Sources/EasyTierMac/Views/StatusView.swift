@@ -8,6 +8,7 @@ struct StatusView: View {
     @State private var publicServerGroupExpanded = false
     @State private var renameHostnameRequest: RenameHostnameRequest?
     @State private var memberSearchText = ""
+    @State private var memberTableIsScrolling = false
 
     var highlightedMemberPeerID: String? = nil
     var onRenameLocalHostname: (String) -> Void = { _ in }
@@ -151,28 +152,28 @@ struct StatusView: View {
 
             TableColumn("Latency") { row in
                 expandablePublicServerCell(for: row) {
-                    LatencyMetricText(value: row.latency)
+                    LatencyMetricText(value: row.latency, animates: !memberTableIsScrolling)
                 }
             }
             .width(min: 78, ideal: 90, max: 118)
 
             TableColumn("Upload") { row in
                 expandablePublicServerCell(for: row) {
-                    AnimatedMetricText(value: row.uploadTotal)
+                    AnimatedMetricText(value: row.uploadTotal, animates: !memberTableIsScrolling)
                 }
             }
             .width(min: 84, ideal: 96, max: 124)
 
             TableColumn("Download") { row in
                 expandablePublicServerCell(for: row) {
-                    AnimatedMetricText(value: row.downloadTotal)
+                    AnimatedMetricText(value: row.downloadTotal, animates: !memberTableIsScrolling)
                 }
             }
             .width(min: 96, ideal: 108, max: 138)
 
             TableColumn("Loss") { row in
                 expandablePublicServerCell(for: row) {
-                    AnimatedMetricText(value: row.lossRate)
+                    AnimatedMetricText(value: row.lossRate, animates: !memberTableIsScrolling)
                 }
             }
             .width(min: 66, ideal: 78, max: 100)
@@ -205,6 +206,7 @@ struct StatusView: View {
             }
         }
         .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
+        .trackScrollPhase(isScrolling: $memberTableIsScrolling)
     }
 
     private var memberTableRows: [MemberTableRow] {
@@ -762,6 +764,17 @@ private struct PointingHandOnHover: ViewModifier {
 }
 
 private extension View {
+    @ViewBuilder
+    func trackScrollPhase(isScrolling: Binding<Bool>) -> some View {
+        if #available(macOS 15.0, *) {
+            onScrollPhaseChange { _, phase in
+                isScrolling.wrappedValue = phase.isScrolling
+            }
+        } else {
+            self
+        }
+    }
+
     func pointingHandOnHover() -> some View {
         modifier(PointingHandOnHover())
     }
@@ -844,6 +857,7 @@ private struct MemberRouteCell: View {
 
 private struct LatencyMetricText: View {
     var value: String
+    var animates = true
 
     private var quality: LatencyQuality {
         LatencyQuality(value)
@@ -853,7 +867,8 @@ private struct LatencyMetricText: View {
         AnimatedMetricText(
             value: value,
             color: quality.color,
-            fontWeight: .regular
+            fontWeight: .regular,
+            animates: animates
         )
         .help(quality.helpText(for: value))
     }
@@ -865,6 +880,7 @@ private struct AnimatedMetricText: View {
     var value: String
     var color: Color = .primary
     var fontWeight: Font.Weight = .regular
+    var animates = true
 
     @State private var isPulsing = false
     @State private var pulseToken = 0
@@ -876,20 +892,26 @@ private struct AnimatedMetricText: View {
             .monospacedDigit()
             .lineLimit(1)
             .minimumScaleFactor(0.82)
-            .contentTransition(reduceMotion ? .opacity : .numericText())
-            .scaleEffect(reduceMotion || !isPulsing ? 1 : 1.035, anchor: .leading)
-            .opacity(reduceMotion || !isPulsing ? 1 : 0.9)
-            .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: value)
-            .animation(reduceMotion ? .easeOut(duration: 0.06) : .easeOut(duration: 0.18), value: isPulsing)
+            .contentTransition(shouldAnimate ? .numericText() : .identity)
+            .scaleEffect(shouldPulse ? 1.035 : 1, anchor: .leading)
+            .opacity(shouldPulse ? 0.9 : 1)
+            .animation(shouldAnimate ? EasyTierMotion.quick(reduceMotion: reduceMotion) : nil, value: value)
+            .animation(shouldAnimate ? .easeOut(duration: 0.18) : nil, value: isPulsing)
             .onChange(of: value) { oldValue, newValue in
-                guard oldValue != newValue else { return }
+                guard shouldAnimate, oldValue != newValue else { return }
                 triggerPulse()
             }
     }
 
-    private func triggerPulse() {
-        guard !reduceMotion else { return }
+    private var shouldAnimate: Bool {
+        animates && !reduceMotion
+    }
 
+    private var shouldPulse: Bool {
+        shouldAnimate && isPulsing
+    }
+
+    private func triggerPulse() {
         pulseToken += 1
         let token = pulseToken
 
@@ -1074,9 +1096,7 @@ private struct CopyableIPv4Cell: View {
             }
             .buttonStyle(CopyFeedbackButtonStyle())
             .onHover { hovering in
-                withAnimation(.easeOut(duration: 0.14)) {
-                    isHovering = hovering
-                }
+                isHovering = hovering
             }
             .animation(.easeOut(duration: 0.18), value: didCopy)
             .help(didCopy ? "Copied \(ip)" : "Copy IP \(ip)")
