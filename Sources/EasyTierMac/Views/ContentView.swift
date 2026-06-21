@@ -735,6 +735,7 @@ struct ContentView: View {
         return Binding(
             get: { draftConfig },
             set: { newValue in
+                guard newValue != draftConfig else { return }
                 draftConfig = newValue
                 draftIsDirty = true
             }
