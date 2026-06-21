@@ -129,10 +129,6 @@ struct ConfigEditorView: View {
                         reversePending: reversePortForwardPending,
                         onToggleReverse: { rule in
                             Task { await toggleReverse(for: rule) }
-                        },
-                        onRemoveRule: { rule in
-                            reversePortForwardStatus[rule.id] = nil
-                            reversePortForwardPending.remove(rule.id)
                         }
                     )
                 }
@@ -140,11 +136,11 @@ struct ConfigEditorView: View {
             .padding(18)
         }
         .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
-        .task {
-            await refreshReverseStatus()
+        .onAppear {
+            Task { await refreshReverseStatus() }
         }
-        .task(id: members.map(\.id)) {
-            await refreshReverseStatus()
+        .onDisappear {
+            reversePortForwardStatus = [:]
         }
     }
 
@@ -195,50 +191,30 @@ struct ConfigEditorView: View {
                     instanceID: remoteInstanceID,
                     portForward: reverseRule
                 )
-                reversePortForwardStatus[rule.id] = false
-                store.recordNotice("Reverse port forward removed on peer at \(rule.dst_ip)")
             } else {
-                // Remove any existing rules on same bind port to avoid EADDRINUSE
-                let existingList = try await EasyTierRemoteRPCClient.listPortForwardsParsed(
-                    rpcURL: rpcURL,
-                    instanceID: remoteInstanceID
-                )
-                for stale in existingList {
-                    if stale.bind_ip == reverseRule.bind_ip,
-                       stale.bind_port == reverseRule.bind_port,
-                       stale.proto == reverseRule.proto
-                    {
-                        try? await EasyTierRemoteRPCClient.patchPortForwardRemove(
-                            rpcURL: rpcURL,
-                            instanceID: remoteInstanceID,
-                            portForward: stale
-                        )
-                    }
-                }
-
                 try await EasyTierRemoteRPCClient.patchPortForwardAdd(
                     rpcURL: rpcURL,
                     instanceID: remoteInstanceID,
                     portForward: reverseRule
                 )
+            }
 
-                let remoteList = try await EasyTierRemoteRPCClient.listPortForwardsParsed(
-                    rpcURL: rpcURL,
-                    instanceID: remoteInstanceID
-                )
-                let verified = remoteList.contains { existing in
-                    existing.bind_ip == reverseRule.bind_ip
-                        && existing.bind_port == reverseRule.bind_port
-                        && existing.dst_ip == reverseRule.dst_ip
-                        && existing.dst_port == reverseRule.dst_port
-                        && existing.proto == reverseRule.proto
-                }
-                if verified {
-                    reversePortForwardStatus[rule.id] = true
-                    store.recordNotice("Reverse OK: \(rule.bind_ip):\(rule.bind_port) -> \(localVirtualIP):\(rule.bind_port) on \(rule.dst_ip)")
-                } else {
-                    store.lastError = "Reverse RPC succeeded but rule not found on \(rule.dst_ip)."
-                }
+            let remoteList = try await EasyTierRemoteRPCClient.listPortForwardsParsed(
+                rpcURL: rpcURL,
+                instanceID: remoteInstanceID
+            )
+            let verified = remoteList.contains { existing in
+                existing.bind_ip == reverseRule.bind_ip
+                    && existing.bind_port == reverseRule.bind_port
+                    && existing.dst_ip == reverseRule.dst_ip
+                    && existing.dst_port == reverseRule.dst_port
+                    && existing.proto == reverseRule.proto
+            }
+            reversePortForwardStatus[rule.id] = verified
+            if verified {
+                store.recordNotice("Reverse OK: \(rule.bind_ip):\(rule.bind_port) -> \(localVirtualIP):\(rule.bind_port) on \(rule.dst_ip)")
+            } else {
+                store.lastError = "Reverse RPC succeeded but rule not found on \(rule.dst_ip)."
             }
         } catch {
             store.lastError = "Reverse port forward failed: \(error.localizedDescription)"
@@ -430,14 +406,11 @@ private struct StringListEditor: View {
 }
 
 private struct PortForwardEditor: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
     @Binding var portForwards: [PortForwardConfig]
     var members: [NetworkMemberStatus]
     var reverseStatus: [UUID: Bool] = [:]
     var reversePending: Set<UUID> = []
     var onToggleReverse: (PortForwardConfig) -> Void = { _ in }
-    var onRemoveRule: (PortForwardConfig) -> Void = { _ in }
 
     private func reverseAvailable(for rule: PortForwardConfig) -> (available: Bool, reason: String?) {
         let localIP = members.first(where: \.isLocal)?.copyableIPv4Address
@@ -487,7 +460,6 @@ private struct PortForwardEditor: View {
                             .frame(width: 90)
                         reverseButton(for: rule)
                         Button(role: .destructive) {
-                            onRemoveRule(rule)
                             portForwards.removeAll { $0.id == rule.id }
                         } label: {
                             Image(systemName: "minus.circle")
