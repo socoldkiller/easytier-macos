@@ -129,6 +129,10 @@ struct ConfigEditorView: View {
                         reversePending: reversePortForwardPending,
                         onToggleReverse: { rule in
                             Task { await toggleReverse(for: rule) }
+                        },
+                        onRemoveRule: { rule in
+                            reversePortForwardStatus[rule.id] = nil
+                            reversePortForwardPending.remove(rule.id)
                         }
                     )
                 }
@@ -415,6 +419,7 @@ private struct PortForwardEditor: View {
     var reverseStatus: [UUID: Bool] = [:]
     var reversePending: Set<UUID> = []
     var onToggleReverse: (PortForwardConfig) -> Void = { _ in }
+    var onRemoveRule: (PortForwardConfig) -> Void = { _ in }
 
     private func reverseAvailable(for rule: PortForwardConfig) -> (available: Bool, reason: String?) {
         let localIP = members.first(where: \.isLocal)?.copyableIPv4Address
@@ -441,9 +446,7 @@ private struct PortForwardEditor: View {
                     .font(.system(size: 13.5, weight: .medium))
                 Spacer()
                 Button {
-                    withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
-                        portForwards.append(PortForwardConfig())
-                    }
+                    portForwards.append(PortForwardConfig())
                 } label: { Image(systemName: "plus") }
                     .buttonStyle(.borderless)
             }
@@ -466,9 +469,8 @@ private struct PortForwardEditor: View {
                             .frame(width: 90)
                         reverseButton(for: rule)
                         Button(role: .destructive) {
-                            withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
-                                portForwards.removeAll { $0.id == rule.id }
-                            }
+                            onRemoveRule(rule)
+                            portForwards.removeAll { $0.id == rule.id }
                         } label: {
                             Image(systemName: "minus.circle")
                         }
