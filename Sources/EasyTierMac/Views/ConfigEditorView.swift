@@ -198,6 +198,24 @@ struct ConfigEditorView: View {
                 reversePortForwardStatus[rule.id] = false
                 store.recordNotice("Reverse port forward removed on peer at \(rule.dst_ip)")
             } else {
+                // Remove any existing rules on same bind port to avoid EADDRINUSE
+                let existingList = try await EasyTierRemoteRPCClient.listPortForwardsParsed(
+                    rpcURL: rpcURL,
+                    instanceID: remoteInstanceID
+                )
+                for stale in existingList {
+                    if stale.bind_ip == reverseRule.bind_ip,
+                       stale.bind_port == reverseRule.bind_port,
+                       stale.proto == reverseRule.proto
+                    {
+                        try? await EasyTierRemoteRPCClient.patchPortForwardRemove(
+                            rpcURL: rpcURL,
+                            instanceID: remoteInstanceID,
+                            portForward: stale
+                        )
+                    }
+                }
+
                 try await EasyTierRemoteRPCClient.patchPortForwardAdd(
                     rpcURL: rpcURL,
                     instanceID: remoteInstanceID,
