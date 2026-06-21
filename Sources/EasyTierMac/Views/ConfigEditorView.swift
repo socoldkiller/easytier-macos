@@ -142,6 +142,21 @@ struct ConfigEditorView: View {
         .onDisappear {
             reversePortForwardStatus = [:]
         }
+        .onChange(of: portForwardKeys) { oldKeys, newKeys in
+            for (id, key) in oldKeys {
+                if newKeys[id] == nil || newKeys[id] != key {
+                    reversePortForwardStatus[id] = nil
+                }
+            }
+        }
+    }
+
+    private typealias RuleKey = String
+
+    private var portForwardKeys: [UUID: RuleKey] {
+        Dictionary(uniqueKeysWithValues: config.port_forwards.map { rule in
+            (rule.id, "\(rule.bind_ip):\(rule.bind_port)-\(rule.dst_ip):\(rule.dst_port)-\(rule.proto)")
+        })
     }
 
     private var localVirtualIP: String {
