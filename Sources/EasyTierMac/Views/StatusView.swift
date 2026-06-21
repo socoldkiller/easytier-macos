@@ -20,6 +20,12 @@ struct StatusView: View {
     private var runtimeError: String? {
         instance?.runtimeErrorMessage
     }
+    private var runtimeIntentConflict: RuntimeIntent? {
+        let networkName = instance?.name ?? store.selectedConfig?.network_name
+        return store.runtimeIntents.first { intent in
+            intent.status == .conflict && (networkName == nil || intent.target.networkName == networkName)
+        }
+    }
     private var connectionState: ConnectionGlyphState {
         if runtimeError != nil { return .error }
         if store.isBusy { return .connecting }
@@ -42,6 +48,20 @@ struct StatusView: View {
             if let runtimeError {
                 ErrorBanner(message: runtimeError)
                     .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 8))
+            }
+
+            if let conflict = runtimeIntentConflict {
+                RuntimeIntentConflictBanner(
+                    intent: conflict,
+                    useRemoteAction: { store.useRemoteValue(forRuntimeIntent: conflict.id) },
+                    reapplyAction: {
+                        Task {
+                            await store.reapplyRuntimeIntent(conflict.id)
+                        }
+                    },
+                    keepPendingAction: { store.keepRuntimeIntentPending(conflict.id) }
+                )
+                .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 8))
             }
 
             MotionSwitch(id: contentMotionID, insertionEdge: .bottom) {
@@ -1293,5 +1313,53 @@ private struct ErrorBanner: View {
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private struct RuntimeIntentConflictBanner: View {
+    var intent: RuntimeIntent
+    var useRemoteAction: () -> Void
+    var reapplyAction: () -> Void
+    var keepPendingAction: () -> Void
+
+    private var title: String {
+        switch intent.kind {
+        case .hostname:
+            "Hostname change conflict"
+        case .portForwardSet:
+            "Port forwarding change conflict"
+        }
+    }
+
+    private var detail: String {
+        let target = intent.target.recentHostname ?? intent.target.instanceID ?? intent.target.peerID ?? intent.target.networkName
+        let desired = intent.desired.hostname ?? "saved value"
+        return "\(target) changed elsewhere. Saved value: \(desired)"
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.callout.weight(.semibold))
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            } icon: {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .foregroundStyle(.orange)
+            }
+            Spacer(minLength: 8)
+            Button("Use Remote", action: useRemoteAction)
+            Button("Reapply", action: reapplyAction)
+                .buttonStyle(.borderedProminent)
+            Button("Keep Pending", action: keepPendingAction)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
     }
 }

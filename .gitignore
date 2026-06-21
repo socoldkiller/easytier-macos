@@ -7,3 +7,4 @@ Vendor/Frameworks/include/
 Vendor/Frameworks/static/
 *.xcuserstate
 *.xcuserdata/
+.idea/

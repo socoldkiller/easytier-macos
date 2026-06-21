@@ -21,6 +21,14 @@ public struct PortForwardConfig: Codable, Equatable, Identifiable, Sendable {
         case bind_ip, bind_port, dst_ip, dst_port, proto
     }
 
+    public static func == (lhs: PortForwardConfig, rhs: PortForwardConfig) -> Bool {
+        lhs.bind_ip == rhs.bind_ip
+            && lhs.bind_port == rhs.bind_port
+            && lhs.dst_ip == rhs.dst_ip
+            && lhs.dst_port == rhs.dst_port
+            && lhs.proto == rhs.proto
+    }
+
     public init(bind_ip: String = "", bind_port: Int = 65_535, dst_ip: String = "", dst_port: Int = 65_535, proto: String = "tcp") {
         self.bind_ip = bind_ip
         self.bind_port = bind_port

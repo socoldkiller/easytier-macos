@@ -49,15 +49,20 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
     func collectNetworkInfos(reply: @escaping (String?, String?) -> Void) {
         do {
             let infos = try client.collectNetworkInfoPayloadsSync()
-            var object: [String: Any] = [:]
-            for info in infos {
-                object[info.key] = try JSONSerialization.jsonObject(with: Data(info.value.utf8))
-            }
-            let data = try JSONSerialization.data(withJSONObject: object)
-            reply(String(decoding: data, as: UTF8.self), nil)
+            let json = buildCollectNetworkInfoJSON(from: infos)
+            reply(json, nil)
         } catch {
             replyFailure(error, code: "collectNetworkInfosFailed", reply: reply)
         }
+    }
+
+    private func buildCollectNetworkInfoJSON(from pairs: [(key: String, value: String)]) -> String {
+        let encoder = JSONEncoder()
+        let entries = pairs.map { pair in
+            let keyJSON = String(data: try! encoder.encode(pair.key), encoding: .utf8) ?? "\"\""
+            return "\(keyJSON): \(pair.value)"
+        }
+        return "{\(entries.joined(separator: ","))}"
     }
 
     func configureRPCPortal(rpcPortal: String?, whitelist: [String]?, reply: @escaping (String?, String?) -> Void) {
@@ -74,7 +79,7 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
             guard let url = URL(string: url) else {
                 throw EasyTierCoreError.operationFailed("Invalid EasyTier RPC URL.")
             }
-            try client.connectRPCClient(clientID: clientID, url: url)
+            try client.connectRPCClientSync(clientID: clientID, url: url)
             reply("ok", nil)
         } catch {
             replyFailure(error, code: "connectRPCClientFailed", reply: reply)
@@ -83,7 +88,7 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
 
     func disconnectRPCClient(clientID: String, reply: @escaping (String?, String?) -> Void) {
         do {
-            try client.disconnectRPCClient(clientID: clientID)
+            try client.disconnectRPCClientSync(clientID: clientID)
             reply("ok", nil)
         } catch {
             replyFailure(error, code: "disconnectRPCClientFailed", reply: reply)

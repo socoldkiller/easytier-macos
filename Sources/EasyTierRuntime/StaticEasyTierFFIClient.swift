@@ -20,7 +20,7 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
     }
 
     public func run(toml: String) throws {
-        try ffiCall(run_network_instance, withCString: toml)
+        try Self.ffiCall(run_network_instance, withCString: toml)
     }
 
     public func stop(instanceNames: [String]) async throws {
@@ -43,7 +43,7 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
     public func retainSync(instanceNames: [String]) throws {
         try withCStringArray(instanceNames) { names in
             let result = retain_network_instance(names.baseAddress, UInt(names.count))
-            if result != 0 { throw lastError() }
+            if result != 0 { throw Self.lastError() }
         }
     }
 
@@ -101,63 +101,73 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
         } else {
             result = configure_rpc_portal(0, nil, nil, 0)
         }
-        if result != 0 { throw lastError() }
+        if result != 0 { throw Self.lastError() }
     }
 
     private static func withCStringArray<Result>(_ strings: [String], _ body: ([UnsafePointer<CChar>?]) -> Result) -> Result {
-        func appendCString(at index: Int, pointers: [UnsafePointer<CChar>?]) -> Result {
-            guard index < strings.count else { return body(pointers) }
-            return strings[index].withCString { pointer in
-                appendCString(at: index + 1, pointers: pointers + [pointer])
-            }
-        }
-
-        return appendCString(at: 0, pointers: [])
+        let cStrings = strings.map { strdup($0) }
+        defer { cStrings.forEach { free($0) } }
+        let pointers = cStrings.map { UnsafePointer<CChar>($0) }
+        return body(pointers)
     }
 
     public func callJSONRPC(service: String, method: String, domain: String?, payload: String) async throws -> String {
         try callJSONRPC(clientID: Self.defaultRPCClientID, service: service, method: method, domain: domain, payload: payload)
     }
 
-    public func connectRPCClient(clientID: String, url: URL) throws {
+    public func connectRPCClientSync(clientID: String, url: URL) throws {
         let result = clientID.withCString { clientIDPointer in
             url.absoluteString.withCString { urlPointer in
                 connect_rpc_client(clientIDPointer, urlPointer)
             }
         }
-        if result != 0 { throw lastError() }
+        if result != 0 { throw Self.lastError() }
     }
 
-    public func disconnectRPCClient(clientID: String) throws {
+    public func disconnectRPCClientSync(clientID: String) throws {
         let result = clientID.withCString { clientIDPointer in
             disconnect_rpc_client(clientIDPointer)
         }
-        if result != 0 { throw lastError() }
+        if result != 0 { throw Self.lastError() }
+    }
+
+    public func connectRPCClient(clientID: String, url: URL) async throws {
+        try connectRPCClientSync(clientID: clientID, url: url)
+    }
+
+    public func disconnectRPCClient(clientID: String) async throws {
+        try disconnectRPCClientSync(clientID: clientID)
     }
 
     public func callJSONRPC(clientID: String, service: String, method: String, domain: String?, payload: String) throws -> String {
         var output: UnsafePointer<CChar>?
-        let result = clientID.withCString { clientIDPointer in
-            service.withCString { servicePointer in
-                method.withCString { methodPointer in
-                    payload.withCString { payloadPointer in
-                        if let domain {
-                            domain.withCString { domainPointer in
-                                call_json_rpc(clientIDPointer, servicePointer, methodPointer, domainPointer, payloadPointer, &output)
-                            }
-                        } else {
-                            call_json_rpc(clientIDPointer, servicePointer, methodPointer, nil, payloadPointer, &output)
-                        }
-                    }
+        let result = withCStringTuple(clientID, service, method, payload) { cClientID, cService, cMethod, cPayload in
+            if let domain {
+                return domain.withCString { cDomain in
+                    call_json_rpc(cClientID, cService, cMethod, cDomain, cPayload, &output)
                 }
+            } else {
+                return call_json_rpc(cClientID, cService, cMethod, nil, cPayload, &output)
             }
         }
-        if result != 0 { throw lastError() }
+        if result != 0 { throw Self.lastError() }
         guard let output else {
             throw EasyTierCoreError.invalidResponse("JSON-RPC FFI returned a null response")
         }
         defer { free_string(output) }
         return String(cString: output)
+    }
+
+    private func withCStringTuple<Result>(_ a: String, _ b: String, _ c: String, _ d: String, body: (UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?) throws -> Result) rethrows -> Result {
+        try a.withCString { ca in
+            try b.withCString { cb in
+                try c.withCString { cc in
+                    try d.withCString { cd in
+                        try body(ca, cb, cc, cd)
+                    }
+                }
+            }
+        }
     }
 
     public func startConfigServerClient(url: URL) async throws {
@@ -173,14 +183,14 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
     }
 
     public static func validateDirect(toml: String) throws {
-        try StaticEasyTierFFIClient().ffiCall(parse_config, withCString: toml)
+        try ffiCall(parse_config, withCString: toml)
     }
 
     private static let defaultRPCClientID = "default"
 
-    private func ffiCall(_ body: (UnsafePointer<CChar>?) -> CInt, withCString value: String) throws {
+    private static func ffiCall(_ body: (UnsafePointer<CChar>?) -> CInt, withCString value: String) throws {
         let result = value.withCString { body($0) }
-        if result != 0 { throw lastError() }
+        if result != 0 { throw Self.lastError() }
     }
 
     private func readPairs(command: (UnsafeMutablePointer<KeyValuePair>?, UInt) -> CInt) throws -> [(key: String, value: String)] {
@@ -190,7 +200,7 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
             let count = pairs.withUnsafeMutableBufferPointer { buffer in
                 command(buffer.baseAddress, UInt(capacity))
             }
-            if count < 0 { throw lastError() }
+            if count < 0 { throw Self.lastError() }
             if count < capacity {
                 let returnedPairs = Array(pairs.prefix(Int(count)))
                 defer {
@@ -227,7 +237,7 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
         }
     }
 
-    private func lastError() -> EasyTierCoreError {
+    private static func lastError() -> EasyTierCoreError {
         var pointer: UnsafePointer<CChar>?
         get_error_msg(&pointer)
         defer { free_string(pointer) }

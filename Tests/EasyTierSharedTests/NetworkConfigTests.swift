@@ -297,6 +297,68 @@ import Testing
     #expect(loaded.lastSelectedConfigID == "abc")
 }
 
+@Test func stateJsonWithoutRuntimeIntentsDefaultsToEmptyIntentList() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let storage = EasyTierStorage(baseDirectory: directory)
+    let config = NetworkConfig(instance_id: "legacy-id", network_name: "legacy")
+    let configURL = directory.appendingPathComponent("configs/legacy-id.toml")
+    try FileManager.default.createDirectory(at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try NetworkConfigTOMLCodec.encode(config).write(to: configURL, atomically: true, encoding: .utf8)
+    let state = """
+    {
+      "configs" : [
+        {
+          "id" : "legacy-id",
+          "source" : "user",
+          "tomlPath" : "configs/legacy-id.toml"
+        }
+      ],
+      "lastSelectedConfigID" : "legacy-id"
+    }
+    """
+    try state.write(to: directory.appendingPathComponent("state.json"), atomically: true, encoding: .utf8)
+
+    let loaded = try storage.load()
+
+    #expect(loaded.runtimeIntents.isEmpty)
+    #expect(loaded.configs.first?.config.network_name == "legacy")
+}
+
+@Test func runtimeIntentsRoundTripThroughStateJson() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let storage = EasyTierStorage(baseDirectory: directory)
+    let config = NetworkConfig(instance_id: "lab-id", network_name: "lab")
+    let intent = RuntimeIntent(
+        target: RuntimeIntentTarget(
+            networkName: "lab",
+            instanceID: "remote-id",
+            peerID: "200",
+            recentHostname: "old-host",
+            recentIPv4: "10.126.126.8",
+            isLocal: false
+        ),
+        kind: .hostname,
+        desired: RuntimeIntentDesired(hostname: "new-host"),
+        base: RuntimeIntentBase(hostname: "old-host"),
+        status: .pending
+    )
+    let snapshot = AppSnapshot(
+        configs: [StoredNetworkConfig(config: config)],
+        mode: .default,
+        lastSelectedConfigID: config.instance_id,
+        runtimeIntents: [intent]
+    )
+
+    try storage.save(snapshot)
+    let loaded = try storage.load()
+
+    #expect(loaded.runtimeIntents.count == 1)
+    #expect(loaded.runtimeIntents.first?.target.instanceID == "remote-id")
+    #expect(loaded.runtimeIntents.first?.desired.hostname == "new-host")
+    #expect(loaded.runtimeIntents.first?.base.hostname == "old-host")
+    #expect(loaded.runtimeIntents.first?.status == .pending)
+}
+
 @Test func defaultStorageUsesBundleSpecificAppSupportDirectory() {
     #expect(EasyTierStorage.default.baseDirectory.lastPathComponent == "com.kkrainbow.easytier.mac")
 }
@@ -604,6 +666,150 @@ import Testing
     #expect(store.configs.first?.config.hostname == "new-host")
     #expect(try storage.load().configs.first?.config.hostname == "new-host")
     #expect(client.stoppedInstanceNames == [[config.network_name]])
+}
+
+@MainActor
+@Test func runtimeIntentReplaysHostnameWhenRuntimeReturnedToBase() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let client = RecordingToggleClient()
+    let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+    let config = NetworkConfig(instance_id: "11111111-1111-1111-1111-111111111111", network_name: "office")
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.runtimeIntents = [hostnameIntent(instanceID: config.instance_id, networkName: config.network_name, base: "base", desired: "desired")]
+    client.networkInfos = [
+        config.instance_id: NetworkInstanceRunningInfo(my_node_info: NodeInfo(hostname: "base")),
+    ]
+
+    await store.refreshRuntime()
+
+    #expect(client.jsonRPCCalls.map(\.method) == ["patch_config"])
+    #expect(client.runConfigs.isEmpty)
+    #expect(client.stoppedInstanceNames.isEmpty)
+    let object = try rpcPayloadObject(client.jsonRPCCalls[0].payload)
+    let patch = object["patch"] as? [String: Any]
+    #expect(patch?["hostname"] as? String == "desired")
+    #expect(store.runtimeIntents.first?.status == .pending)
+}
+
+@MainActor
+@Test func runtimeIntentDoesNotReplayWhenRuntimeAlreadyMatchesDesired() async {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let client = RecordingToggleClient()
+    let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+    let config = NetworkConfig(instance_id: "11111111-1111-1111-1111-111111111111", network_name: "office")
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.runtimeIntents = [hostnameIntent(instanceID: config.instance_id, networkName: config.network_name, base: "base", desired: "desired")]
+    client.networkInfos = [
+        config.instance_id: NetworkInstanceRunningInfo(my_node_info: NodeInfo(hostname: "desired")),
+    ]
+
+    await store.refreshRuntime()
+
+    #expect(client.jsonRPCCalls.isEmpty)
+    #expect(store.runtimeIntents.first?.status == .applied)
+}
+
+@MainActor
+@Test func runtimeIntentMarksConflictWhenRuntimeHasThirdPartyValue() async {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let client = RecordingToggleClient()
+    let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+    let config = NetworkConfig(instance_id: "11111111-1111-1111-1111-111111111111", network_name: "office")
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.runtimeIntents = [hostnameIntent(instanceID: config.instance_id, networkName: config.network_name, base: "base", desired: "desired")]
+    client.networkInfos = [
+        config.instance_id: NetworkInstanceRunningInfo(my_node_info: NodeInfo(hostname: "someone-else")),
+    ]
+
+    await store.refreshRuntime()
+
+    #expect(client.jsonRPCCalls.isEmpty)
+    #expect(store.runtimeIntents.first?.status == .conflict)
+}
+
+@MainActor
+@Test func localHostnameRuntimeIntentDoesNotRestartWhenRPCFails() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let storage = EasyTierStorage(baseDirectory: directory)
+    let client = RecordingToggleClient()
+    client.jsonRPCError = EasyTierCoreError.operationFailed("rpc unavailable")
+    let store = EasyTierAppStore(client: client, storage: storage)
+    var config = NetworkConfig(instance_id: "11111111-1111-1111-1111-111111111111", hostname: "base", network_name: "office")
+    config.listener_urls = ["tcp://0.0.0.0:11010", "udp://0.0.0.0:11010", "wg://0.0.0.0:11011"]
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.selectedConfigID = config.instance_id
+    var updated = config
+    updated.hostname = "desired"
+    store.updateConfig(id: config.instance_id, with: updated, saveImmediately: true)
+    let running = NetworkInstance(
+        instance_id: config.instance_id,
+        name: config.network_name,
+        running: true,
+        detail: NetworkInstanceRunningInfo(my_node_info: NodeInfo(hostname: "base"))
+    )
+    store.instances = [running]
+
+    await store.applyLocalHostnameRuntimeIntent(
+        configID: config.instance_id,
+        runningInstance: running,
+        desiredHostname: "desired",
+        baseHostname: "base"
+    )
+
+    #expect(client.runConfigs.isEmpty)
+    #expect(client.stoppedInstanceNames.isEmpty)
+    #expect(client.jsonRPCCalls.map(\.method) == ["patch_config"])
+    #expect(store.runtimeIntents.first?.status == .unreachable)
+    #expect(try storage.load().configs.first?.config.hostname == "desired")
+}
+
+@Test func reverseRuntimeIntentMaterializesPortForwardWithCurrentMemberIP() throws {
+    let intent = RuntimeIntent(
+        target: RuntimeIntentTarget(networkName: "office", instanceID: "remote-id", isLocal: false),
+        kind: .portForwardSet,
+        desired: RuntimeIntentDesired(
+            reversePortForwards: [
+                RuntimeReversePortForwardIntent(
+                    targetInstanceID: "source-id",
+                    targetPeerID: nil,
+                    bindIP: "0.0.0.0",
+                    bindPort: 80,
+                    targetPort: 8080,
+                    proto: "tcp"
+                ),
+            ]
+        ),
+        base: RuntimeIntentBase(portForwardFingerprint: "old")
+    )
+    let members = [
+        NetworkMemberStatus(
+            id: "peer-1",
+            isLocal: false,
+            peerID: "200",
+            instanceID: "source-id",
+            virtualIPv4: "10.126.126.9/24",
+            hostname: "source",
+            version: "test",
+            routeCost: "1",
+            tunnelProto: "tcp",
+            latency: "-",
+            uploadTotal: "-",
+            downloadTotal: "-",
+            lossRate: "-",
+            natType: "-",
+            isPublicServer: false,
+            txBytes: 0,
+            rxBytes: 0
+        ),
+    ]
+
+    let forwards = try #require(intent.materializedPortForwards(members: members))
+
+    #expect(forwards.count == 1)
+    #expect(forwards[0].bind_ip == "0.0.0.0")
+    #expect(forwards[0].bind_port == 80)
+    #expect(forwards[0].dst_ip == "10.126.126.9")
+    #expect(forwards[0].dst_port == 8080)
 }
 
 @MainActor
@@ -1088,6 +1294,28 @@ import Testing
     #expect(WorkspaceTab.allCases.map(\.rawValue) == ["Status", "View", "Config", "Logs"])
 }
 
+private func hostnameIntent(instanceID: String, networkName: String, base: String, desired: String) -> RuntimeIntent {
+    RuntimeIntent(
+        target: RuntimeIntentTarget(
+            networkName: networkName,
+            instanceID: instanceID,
+            recentHostname: base,
+            isLocal: true
+        ),
+        kind: .hostname,
+        desired: RuntimeIntentDesired(hostname: desired),
+        base: RuntimeIntentBase(hostname: base),
+        status: .pending
+    )
+}
+
+private func rpcPayloadObject(_ payload: String) throws -> [String: Any] {
+    guard let object = try JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any] else {
+        throw EasyTierCoreError.invalidResponse("RPC payload is not a JSON object")
+    }
+    return object
+}
+
 private final class PendingStartClient: EasyTierCoreClient, @unchecked Sendable {
     var didRun = false
 
@@ -1110,6 +1338,12 @@ private final class PendingStartClient: EasyTierCoreClient, @unchecked Sendable 
         throw EasyTierCoreError.operationFailed("unsupported")
     }
 
+    func connectRPCClient(clientID _: String, url _: URL) async throws {
+        throw EasyTierCoreError.operationFailed("unsupported")
+    }
+
+    func disconnectRPCClient(clientID _: String) async throws {}
+
     func startConfigServerClient(url _: URL) async throws {
         throw EasyTierCoreError.operationFailed("unsupported")
     }
@@ -1126,7 +1360,10 @@ private final class RecordingToggleClient: EasyTierCoreClient, @unchecked Sendab
     var networkInfos: [String: NetworkInstanceRunningInfo] = [:]
     var configuredRPCPortals: [String?] = []
     var configuredRPCPortalWhitelists: [[String]?] = []
+    var jsonRPCCalls: [EasyTierRPCRequest] = []
+    var connectedRPCClients: [(clientID: String, url: URL)] = []
     var stopError: Error?
+    var jsonRPCError: Error?
 
     func version() async throws -> String { "test" }
     func validate(toml _: String) async throws {}
@@ -1151,9 +1388,17 @@ private final class RecordingToggleClient: EasyTierCoreClient, @unchecked Sendab
         configuredRPCPortalWhitelists.append(whitelist)
     }
 
-    func callJSONRPC(service _: String, method _: String, domain _: String?, payload _: String) async throws -> String {
-        throw EasyTierCoreError.operationFailed("unsupported")
+    func callJSONRPC(service: String, method: String, domain: String?, payload: String) async throws -> String {
+        jsonRPCCalls.append(EasyTierRPCRequest(service: service, method: method, domain: domain, payload: payload))
+        if let jsonRPCError { throw jsonRPCError }
+        return #"{"ok":true}"#
     }
+
+    func connectRPCClient(clientID: String, url: URL) async throws {
+        connectedRPCClients.append((clientID: clientID, url: url))
+    }
+
+    func disconnectRPCClient(clientID _: String) async throws {}
 
     func startConfigServerClient(url _: URL) async throws {
         throw EasyTierCoreError.operationFailed("unsupported")
@@ -1183,6 +1428,8 @@ private final class HelperRunErrorClient: EasyTierCoreClient, @unchecked Sendabl
     func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] { [:] }
     func configureRPCPortal(_: String?, whitelist _: [String]?) async throws {}
     func callJSONRPC(service _: String, method _: String, domain _: String?, payload _: String) async throws -> String { "" }
+    func connectRPCClient(clientID _: String, url _: URL) async throws {}
+    func disconnectRPCClient(clientID _: String) async throws {}
     func startConfigServerClient(url _: URL) async throws {}
     func stopConfigServerClient() async throws {}
     func isConfigServerClientConnected() async throws -> Bool { false }

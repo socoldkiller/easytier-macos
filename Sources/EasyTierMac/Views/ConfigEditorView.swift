@@ -2,8 +2,11 @@ import EasyTierShared
 import SwiftUI
 
 struct ConfigEditorView: View {
+    @Environment(EasyTierAppStore.self) private var store
     @Binding var config: NetworkConfig
     var members: [NetworkMemberStatus] = []
+    @State private var reversePortForwardStatus: [UUID: Bool] = [:]
+    @State private var reversePortForwardPending: Set<UUID> = []
 
     var body: some View {
         ScrollView {
@@ -119,12 +122,181 @@ struct ConfigEditorView: View {
                 }
 
                 CardSection("Port Forwarding") {
-                    PortForwardEditor(portForwards: $config.port_forwards, members: members)
+                    PortForwardEditor(
+                        portForwards: $config.port_forwards,
+                        members: members,
+                        reverseStatus: reversePortForwardStatus,
+                        reversePending: reversePortForwardPending,
+                        onToggleReverse: { rule in
+                            Task { await toggleReverse(for: rule) }
+                        }
+                    )
                 }
             }
             .padding(18)
         }
         .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
+        .onAppear {
+            Task { await refreshReverseStatus() }
+        }
+        .onChange(of: portForwardKeys) { oldKeys, newKeys in
+            for (id, key) in oldKeys {
+                if newKeys[id] == nil || newKeys[id] != key {
+                    reversePortForwardStatus[id] = nil
+                    if let oldFP = oldKeys[id] {
+                        store.reversedPortForwardFingerprints[config.instance_id]?.remove(oldFP)
+                        if store.reversedPortForwardFingerprints[config.instance_id]?.isEmpty == true {
+                            store.reversedPortForwardFingerprints.removeValue(forKey: config.instance_id)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private typealias RuleKey = String
+
+    private var portForwardKeys: [UUID: RuleKey] {
+        Dictionary(uniqueKeysWithValues: config.port_forwards.map { rule in
+            (rule.id, "\(rule.bind_ip):\(rule.bind_port)-\(rule.dst_ip):\(rule.dst_port)-\(rule.proto)")
+        })
+    }
+
+    private var localVirtualIP: String {
+        members.first(where: \.isLocal)?.copyableIPv4Address ?? ""
+    }
+
+    private func toggleReverse(for rule: PortForwardConfig) async {
+        reversePortForwardPending.insert(rule.id)
+        defer { reversePortForwardPending.remove(rule.id) }
+
+        let isActive = reversePortForwardStatus[rule.id] == true
+
+        guard !localVirtualIP.isEmpty else {
+            store.lastError = "Reverse port forward unavailable: no local virtual IP."
+            return
+        }
+
+        guard let dstMember = members.first(where: { $0.copyableIPv4Address == rule.dst_ip }) else {
+            store.lastError = "Reverse port forward unavailable: no peer at \(rule.dst_ip)."
+            return
+        }
+
+        guard let remoteInstanceID = dstMember.instanceID else {
+            store.lastError = "Reverse port forward unavailable: peer at \(rule.dst_ip) has no instance ID."
+            return
+        }
+
+        guard let remoteIP = dstMember.copyableIPv4Address,
+              let rpcURL = URL(string: "tcp://\(remoteIP):\(AppMode.defaultRPCListenPort)")
+        else {
+            store.lastError = "Reverse port forward unavailable: cannot build RPC URL for \(rule.dst_ip)."
+            return
+        }
+
+        let reverseRule = PortForwardConfig(
+            bind_ip: rule.bind_ip,
+            bind_port: rule.bind_port,
+            dst_ip: localVirtualIP,
+            dst_port: rule.bind_port,
+            proto: rule.proto
+        )
+
+        do {
+            if isActive {
+                try await EasyTierRemoteRPCClient.patchPortForwardRemove(
+                    rpcURL: rpcURL,
+                    instanceID: remoteInstanceID,
+                    portForward: reverseRule
+                )
+            } else {
+                try await EasyTierRemoteRPCClient.patchPortForwards(
+                    rpcURL: rpcURL,
+                    instanceID: remoteInstanceID,
+                    portForwards: [reverseRule]
+                )
+            }
+
+            let remoteList = try await EasyTierRemoteRPCClient.listPortForwardsParsed(
+                rpcURL: rpcURL,
+                instanceID: remoteInstanceID
+            )
+            let found = remoteList.contains { existing in
+                existing.bind_ip == reverseRule.bind_ip
+                    && existing.bind_port == reverseRule.bind_port
+                    && existing.dst_ip == reverseRule.dst_ip
+                    && existing.dst_port == reverseRule.dst_port
+                    && existing.proto == reverseRule.proto
+            }
+            let success = isActive ? !found : found
+            reversePortForwardStatus[rule.id] = found
+            let fp = EasyTierAppStore.portForwardFingerprint(for: rule)
+            if found {
+                store.reversedPortForwardFingerprints[config.instance_id, default: []].insert(fp)
+            } else {
+                store.reversedPortForwardFingerprints[config.instance_id]?.remove(fp)
+                if store.reversedPortForwardFingerprints[config.instance_id]?.isEmpty == true {
+                    store.reversedPortForwardFingerprints.removeValue(forKey: config.instance_id)
+                }
+            }
+            if success {
+                store.recordNotice(found
+                    ? "Reverse OK: \(rule.bind_ip):\(rule.bind_port) on \(rule.dst_ip)"
+                    : "Reverse removed on \(rule.dst_ip)")
+            } else {
+                store.lastError = found
+                    ? "Reverse remove failed: rule still present on \(rule.dst_ip)."
+                    : "Reverse add failed: rule not found on \(rule.dst_ip)."
+            }
+        } catch {
+            store.lastError = "Reverse port forward failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func refreshReverseStatus() async {
+        guard !members.isEmpty, !localVirtualIP.isEmpty else { return }
+
+        for rule in config.port_forwards {
+            guard let dstMember = members.first(where: { $0.copyableIPv4Address == rule.dst_ip }),
+                  let remoteInstanceID = dstMember.instanceID,
+                  let remoteIP = dstMember.copyableIPv4Address,
+                  let rpcURL = URL(string: "tcp://\(remoteIP):\(AppMode.defaultRPCListenPort)")
+            else { continue }
+
+            let expectedReverse = PortForwardConfig(
+                bind_ip: rule.bind_ip,
+                bind_port: rule.bind_port,
+                dst_ip: localVirtualIP,
+                dst_port: rule.bind_port,
+                proto: rule.proto
+            )
+
+            do {
+                let remotePortForwards = try await EasyTierRemoteRPCClient.listPortForwardsParsed(
+                    rpcURL: rpcURL,
+                    instanceID: remoteInstanceID
+                )
+                let isActive = remotePortForwards.contains { existing in
+                    existing.bind_ip == expectedReverse.bind_ip
+                        && existing.bind_port == expectedReverse.bind_port
+                        && existing.dst_ip == expectedReverse.dst_ip
+                        && existing.dst_port == expectedReverse.dst_port
+                        && existing.proto == expectedReverse.proto
+                }
+                reversePortForwardStatus[rule.id] = isActive
+                let fp = EasyTierAppStore.portForwardFingerprint(for: rule)
+                if isActive {
+                    store.reversedPortForwardFingerprints[config.instance_id, default: []].insert(fp)
+                } else {
+                    store.reversedPortForwardFingerprints[config.instance_id]?.remove(fp)
+                    if store.reversedPortForwardFingerprints[config.instance_id]?.isEmpty == true {
+                        store.reversedPortForwardFingerprints.removeValue(forKey: config.instance_id)
+                    }
+                }
+            } catch {
+                reversePortForwardStatus[rule.id] = false
+            }
+        }
     }
 
     private func optionalBool(_ binding: Binding<Bool?>, defaultValue: Bool) -> Binding<Bool> {
@@ -275,10 +447,25 @@ private struct StringListEditor: View {
 }
 
 private struct PortForwardEditor: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
     @Binding var portForwards: [PortForwardConfig]
     var members: [NetworkMemberStatus]
+    var reverseStatus: [UUID: Bool] = [:]
+    var reversePending: Set<UUID> = []
+    var onToggleReverse: (PortForwardConfig) -> Void = { _ in }
+
+    private var reversedRules: [PortForwardConfig] {
+        portForwards.filter { reverseStatus[$0.id] == true }
+    }
+
+    private func reverseAvailable(for rule: PortForwardConfig) -> (available: Bool, reason: String?) {
+        let localIP = members.first(where: \.isLocal)?.copyableIPv4Address
+        guard localIP?.isEmpty == false else { return (false, "No local IP") }
+        guard let dstMember = members.first(where: { $0.copyableIPv4Address == rule.dst_ip })
+        else { return (false, "Peer \(rule.dst_ip) not in network") }
+        guard dstMember.instanceID != nil else { return (false, "Peer has no instance ID") }
+        guard dstMember.copyableIPv4Address != nil else { return (false, "Peer has no IP") }
+        return (true, nil)
+    }
 
     private var destinationOptions: [PortForwardDestinationOption] {
         var seenAddresses = Set<String>()
@@ -295,43 +482,104 @@ private struct PortForwardEditor: View {
                     .font(.system(size: 13.5, weight: .medium))
                 Spacer()
                 Button {
-                    withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
-                        portForwards.append(PortForwardConfig())
-                    }
+                    portForwards.append(PortForwardConfig())
                 } label: { Image(systemName: "plus") }
                     .buttonStyle(.borderless)
             }
 
             ForEach($portForwards) { $rule in
-                Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
-                    GridRow {
-                        Picker("Proto", selection: $rule.proto) {
-                            Text("tcp").tag("tcp")
-                            Text("udp").tag("udp")
-                        }
-                        .labelsHidden()
-                        PortForwardBindField(address: $rule.bind_ip)
-                        TextField("Bind port", value: $rule.bind_port, format: .number)
-                            .frame(width: 90)
-                        Text("->")
-                            .foregroundStyle(.secondary)
-                        PortForwardDestinationField(address: $rule.dst_ip, options: destinationOptions)
-                        TextField("Port", value: $rule.dst_port, format: .number)
-                            .frame(width: 90)
-                        Button(role: .destructive) {
-                            withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
-                                portForwards.removeAll { $0.id == rule.id }
-                            }
-                        } label: {
-                            Image(systemName: "minus.circle")
-                        }
-                        .buttonStyle(.borderless)
-                    }
+                let isReversed = reverseStatus[$rule.wrappedValue.id] == true
+                if !isReversed {
+                    editableRow(ruleBinding: $rule)
                 }
-                .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 6))
+            }
+
+            if !reversedRules.isEmpty {
+                Text("Reversed")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.green)
+                    .padding(.top, 4)
+                ForEach(reversedRules) { rule in
+                    readonlyRow(for: rule)
+                }
             }
         }
-        .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: portForwards.count)
+    }
+
+    @ViewBuilder
+    private func editableRow(ruleBinding: Binding<PortForwardConfig>) -> some View {
+        let rule = ruleBinding.wrappedValue
+        Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
+            GridRow {
+                Picker("Proto", selection: ruleBinding.proto) {
+                    Text("tcp").tag("tcp")
+                    Text("udp").tag("udp")
+                }
+                .labelsHidden()
+                PortForwardBindField(address: ruleBinding.bind_ip)
+                TextField("Bind port", value: ruleBinding.bind_port, format: .number)
+                    .frame(width: 90)
+                Text("->")
+                    .foregroundStyle(.secondary)
+                PortForwardDestinationField(address: ruleBinding.dst_ip, options: destinationOptions)
+                TextField("Port", value: ruleBinding.dst_port, format: .number)
+                    .frame(width: 90)
+                reverseButton(for: rule)
+                Button(role: .destructive) {
+                    portForwards.removeAll { $0.id == rule.id }
+                } label: {
+                    Image(systemName: "minus.circle")
+                }
+                .buttonStyle(.borderless)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func readonlyRow(for rule: PortForwardConfig) -> some View {
+        Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
+            GridRow {
+                Text(rule.proto).font(.system(size: 13.5)).foregroundStyle(.secondary)
+                Text(rule.bind_ip).font(.system(size: 13.5)).foregroundStyle(.secondary)
+                Text("\(rule.bind_port)").font(.system(size: 13.5)).foregroundStyle(.secondary)
+                Text("->").foregroundStyle(.secondary)
+                Text(rule.dst_ip).font(.system(size: 13.5)).foregroundStyle(.secondary)
+                Text("\(rule.dst_port)").font(.system(size: 13.5)).foregroundStyle(.secondary)
+                reverseButton(for: rule)
+                Button(role: .destructive) {
+                    portForwards.removeAll { $0.id == rule.id }
+                } label: {
+                    Image(systemName: "minus.circle")
+                }
+                .buttonStyle(.borderless)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func reverseButton(for rule: PortForwardConfig) -> some View {
+        let isActive = reverseStatus[rule.id] == true
+        let isPending = reversePending.contains(rule.id)
+        let availability = reverseAvailable(for: rule)
+
+        Button {
+            onToggleReverse(rule)
+        } label: {
+            Image(systemName: "arrow.left.arrow.right")
+                .font(.system(size: 11, weight: isActive ? .semibold : .medium))
+                .foregroundStyle(isActive ? .green : .secondary)
+                .opacity(isPending ? 0.4 : (availability.available ? 1.0 : 0.28))
+        }
+        .buttonStyle(.borderless)
+        .disabled(isPending || !availability.available)
+        .help(reverseHelpText(isActive: isActive, isPending: isPending, availability: availability, dstIP: rule.dst_ip))
+    }
+
+    private func reverseHelpText(isActive: Bool, isPending: Bool, availability: (available: Bool, reason: String?), dstIP: String) -> String {
+        if isPending { return "Sending reverse port forward..." }
+        if isActive { return "Reverse is active on remote peer — click to remove" }
+        if !availability.available, let reason = availability.reason { return "Reverse unavailable: \(reason)" }
+        return "Send reverse port forward to peer at \(dstIP)"
     }
 }
 

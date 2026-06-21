@@ -2,15 +2,8 @@ import Foundation
 import Testing
 @testable import EasyTierShared
 
-private struct RPCCall: Equatable, Sendable {
-    var service: String
-    var method: String
-    var domain: String?
-    var payload: String
-}
-
 private actor SpyRPCTransport: EasyTierRPCTransport {
-    private var calls: [RPCCall] = []
+    private var calls: [EasyTierRPCRequest] = []
     private var responses: [String]
 
     init(response: String = #"{"ok":true}"#) {
@@ -21,48 +14,60 @@ private actor SpyRPCTransport: EasyTierRPCTransport {
         self.responses = responses
     }
 
-    func call(service: String, method: String, domain: String?, payload: String) async throws -> String {
-        calls.append(RPCCall(service: service, method: method, domain: domain, payload: payload))
+    func call(_ request: EasyTierRPCRequest) async throws -> String {
+        calls.append(request)
         return responses.isEmpty ? #"{"ok":true}"# : responses.removeFirst()
     }
 
-    func firstCall() -> RPCCall? {
+    func firstCall() -> EasyTierRPCRequest? {
         calls.first
     }
 
-    func allCalls() -> [RPCCall] {
+    func allCalls() -> [EasyTierRPCRequest] {
         calls
     }
 }
 
-private actor PersistFailingRPCTransport: EasyTierRPCTransport {
-    private var calls: [RPCCall] = []
+private actor ThrowingRPCTransport: EasyTierRPCTransport {
+    private var calls: [EasyTierRPCRequest] = []
+    private let error: Error
 
-    func call(service: String, method: String, domain: String?, payload: String) async throws -> String {
-        calls.append(RPCCall(service: service, method: method, domain: domain, payload: payload))
-        if service == "api.manage.WebClientService" {
-            throw EasyTierCoreError.operationFailed("instance is read-only")
-        }
-        if method == "get_config" {
-            return #"{"config":{"network_name":"office","hostname":"old-host"}}"#
-        }
-        return #"{"ok":true}"#
+    init(error: Error) {
+        self.error = error
     }
 
-    func allCalls() -> [RPCCall] {
+    func call(_ request: EasyTierRPCRequest) async throws -> String {
+        calls.append(request)
+        throw error
+    }
+
+    func allCalls() -> [EasyTierRPCRequest] {
         calls
     }
 }
 
-@Test func patchHostnameBuildsExpectedRPCPayload() async throws {
-    let transport = SpyRPCTransport()
+@Test func remoteClientForwardsGenericRPCRequest() async throws {
+    let transport = SpyRPCTransport(response: #"{"ok":1}"#)
+    let client = EasyTierRemoteRPCClient(transport: transport)
+    let request = EasyTierRPCRequest(service: "svc", method: "method", domain: "domain", payload: #"{"x":1}"#)
+
+    let response = try await client.call(request)
+
+    #expect(response == #"{"ok":1}"#)
+    #expect(await transport.firstCall() == request)
+}
+
+@Test func patchHostnameUsesRuntimePatchDirectly() async throws {
+    let transport = SpyRPCTransport(response: #"{"ok":true}"#)
     let client = EasyTierRemoteRPCClient(transport: transport)
 
     let response = try await client.patchHostname(instanceID: "11111111-2222-3333-4444-555555555555", hostname: "edge-mac")
+    let calls = await transport.allCalls()
 
     #expect(response == #"{"ok":true}"#)
-    guard let call = await transport.firstCall() else {
-        Issue.record("expected an RPC call")
+    #expect(calls.map(\.method) == ["patch_config"])
+    guard let call = calls.first else {
+        Issue.record("expected a runtime patch call")
         return
     }
 
@@ -73,6 +78,7 @@ private actor PersistFailingRPCTransport: EasyTierRPCTransport {
     let object = try rpcPayloadObject(call.payload)
     let patch = object["patch"] as? [String: Any]
     #expect(patch?["hostname"] as? String == "edge-mac")
+    #expect(patch?.keys.contains("ipv4") == false)
     #expect((patch?["port_forwards"] as? [Any])?.isEmpty == true)
     #expect((patch?["proxy_networks"] as? [Any])?.isEmpty == true)
     #expect((patch?["routes"] as? [Any])?.isEmpty == true)
@@ -109,23 +115,39 @@ private actor PersistFailingRPCTransport: EasyTierRPCTransport {
     #expect(id?["part4"] as? Int == 0xeeeeeeee)
 }
 
-@Test func persistHostnameBuildsRunNetworkInstancePayload() async throws {
-    let transport = SpyRPCTransport(responses: [
-        #"{"config":{"instance_id":"11111111-2222-3333-4444-555555555555","network_name":"office","hostname":"old-host","peer_urls":["tcp://10.0.0.1:11010"]}}"#,
-        #"{"ok":true}"#,
-    ])
+@Test func listPortForwardsUsesPortForwardService() async throws {
+    let transport = SpyRPCTransport(response: #"{"cfgs":[]}"#)
     let client = EasyTierRemoteRPCClient(transport: transport)
 
-    try await client.persistHostname(instanceID: "11111111-2222-3333-4444-555555555555", hostname: "new-host")
-    let calls = await transport.allCalls()
+    let response = try await client.listPortForwards(instanceID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 
-    #expect(calls.count == 2)
-    #expect(calls[0].service == "api.config.ConfigRpcService")
-    #expect(calls[0].method == "get_config")
-    #expect(calls[1].service == "api.manage.WebClientService")
-    #expect(calls[1].method == "run_network_instance")
+    #expect(response == #"{"cfgs":[]}"#)
+    guard let call = await transport.firstCall() else {
+        Issue.record("expected an RPC call")
+        return
+    }
 
-    let object = try rpcPayloadObject(calls[1].payload)
+    #expect(call.service == "api.instance.PortForwardManageRpcService")
+    #expect(call.method == "list_port_forward")
+    #expect(call.domain == nil)
+    let object = try rpcPayloadObject(call.payload)
+    let id = rpcInstanceID(in: object)
+    #expect(id?["part1"] as? Int == 0xaaaaaaaa)
+    #expect(id?["part2"] as? Int == 0xbbbbcccc)
+    #expect(id?["part3"] as? Int == 0xddddeeee)
+    #expect(id?["part4"] as? Int == 0xeeeeeeee)
+}
+
+@Test func runNetworkInstancePayloadStillBuildsPersistentReloadPayload() async throws {
+    let response = #"{"config":{"instance_id":"11111111-2222-3333-4444-555555555555","network_name":"office","hostname":"old-host","peer_urls":["tcp://10.0.0.1:11010"]}}"#
+    let payload = try EasyTierRemoteRPCClient.runNetworkInstancePayload(
+        instanceID: "11111111-2222-3333-4444-555555555555",
+        getConfigResponse: response
+    ) { config in
+        config["hostname"] = "new-host"
+    }
+
+    let object = try rpcPayloadObject(payload)
     #expect(object["overwrite"] as? Bool == true)
     #expect(object["source"] as? Int == 1)
     let config = object["config"] as? [String: Any]
@@ -139,17 +161,89 @@ private actor PersistFailingRPCTransport: EasyTierRPCTransport {
     #expect(id?["part4"] as? Int == 0x55555555)
 }
 
-@Test func renameHostnameFallsBackToPatchConfigWhenPersistenceFails() async throws {
-    let transport = PersistFailingRPCTransport()
+@Test func patchPortForwardsUsesRuntimePatchDirectly() async throws {
+    let transport = SpyRPCTransport()
     let client = EasyTierRemoteRPCClient(transport: transport)
 
-    try await client.renameHostname(instanceID: "11111111-2222-3333-4444-555555555555", hostname: "new-host")
+    try await client.patchPortForwards(
+        instanceID: "11111111-2222-3333-4444-555555555555",
+        portForwards: [PortForwardConfig(bind_ip: "0.0.0.0", bind_port: 8080, dst_ip: "10.126.126.2", dst_port: 80, proto: "tcp")]
+    )
     let calls = await transport.allCalls()
 
-    #expect(calls.map(\.method) == ["get_config", "run_network_instance", "patch_config"])
-    let object = try rpcPayloadObject(calls[2].payload)
+    #expect(calls.map(\.method) == ["patch_config"])
+    guard let call = calls.first else {
+        Issue.record("expected a runtime patch call")
+        return
+    }
+
+    #expect(call.service == "api.config.ConfigRpcService")
+    #expect(call.domain == nil)
+    let object = try rpcPayloadObject(call.payload)
     let patch = object["patch"] as? [String: Any]
-    #expect(patch?["hostname"] as? String == "new-host")
+    #expect(patch?.keys.contains("ipv4") == false)
+    let patches = patch?["port_forwards"] as? [[String: Any]]
+    #expect(patches?.count == 2)
+    #expect(patches?.first?["action"] as? Int == 2)
+    let add = patches?.last
+    #expect(add?["action"] as? Int == 0)
+    let cfg = add?["cfg"] as? [String: Any]
+    #expect(cfg?["socket_type"] as? Int == 0)
+    let bind = cfg?["bind_addr"] as? [String: Any]
+    #expect(bind?["port"] as? Int == 8080)
+    let bindIPv4Container = bind?["ip"] as? [String: Any]
+    let bindIPv4Addr = bindIPv4Container?["Ipv4"] as? [String: Any]
+    #expect(bindIPv4Addr?["addr"] as? Int == 0)
+    let dst = cfg?["dst_addr"] as? [String: Any]
+    #expect(dst?["port"] as? Int == 80)
+    let dstIPv4Container = dst?["ip"] as? [String: Any]
+    let dstIPv4Addr = dstIPv4Container?["Ipv4"] as? [String: Any]
+    #expect(dstIPv4Addr?["addr"] as? Int == 0x0a7e7e02)
+}
+
+@Test func patchPortForwardsRuntimePatchEncodesUdpAndUnspecifiedBind() async throws {
+    let transport = SpyRPCTransport()
+    let client = EasyTierRemoteRPCClient(transport: transport)
+
+    try await client.patchPortForwards(
+        instanceID: "11111111-2222-3333-4444-555555555555",
+        portForwards: [PortForwardConfig(bind_ip: "0.0.0.0", bind_port: 8080, dst_ip: "10.126.126.2", dst_port: 80, proto: "udp")]
+    )
+    let calls = await transport.allCalls()
+
+    #expect(calls.map(\.method) == ["patch_config"])
+    let object = try rpcPayloadObject(calls[0].payload)
+    let patch = object["patch"] as? [String: Any]
+    let patches = patch?["port_forwards"] as? [[String: Any]]
+    #expect(patches?.count == 2)
+    #expect(patches?.first?["action"] as? Int == 2)
+    let add = patches?.last
+    #expect(add?["action"] as? Int == 0)
+    let cfg = add?["cfg"] as? [String: Any]
+    #expect(cfg?["socket_type"] as? Int == 1)
+    let bind = cfg?["bind_addr"] as? [String: Any]
+    #expect(bind?["port"] as? Int == 8080)
+    let bindIPv4Container = bind?["ip"] as? [String: Any]
+    let bindIPv4Addr = bindIPv4Container?["Ipv4"] as? [String: Any]
+    #expect(bindIPv4Addr?["addr"] as? Int == 0)
+}
+
+@Test func patchHostnamePropagatesRuntimePatchFailureWithoutReloading() async throws {
+    let transport = ThrowingRPCTransport(error: EasyTierCoreError.operationFailed("Remote EasyTier RPC request timed out"))
+    let client = EasyTierRemoteRPCClient(transport: transport)
+
+    do {
+        try await client.patchHostname(instanceID: "11111111-2222-3333-4444-555555555555", hostname: "new-host")
+        Issue.record("runtime patch failure should be propagated")
+    } catch EasyTierCoreError.operationFailed(let message) {
+        #expect(message.contains("timed out"))
+    } catch {
+        Issue.record("unexpected error: \(error)")
+    }
+
+    let calls = await transport.allCalls()
+
+    #expect(calls.map(\.method) == ["patch_config"])
 }
 
 @Test func rpcWrapperRejectsInvalidInstanceIDBeforeCallingTransport() async throws {

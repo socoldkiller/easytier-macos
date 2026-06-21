@@ -17,6 +17,12 @@ public final class EasyTierAppStore {
     public var isShowingLinuxInstallGuide = false
     public var isConfigServerConnected = false
     public var trafficSamplesByInstance: [String: [TrafficSample]] = [:]
+    public var runtimeIntents: [RuntimeIntent] = []
+    public var reversedPortForwardFingerprints: [String: Set<String>] = [:]
+
+    public static func portForwardFingerprint(for rule: PortForwardConfig) -> String {
+        "\(rule.bind_ip):\(rule.bind_port)-\(rule.dst_ip):\(rule.dst_port)-\(rule.proto)"
+    }
 
     private let client: any EasyTierCoreClient
     private let storage: EasyTierStorage
@@ -84,6 +90,8 @@ public final class EasyTierAppStore {
         do {
             let snapshot = try storage.load()
             configs = snapshot.configs.isEmpty ? [StoredNetworkConfig(config: NetworkConfig())] : snapshot.configs
+            runtimeIntents = snapshot.runtimeIntents
+            reversedPortForwardFingerprints = snapshot.reversedPortForwardFingerprints
             let loadedMode = snapshot.mode ?? .default
             if case .service = loadedMode {
                 mode = .default
@@ -113,9 +121,10 @@ public final class EasyTierAppStore {
             try storage.save(AppSnapshot(
                 configs: configs,
                 mode: mode,
-                lastSelectedConfigID: selectedConfigID
+                lastSelectedConfigID: selectedConfigID,
+                runtimeIntents: runtimeIntents,
+                reversedPortForwardFingerprints: reversedPortForwardFingerprints
             ))
-            log("Saved app state.")
         } catch {
             lastError = error.localizedDescription
             log("Save failed: \(error.localizedDescription)")
@@ -143,6 +152,10 @@ public final class EasyTierAppStore {
             }
         }
         clearPendingStart(for: config)
+        runtimeIntents.removeAll { intent in
+            intent.target.isLocal && (intent.target.instanceID == config.instance_id || intent.target.networkName == config.network_name)
+        }
+        reversedPortForwardFingerprints.removeValue(forKey: config.instance_id)
         let removed = configs.remove(at: index)
         do {
             try storage.deleteConfig(removed)
@@ -194,7 +207,8 @@ public final class EasyTierAppStore {
         await busy {
             log("Starting \(config.network_name)...")
             try validateConfigForCurrentRuntime(config)
-            try await client.run(config: config)
+            let cleanConfig = Self.configWithoutReversedPortForwards(config, fingerprints: reversedPortForwardFingerprints)
+            try await client.run(config: cleanConfig)
             recordPendingStart(for: config)
             log("Started \(config.network_name).")
             try await refreshRuntimeThrowing()
@@ -222,14 +236,25 @@ public final class EasyTierAppStore {
         await busy {
             log("Restarting \(config.network_name)...")
             try validateConfigForCurrentRuntime(config, replacing: instance)
-            try await client.validate(toml: try NetworkConfigTOMLCodec.encode(config))
+            let cleanConfig = Self.configWithoutReversedPortForwards(config, fingerprints: reversedPortForwardFingerprints)
+            try await client.validate(toml: try NetworkConfigTOMLCodec.encode(cleanConfig))
             try await client.stop(instanceNames: [instance.name])
             clearPendingStart(for: config)
-            try await client.run(config: config)
+            try await client.run(config: cleanConfig)
             recordPendingStart(for: config)
             log("Restarted \(config.network_name).")
             try await refreshRuntimeThrowing()
         }
+    }
+
+    public static func configWithoutReversedPortForwards(_ config: NetworkConfig, fingerprints: [String: Set<String>]) -> NetworkConfig {
+        let reversed = fingerprints[config.instance_id] ?? []
+        guard !reversed.isEmpty else { return config }
+        var clean = config
+        clean.port_forwards = config.port_forwards.filter { rule in
+            !reversed.contains(portForwardFingerprint(for: rule))
+        }
+        return clean
     }
 
     public func toggleSelectedConfigConnection() async {
@@ -273,10 +298,127 @@ public final class EasyTierAppStore {
         }
     }
 
+    public func recordNotice(_ message: String) {
+        log(message)
+    }
+
     public func clearHelperPermissionError() {
         if isHelperPermissionErrorMessage(lastError) {
             lastError = nil
         }
+    }
+
+    @discardableResult
+    public func upsertHostnameRuntimeIntent(
+        target: RuntimeIntentTarget,
+        desiredHostname: String,
+        baseHostname: String?
+    ) -> RuntimeIntent {
+        let desiredHostname = desiredHostname.trimmingCharacters(in: .whitespacesAndNewlines)
+        let intent = RuntimeIntent(
+            target: target,
+            kind: .hostname,
+            desired: RuntimeIntentDesired(hostname: desiredHostname),
+            base: RuntimeIntentBase(hostname: nonEmptyTrimmed(baseHostname)),
+            status: .pending
+        )
+
+        if let index = runtimeIntents.firstIndex(where: { $0.reconcileKey == intent.reconcileKey }) {
+            var updated = intent
+            updated.id = runtimeIntents[index].id
+            runtimeIntents[index] = updated
+        } else {
+            runtimeIntents.append(intent)
+        }
+        save()
+        return runtimeIntents.first { $0.reconcileKey == intent.reconcileKey } ?? intent
+    }
+
+    public func markRuntimeIntent(_ id: String, status: RuntimeIntentStatus) {
+        updateRuntimeIntent(id: id) { intent in
+            intent.status = status
+            intent.updatedAt = Date()
+        }
+    }
+
+    public func useRemoteValue(forRuntimeIntent id: String) {
+        runtimeIntents.removeAll { $0.id == id }
+        save()
+    }
+
+    public func keepRuntimeIntentPending(_ id: String) {
+        markRuntimeIntent(id, status: .pending)
+    }
+
+    public func reapplyRuntimeIntent(_ id: String) async {
+        guard let intent = runtimeIntents.first(where: { $0.id == id }),
+              let observation = runtimeObservation(for: intent.target)
+        else {
+            markRuntimeIntent(id, status: .unreachable)
+            return
+        }
+
+        updateRuntimeIntent(id: id) { intent in
+            intent.base.hostname = observation.hostname
+            intent.status = .pending
+            intent.updatedAt = Date()
+        }
+        await reconcileHostnameIntent(id: id, force: true)
+    }
+
+    public func applyLocalHostnameRuntimeIntent(
+        configID: String,
+        runningInstance: NetworkInstance,
+        desiredHostname: String,
+        baseHostname: String?
+    ) async {
+        let target = RuntimeIntentTarget(
+            networkName: runningInstance.name,
+            instanceID: runningInstance.instance_id,
+            recentHostname: runningInstance.detail?.my_node_info?.hostname,
+            recentIPv4: runningInstance.detail?.my_node_info?.displayIPv4,
+            isLocal: true
+        )
+        let intent = upsertHostnameRuntimeIntent(
+            target: target,
+            desiredHostname: desiredHostname,
+            baseHostname: baseHostname
+        )
+
+        guard let observation = runtimeObservation(for: target) else {
+            markRuntimeIntent(intent.id, status: .unreachable)
+            recordNotice("Saved hostname for \(runningInstance.name). Runtime RPC is unavailable; it will be retried while this GUI is open.")
+            return
+        }
+
+        do {
+            try await applyHostname(desiredHostname, to: observation)
+            markRuntimeIntent(intent.id, status: .pending)
+            recordNotice("Runtime hostname patch sent for \(runningInstance.name).")
+        } catch {
+            markRuntimeIntent(intent.id, status: .unreachable)
+            recordNotice("Saved hostname for \(runningInstance.name), but runtime patch failed: \(error.localizedDescription)")
+        }
+    }
+
+    @discardableResult
+    public func upsertRemoteHostnameRuntimeIntent(
+        networkName: String,
+        member: NetworkMemberStatus,
+        desiredHostname: String
+    ) -> RuntimeIntent {
+        upsertHostnameRuntimeIntent(
+            target: RuntimeIntentTarget(
+                networkName: networkName,
+                instanceID: member.instanceID,
+                peerID: member.peerID == "-" ? nil : member.peerID,
+                recentHostname: member.hostname,
+                recentIPv4: member.copyableIPv4Address,
+                isLocal: false
+            ),
+            desiredHostname: desiredHostname,
+            baseHostname: member.hostname
+        )
     }
 
     public func easyTierCoreVersion() async throws -> String {
@@ -367,10 +509,137 @@ public final class EasyTierAppStore {
         mergePendingStarts(into: &running)
         recordTrafficSamples(for: running)
         instances = running
+        await reconcileRuntimeIntents()
         if mode.configServerURL == nil {
             isConfigServerConnected = false
         } else {
             isConfigServerConnected = try await client.isConfigServerClientConnected()
+        }
+    }
+
+    private func reconcileRuntimeIntents() async {
+        let ids = runtimeIntents
+            .filter { $0.kind == .hostname }
+            .map(\.id)
+        for id in ids {
+            await reconcileHostnameIntent(id: id)
+        }
+    }
+
+    private func reconcileHostnameIntent(id: String, force: Bool = false) async {
+        guard let intent = runtimeIntents.first(where: { $0.id == id }),
+              intent.kind == .hostname,
+              let desiredHostname = nonEmptyTrimmed(intent.desired.hostname)
+        else { return }
+
+        guard let observation = runtimeObservation(for: intent.target) else {
+            setRuntimeIntentStatus(id, .unreachable)
+            return
+        }
+
+        let currentHostname = nonEmptyTrimmed(observation.hostname)
+        if currentHostname == desiredHostname {
+            updateRuntimeIntent(id: id) { intent in
+                intent.target.recentHostname = observation.hostname
+                intent.target.recentIPv4 = observation.ipv4
+                intent.status = .applied
+                intent.updatedAt = Date()
+            }
+            return
+        }
+
+        guard force || intent.status != .conflict else { return }
+
+        let baseHostname = nonEmptyTrimmed(intent.base.hostname)
+        guard force || currentHostname == baseHostname else {
+            setRuntimeIntentStatus(id, .conflict)
+            recordNotice("Runtime intent conflict for \(observation.label). Remote hostname is \(currentHostname ?? "-"), expected base \(baseHostname ?? "-").")
+            return
+        }
+
+        do {
+            try await applyHostname(desiredHostname, to: observation)
+            updateRuntimeIntent(id: id) { intent in
+                intent.target.recentHostname = observation.hostname
+                intent.target.recentIPv4 = observation.ipv4
+                intent.status = .pending
+                intent.updatedAt = Date()
+            }
+        } catch {
+            setRuntimeIntentStatus(id, .unreachable)
+            recordNotice("Runtime intent replay failed for \(observation.label): \(error.localizedDescription)")
+        }
+    }
+
+    private func runtimeObservation(for target: RuntimeIntentTarget) -> RuntimeIntentObservation? {
+        if target.isLocal {
+            guard let instance = instances.first(where: { instance in
+                if let instanceID = target.instanceID, instance.instance_id == instanceID { return true }
+                return instance.name == target.networkName
+            }) else { return nil }
+            return RuntimeIntentObservation(
+                instanceID: instance.instance_id,
+                hostname: instance.detail?.my_node_info?.hostname,
+                ipv4: instance.detail?.my_node_info?.displayIPv4,
+                rpcURL: nil,
+                label: instance.name,
+                isLocal: true
+            )
+        }
+
+        let candidateInstances = instances.filter { instance in
+            instance.name == target.networkName || config(matching: instance)?.network_name == target.networkName
+        }
+        for instance in candidateInstances {
+            guard let member = instance.detail?.memberStatuses.first(where: { member in
+                guard !member.isLocal else { return false }
+                if let instanceID = target.instanceID, member.instanceID == instanceID { return true }
+                if let peerID = target.peerID, member.peerID == peerID { return true }
+                return false
+            }) else { continue }
+
+            let rpcURL = member.copyableIPv4Address.flatMap { URL(string: "tcp://\($0):\(AppMode.defaultRPCListenPort)") }
+            guard let instanceID = member.instanceID ?? target.instanceID else { return nil }
+            return RuntimeIntentObservation(
+                instanceID: instanceID,
+                hostname: member.hostname,
+                ipv4: member.copyableIPv4Address,
+                rpcURL: rpcURL,
+                label: member.hostname,
+                isLocal: false
+            )
+        }
+
+        return nil
+    }
+
+    private func applyHostname(_ hostname: String, to observation: RuntimeIntentObservation) async throws {
+        guard observation.isLocal || observation.rpcURL != nil else {
+            throw EasyTierCoreError.invalidResponse("remote runtime RPC URL is missing")
+        }
+        guard !observation.instanceID.isEmpty else {
+            throw EasyTierCoreError.invalidResponse("runtime RPC target is missing")
+        }
+        let transport = EasyTierCoreRPCTransport(client: client, rpcURL: observation.rpcURL)
+        try await EasyTierRemoteRPCClient(transport: transport).patchHostname(
+            instanceID: observation.instanceID,
+            hostname: hostname
+        )
+    }
+
+    private func updateRuntimeIntent(id: String, mutate: (inout RuntimeIntent) -> Void) {
+        guard let index = runtimeIntents.firstIndex(where: { $0.id == id }) else { return }
+        var updated = runtimeIntents[index]
+        mutate(&updated)
+        guard runtimeIntents[index] != updated else { return }
+        runtimeIntents[index] = updated
+        save()
+    }
+
+    private func setRuntimeIntentStatus(_ id: String, _ status: RuntimeIntentStatus) {
+        updateRuntimeIntent(id: id) { intent in
+            intent.status = status
+            intent.updatedAt = Date()
         }
     }
 
@@ -577,4 +846,13 @@ public final class EasyTierAppStore {
 private struct PendingNetworkStart: Sendable {
     var instanceID: String
     var name: String
+}
+
+private struct RuntimeIntentObservation {
+    var instanceID: String
+    var hostname: String?
+    var ipv4: String?
+    var rpcURL: URL?
+    var label: String
+    var isLocal: Bool
 }
