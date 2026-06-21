@@ -92,38 +92,43 @@ public struct EasyTierRemoteRPCClient: Sendable {
 
     @discardableResult
     public func patchHostname(instanceID: String, hostname: String) async throws -> String {
-        try await call(EasyTierRPCRequest(
-            service: Self.configService,
-            method: "patch_config",
-            payload: try Self.patchHostnamePayload(instanceID: instanceID, hostname: hostname)
-        ))
-    }
-
-    @discardableResult
-    public func persistHostname(instanceID: String, hostname: String) async throws -> String {
-        try await persistConfigMutation(instanceID: instanceID) { config in
+        try await patchConfig(instanceID: instanceID, runtimePatch: Self.hostnamePatch(hostname)) { config in
             config["hostname"] = hostname
         }
     }
 
     @discardableResult
-    public func persistConfigMutation(instanceID: String, mutate: (inout [String: Any]) throws -> Void) async throws -> String {
-        let response = try await getConfig(instanceID: instanceID)
-        let payload = try Self.runNetworkInstancePayload(instanceID: instanceID, getConfigResponse: response, mutate: mutate)
+    public func patchPortForwards(instanceID: String, portForwards: [PortForwardConfig]) async throws -> String {
+        let encodedPortForwards = try Self.jsonObject(portForwards)
+        let runtimePatch = try Self.portForwardsPatch(portForwards)
+        return try await patchConfig(instanceID: instanceID, runtimePatch: runtimePatch) { config in
+            config["port_forwards"] = encodedPortForwards
+        }
+    }
+
+    @discardableResult
+    private func patchConfig(instanceID: String, runtimePatch: [String: Any], mutate: (inout [String: Any]) throws -> Void) async throws -> String {
+        let runtimePayload = try Self.patchConfigPayload(instanceID: instanceID, patch: runtimePatch)
+        var reloadCallStarted = false
         do {
+            let response = try await getConfig(instanceID: instanceID)
+            let payload = try Self.runNetworkInstancePayload(instanceID: instanceID, getConfigResponse: response, mutate: mutate)
+            reloadCallStarted = true
             return try await call(EasyTierRPCRequest(
                 service: Self.webClientService,
                 method: "run_network_instance",
                 payload: payload
             ))
         } catch {
-            throw EasyTierRPCError.reloadWriteUnconfirmed(error.localizedDescription)
+            if reloadCallStarted, !Self.canFallbackToRuntimePatch(after: error) {
+                throw EasyTierRPCError.reloadWriteUnconfirmed(error.localizedDescription)
+            }
+            return try await call(EasyTierRPCRequest(
+                service: Self.configService,
+                method: "patch_config",
+                payload: runtimePayload
+            ))
         }
-    }
-
-    @discardableResult
-    public func renameHostname(instanceID: String, hostname: String) async throws -> String {
-        try await persistHostname(instanceID: instanceID, hostname: hostname)
     }
 
     public static func getConfig(rpcURL: URL, instanceID: String, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
@@ -144,13 +149,8 @@ public struct EasyTierRemoteRPCClient: Sendable {
     }
 
     @discardableResult
-    public static func persistHostname(rpcURL: URL, instanceID: String, hostname: String, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
-        try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).persistHostname(instanceID: instanceID, hostname: hostname)
-    }
-
-    @discardableResult
-    public static func renameHostname(rpcURL: URL, instanceID: String, hostname: String, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
-        try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).renameHostname(instanceID: instanceID, hostname: hostname)
+    public static func patchPortForwards(rpcURL: URL, instanceID: String, portForwards: [PortForwardConfig], privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
+        try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).patchPortForwards(instanceID: instanceID, portForwards: portForwards)
     }
 }
 
@@ -164,11 +164,12 @@ extension EasyTierRemoteRPCClient {
         try encodePayload(InstanceRequestPayload(instance: instanceIdentifier(instanceID: instanceID)))
     }
 
-    static func patchHostnamePayload(instanceID: String, hostname: String) throws -> String {
-        try encodePayload(PatchHostnameRequestPayload(
-            patch: HostnamePatch(hostname: hostname),
-            instance: instanceIdentifier(instanceID: instanceID)
-        ))
+    static func patchConfigPayload(instanceID: String, patch: [String: Any]) throws -> String {
+        let payload: [String: Any] = [
+            "patch": patch,
+            "instance": try jsonObject(instanceIdentifier(instanceID: instanceID)),
+        ]
+        return try jsonString(payload)
     }
 
     static func runNetworkInstancePayload(instanceID: String, getConfigResponse: String, mutate: (inout [String: Any]) throws -> Void) throws -> String {
@@ -226,6 +227,89 @@ extension EasyTierRemoteRPCClient {
         }
         return json
     }
+
+    private static func jsonObject(_ value: some Encodable) throws -> Any {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(value)
+        return try JSONSerialization.jsonObject(with: data)
+    }
+
+    private static func jsonString(_ value: Any) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw EasyTierCoreError.invalidResponse("failed to encode RPC payload as UTF-8")
+        }
+        return json
+    }
+
+    private static func hostnamePatch(_ hostname: String) -> [String: Any] {
+        [
+            "hostname": hostname,
+            "port_forwards": [],
+            "proxy_networks": [],
+            "routes": [],
+            "exit_nodes": [],
+            "mapped_listeners": [],
+            "connectors": [],
+        ]
+    }
+
+    private static func portForwardsPatch(_ portForwards: [PortForwardConfig]) throws -> [String: Any] {
+        var patches: [[String: Any]] = [["action": 2]]
+        for portForward in portForwards {
+            patches.append(["action": 0, "cfg": try portForwardPatchConfig(portForward)])
+        }
+        return ["port_forwards": patches]
+    }
+
+    private static func portForwardPatchConfig(_ portForward: PortForwardConfig) throws -> [String: Any] {
+        let socketType: Int
+        switch portForward.proto.lowercased() {
+        case "tcp": socketType = 0
+        case "udp": socketType = 1
+        default: throw EasyTierCoreError.invalidResponse("port forward protocol must be tcp or udp")
+        }
+        return [
+            "bind_addr": try socketAddress(ip: portForward.bind_ip, port: portForward.bind_port),
+            "dst_addr": try socketAddress(ip: portForward.dst_ip, port: portForward.dst_port),
+            "socket_type": socketType,
+        ]
+    }
+
+    private static func socketAddress(ip: String, port: Int) throws -> [String: Any] {
+        guard (1...65_535).contains(port) else {
+            throw EasyTierCoreError.invalidResponse("port forward port is out of range")
+        }
+        return ["ipv4": ["addr": try ipv4Address(ip)], "port": port]
+    }
+
+    private static func ipv4Address(_ value: String) throws -> Int {
+        let parts = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else {
+            throw EasyTierCoreError.invalidResponse("port forward address must be IPv4")
+        }
+        var result = 0
+        for part in parts {
+            guard let byte = UInt8(String(part)) else {
+                throw EasyTierCoreError.invalidResponse("port forward address must be IPv4")
+            }
+            result = (result << 8) | Int(byte)
+        }
+        return result
+    }
+
+    private static func canFallbackToRuntimePatch(after error: Error) -> Bool {
+        if let error = error as? EasyTierCoreError,
+           case let .operationFailed(message) = error {
+            return message.contains("RPC Error:")
+        }
+        if let error = error as? PrivilegedHelperError,
+           case let .helperReported(payload) = error {
+            return payload.code == "callJSONRPCFailed" && payload.message.contains("RPC Error:")
+        }
+        return false
+    }
 }
 
 public enum EasyTierRPCError: LocalizedError, Equatable, Sendable {
@@ -244,24 +328,6 @@ public enum EasyTierRPCError: LocalizedError, Equatable, Sendable {
 
 private struct InstanceRequestPayload: Encodable {
     var instance: InstanceIdentifierPayload
-}
-
-private struct PatchHostnameRequestPayload: Encodable {
-    var patch: HostnamePatch
-    var instance: InstanceIdentifierPayload
-}
-
-private struct HostnamePatch: Encodable {
-    var hostname: String
-    var port_forwards: [EmptyPatch] = []
-    var proxy_networks: [EmptyPatch] = []
-    var routes: [EmptyPatch] = []
-    var exit_nodes: [EmptyPatch] = []
-    var mapped_listeners: [EmptyPatch] = []
-    var connectors: [EmptyPatch] = []
-}
-
-private struct EmptyPatch: Encodable {
 }
 
 private struct InstanceIdentifierPayload: Encodable {

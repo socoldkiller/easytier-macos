@@ -662,7 +662,7 @@ struct ContentView: View {
             return false
         }
         do {
-            try await EasyTierRemoteRPCClient.renameHostname(rpcURL: rpcURL, instanceID: instanceID, hostname: trimmed)
+            try await EasyTierRemoteRPCClient.patchHostname(rpcURL: rpcURL, instanceID: instanceID, hostname: trimmed)
         } catch EasyTierRPCError.reloadWriteUnconfirmed(let message) {
             store.recordNotice("Remote hostname reload confirmation was interrupted: \(message)")
         } catch {
