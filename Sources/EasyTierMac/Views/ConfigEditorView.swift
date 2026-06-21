@@ -203,18 +203,23 @@ struct ConfigEditorView: View {
                 rpcURL: rpcURL,
                 instanceID: remoteInstanceID
             )
-            let verified = remoteList.contains { existing in
+            let found = remoteList.contains { existing in
                 existing.bind_ip == reverseRule.bind_ip
                     && existing.bind_port == reverseRule.bind_port
                     && existing.dst_ip == reverseRule.dst_ip
                     && existing.dst_port == reverseRule.dst_port
                     && existing.proto == reverseRule.proto
             }
-            reversePortForwardStatus[rule.id] = verified
-            if verified {
-                store.recordNotice("Reverse OK: \(rule.bind_ip):\(rule.bind_port) -> \(localVirtualIP):\(rule.bind_port) on \(rule.dst_ip)")
+            let success = isActive ? !found : found
+            reversePortForwardStatus[rule.id] = found
+            if success {
+                store.recordNotice(found
+                    ? "Reverse OK: \(rule.bind_ip):\(rule.bind_port) on \(rule.dst_ip)"
+                    : "Reverse removed on \(rule.dst_ip)")
             } else {
-                store.lastError = "Reverse RPC succeeded but rule not found on \(rule.dst_ip)."
+                store.lastError = found
+                    ? "Reverse remove failed: rule still present on \(rule.dst_ip)."
+                    : "Reverse add failed: rule not found on \(rule.dst_ip)."
             }
         } catch {
             store.lastError = "Reverse port forward failed: \(error.localizedDescription)"
