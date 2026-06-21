@@ -365,9 +365,6 @@ async fn call_rpc_by_service(
         acquire_rpc_permit(RPC_TOTAL_LIMIT.clone(), "global RPC", RPC_QUEUE_TIMEOUT).await?;
     let _endpoint_permit =
         acquire_rpc_permit(endpoint.limit.clone(), "endpoint RPC", RPC_QUEUE_TIMEOUT).await?;
-    endpoint
-        .check_cooldown()
-        .map_err(|e| RpcCallError::new(RpcFailureKind::ConnectUnavailable, e))?;
 
     let mut client = StandAloneClient::new(TcpTunnelConnector::new(endpoint.parsed_url.clone()));
 
@@ -465,15 +462,10 @@ pub unsafe extern "C" fn set_tun_fd(inst_name: *const c_char, fd: c_int) -> c_in
     ffi_result(|| {
         // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
         let inst_name = unsafe { cstr_arg(inst_name, "inst_name") }?;
-        if !INSTANCE_NAME_ID_MAP.contains_key(&inst_name) {
-            return Err("instance does not exist".to_string());
-        }
-
-        let inst_id = *INSTANCE_NAME_ID_MAP
+        let inst_id = INSTANCE_NAME_ID_MAP
             .get(&inst_name)
-            .as_ref()
-            .unwrap()
-            .value();
+            .map(|entry| *entry.value())
+            .ok_or_else(|| "instance does not exist".to_string())?;
 
         INSTANCE_MANAGER
             .set_tun_fd(&inst_id, fd)
@@ -489,7 +481,7 @@ pub unsafe extern "C" fn get_error_msg(out: *mut *const c_char) {
         return;
     }
 
-    let msg_buf = ERROR_MSG.lock().unwrap();
+    let mut msg_buf = ERROR_MSG.lock().unwrap();
     if msg_buf.is_empty() {
         // SAFETY: `out` was checked for null and points to caller-owned storage.
         unsafe {
@@ -501,6 +493,7 @@ pub unsafe extern "C" fn get_error_msg(out: *mut *const c_char) {
     let cstr = CString::new(msg_buf.as_slice()).unwrap_or_else(|_| {
         CString::new("EasyTier FFI error contained an invalid NUL byte").unwrap()
     });
+    msg_buf.clear();
     // SAFETY: `out` was checked for null and points to caller-owned storage.
     unsafe {
         *out = cstr.into_raw();

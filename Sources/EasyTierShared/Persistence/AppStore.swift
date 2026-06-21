@@ -18,6 +18,11 @@ public final class EasyTierAppStore {
     public var isConfigServerConnected = false
     public var trafficSamplesByInstance: [String: [TrafficSample]] = [:]
     public var runtimeIntents: [RuntimeIntent] = []
+    public var reversedPortForwardFingerprints: [String: Set<String>] = [:]
+
+    public static func portForwardFingerprint(for rule: PortForwardConfig) -> String {
+        "\(rule.bind_ip):\(rule.bind_port)-\(rule.dst_ip):\(rule.dst_port)-\(rule.proto)"
+    }
 
     private let client: any EasyTierCoreClient
     private let storage: EasyTierStorage
@@ -86,6 +91,7 @@ public final class EasyTierAppStore {
             let snapshot = try storage.load()
             configs = snapshot.configs.isEmpty ? [StoredNetworkConfig(config: NetworkConfig())] : snapshot.configs
             runtimeIntents = snapshot.runtimeIntents
+            reversedPortForwardFingerprints = snapshot.reversedPortForwardFingerprints
             let loadedMode = snapshot.mode ?? .default
             if case .service = loadedMode {
                 mode = .default
@@ -116,7 +122,8 @@ public final class EasyTierAppStore {
                 configs: configs,
                 mode: mode,
                 lastSelectedConfigID: selectedConfigID,
-                runtimeIntents: runtimeIntents
+                runtimeIntents: runtimeIntents,
+                reversedPortForwardFingerprints: reversedPortForwardFingerprints
             ))
         } catch {
             lastError = error.localizedDescription
@@ -148,6 +155,7 @@ public final class EasyTierAppStore {
         runtimeIntents.removeAll { intent in
             intent.target.isLocal && (intent.target.instanceID == config.instance_id || intent.target.networkName == config.network_name)
         }
+        reversedPortForwardFingerprints.removeValue(forKey: config.instance_id)
         let removed = configs.remove(at: index)
         do {
             try storage.deleteConfig(removed)
@@ -199,7 +207,8 @@ public final class EasyTierAppStore {
         await busy {
             log("Starting \(config.network_name)...")
             try validateConfigForCurrentRuntime(config)
-            try await client.run(config: config)
+            let cleanConfig = Self.configWithoutReversedPortForwards(config, fingerprints: reversedPortForwardFingerprints)
+            try await client.run(config: cleanConfig)
             recordPendingStart(for: config)
             log("Started \(config.network_name).")
             try await refreshRuntimeThrowing()
@@ -227,14 +236,25 @@ public final class EasyTierAppStore {
         await busy {
             log("Restarting \(config.network_name)...")
             try validateConfigForCurrentRuntime(config, replacing: instance)
-            try await client.validate(toml: try NetworkConfigTOMLCodec.encode(config))
+            let cleanConfig = Self.configWithoutReversedPortForwards(config, fingerprints: reversedPortForwardFingerprints)
+            try await client.validate(toml: try NetworkConfigTOMLCodec.encode(cleanConfig))
             try await client.stop(instanceNames: [instance.name])
             clearPendingStart(for: config)
-            try await client.run(config: config)
+            try await client.run(config: cleanConfig)
             recordPendingStart(for: config)
             log("Restarted \(config.network_name).")
             try await refreshRuntimeThrowing()
         }
+    }
+
+    public static func configWithoutReversedPortForwards(_ config: NetworkConfig, fingerprints: [String: Set<String>]) -> NetworkConfig {
+        let reversed = fingerprints[config.instance_id] ?? []
+        guard !reversed.isEmpty else { return config }
+        var clean = config
+        clean.port_forwards = config.port_forwards.filter { rule in
+            !reversed.contains(portForwardFingerprint(for: rule))
+        }
+        return clean
     }
 
     public func toggleSelectedConfigConnection() async {

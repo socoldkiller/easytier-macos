@@ -143,6 +143,12 @@ struct ConfigEditorView: View {
             for (id, key) in oldKeys {
                 if newKeys[id] == nil || newKeys[id] != key {
                     reversePortForwardStatus[id] = nil
+                    if let oldFP = oldKeys[id] {
+                        store.reversedPortForwardFingerprints[config.instance_id]?.remove(oldFP)
+                        if store.reversedPortForwardFingerprints[config.instance_id]?.isEmpty == true {
+                            store.reversedPortForwardFingerprints.removeValue(forKey: config.instance_id)
+                        }
+                    }
                 }
             }
         }
@@ -224,6 +230,15 @@ struct ConfigEditorView: View {
             }
             let success = isActive ? !found : found
             reversePortForwardStatus[rule.id] = found
+            let fp = EasyTierAppStore.portForwardFingerprint(for: rule)
+            if found {
+                store.reversedPortForwardFingerprints[config.instance_id, default: []].insert(fp)
+            } else {
+                store.reversedPortForwardFingerprints[config.instance_id]?.remove(fp)
+                if store.reversedPortForwardFingerprints[config.instance_id]?.isEmpty == true {
+                    store.reversedPortForwardFingerprints.removeValue(forKey: config.instance_id)
+                }
+            }
             if success {
                 store.recordNotice(found
                     ? "Reverse OK: \(rule.bind_ip):\(rule.bind_port) on \(rule.dst_ip)"
@@ -269,6 +284,15 @@ struct ConfigEditorView: View {
                         && existing.proto == expectedReverse.proto
                 }
                 reversePortForwardStatus[rule.id] = isActive
+                let fp = EasyTierAppStore.portForwardFingerprint(for: rule)
+                if isActive {
+                    store.reversedPortForwardFingerprints[config.instance_id, default: []].insert(fp)
+                } else {
+                    store.reversedPortForwardFingerprints[config.instance_id]?.remove(fp)
+                    if store.reversedPortForwardFingerprints[config.instance_id]?.isEmpty == true {
+                        store.reversedPortForwardFingerprints.removeValue(forKey: config.instance_id)
+                    }
+                }
             } catch {
                 reversePortForwardStatus[rule.id] = false
             }
