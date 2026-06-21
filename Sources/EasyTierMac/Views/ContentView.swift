@@ -611,18 +611,21 @@ struct ContentView: View {
         let trimmed = hostname.trimmingCharacters(in: .whitespacesAndNewlines)
         let newHostname = trimmed.isEmpty ? nil : trimmed
         let previousHostname = storedConfig.hostname?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmptyForSearchResult
-        guard previousHostname != newHostname else { return }
-
         let runningInstanceToRestart = draftIsDirty ? nil : store.runningInstance(matching: storedConfig)
+        if previousHostname == newHostname {
+            guard newHostname == nil, runningInstanceToRestart != nil else { return }
+        }
+
         var updatedConfig = storedConfig
         updatedConfig.hostname = newHostname
         store.updateConfig(id: selectedID, with: updatedConfig, saveImmediately: true)
 
-        guard draftConfigID == selectedID else { return }
-        if draftIsDirty {
-            draftConfig.hostname = newHostname
-        } else {
-            draftConfig = updatedConfig
+        if draftConfigID == selectedID {
+            if draftIsDirty {
+                draftConfig.hostname = newHostname
+            } else {
+                draftConfig = updatedConfig
+            }
         }
 
         guard let runningInstanceToRestart else { return }
