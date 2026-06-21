@@ -2,10 +2,9 @@ use std::{
     ffi::{CStr, CString, c_char, c_int},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use anyhow::{Context, anyhow};
 use dashmap::DashMap;
 use easytier::{
     common::config::{ConfigFileControl, ConfigLoader as _, TomlConfigLoader},
@@ -28,26 +27,122 @@ use easytier::{
 };
 use once_cell::sync::Lazy;
 use serde_json::Value;
-use tokio::{runtime::Runtime, time::timeout};
+use tokio::{
+    runtime::Runtime,
+    sync::{OwnedSemaphorePermit, Semaphore},
+    time::timeout,
+};
 use url::{Host, Url};
 
-type RpcClient = StandAloneClient<TcpTunnelConnector>;
 type RpcPortalServer = ApiRpcServer<TcpTunnelListener>;
 
 static INSTANCE_NAME_ID_MAP: Lazy<DashMap<String, uuid::Uuid>> = Lazy::new(DashMap::new);
 static INSTANCE_MANAGER: Lazy<Arc<NetworkInstanceManager>> =
     Lazy::new(|| Arc::new(NetworkInstanceManager::new()));
-static RPC_CLIENTS: Lazy<DashMap<String, RpcClientEntry>> = Lazy::new(DashMap::new);
+static RPC_CLIENTS: Lazy<DashMap<String, Arc<RpcEndpoint>>> = Lazy::new(DashMap::new);
 static RPC_PORTAL_SERVER: Lazy<Mutex<Option<RpcPortalServer>>> = Lazy::new(|| Mutex::new(None));
 static RPC_RUNTIME: Lazy<Runtime> =
     Lazy::new(|| Runtime::new().expect("failed to create EasyTier RPC runtime"));
+static RPC_TOTAL_LIMIT: Lazy<Arc<Semaphore>> =
+    Lazy::new(|| Arc::new(Semaphore::new(RPC_MAX_CONCURRENT_TOTAL)));
+static RPC_CONNECTING_LIMIT: Lazy<Arc<Semaphore>> =
+    Lazy::new(|| Arc::new(Semaphore::new(RPC_MAX_CONNECTING_TOTAL)));
+const RPC_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const RPC_CALL_TIMEOUT: Duration = Duration::from_secs(8);
+const RPC_QUEUE_TIMEOUT: Duration = Duration::from_secs(2);
+const RPC_UNAVAILABLE_COOLDOWN: Duration = Duration::from_secs(5);
+const RPC_MAX_CONCURRENT_PER_ENDPOINT: usize = 4;
+const RPC_MAX_CONCURRENT_TOTAL: usize = 32;
+const RPC_MAX_CONNECTING_TOTAL: usize = 8;
 
 static ERROR_MSG: Lazy<Mutex<Vec<u8>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
-struct RpcClientEntry {
+struct RpcEndpoint {
     url: String,
-    client: Mutex<RpcClient>,
+    parsed_url: Url,
+    limit: Arc<Semaphore>,
+    state: Mutex<RpcEndpointState>,
+}
+
+#[derive(Default)]
+struct RpcEndpointState {
+    cooldown_until: Option<Instant>,
+    last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RpcFailureKind {
+    ConnectUnavailable,
+    ConnectTimeout,
+    QueueFull,
+    RequestTimeout,
+    RpcError,
+}
+
+#[derive(Debug)]
+struct RpcCallError {
+    kind: RpcFailureKind,
+    message: String,
+}
+
+impl RpcCallError {
+    fn new(kind: RpcFailureKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+}
+
+impl RpcEndpoint {
+    fn new(url: String, parsed_url: Url) -> Self {
+        Self {
+            url,
+            parsed_url,
+            limit: Arc::new(Semaphore::new(RPC_MAX_CONCURRENT_PER_ENDPOINT)),
+            state: Mutex::new(RpcEndpointState::default()),
+        }
+    }
+
+    fn check_cooldown(&self) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "RPC endpoint state lock is poisoned".to_string())?;
+        let Some(until) = state.cooldown_until else {
+            return Ok(());
+        };
+
+        let now = Instant::now();
+        if until <= now {
+            state.cooldown_until = None;
+            state.last_error = None;
+            return Ok(());
+        }
+
+        let remaining = until.saturating_duration_since(now).as_secs_f32();
+        let last_error = state
+            .last_error
+            .as_deref()
+            .unwrap_or("remote RPC endpoint is unavailable");
+        Err(format!(
+            "Remote EasyTier RPC endpoint is cooling down for {remaining:.1}s after a connection failure: {last_error}"
+        ))
+    }
+
+    fn set_connect_cooldown(&self, message: impl Into<String>) {
+        if let Ok(mut state) = self.state.lock() {
+            state.cooldown_until = Some(Instant::now() + RPC_UNAVAILABLE_COOLDOWN);
+            state.last_error = Some(message.into());
+        }
+    }
+
+    fn clear_cooldown(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.cooldown_until = None;
+            state.last_error = None;
+        }
+    }
 }
 
 #[repr(C)]
@@ -235,22 +330,105 @@ fn is_allowed_service_method(service_name: &str, method_name: &str) -> bool {
     }
 }
 
+async fn acquire_rpc_permit(
+    semaphore: Arc<Semaphore>,
+    label: &str,
+    wait: Duration,
+) -> Result<OwnedSemaphorePermit, RpcCallError> {
+    timeout(wait, semaphore.acquire_owned())
+        .await
+        .map_err(|_| {
+            RpcCallError::new(
+                RpcFailureKind::QueueFull,
+                format!("EasyTier RPC is busy waiting for {label} capacity. Try again shortly."),
+            )
+        })?
+        .map_err(|_| {
+            RpcCallError::new(
+                RpcFailureKind::QueueFull,
+                format!("EasyTier RPC {label} limiter is closed."),
+            )
+        })
+}
+
 async fn call_rpc_by_service(
-    client: &mut RpcClient,
+    endpoint: Arc<RpcEndpoint>,
     service_name: &str,
     method_name: &str,
     domain: String,
     payload: Value,
-) -> anyhow::Result<Value> {
+) -> Result<Value, RpcCallError> {
+    endpoint
+        .check_cooldown()
+        .map_err(|e| RpcCallError::new(RpcFailureKind::ConnectUnavailable, e))?;
+    let _global_permit =
+        acquire_rpc_permit(RPC_TOTAL_LIMIT.clone(), "global RPC", RPC_QUEUE_TIMEOUT).await?;
+    let _endpoint_permit =
+        acquire_rpc_permit(endpoint.limit.clone(), "endpoint RPC", RPC_QUEUE_TIMEOUT).await?;
+    endpoint
+        .check_cooldown()
+        .map_err(|e| RpcCallError::new(RpcFailureKind::ConnectUnavailable, e))?;
+
+    let mut client = StandAloneClient::new(TcpTunnelConnector::new(endpoint.parsed_url.clone()));
+
     macro_rules! call_service {
         ($factory:ty) => {{
-            let stub = client
-                .scoped_client::<$factory>(domain)
-                .await
-                .with_context(|| "failed to create scoped EasyTier RPC client")?;
-            stub.json_call_method(BaseController::default(), method_name, payload)
-                .await
-                .map_err(|e| anyhow!("RPC Error: {e:?}"))
+            let connect_permit = acquire_rpc_permit(
+                RPC_CONNECTING_LIMIT.clone(),
+                "TCP connect",
+                RPC_QUEUE_TIMEOUT,
+            )
+            .await?;
+            let stub = match timeout(
+                RPC_CONNECT_TIMEOUT,
+                client.scoped_client::<$factory>(domain),
+            )
+            .await
+            {
+                Ok(Ok(stub)) => {
+                    drop(connect_permit);
+                    endpoint.clear_cooldown();
+                    stub
+                }
+                Ok(Err(e)) => {
+                    drop(connect_permit);
+                    let message = format!("Remote EasyTier RPC endpoint is unavailable: {e:#}");
+                    endpoint.set_connect_cooldown(message.clone());
+                    return Err(RpcCallError::new(
+                        RpcFailureKind::ConnectUnavailable,
+                        message,
+                    ));
+                }
+                Err(_) => {
+                    drop(connect_permit);
+                    let message = format!(
+                        "Remote EasyTier RPC connect timed out after {} seconds.",
+                        RPC_CONNECT_TIMEOUT.as_secs()
+                    );
+                    endpoint.set_connect_cooldown(message.clone());
+                    return Err(RpcCallError::new(RpcFailureKind::ConnectTimeout, message));
+                }
+            };
+
+            match timeout(
+                RPC_CALL_TIMEOUT,
+                stub.json_call_method(BaseController::default(), method_name, payload),
+            )
+            .await
+            {
+                Ok(Ok(value)) => Ok(value),
+                Ok(Err(e)) => Err(RpcCallError::new(
+                    RpcFailureKind::RpcError,
+                    format!("RPC Error: {e:?}"),
+                )),
+                Err(_) => Err(RpcCallError::new(
+                    RpcFailureKind::RequestTimeout,
+                    format!(
+                        "EasyTier RPC request timed out after {} seconds.",
+                        RPC_CALL_TIMEOUT.as_secs()
+                    ),
+                )),
+            }
         }};
     }
 
@@ -273,7 +451,10 @@ async fn call_rpc_by_service(
         "api.manage.WebClientService" => {
             call_service!(WebClientServiceClientFactory<BaseController>)
         }
-        _ => Err(anyhow!("Unknown service: {service_name}")),
+        _ => Err(RpcCallError::new(
+            RpcFailureKind::RpcError,
+            format!("Unknown service: {service_name}"),
+        )),
     }
 }
 
@@ -546,22 +727,21 @@ pub unsafe extern "C" fn connect_rpc_client(client_id: *const c_char, url: *cons
         if client_id.trim().is_empty() {
             return Err("client_id must not be empty".to_string());
         }
-        let url = validate_rpc_url(&url_string)?;
-
-        let should_replace = RPC_CLIENTS
-            .get(&client_id)
-            .is_none_or(|entry| entry.url != url_string);
-        if should_replace {
-            RPC_CLIENTS.insert(
-                client_id,
-                RpcClientEntry {
-                    url: url_string,
-                    client: Mutex::new(StandAloneClient::new(TcpTunnelConnector::new(url))),
-                },
-            );
-        }
-        Ok(())
+        register_rpc_client(client_id, url_string)
     })
+}
+
+fn register_rpc_client(client_id: String, url_string: String) -> Result<(), String> {
+    let url = validate_rpc_url(&url_string)?;
+
+    if let Some(entry) = RPC_CLIENTS.get(&client_id) {
+        if entry.url == url_string {
+            return entry.check_cooldown();
+        }
+    }
+
+    RPC_CLIENTS.insert(client_id, Arc::new(RpcEndpoint::new(url_string, url)));
+    Ok(())
 }
 
 /// # Safety
@@ -571,9 +751,13 @@ pub unsafe extern "C" fn disconnect_rpc_client(client_id: *const c_char) -> c_in
     ffi_result(|| {
         // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
         let client_id = unsafe { cstr_arg(client_id, "client_id") }?;
-        RPC_CLIENTS.remove(&client_id);
+        disconnect_rpc_client_inner(&client_id);
         Ok(())
     })
+}
+
+fn disconnect_rpc_client_inner(client_id: &str) {
+    RPC_CLIENTS.remove(client_id);
 }
 
 /// # Safety
@@ -610,46 +794,44 @@ pub unsafe extern "C" fn call_json_rpc(
         };
         // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
         let payload_json = unsafe { cstr_arg(payload_json, "payload_json") }?;
-        let payload = serde_json::from_str::<Value>(&payload_json)
-            .map_err(|e| format!("payload_json must be valid JSON: {e}"))?;
-
-        if !is_allowed_service_method(&service_name, &method_name) {
-            return Err(format!(
-                "RPC service or method is not allowed: {service_name}.{method_name}"
-            ));
-        }
-
-        let entry = RPC_CLIENTS
-            .get(&client_id)
-            .ok_or_else(|| format!("RPC client is not connected: {client_id}"))?;
-        let mut client = entry
-            .client
-            .lock()
-            .map_err(|_| "RPC client lock is poisoned".to_string())?;
-
-        let response = RPC_RUNTIME
-            .block_on(async {
-                timeout(
-                    RPC_CALL_TIMEOUT,
-                    call_rpc_by_service(&mut client, &service_name, &method_name, domain, payload),
-                )
-                .await
-            })
-            .map_err(|_| {
-                RPC_CLIENTS.remove(&client_id);
-                format!(
-                    "EasyTier RPC request timed out after {} seconds.",
-                    RPC_CALL_TIMEOUT.as_secs()
-                )
-            })?
-            .map_err(|e| {
-                RPC_CLIENTS.remove(&client_id);
-                e.to_string()
-            })?;
-        let response_json = serde_json::to_string(&response)
-            .map_err(|e| format!("failed to serialize RPC response: {e}"))?;
+        let response_json =
+            call_json_rpc_inner(client_id, service_name, method_name, domain, payload_json)?;
         write_cstring_out(response_json, out_json)
     })
+}
+
+fn call_json_rpc_inner(
+    client_id: String,
+    service_name: String,
+    method_name: String,
+    domain: String,
+    payload_json: String,
+) -> Result<String, String> {
+    let payload = serde_json::from_str::<Value>(&payload_json)
+        .map_err(|e| format!("payload_json must be valid JSON: {e}"))?;
+
+    if !is_allowed_service_method(&service_name, &method_name) {
+        return Err(format!(
+            "RPC service or method is not allowed: {service_name}.{method_name}"
+        ));
+    }
+
+    let endpoint = RPC_CLIENTS
+        .get(&client_id)
+        .map(|entry| Arc::clone(entry.value()))
+        .ok_or_else(|| format!("RPC client is not connected: {client_id}"))?;
+    endpoint.check_cooldown()?;
+
+    let response = RPC_RUNTIME
+        .block_on(call_rpc_by_service(
+            endpoint,
+            &service_name,
+            &method_name,
+            domain,
+            payload,
+        ))
+        .map_err(|e| e.message)?;
+    serde_json::to_string(&response).map_err(|e| format!("failed to serialize RPC response: {e}"))
 }
 
 #[cfg(test)]
@@ -706,6 +888,81 @@ mod tests {
             "api.config.ConfigRpcService",
             "delete_everything"
         ));
+    }
+
+    #[test]
+    fn closed_rpc_endpoint_enters_cooldown_and_expires() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let client_id = format!("closed-port-{port}");
+        let url = format!("tcp://127.0.0.1:{port}");
+        register_rpc_client(client_id.clone(), url.clone()).unwrap();
+
+        let payload = serde_json::json!({
+            "instance": {
+                "selector": {
+                    "Id": {
+                        "part1": 1,
+                        "part2": 2,
+                        "part3": 3,
+                        "part4": 4
+                    }
+                }
+            }
+        })
+        .to_string();
+
+        let first = call_json_rpc_inner(
+            client_id.clone(),
+            "api.config.ConfigRpcService".to_string(),
+            "get_config".to_string(),
+            String::new(),
+            payload,
+        )
+        .unwrap_err();
+        assert!(first.contains("unavailable") || first.contains("timed out"));
+
+        let cooling = register_rpc_client(client_id.clone(), url.clone()).unwrap_err();
+        assert!(cooling.contains("cooling down"));
+
+        let endpoint = RPC_CLIENTS.get(&client_id).unwrap().value().clone();
+        {
+            let mut state = endpoint.state.lock().unwrap();
+            state.cooldown_until = Some(Instant::now() - Duration::from_secs(1));
+        }
+        assert!(register_rpc_client(client_id.clone(), url).is_ok());
+        disconnect_rpc_client_inner(&client_id);
+    }
+
+    #[test]
+    fn rpc_limiter_rejects_when_capacity_is_full() {
+        RPC_RUNTIME.block_on(async {
+            let semaphore = Arc::new(Semaphore::new(2));
+            let _first = semaphore.clone().acquire_owned().await.unwrap();
+            let _second = semaphore.clone().acquire_owned().await.unwrap();
+
+            let error = acquire_rpc_permit(semaphore, "endpoint RPC", Duration::from_millis(10))
+                .await
+                .unwrap_err();
+
+            assert_eq!(error.kind, RpcFailureKind::QueueFull);
+        });
+    }
+
+    #[test]
+    fn invalid_rpc_method_rejects_before_client_lookup() {
+        let error = call_json_rpc_inner(
+            "missing-client".to_string(),
+            "api.config.ConfigRpcService".to_string(),
+            "delete_everything".to_string(),
+            String::new(),
+            "{}".to_string(),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("not allowed"));
     }
 
     #[test]
@@ -782,7 +1039,10 @@ mod tests {
             "source": 1
         });
         let request: RunNetworkInstanceRequest = serde_json::from_value(payload).unwrap();
-        assert_eq!(request.config.unwrap().hostname.as_deref(), Some("edge-mac"));
+        assert_eq!(
+            request.config.unwrap().hostname.as_deref(),
+            Some("edge-mac")
+        );
         assert!(request.overwrite);
     }
 }
