@@ -22,6 +22,7 @@ struct ContentView: View {
 
     private static let tabTransitionDistance: CGFloat = 14
     private static let networkTransitionDistance: CGFloat = 7
+    private static let remoteRenameConfirmationAttempts = 12
 
     var body: some View {
         @Bindable var store = store
@@ -662,12 +663,34 @@ struct ContentView: View {
         }
         do {
             try await EasyTierRemoteRPCClient.renameHostname(rpcURL: rpcURL, instanceID: instanceID, hostname: trimmed)
-            await store.refreshRuntime()
-            return true
+        } catch EasyTierRPCError.reloadWriteUnconfirmed(let message) {
+            store.recordNotice("Remote hostname reload confirmation was interrupted: \(message)")
         } catch {
             store.lastError = error.localizedDescription
             return false
         }
+
+        if await waitForRemoteInstance(instanceID: instanceID, matches: { $0.hostname == trimmed }) {
+            return true
+        }
+
+        let message = "Remote hostname change was sent but not confirmed yet. The remote instance may still be restarting."
+        store.recordNotice(message)
+        store.lastError = message
+        return true
+    }
+
+    private func waitForRemoteInstance(instanceID: String, matches: (NetworkMemberStatus) -> Bool) async -> Bool {
+        for attempt in 0..<Self.remoteRenameConfirmationAttempts {
+            await store.refreshRuntime()
+            if store.selectedMemberStatuses.contains(where: { $0.instanceID == instanceID && matches($0) }) {
+                return true
+            }
+            if attempt + 1 < Self.remoteRenameConfirmationAttempts {
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+        return false
     }
 
     private func networkTransitionEdge(from oldID: String?, to newID: String?) -> Edge {

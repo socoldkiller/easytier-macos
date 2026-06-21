@@ -273,6 +273,10 @@ public final class EasyTierAppStore {
         }
     }
 
+    public func recordNotice(_ message: String) {
+        log(message)
+    }
+
     public func clearHelperPermissionError() {
         if isHelperPermissionErrorMessage(lastError) {
             lastError = nil

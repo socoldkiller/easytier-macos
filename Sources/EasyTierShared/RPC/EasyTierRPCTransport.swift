@@ -1,7 +1,21 @@
 import Foundation
 
+public struct EasyTierRPCRequest: Equatable, Sendable {
+    public var service: String
+    public var method: String
+    public var domain: String?
+    public var payload: String
+
+    public init(service: String, method: String, domain: String? = nil, payload: String) {
+        self.service = service
+        self.method = method
+        self.domain = domain
+        self.payload = payload
+    }
+}
+
 public protocol EasyTierRPCTransport: Sendable {
-    func call(service: String, method: String, domain: String?, payload: String) async throws -> String
+    func call(_ request: EasyTierRPCRequest) async throws -> String
 }
 
 public struct LocalFFIRPCTransport: EasyTierRPCTransport {
@@ -16,9 +30,15 @@ public struct LocalFFIRPCTransport: EasyTierRPCTransport {
         self.client = client
     }
 
-    public func call(service: String, method: String, domain: String?, payload: String) async throws -> String {
+    public func call(_ request: EasyTierRPCRequest) async throws -> String {
         try await client.connectRPCClient(clientID: clientID, url: rpcURL)
-        return try await client.callJSONRPC(clientID: clientID, service: service, method: method, domain: domain, payload: payload)
+        return try await client.callJSONRPC(
+            clientID: clientID,
+            service: request.service,
+            method: request.method,
+            domain: request.domain,
+            payload: request.payload
+        )
     }
 
     public func disconnect() async throws {
@@ -42,52 +62,68 @@ public struct EasyTierRemoteRPCClient: Sendable {
         self.init(transport: LocalFFIRPCTransport(rpcURL: rpcURL, client: privilegedClient))
     }
 
+    public func call(_ request: EasyTierRPCRequest) async throws -> String {
+        try await transport.call(request)
+    }
+
     public func getConfig(instanceID: String) async throws -> String {
-        try await transport.call(
+        try await call(EasyTierRPCRequest(
             service: Self.configService,
             method: "get_config",
-            domain: nil,
             payload: try Self.instancePayload(instanceID: instanceID)
-        )
+        ))
     }
 
     public func listPeers(instanceID: String) async throws -> String {
-        try await transport.call(
+        try await call(EasyTierRPCRequest(
             service: Self.peerManageService,
             method: "list_peer",
-            domain: nil,
             payload: try Self.instancePayload(instanceID: instanceID)
-        )
+        ))
+    }
+
+    public func listPortForwards(instanceID: String) async throws -> String {
+        try await call(EasyTierRPCRequest(
+            service: Self.portForwardService,
+            method: "list_port_forward",
+            payload: try Self.instancePayload(instanceID: instanceID)
+        ))
     }
 
     @discardableResult
     public func patchHostname(instanceID: String, hostname: String) async throws -> String {
-        try await transport.call(
+        try await call(EasyTierRPCRequest(
             service: Self.configService,
             method: "patch_config",
-            domain: nil,
             payload: try Self.patchHostnamePayload(instanceID: instanceID, hostname: hostname)
-        )
+        ))
     }
 
     @discardableResult
     public func persistHostname(instanceID: String, hostname: String) async throws -> String {
+        try await persistConfigMutation(instanceID: instanceID) { config in
+            config["hostname"] = hostname
+        }
+    }
+
+    @discardableResult
+    public func persistConfigMutation(instanceID: String, mutate: (inout [String: Any]) throws -> Void) async throws -> String {
         let response = try await getConfig(instanceID: instanceID)
-        return try await transport.call(
-            service: Self.webClientService,
-            method: "run_network_instance",
-            domain: nil,
-            payload: try Self.persistHostnamePayload(instanceID: instanceID, getConfigResponse: response, hostname: hostname)
-        )
+        let payload = try Self.runNetworkInstancePayload(instanceID: instanceID, getConfigResponse: response, mutate: mutate)
+        do {
+            return try await call(EasyTierRPCRequest(
+                service: Self.webClientService,
+                method: "run_network_instance",
+                payload: payload
+            ))
+        } catch {
+            throw EasyTierRPCError.reloadWriteUnconfirmed(error.localizedDescription)
+        }
     }
 
     @discardableResult
     public func renameHostname(instanceID: String, hostname: String) async throws -> String {
-        do {
-            return try await persistHostname(instanceID: instanceID, hostname: hostname)
-        } catch {
-            return try await patchHostname(instanceID: instanceID, hostname: hostname)
-        }
+        try await persistHostname(instanceID: instanceID, hostname: hostname)
     }
 
     public static func getConfig(rpcURL: URL, instanceID: String, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
@@ -96,6 +132,10 @@ public struct EasyTierRemoteRPCClient: Sendable {
 
     public static func listPeers(rpcURL: URL, instanceID: String, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
         try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).listPeers(instanceID: instanceID)
+    }
+
+    public static func listPortForwards(rpcURL: URL, instanceID: String, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
+        try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).listPortForwards(instanceID: instanceID)
     }
 
     @discardableResult
@@ -117,6 +157,7 @@ public struct EasyTierRemoteRPCClient: Sendable {
 extension EasyTierRemoteRPCClient {
     static let configService = "api.config.ConfigRpcService"
     static let peerManageService = "api.instance.PeerManageRpcService"
+    static let portForwardService = "api.instance.PortForwardManageRpcService"
     static let webClientService = "api.manage.WebClientService"
 
     static func instancePayload(instanceID: String) throws -> String {
@@ -130,7 +171,7 @@ extension EasyTierRemoteRPCClient {
         ))
     }
 
-    static func persistHostnamePayload(instanceID: String, getConfigResponse: String, hostname: String) throws -> String {
+    static func runNetworkInstancePayload(instanceID: String, getConfigResponse: String, mutate: (inout [String: Any]) throws -> Void) throws -> String {
         guard let data = getConfigResponse.data(using: .utf8),
               let response = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               var config = response["config"] as? [String: Any]
@@ -138,7 +179,11 @@ extension EasyTierRemoteRPCClient {
             throw EasyTierCoreError.invalidResponse("RPC get_config response did not include a config object")
         }
 
-        config["hostname"] = hostname
+        try mutate(&config)
+        return try runNetworkInstancePayload(instanceID: instanceID, config: config)
+    }
+
+    static func runNetworkInstancePayload(instanceID: String, config: [String: Any]) throws -> String {
         let payload: [String: Any] = [
             "inst_id": try rpcUUIDPayload(instanceID: instanceID),
             "config": config,
@@ -147,7 +192,7 @@ extension EasyTierRemoteRPCClient {
         ]
         let payloadData = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
         guard let json = String(data: payloadData, encoding: .utf8) else {
-            throw EasyTierCoreError.invalidResponse("failed to encode persistent hostname payload as UTF-8")
+            throw EasyTierCoreError.invalidResponse("failed to encode run_network_instance payload as UTF-8")
         }
         return json
     }
@@ -185,11 +230,14 @@ extension EasyTierRemoteRPCClient {
 
 public enum EasyTierRPCError: LocalizedError, Equatable, Sendable {
     case invalidInstanceID(String)
+    case reloadWriteUnconfirmed(String)
 
     public var errorDescription: String? {
         switch self {
         case let .invalidInstanceID(instanceID):
             "Invalid EasyTier instance id: \(instanceID)"
+        case let .reloadWriteUnconfirmed(message):
+            "Remote EasyTier reload was sent but could not be confirmed: \(message)"
         }
     }
 }
