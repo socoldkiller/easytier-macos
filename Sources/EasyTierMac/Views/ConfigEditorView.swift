@@ -495,10 +495,8 @@ private struct PortForwardEditor: View {
                         .buttonStyle(.borderless)
                     }
                 }
-                .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 6))
             }
         }
-        .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: portForwards.count)
     }
 
     @ViewBuilder
