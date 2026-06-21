@@ -102,6 +102,23 @@ public struct EasyTierRemoteRPCClient: Sendable {
     }
 
     @discardableResult
+    public func patchPortForwardAdd(instanceID: String, portForward: PortForwardConfig) async throws -> String {
+        let runtimePatch = try Self.portForwardAddPatch(portForward)
+        return try await patchConfig(instanceID: instanceID, runtimePatch: runtimePatch)
+    }
+
+    @discardableResult
+    public func patchPortForwardRemove(instanceID: String, portForward: PortForwardConfig) async throws -> String {
+        let runtimePatch = try Self.portForwardRemovePatch(portForward)
+        return try await patchConfig(instanceID: instanceID, runtimePatch: runtimePatch)
+    }
+
+    public func listPortForwardsParsed(instanceID: String) async throws -> [PortForwardConfig] {
+        let response = try await listPortForwards(instanceID: instanceID)
+        return try Self.parseListPortForwardsResponse(response)
+    }
+
+    @discardableResult
     private func patchConfig(instanceID: String, runtimePatch: [String: Any]) async throws -> String {
         let runtimePayload = try Self.patchConfigPayload(instanceID: instanceID, patch: runtimePatch)
         return try await call(EasyTierRPCRequest(
@@ -131,6 +148,20 @@ public struct EasyTierRemoteRPCClient: Sendable {
     @discardableResult
     public static func patchPortForwards(rpcURL: URL, instanceID: String, portForwards: [PortForwardConfig], privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
         try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).patchPortForwards(instanceID: instanceID, portForwards: portForwards)
+    }
+
+    @discardableResult
+    public static func patchPortForwardAdd(rpcURL: URL, instanceID: String, portForward: PortForwardConfig, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
+        try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).patchPortForwardAdd(instanceID: instanceID, portForward: portForward)
+    }
+
+    @discardableResult
+    public static func patchPortForwardRemove(rpcURL: URL, instanceID: String, portForward: PortForwardConfig, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
+        try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).patchPortForwardRemove(instanceID: instanceID, portForward: portForward)
+    }
+
+    public static func listPortForwardsParsed(rpcURL: URL, instanceID: String, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> [PortForwardConfig] {
+        try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).listPortForwardsParsed(instanceID: instanceID)
     }
 }
 
@@ -240,7 +271,29 @@ extension EasyTierRemoteRPCClient {
         for portForward in portForwards {
             patches.append(["action": 0, "cfg": try portForwardPatchConfig(portForward)])
         }
-        return ["port_forwards": patches]
+        return basePatchFields().merging(["port_forwards": patches]) { $1 }
+    }
+
+    private static func portForwardAddPatch(_ portForward: PortForwardConfig) throws -> [String: Any] {
+        return basePatchFields().merging(
+            ["port_forwards": [["action": 0, "cfg": try portForwardPatchConfig(portForward)]]]
+        ) { $1 }
+    }
+
+    private static func portForwardRemovePatch(_ portForward: PortForwardConfig) throws -> [String: Any] {
+        return basePatchFields().merging(
+            ["port_forwards": [["action": 1, "cfg": try portForwardPatchConfig(portForward)]]]
+        ) { $1 }
+    }
+
+    private static func basePatchFields() -> [String: Any] {
+        [
+            "proxy_networks": [],
+            "routes": [],
+            "exit_nodes": [],
+            "mapped_listeners": [],
+            "connectors": [],
+        ]
     }
 
     private static func portForwardPatchConfig(_ portForward: PortForwardConfig) throws -> [String: Any] {
@@ -257,11 +310,54 @@ extension EasyTierRemoteRPCClient {
         ]
     }
 
+    public static func parseListPortForwardsResponse(_ response: String) throws -> [PortForwardConfig] {
+        guard let data = response.data(using: .utf8),
+              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let cfgs = json["cfgs"] as? [[String: Any]]
+        else {
+            return []
+        }
+        return try cfgs.map { try parsePortForwardConfigJson($0) }
+    }
+
+    private static func parsePortForwardConfigJson(_ cfg: [String: Any]) throws -> PortForwardConfig {
+        guard let socketType = cfg["socket_type"] as? Int,
+              let bindAddr = cfg["bind_addr"] as? [String: Any],
+              let dstAddr = cfg["dst_addr"] as? [String: Any]
+        else {
+            throw EasyTierCoreError.invalidResponse("invalid port forward cfg in list response")
+        }
+
+        let proto = socketType == 1 ? "udp" : "tcp"
+        let bind_ip = parseIPv4Address(from: bindAddr)
+        let bind_port = bindAddr["port"] as? Int ?? 0
+        let dst_ip = parseIPv4Address(from: dstAddr)
+        let dst_port = dstAddr["port"] as? Int ?? 0
+
+        return PortForwardConfig(bind_ip: bind_ip, bind_port: bind_port, dst_ip: dst_ip, dst_port: dst_port, proto: proto)
+    }
+
+    private static func parseIPv4Address(from socketAddr: [String: Any]) -> String {
+        let ipObj = (socketAddr["ip"] as? [String: Any]) ?? socketAddr
+        guard let ipv4 = ipObj["Ipv4"] as? [String: Any] ?? ipObj["ipv4"] as? [String: Any],
+              let addr = ipv4["addr"] as? Int
+        else {
+            return "0.0.0.0"
+        }
+        var value = UInt32(truncatingIfNeeded: addr)
+        var octets = [UInt8](repeating: 0, count: 4)
+        for i in (0...3).reversed() {
+            octets[i] = UInt8(value & 0xff)
+            value >>= 8
+        }
+        return octets.map(String.init).joined(separator: ".")
+    }
+
     private static func socketAddress(ip: String, port: Int) throws -> [String: Any] {
         guard (1...65_535).contains(port) else {
             throw EasyTierCoreError.invalidResponse("port forward port is out of range")
         }
-        return ["ipv4": ["addr": try ipv4Address(ip)], "port": port]
+        return ["ip": ["Ipv4": ["addr": try ipv4Address(ip)]], "port": port]
     }
 
     private static func ipv4Address(_ value: String) throws -> Int {

@@ -118,7 +118,6 @@ public final class EasyTierAppStore {
                 lastSelectedConfigID: selectedConfigID,
                 runtimeIntents: runtimeIntents
             ))
-            log("Saved app state.")
         } catch {
             lastError = error.localizedDescription
             log("Save failed: \(error.localizedDescription)")

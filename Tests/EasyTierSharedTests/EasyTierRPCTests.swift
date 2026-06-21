@@ -191,12 +191,14 @@ private actor ThrowingRPCTransport: EasyTierRPCTransport {
     #expect(cfg?["socket_type"] as? Int == 0)
     let bind = cfg?["bind_addr"] as? [String: Any]
     #expect(bind?["port"] as? Int == 8080)
-    let bindIPv4 = bind?["ipv4"] as? [String: Any]
-    #expect(bindIPv4?["addr"] as? Int == 0)
+    let bindIPv4Container = bind?["ip"] as? [String: Any]
+    let bindIPv4Addr = bindIPv4Container?["Ipv4"] as? [String: Any]
+    #expect(bindIPv4Addr?["addr"] as? Int == 0)
     let dst = cfg?["dst_addr"] as? [String: Any]
     #expect(dst?["port"] as? Int == 80)
-    let dstIPv4 = dst?["ipv4"] as? [String: Any]
-    #expect(dstIPv4?["addr"] as? Int == 0x0a7e7e02)
+    let dstIPv4Container = dst?["ip"] as? [String: Any]
+    let dstIPv4Addr = dstIPv4Container?["Ipv4"] as? [String: Any]
+    #expect(dstIPv4Addr?["addr"] as? Int == 0x0a7e7e02)
 }
 
 @Test func patchPortForwardsRuntimePatchEncodesUdpAndUnspecifiedBind() async throws {
@@ -221,8 +223,9 @@ private actor ThrowingRPCTransport: EasyTierRPCTransport {
     #expect(cfg?["socket_type"] as? Int == 1)
     let bind = cfg?["bind_addr"] as? [String: Any]
     #expect(bind?["port"] as? Int == 8080)
-    let bindIPv4 = bind?["ipv4"] as? [String: Any]
-    #expect(bindIPv4?["addr"] as? Int == 0)
+    let bindIPv4Container = bind?["ip"] as? [String: Any]
+    let bindIPv4Addr = bindIPv4Container?["Ipv4"] as? [String: Any]
+    #expect(bindIPv4Addr?["addr"] as? Int == 0)
 }
 
 @Test func patchHostnamePropagatesRuntimePatchFailureWithoutReloading() async throws {
