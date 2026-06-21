@@ -192,10 +192,10 @@ struct ConfigEditorView: View {
                     portForward: reverseRule
                 )
             } else {
-                try await EasyTierRemoteRPCClient.patchPortForwardAdd(
+                try await EasyTierRemoteRPCClient.patchPortForwards(
                     rpcURL: rpcURL,
                     instanceID: remoteInstanceID,
-                    portForward: reverseRule
+                    portForwards: [reverseRule]
                 )
             }
 
