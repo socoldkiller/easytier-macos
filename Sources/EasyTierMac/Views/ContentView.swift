@@ -612,9 +612,9 @@ struct ContentView: View {
         let trimmed = hostname.trimmingCharacters(in: .whitespacesAndNewlines)
         let newHostname = trimmed.isEmpty ? nil : trimmed
         let previousHostname = storedConfig.hostname?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmptyForSearchResult
-        let runningInstanceToRestart = draftIsDirty ? nil : store.runningInstance(matching: storedConfig)
+        let runningInstanceToPatch = draftIsDirty ? nil : store.runningInstance(matching: storedConfig)
         if previousHostname == newHostname {
-            guard newHostname == nil, runningInstanceToRestart != nil else { return }
+            guard newHostname == nil, runningInstanceToPatch != nil else { return }
         }
 
         var updatedConfig = storedConfig
@@ -629,14 +629,23 @@ struct ContentView: View {
             }
         }
 
-        guard let runningInstanceToRestart else { return }
+        guard let runningInstanceToPatch else { return }
+        guard let newHostname else {
+            store.recordNotice("Saved hostname change. Clearing the running hostname will take effect after a manual restart.")
+            return
+        }
         Task {
             await permissionController.refresh()
             guard permissionController.state == .enabled else {
                 store.clearHelperPermissionError()
                 return
             }
-            await store.restartSelectedConfig(replacing: runningInstanceToRestart)
+            await store.applyLocalHostnameRuntimeIntent(
+                configID: selectedID,
+                runningInstance: runningInstanceToPatch,
+                desiredHostname: newHostname,
+                baseHostname: runningInstanceToPatch.detail?.my_node_info?.hostname
+            )
         }
     }
 
@@ -655,26 +664,33 @@ struct ContentView: View {
             store.lastError = "Remote RPC URL is unavailable for \(member.hostname)."
             return false
         }
+        let networkName = store.selectedRunningInstance?.name ?? store.selectedConfig?.network_name ?? ""
+        let intent = store.upsertRemoteHostnameRuntimeIntent(
+            networkName: networkName,
+            member: member,
+            desiredHostname: trimmed
+        )
 
         await permissionController.refresh()
         guard permissionController.state == .enabled else {
             store.clearHelperPermissionError()
+            store.markRuntimeIntent(intent.id, status: .unreachable)
             return false
         }
         do {
             try await EasyTierRemoteRPCClient.patchHostname(rpcURL: rpcURL, instanceID: instanceID, hostname: trimmed)
-        } catch EasyTierRPCError.reloadWriteUnconfirmed(let message) {
-            store.recordNotice("Remote hostname reload confirmation was interrupted: \(message)")
         } catch {
+            store.markRuntimeIntent(intent.id, status: .unreachable)
             store.lastError = error.localizedDescription
             return false
         }
 
         if await waitForRemoteInstance(instanceID: instanceID, matches: { $0.hostname == trimmed }) {
+            store.markRuntimeIntent(intent.id, status: .applied)
             return true
         }
 
-        let message = "Remote hostname change was sent but not confirmed yet. The remote instance may still be restarting."
+        let message = "Remote hostname change was sent but not confirmed yet. Runtime status may not have refreshed."
         store.recordNotice(message)
         store.lastError = message
         return true

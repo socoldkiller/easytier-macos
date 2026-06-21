@@ -119,7 +119,7 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
         try callJSONRPC(clientID: Self.defaultRPCClientID, service: service, method: method, domain: domain, payload: payload)
     }
 
-    public func connectRPCClient(clientID: String, url: URL) throws {
+    public func connectRPCClientSync(clientID: String, url: URL) throws {
         let result = clientID.withCString { clientIDPointer in
             url.absoluteString.withCString { urlPointer in
                 connect_rpc_client(clientIDPointer, urlPointer)
@@ -128,11 +128,19 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
         if result != 0 { throw lastError() }
     }
 
-    public func disconnectRPCClient(clientID: String) throws {
+    public func disconnectRPCClientSync(clientID: String) throws {
         let result = clientID.withCString { clientIDPointer in
             disconnect_rpc_client(clientIDPointer)
         }
         if result != 0 { throw lastError() }
+    }
+
+    public func connectRPCClient(clientID: String, url: URL) async throws {
+        try connectRPCClientSync(clientID: clientID, url: url)
+    }
+
+    public func disconnectRPCClient(clientID: String) async throws {
+        try disconnectRPCClientSync(clientID: clientID)
     }
 
     public func callJSONRPC(clientID: String, service: String, method: String, domain: String?, payload: String) throws -> String {

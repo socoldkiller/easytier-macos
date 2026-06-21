@@ -27,6 +27,8 @@ public protocol EasyTierCoreClient: Sendable {
     func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo]
     func configureRPCPortal(_ rpcPortal: String?, whitelist: [String]?) async throws
     func callJSONRPC(service: String, method: String, domain: String?, payload: String) async throws -> String
+    func connectRPCClient(clientID: String, url: URL) async throws
+    func disconnectRPCClient(clientID: String) async throws
     func startConfigServerClient(url: URL) async throws
     func stopConfigServerClient() async throws
     func isConfigServerClientConnected() async throws -> Bool
@@ -50,6 +52,8 @@ public struct UnavailableEasyTierCoreClient: EasyTierCoreClient {
         if rpcPortal != nil { throw unavailable() }
     }
     public func callJSONRPC(service _: String, method _: String, domain _: String?, payload _: String) async throws -> String { throw unavailable() }
+    public func connectRPCClient(clientID _: String, url _: URL) async throws { throw unavailable() }
+    public func disconnectRPCClient(clientID _: String) async throws { throw unavailable() }
     public func startConfigServerClient(url _: URL) async throws { throw unavailable() }
     public func stopConfigServerClient() async throws { throw unavailable() }
     public func isConfigServerClientConnected() async throws -> Bool { throw unavailable() }

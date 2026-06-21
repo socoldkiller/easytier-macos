@@ -74,7 +74,7 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
             guard let url = URL(string: url) else {
                 throw EasyTierCoreError.operationFailed("Invalid EasyTier RPC URL.")
             }
-            try client.connectRPCClient(clientID: clientID, url: url)
+            try client.connectRPCClientSync(clientID: clientID, url: url)
             reply("ok", nil)
         } catch {
             replyFailure(error, code: "connectRPCClientFailed", reply: reply)
@@ -83,7 +83,7 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
 
     func disconnectRPCClient(clientID: String, reply: @escaping (String?, String?) -> Void) {
         do {
-            try client.disconnectRPCClient(clientID: clientID)
+            try client.disconnectRPCClientSync(clientID: clientID)
             reply("ok", nil)
         } catch {
             replyFailure(error, code: "disconnectRPCClientFailed", reply: reply)

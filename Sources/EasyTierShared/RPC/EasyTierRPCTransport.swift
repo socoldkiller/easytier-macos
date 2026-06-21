@@ -92,43 +92,23 @@ public struct EasyTierRemoteRPCClient: Sendable {
 
     @discardableResult
     public func patchHostname(instanceID: String, hostname: String) async throws -> String {
-        try await patchConfig(instanceID: instanceID, runtimePatch: Self.hostnamePatch(hostname)) { config in
-            config["hostname"] = hostname
-        }
+        try await patchConfig(instanceID: instanceID, runtimePatch: Self.hostnamePatch(hostname))
     }
 
     @discardableResult
     public func patchPortForwards(instanceID: String, portForwards: [PortForwardConfig]) async throws -> String {
-        let encodedPortForwards = try Self.jsonObject(portForwards)
         let runtimePatch = try Self.portForwardsPatch(portForwards)
-        return try await patchConfig(instanceID: instanceID, runtimePatch: runtimePatch) { config in
-            config["port_forwards"] = encodedPortForwards
-        }
+        return try await patchConfig(instanceID: instanceID, runtimePatch: runtimePatch)
     }
 
     @discardableResult
-    private func patchConfig(instanceID: String, runtimePatch: [String: Any], mutate: (inout [String: Any]) throws -> Void) async throws -> String {
+    private func patchConfig(instanceID: String, runtimePatch: [String: Any]) async throws -> String {
         let runtimePayload = try Self.patchConfigPayload(instanceID: instanceID, patch: runtimePatch)
-        var reloadCallStarted = false
-        do {
-            let response = try await getConfig(instanceID: instanceID)
-            let payload = try Self.runNetworkInstancePayload(instanceID: instanceID, getConfigResponse: response, mutate: mutate)
-            reloadCallStarted = true
-            return try await call(EasyTierRPCRequest(
-                service: Self.webClientService,
-                method: "run_network_instance",
-                payload: payload
-            ))
-        } catch {
-            if reloadCallStarted, !Self.canFallbackToRuntimePatch(after: error) {
-                throw EasyTierRPCError.reloadWriteUnconfirmed(error.localizedDescription)
-            }
-            return try await call(EasyTierRPCRequest(
-                service: Self.configService,
-                method: "patch_config",
-                payload: runtimePayload
-            ))
-        }
+        return try await call(EasyTierRPCRequest(
+            service: Self.configService,
+            method: "patch_config",
+            payload: runtimePayload
+        ))
     }
 
     public static func getConfig(rpcURL: URL, instanceID: String, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
@@ -299,29 +279,15 @@ extension EasyTierRemoteRPCClient {
         return result
     }
 
-    private static func canFallbackToRuntimePatch(after error: Error) -> Bool {
-        if let error = error as? EasyTierCoreError,
-           case let .operationFailed(message) = error {
-            return message.contains("RPC Error:")
-        }
-        if let error = error as? PrivilegedHelperError,
-           case let .helperReported(payload) = error {
-            return payload.code == "callJSONRPCFailed" && payload.message.contains("RPC Error:")
-        }
-        return false
-    }
 }
 
 public enum EasyTierRPCError: LocalizedError, Equatable, Sendable {
     case invalidInstanceID(String)
-    case reloadWriteUnconfirmed(String)
 
     public var errorDescription: String? {
         switch self {
         case let .invalidInstanceID(instanceID):
             "Invalid EasyTier instance id: \(instanceID)"
-        case let .reloadWriteUnconfirmed(message):
-            "Remote EasyTier reload was sent but could not be confirmed: \(message)"
         }
     }
 }
