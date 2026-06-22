@@ -108,8 +108,10 @@ public final class EasyTierAppStore {
             }
             log("Loaded \(configs.count) saved network config(s).")
         } catch {
-            configs = [StoredNetworkConfig(config: NetworkConfig())]
-            selectedConfigID = configs.first?.id
+            if configs.isEmpty {
+                configs = [StoredNetworkConfig(config: NetworkConfig())]
+                selectedConfigID = configs.first?.id
+            }
             lastError = error.localizedDescription
             log("Failed to load state: \(error.localizedDescription)")
         }
@@ -599,7 +601,10 @@ public final class EasyTierAppStore {
             }) else { continue }
 
             let rpcURL = member.copyableIPv4Address.flatMap { URL(string: "tcp://\($0):\(AppMode.defaultRPCListenPort)") }
-            guard let instanceID = member.instanceID ?? target.instanceID else { return nil }
+            guard let instanceID = member.instanceID else {
+                log("observeRuntimeIntents: matched member for target \(target.networkName) has no instanceID; skipping to avoid identity mismatch")
+                continue
+            }
             return RuntimeIntentObservation(
                 instanceID: instanceID,
                 hostname: member.hostname,

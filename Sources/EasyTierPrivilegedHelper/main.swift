@@ -49,17 +49,20 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
     func collectNetworkInfos(reply: @escaping (String?, String?) -> Void) {
         do {
             let infos = try client.collectNetworkInfoPayloadsSync()
-            let json = buildCollectNetworkInfoJSON(from: infos)
+            let json = try buildCollectNetworkInfoJSON(from: infos)
             reply(json, nil)
         } catch {
             replyFailure(error, code: "collectNetworkInfosFailed", reply: reply)
         }
     }
 
-    private func buildCollectNetworkInfoJSON(from pairs: [(key: String, value: String)]) -> String {
+    private func buildCollectNetworkInfoJSON(from pairs: [(key: String, value: String)]) throws -> String {
         let encoder = JSONEncoder()
-        let entries = pairs.map { pair in
-            let keyJSON = String(data: try! encoder.encode(pair.key), encoding: .utf8) ?? "\"\""
+        let entries = try pairs.map { pair in
+            let data = try encoder.encode(pair.key)
+            guard let keyJSON = String(data: data, encoding: .utf8) else {
+                throw NSError(domain: "EasyTierPrivilegedHelper", code: 1, userInfo: [NSLocalizedDescriptionKey: "failed to encode key as UTF-8 JSON: \(pair.key)"])
+            }
             return "\(keyJSON): \(pair.value)"
         }
         return "{\(entries.joined(separator: ","))}"

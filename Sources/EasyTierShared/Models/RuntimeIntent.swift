@@ -52,6 +52,7 @@ public struct RuntimeReversePortForwardIntent: Codable, Equatable, Sendable {
     public var targetPeerID: String?
     public var bindIP: String
     public var bindPort: Int
+    public var recentTargetIPv4: String?
     public var targetPort: Int
     public var proto: String
 
@@ -60,6 +61,7 @@ public struct RuntimeReversePortForwardIntent: Codable, Equatable, Sendable {
         targetPeerID: String?,
         bindIP: String,
         bindPort: Int,
+        recentTargetIPv4: String? = nil,
         targetPort: Int,
         proto: String
     ) {
@@ -67,6 +69,7 @@ public struct RuntimeReversePortForwardIntent: Codable, Equatable, Sendable {
         self.targetPeerID = targetPeerID
         self.bindIP = bindIP
         self.bindPort = bindPort
+        self.recentTargetIPv4 = recentTargetIPv4
         self.targetPort = targetPort
         self.proto = proto
     }
@@ -150,5 +153,37 @@ public struct RuntimeIntent: Codable, Equatable, Identifiable, Sendable {
             ))
         }
         return forwards
+    }
+}
+
+public extension PortForwardConfig {
+    static func fingerprint(_ portForwards: [PortForwardConfig]) -> String {
+        portForwards
+            .map(\.fingerprintKey)
+            .sorted()
+            .joined(separator: "\n")
+    }
+
+    var fingerprintKey: String {
+        [
+            proto.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            bind_ip.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            String(bind_port),
+            dst_ip.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            String(dst_port),
+        ].joined(separator: "|")
+    }
+
+    func matchesReverseMaterialization(_ reverse: RuntimeReversePortForwardIntent) -> Bool {
+        guard proto.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == reverse.proto.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              bind_ip.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == reverse.bindIP.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              bind_port == reverse.bindPort,
+              dst_port == reverse.targetPort
+        else { return false }
+
+        guard let recentTargetIPv4 = reverse.recentTargetIPv4?.trimmingCharacters(in: .whitespacesAndNewlines), !recentTargetIPv4.isEmpty else {
+            return true
+        }
+        return dst_ip.trimmingCharacters(in: .whitespacesAndNewlines) == recentTargetIPv4
     }
 }

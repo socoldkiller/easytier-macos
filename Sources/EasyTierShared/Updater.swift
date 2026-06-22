@@ -144,10 +144,10 @@ public enum EasyTierUpdateSelector {
            let current = EasyTierSemanticVersion(currentVersion)
         {
             if remote != current { return remote > current }
-            return numericBuild(remoteBuild) > numericBuild(currentBuild)
+            return compareBuilds(remoteBuild: remoteBuild, currentBuild: currentBuild)
         }
 
-        return numericBuild(remoteBuild) > numericBuild(currentBuild)
+        return compareBuilds(remoteBuild: remoteBuild, currentBuild: currentBuild)
     }
 
     private static func isVersion(_ first: String, newerThan second: String) -> Bool {
@@ -155,8 +155,18 @@ public enum EasyTierUpdateSelector {
         return lhs > rhs
     }
 
-    private static func numericBuild(_ value: String) -> Int64 {
-        Int64(value.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    private static func compareBuilds(remoteBuild: String, currentBuild: String) -> Bool {
+        guard let remote = numericBuild(remoteBuild) else {
+            return false
+        }
+        guard let current = numericBuild(currentBuild) else {
+            return true
+        }
+        return remote > current
+    }
+
+    private static func numericBuild(_ value: String) -> Int64? {
+        Int64(value.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 }
 

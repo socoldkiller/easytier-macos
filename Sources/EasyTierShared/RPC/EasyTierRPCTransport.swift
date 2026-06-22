@@ -311,11 +311,20 @@ extension EasyTierRemoteRPCClient {
     }
 
     public static func parseListPortForwardsResponse(_ response: String) throws -> [PortForwardConfig] {
-        guard let data = response.data(using: .utf8),
-              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let cfgs = json["cfgs"] as? [[String: Any]]
-        else {
-            return []
+        guard let data = response.data(using: .utf8) else {
+            throw EasyTierCoreError.invalidResponse("port forward list response is not valid UTF-8")
+        }
+        let json: Any
+        do {
+            json = try JSONSerialization.jsonObject(with: data)
+        } catch {
+            throw EasyTierCoreError.invalidResponse("port forward list response is not valid JSON: \(error)")
+        }
+        guard let object = json as? [String: Any] else {
+            throw EasyTierCoreError.invalidResponse("port forward list response root is not a JSON object")
+        }
+        guard let cfgs = object["cfgs"] as? [[String: Any]] else {
+            throw EasyTierCoreError.invalidResponse("port forward list response missing 'cfgs' array")
         }
         return try cfgs.map { try parsePortForwardConfigJson($0) }
     }
@@ -329,20 +338,24 @@ extension EasyTierRemoteRPCClient {
         }
 
         let proto = socketType == 1 ? "udp" : "tcp"
-        let bind_ip = parseIPv4Address(from: bindAddr)
-        let bind_port = bindAddr["port"] as? Int ?? 0
-        let dst_ip = parseIPv4Address(from: dstAddr)
-        let dst_port = dstAddr["port"] as? Int ?? 0
+        let bind_ip = try parseIPv4Address(from: bindAddr)
+        guard let bind_port = bindAddr["port"] as? Int else {
+            throw EasyTierCoreError.invalidResponse("port forward bind_addr missing 'port'")
+        }
+        let dst_ip = try parseIPv4Address(from: dstAddr)
+        guard let dst_port = dstAddr["port"] as? Int else {
+            throw EasyTierCoreError.invalidResponse("port forward dst_addr missing 'port'")
+        }
 
         return PortForwardConfig(bind_ip: bind_ip, bind_port: bind_port, dst_ip: dst_ip, dst_port: dst_port, proto: proto)
     }
 
-    private static func parseIPv4Address(from socketAddr: [String: Any]) -> String {
+    private static func parseIPv4Address(from socketAddr: [String: Any]) throws -> String {
         let ipObj = (socketAddr["ip"] as? [String: Any]) ?? socketAddr
         guard let ipv4 = ipObj["Ipv4"] as? [String: Any] ?? ipObj["ipv4"] as? [String: Any],
               let addr = ipv4["addr"] as? Int
         else {
-            return "0.0.0.0"
+            throw EasyTierCoreError.invalidResponse("invalid or missing ipv4 address in socket addr")
         }
         var value = UInt32(truncatingIfNeeded: addr)
         var octets = [UInt8](repeating: 0, count: 4)

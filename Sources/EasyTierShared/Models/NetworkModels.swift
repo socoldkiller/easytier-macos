@@ -388,9 +388,9 @@ public struct NetworkInstanceRunningInfo: Codable, Equatable, Sendable {
         dev_name = try container.decodeIfPresent(String.self, forKey: .dev_name)
         my_node_info = try container.decodeIfPresent(NodeInfo.self, forKey: .my_node_info)
         events = try container.decodeIfPresent([String].self, forKey: .events)
-        routes = container.decodeLossyArray(Route.self, forKey: .routes)
-        peers = container.decodeLossyArray(PeerInfo.self, forKey: .peers)
-        peer_route_pairs = container.decodeLossyArray(PeerRoutePair.self, forKey: .peer_route_pairs)
+        routes = try container.decodeLossyArray(Route.self, forKey: .routes)
+        peers = try container.decodeLossyArray(PeerInfo.self, forKey: .peers)
+        peer_route_pairs = try container.decodeLossyArray(PeerRoutePair.self, forKey: .peer_route_pairs)
         running = try container.decodeIfPresent(Bool.self, forKey: .running)
         error_msg = try container.decodeIfPresent(String.self, forKey: .error_msg)
     }
@@ -440,7 +440,7 @@ public struct NodeInfo: Codable, Equatable, Sendable {
         hostname = try container.decodeStringIfPresent("hostname")
         version = try container.decodeStringIfPresent("version")
         peer_id = container.decodeFlexibleInt(forKeys: "peer_id", "peerId")
-        listeners = container.decodeLossyArray(URLValue.self, forKeys: "listeners")
+        listeners = try container.decodeLossyArray(URLValue.self, forKeys: "listeners")
         stun_info = try container.decodeIfPresent(StunInfo.self, forKeys: "stun_info", "stunInfo")
         vpn_portal_cfg = try container.decodeStringIfPresent("vpn_portal_cfg", "vpnPortalCfg")
         feature_flag = try container.decodeIfPresent(PeerFeatureFlag.self, forKeys: "feature_flag", "featureFlag")
@@ -638,7 +638,7 @@ public struct PeerInfo: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: AnyCodingKey.self)
         peer_id = container.decodeFlexibleInt(forKeys: "peer_id", "peerId")
-        conns = container.decodeLossyArray(PeerConnInfo.self, forKeys: "conns")
+        conns = try container.decodeLossyArray(PeerConnInfo.self, forKeys: "conns")
         default_conn_id = container.decodeFlexibleString(forKeys: "default_conn_id", "defaultConnId")
     }
 }
@@ -889,7 +889,7 @@ public extension NetworkMemberStatus {
         let peerID = route?.peer_id ?? peer?.peer_id
 
         self.init(
-            id: "peer-\(peerID.map(String.init) ?? UUID().uuidString)",
+            id: "peer-\(peerID.map(String.init) ?? "unknown")",
             isLocal: false,
             peerID: peerID.map(String.init) ?? "-",
             instanceID: route?.inst_id?.nilIfEmpty,
@@ -925,12 +925,14 @@ public extension NodeInfo {
 
 public extension PeerInfo {
     var trafficTotals: (txBytes: Int64, rxBytes: Int64) {
-        (conns ?? []).reduce((txBytes: 0, rxBytes: 0)) { partial, conn in
-            (
-                partial.txBytes + Int64(conn.stats?.tx_bytes ?? 0),
-                partial.rxBytes + Int64(conn.stats?.rx_bytes ?? 0)
-            )
+        let validStats: [PeerConnStats] = (conns ?? []).compactMap { $0.stats }
+        var tx: Int64 = 0
+        var rx: Int64 = 0
+        for stats in validStats {
+            tx += Int64(stats.tx_bytes ?? 0)
+            rx += Int64(stats.rx_bytes ?? 0)
         }
+        return (tx, rx)
     }
 
     var latencyLabel: String {
@@ -1045,8 +1047,9 @@ private extension KeyedDecodingContainer {
         return nil
     }
 
-    func decodeLossyArray<T: Decodable>(_ type: T.Type, forKey key: Key) -> [T]? {
-        guard var container = try? nestedUnkeyedContainer(forKey: key) else { return nil }
+    func decodeLossyArray<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> [T]? {
+        guard contains(key) else { return nil }
+        var container = try nestedUnkeyedContainer(forKey: key)
         var output: [T] = []
         while !container.isAtEnd {
             if let value = try? container.decode(T.self) {
@@ -1145,9 +1148,11 @@ private extension KeyedDecodingContainer where Key == AnyCodingKey {
         }
     }
 
-    func decodeLossyArray<T: Decodable>(_ type: T.Type, forKeys keys: String...) -> [T]? {
+    func decodeLossyArray<T: Decodable>(_ type: T.Type, forKeys keys: String...) throws -> [T]? {
         for keyName in keys {
-            if let value = decodeLossyArray(type, forKey: key(keyName)) { return value }
+            let k = key(keyName)
+            if !contains(k) { continue }
+            return try decodeLossyArray(type, forKey: k)
         }
         return nil
     }
