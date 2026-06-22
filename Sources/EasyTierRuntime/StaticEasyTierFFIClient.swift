@@ -20,7 +20,9 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
     }
 
     public func run(toml: String) throws {
-        try Self.ffiCall(run_network_instance, withCString: toml)
+        var error: UnsafePointer<CChar>?
+        let result = toml.withCString { cfg in run_network_instance(cfg, &error) }
+        try Self.throwOnError(result, error: error)
     }
 
     public func stop(instanceNames: [String]) async throws {
@@ -29,11 +31,11 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
 
     public func stopSync(instanceNames: [String]) throws {
         guard !instanceNames.isEmpty else { return }
-        let stopped = Set(instanceNames)
-        let retained = try collectNetworkInfoPayloadsSync()
-            .map(\.key)
-            .filter { !stopped.contains($0) }
-        try retainSync(instanceNames: retained)
+        try withCStringArray(instanceNames) { names in
+            var error: UnsafePointer<CChar>?
+            let result = stop_network_instance(names.baseAddress, UInt(names.count), &error)
+            try Self.throwOnError(result, error: error)
+        }
     }
 
     public func retain(instanceNames: [String]) async throws {
@@ -42,8 +44,9 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
 
     public func retainSync(instanceNames: [String]) throws {
         try withCStringArray(instanceNames) { names in
-            let result = retain_network_instance(names.baseAddress, UInt(names.count))
-            if result != 0 { throw Self.lastError() }
+            var error: UnsafePointer<CChar>?
+            let result = retain_network_instance(names.baseAddress, UInt(names.count), &error)
+            try Self.throwOnError(result, error: error)
         }
     }
 
@@ -84,24 +87,25 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
     }
 
     public func configureRPCPortalSync(_ rpcPortal: String?, whitelist: [String]? = nil) throws {
+        var error: UnsafePointer<CChar>?
         let result: CInt
         if let rpcPortal {
             let whitelist = whitelist?.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
             result = rpcPortal.withCString { pointer in
                 guard let whitelist, !whitelist.isEmpty else {
-                    return configure_rpc_portal(1, pointer, nil, 0)
+                    return configure_rpc_portal(1, pointer, nil, 0, &error)
                 }
                 return Self.withCStringArray(whitelist) { pointers in
                     var pointers = pointers
                     return pointers.withUnsafeMutableBufferPointer { buffer in
-                        configure_rpc_portal(1, pointer, buffer.baseAddress, UInt(buffer.count))
+                        configure_rpc_portal(1, pointer, buffer.baseAddress, UInt(buffer.count), &error)
                     }
                 }
             }
         } else {
-            result = configure_rpc_portal(0, nil, nil, 0)
+            result = configure_rpc_portal(0, nil, nil, 0, &error)
         }
-        if result != 0 { throw Self.lastError() }
+        try Self.throwOnError(result, error: error)
     }
 
     private static func withCStringArray<Result>(_ strings: [String], _ body: ([UnsafePointer<CChar>?]) -> Result) -> Result {
@@ -116,19 +120,21 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
     }
 
     public func connectRPCClientSync(clientID: String, url: URL) throws {
+        var error: UnsafePointer<CChar>?
         let result = clientID.withCString { clientIDPointer in
             url.absoluteString.withCString { urlPointer in
-                connect_rpc_client(clientIDPointer, urlPointer)
+                connect_rpc_client(clientIDPointer, urlPointer, &error)
             }
         }
-        if result != 0 { throw Self.lastError() }
+        try Self.throwOnError(result, error: error)
     }
 
     public func disconnectRPCClientSync(clientID: String) throws {
+        var error: UnsafePointer<CChar>?
         let result = clientID.withCString { clientIDPointer in
-            disconnect_rpc_client(clientIDPointer)
+            disconnect_rpc_client(clientIDPointer, &error)
         }
-        if result != 0 { throw Self.lastError() }
+        try Self.throwOnError(result, error: error)
     }
 
     public func connectRPCClient(clientID: String, url: URL) async throws {
@@ -141,16 +147,17 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
 
     public func callJSONRPC(clientID: String, service: String, method: String, domain: String?, payload: String) throws -> String {
         var output: UnsafePointer<CChar>?
+        var error: UnsafePointer<CChar>?
         let result = withCStringTuple(clientID, service, method, payload) { cClientID, cService, cMethod, cPayload in
             if let domain {
                 return domain.withCString { cDomain in
-                    call_json_rpc(cClientID, cService, cMethod, cDomain, cPayload, &output)
+                    call_json_rpc(cClientID, cService, cMethod, cDomain, cPayload, &output, &error)
                 }
             } else {
-                return call_json_rpc(cClientID, cService, cMethod, nil, cPayload, &output)
+                return call_json_rpc(cClientID, cService, cMethod, nil, cPayload, &output, &error)
             }
         }
-        if result != 0 { throw Self.lastError() }
+        try Self.throwOnError(result, error: error)
         guard let output else {
             throw EasyTierCoreError.invalidResponse("JSON-RPC FFI returned a null response")
         }
@@ -183,24 +190,43 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
     }
 
     public static func validateDirect(toml: String) throws {
-        try ffiCall(parse_config, withCString: toml)
+        var error: UnsafePointer<CChar>?
+        let result = toml.withCString { cfg in parse_config(cfg, &error) }
+        try throwOnError(result, error: error)
     }
 
     private static let defaultRPCClientID = "default"
 
-    private static func ffiCall(_ body: (UnsafePointer<CChar>?) -> CInt, withCString value: String) throws {
-        let result = value.withCString { body($0) }
-        if result != 0 { throw Self.lastError() }
+    /// Convert an FFI result + out-error pair into a thrown `EasyTierCoreError`.
+    /// On success the error pointer is expected to be null and is left untouched.
+    /// On failure the error pointer owns a `CString` that is released here.
+    private static func throwOnError(_ result: CInt, error: UnsafePointer<CChar>?) throws {
+        if result == 0 {
+            if let error { free_string(error) }
+            return
+        }
+        if let error {
+            defer { free_string(error) }
+            throw EasyTierCoreError.operationFailed(String(cString: error))
+        }
+        throw Self.lastError()
     }
 
-    private func readPairs(command: (UnsafeMutablePointer<KeyValuePair>?, UInt) -> CInt) throws -> [(key: String, value: String)] {
+    private func readPairs(command: (UnsafeMutablePointer<KeyValuePair>?, UInt, UnsafeMutablePointer<UnsafePointer<CChar>?>?) -> CInt) throws -> [(key: String, value: String)] {
         var capacity = 32
         while true {
             var pairs = Array(repeating: KeyValuePair(key: nil, value: nil), count: capacity)
+            var error: UnsafePointer<CChar>?
             let count = pairs.withUnsafeMutableBufferPointer { buffer in
-                command(buffer.baseAddress, UInt(capacity))
+                command(buffer.baseAddress, UInt(capacity), &error)
             }
-            if count < 0 { throw Self.lastError() }
+            if count < 0 {
+                if let error {
+                    defer { free_string(error) }
+                    throw EasyTierCoreError.operationFailed(String(cString: error))
+                }
+                throw Self.lastError()
+            }
             if count < capacity {
                 let returnedPairs = Array(pairs.prefix(Int(count)))
                 defer {

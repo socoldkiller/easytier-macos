@@ -358,9 +358,12 @@ public struct NetworkInstanceRunningInfo: Codable, Equatable, Sendable {
     public var peer_route_pairs: [PeerRoutePair]?
     public var running: Bool?
     public var error_msg: String?
+    /// UUID injected by the FFI layer so callers can match running instances
+    /// against `NetworkConfig.instance_id` without relying on the instance name.
+    public var instance_id: String?
 
     enum CodingKeys: String, CodingKey {
-        case dev_name, my_node_info, events, routes, peers, peer_route_pairs, running, error_msg
+        case dev_name, my_node_info, events, routes, peers, peer_route_pairs, running, error_msg, instance_id
     }
 
     public init(
@@ -371,7 +374,8 @@ public struct NetworkInstanceRunningInfo: Codable, Equatable, Sendable {
         peers: [PeerInfo]? = nil,
         peer_route_pairs: [PeerRoutePair]? = nil,
         running: Bool? = nil,
-        error_msg: String? = nil
+        error_msg: String? = nil,
+        instance_id: String? = nil
     ) {
         self.dev_name = dev_name
         self.my_node_info = my_node_info
@@ -381,6 +385,7 @@ public struct NetworkInstanceRunningInfo: Codable, Equatable, Sendable {
         self.peer_route_pairs = peer_route_pairs
         self.running = running
         self.error_msg = error_msg
+        self.instance_id = instance_id
     }
 
     public init(from decoder: Decoder) throws {
@@ -393,6 +398,7 @@ public struct NetworkInstanceRunningInfo: Codable, Equatable, Sendable {
         peer_route_pairs = try container.decodeLossyArray(PeerRoutePair.self, forKey: .peer_route_pairs)
         running = try container.decodeIfPresent(Bool.self, forKey: .running)
         error_msg = try container.decodeIfPresent(String.self, forKey: .error_msg)
+        instance_id = try container.decodeIfPresent(String.self, forKey: .instance_id)
     }
 }
 

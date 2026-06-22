@@ -59,9 +59,12 @@ static ERROR_MSG: Lazy<Mutex<Vec<u8>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
 struct RpcEndpoint {
     url: String,
-    parsed_url: Url,
     limit: Arc<Semaphore>,
     state: Mutex<RpcEndpointState>,
+    /// Persistent `StandAloneClient` reused across `call_json_rpc` invocations so that
+    /// TCP connections are kept alive between calls instead of being re-established.
+    /// Guarded by a tokio mutex because `scoped_client` is async and needs `&mut self`.
+    client: tokio::sync::Mutex<StandAloneClient<TcpTunnelConnector>>,
 }
 
 #[derive(Default)]
@@ -81,6 +84,7 @@ enum RpcFailureKind {
 
 #[derive(Debug)]
 struct RpcCallError {
+    #[allow(dead_code)]
     kind: RpcFailureKind,
     message: String,
 }
@@ -98,9 +102,11 @@ impl RpcEndpoint {
     fn new(url: String, parsed_url: Url) -> Self {
         Self {
             url,
-            parsed_url,
             limit: Arc::new(Semaphore::new(RPC_MAX_CONCURRENT_PER_ENDPOINT)),
             state: Mutex::new(RpcEndpointState::default()),
+            client: tokio::sync::Mutex::new(StandAloneClient::new(TcpTunnelConnector::new(
+                parsed_url,
+            ))),
         }
     }
 
@@ -163,6 +169,39 @@ fn clear_error_msg() {
     ERROR_MSG.lock().unwrap().clear();
 }
 
+/// Write an error message into the caller-provided out-param.
+///
+/// On success the caller observes a null pointer; on failure the caller owns the returned
+/// `CString` and must release it with `free_string`. The global `ERROR_MSG` is also updated
+/// as a compatibility fallback for callers that did not pass an out-param.
+///
+/// # Safety
+/// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
+unsafe fn write_error_out(out_error: *mut *const c_char, message: &str) {
+    if !out_error.is_null() {
+        let sanitized = message.replace('\0', "\\0");
+        let cstr = CString::new(sanitized.as_bytes())
+            .unwrap_or_else(|_| CString::new("EasyTier FFI error contained an invalid NUL byte").unwrap());
+        // SAFETY: `out_error` was checked for null and points to caller-owned storage.
+        unsafe {
+            *out_error = cstr.into_raw();
+        }
+    }
+}
+
+/// Clear the out-param error slot on success.
+///
+/// # Safety
+/// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
+unsafe fn clear_error_out(out_error: *mut *const c_char) {
+    if !out_error.is_null() {
+        // SAFETY: `out_error` was checked for null and points to caller-owned storage.
+        unsafe {
+            *out_error = std::ptr::null();
+        }
+    }
+}
+
 unsafe fn cstr_arg(ptr: *const c_char, name: &str) -> Result<String, String> {
     if ptr.is_null() {
         return Err(format!("{name} must not be null"));
@@ -187,13 +226,26 @@ fn write_cstring_out(value: String, out: *mut *const c_char) -> Result<(), Strin
     Ok(())
 }
 
-fn ffi_result<T>(operation: impl FnOnce() -> Result<T, String>) -> c_int {
+/// Run `operation` and map its result to the FFI convention:
+/// - `Ok(())` → returns 0, clears `out_error` and the global `ERROR_MSG`
+/// - `Err(e)` → returns -1, writes `e` into `out_error` (if non-null) and the global `ERROR_MSG`
+///
+/// # Safety
+/// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
+unsafe fn ffi_result_with_error(
+    out_error: *mut *const c_char,
+    operation: impl FnOnce() -> Result<(), String>,
+) -> c_int {
     match operation() {
-        Ok(_) => {
+        Ok(()) => {
+            // SAFETY: caller owns `out_error` storage; null is a valid sentinel for "no error".
+            unsafe { clear_error_out(out_error) };
             clear_error_msg();
             0
         }
         Err(error) => {
+            // SAFETY: caller owns `out_error` storage; `write_error_out` checks for null.
+            unsafe { write_error_out(out_error, &error) };
             set_error_msg(&error);
             -1
         }
@@ -366,7 +418,10 @@ async fn call_rpc_by_service(
     let _endpoint_permit =
         acquire_rpc_permit(endpoint.limit.clone(), "endpoint RPC", RPC_QUEUE_TIMEOUT).await?;
 
-    let mut client = StandAloneClient::new(TcpTunnelConnector::new(endpoint.parsed_url.clone()));
+    // Reuse the persistent `StandAloneClient` stored on the endpoint. `scoped_client`
+    // internally reconnects only when the previous tunnel errored or was never
+    // established, so consecutive calls share the same TCP connection.
+    let mut client_guard = endpoint.client.lock().await;
 
     macro_rules! call_service {
         ($factory:ty) => {{
@@ -378,7 +433,7 @@ async fn call_rpc_by_service(
             .await?;
             let stub = match timeout(
                 RPC_CONNECT_TIMEOUT,
-                client.scoped_client::<$factory>(domain),
+                client_guard.scoped_client::<$factory>(domain),
             )
             .await
             {
@@ -456,24 +511,6 @@ async fn call_rpc_by_service(
 }
 
 /// # Safety
-/// `inst_name` must be a valid NUL-terminated C string pointer.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn set_tun_fd(inst_name: *const c_char, fd: c_int) -> c_int {
-    ffi_result(|| {
-        // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
-        let inst_name = unsafe { cstr_arg(inst_name, "inst_name") }?;
-        let inst_id = INSTANCE_NAME_ID_MAP
-            .get(&inst_name)
-            .map(|entry| *entry.value())
-            .ok_or_else(|| "instance does not exist".to_string())?;
-
-        INSTANCE_MANAGER
-            .set_tun_fd(&inst_id, fd)
-            .map_err(|e| format!("failed to set TUN fd: {e}"))
-    })
-}
-
-/// # Safety
 /// `out` must point to writable storage for one C string pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn get_error_msg(out: *mut *const c_char) {
@@ -513,89 +550,152 @@ pub extern "C" fn free_string(s: *const c_char) {
 
 /// # Safety
 /// `cfg_str` must be a valid NUL-terminated C string pointer.
+/// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn parse_config(cfg_str: *const c_char) -> c_int {
-    ffi_result(|| {
-        // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
-        let cfg_str = unsafe { cstr_arg(cfg_str, "cfg_str") }?;
-        TomlConfigLoader::new_from_str(&cfg_str)
-            .map(|_| ())
-            .map_err(|e| format!("failed to parse config: {e:?}"))
-    })
+pub unsafe extern "C" fn parse_config(
+    cfg_str: *const c_char,
+    out_error: *mut *const c_char,
+) -> c_int {
+    // SAFETY: `out_error` is caller-owned storage or null.
+    unsafe {
+        ffi_result_with_error(out_error, || {
+            // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
+            let cfg_str = cstr_arg(cfg_str, "cfg_str")?;
+            TomlConfigLoader::new_from_str(&cfg_str)
+                .map(|_| ())
+                .map_err(|e| format!("failed to parse config: {e:?}"))
+        })
+    }
 }
 
 /// # Safety
 /// `cfg_str` must be a valid NUL-terminated C string pointer.
+/// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn run_network_instance(cfg_str: *const c_char) -> c_int {
-    ffi_result(|| {
-        // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
-        let cfg_str = unsafe { cstr_arg(cfg_str, "cfg_str") }?;
-        let cfg = TomlConfigLoader::new_from_str(&cfg_str)
-            .map_err(|e| format!("failed to parse config: {e}"))?;
+pub unsafe extern "C" fn run_network_instance(
+    cfg_str: *const c_char,
+    out_error: *mut *const c_char,
+) -> c_int {
+    // SAFETY: `out_error` is caller-owned storage or null.
+    unsafe {
+        ffi_result_with_error(out_error, || {
+            // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
+            let cfg_str = cstr_arg(cfg_str, "cfg_str")?;
+            let cfg = TomlConfigLoader::new_from_str(&cfg_str)
+                .map_err(|e| format!("failed to parse config: {e}"))?;
 
-        let inst_name = cfg.get_inst_name();
-        if INSTANCE_NAME_ID_MAP.contains_key(&inst_name) {
-            return Err("instance already exists".to_string());
-        }
+            let inst_name = cfg.get_inst_name();
+            if INSTANCE_NAME_ID_MAP.contains_key(&inst_name) {
+                return Err("instance already exists".to_string());
+            }
 
-        let instance_id = INSTANCE_MANAGER
-            .run_network_instance(cfg, false, ConfigFileControl::STATIC_CONFIG)
-            .map_err(|e| format!("failed to start instance: {e}"))?;
+            let instance_id = INSTANCE_MANAGER
+                .run_network_instance(cfg, false, ConfigFileControl::STATIC_CONFIG)
+                .map_err(|e| format!("failed to start instance: {e}"))?;
 
-        INSTANCE_NAME_ID_MAP.insert(inst_name, instance_id);
-        Ok(())
-    })
+            INSTANCE_NAME_ID_MAP.insert(inst_name, instance_id);
+            Ok(())
+        })
+    }
 }
 
 /// # Safety
 /// When `length > 0`, `inst_names` must point to an array of valid NUL-terminated C strings.
+/// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn retain_network_instance(
     inst_names: *const *const c_char,
     length: usize,
+    out_error: *mut *const c_char,
 ) -> c_int {
-    ffi_result(|| {
-        if length == 0 {
+    // SAFETY: `out_error` is caller-owned storage or null.
+    unsafe {
+        ffi_result_with_error(out_error, || {
+            if length == 0 {
+                INSTANCE_MANAGER
+                    .retain_network_instance(Vec::new())
+                    .map_err(|e| format!("failed to retain instances: {e}"))?;
+                INSTANCE_NAME_ID_MAP.clear();
+                return Ok(());
+            }
+
+            if inst_names.is_null() {
+                return Err("inst_names must not be null when length is greater than zero".to_string());
+            }
+            // SAFETY: `inst_names` is checked for null and caller promises `length` valid entries.
+            let inst_names = std::slice::from_raw_parts(inst_names, length)
+                .iter()
+                .enumerate()
+                .map(|(index, &name)| {
+                    // SAFETY: Each entry is a caller-owned C string pointer; null/UTF-8 are checked.
+                    cstr_arg(name, &format!("inst_names[{index}]"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let inst_ids: Vec<uuid::Uuid> = inst_names
+                .iter()
+                .filter_map(|name| INSTANCE_NAME_ID_MAP.get(name).map(|id| *id))
+                .collect();
+
             INSTANCE_MANAGER
-                .retain_network_instance(Vec::new())
+                .retain_network_instance(inst_ids)
                 .map_err(|e| format!("failed to retain instances: {e}"))?;
-            INSTANCE_NAME_ID_MAP.clear();
-            return Ok(());
-        }
+            INSTANCE_NAME_ID_MAP.retain(|k, _| inst_names.contains(k));
+            Ok(())
+        })
+    }
+}
 
-        if inst_names.is_null() {
-            return Err("inst_names must not be null when length is greater than zero".to_string());
-        }
-        // SAFETY: `inst_names` is checked for null and caller promises `length` valid entries.
-        let inst_names = unsafe { std::slice::from_raw_parts(inst_names, length) }
-            .iter()
-            .enumerate()
-            .map(|(index, &name)| {
-                // SAFETY: Each entry is a caller-owned C string pointer; null/UTF-8 are checked.
-                unsafe { cstr_arg(name, &format!("inst_names[{index}]")) }
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+/// # Safety
+/// When `length > 0`, `inst_names` must point to an array of valid NUL-terminated C strings.
+/// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stop_network_instance(
+    inst_names: *const *const c_char,
+    length: usize,
+    out_error: *mut *const c_char,
+) -> c_int {
+    // SAFETY: `out_error` is caller-owned storage or null.
+    unsafe {
+        ffi_result_with_error(out_error, || {
+            if length == 0 {
+                return Ok(());
+            }
+            if inst_names.is_null() {
+                return Err("inst_names must not be null when length is greater than zero".to_string());
+            }
+            // SAFETY: `inst_names` is checked for null and caller promises `length` valid entries.
+            let inst_names = std::slice::from_raw_parts(inst_names, length)
+                .iter()
+                .enumerate()
+                .map(|(index, &name)| {
+                    // SAFETY: Each entry is a caller-owned C string pointer; null/UTF-8 are checked.
+                    cstr_arg(name, &format!("inst_names[{index}]"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
 
-        let inst_ids: Vec<uuid::Uuid> = inst_names
-            .iter()
-            .filter_map(|name| INSTANCE_NAME_ID_MAP.get(name).map(|id| *id))
-            .collect();
+            let inst_ids: Vec<uuid::Uuid> = inst_names
+                .iter()
+                .filter_map(|name| INSTANCE_NAME_ID_MAP.get(name).map(|id| *id))
+                .collect();
 
-        INSTANCE_MANAGER
-            .retain_network_instance(inst_ids)
-            .map_err(|e| format!("failed to retain instances: {e}"))?;
-        INSTANCE_NAME_ID_MAP.retain(|k, _| inst_names.contains(k));
-        Ok(())
-    })
+            INSTANCE_MANAGER
+                .delete_network_instance(inst_ids)
+                .map_err(|e| format!("failed to stop instances: {e}"))?;
+            INSTANCE_NAME_ID_MAP.retain(|k, _| !inst_names.contains(k));
+            Ok(())
+        })
+    }
 }
 
 /// # Safety
 /// `infos` must point to writable storage for `max_length` `KeyValuePair` values.
+/// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn collect_network_infos(
     infos: *mut KeyValuePair,
     max_length: usize,
+    out_error: *mut *const c_char,
 ) -> c_int {
     let result = || -> Result<c_int, String> {
         if max_length == 0 {
@@ -620,7 +720,15 @@ pub unsafe extern "C" fn collect_network_infos(
             let Some(key) = INSTANCE_MANAGER.get_instance_name(instance_id) else {
                 continue;
             };
-            let value = serde_json::to_string(&value)
+            // Inject the UUID `instance_id` into the JSON value so the Swift side can
+            // match running instances against `NetworkConfig.instance_id` (a UUID)
+            // instead of relying on the instance name, which may collide or change.
+            let mut json_value = serde_json::to_value(value)
+                .map_err(|e| format!("failed to serialize instance info: {e}"))?;
+            if let Some(obj) = json_value.as_object_mut() {
+                obj.insert("instance_id".to_string(), serde_json::Value::String(instance_id.to_string()));
+            }
+            let value = serde_json::to_string(&json_value)
                 .map_err(|e| format!("failed to serialize instance info: {e}"))?;
 
             infos[index] = KeyValuePair {
@@ -639,10 +747,14 @@ pub unsafe extern "C" fn collect_network_infos(
 
     match result() {
         Ok(count) => {
+            // SAFETY: caller owns `out_error` storage; null is a valid sentinel for "no error".
+            unsafe { clear_error_out(out_error) };
             clear_error_msg();
             count
         }
         Err(error) => {
+            // SAFETY: caller owns `out_error` storage; `write_error_out` checks for null.
+            unsafe { write_error_out(out_error, &error) };
             set_error_msg(&error);
             -1
         }
@@ -652,85 +764,98 @@ pub unsafe extern "C" fn collect_network_infos(
 /// # Safety
 /// When `enabled != 0`, `listen_addr` must be a valid NUL-terminated C string pointer.
 /// When `whitelist_count > 0`, `whitelist` must point to an array of valid C string pointers.
+/// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn configure_rpc_portal(
     enabled: c_int,
     listen_addr: *const c_char,
     whitelist: *const *const c_char,
     whitelist_count: usize,
+    out_error: *mut *const c_char,
 ) -> c_int {
-    ffi_result(|| {
-        let mut slot = RPC_PORTAL_SERVER
-            .lock()
-            .map_err(|_| "RPC portal lock is poisoned".to_string())?;
-        *slot = None;
+    // SAFETY: `out_error` is caller-owned storage or null.
+    unsafe {
+        ffi_result_with_error(out_error, || {
+            let mut slot = RPC_PORTAL_SERVER
+                .lock()
+                .map_err(|_| "RPC portal lock is poisoned".to_string())?;
+            *slot = None;
 
-        if enabled == 0 {
-            return Ok(());
-        }
+            if enabled == 0 {
+                return Ok(());
+            }
 
-        // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
-        let listen_addr = unsafe { cstr_arg(listen_addr, "listen_addr") }?;
-        let listen_addr = normalize_rpc_portal(&listen_addr)?;
+            // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
+            let listen_addr = cstr_arg(listen_addr, "listen_addr")?;
+            let listen_addr = normalize_rpc_portal(&listen_addr)?;
 
-        if whitelist_count > 0 && whitelist.is_null() {
-            return Err(
-                "whitelist must not be null when whitelist_count is greater than zero".to_string(),
-            );
-        }
-        let whitelist = if whitelist_count == 0 {
-            None
-        } else {
-            // SAFETY: `whitelist` is checked for null and caller promises `whitelist_count` entries.
-            let values = unsafe { std::slice::from_raw_parts(whitelist, whitelist_count) }
-                .iter()
-                .enumerate()
-                .map(|(index, &value)| {
-                    // SAFETY: Each entry is a caller-owned C string pointer; null/UTF-8 are checked.
-                    unsafe { cstr_arg(value, &format!("whitelist[{index}]")) }?
-                        .parse()
-                        .map_err(|e| format!("invalid RPC portal whitelist entry #{index}: {e}"))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            Some(values)
-        };
+            if whitelist_count > 0 && whitelist.is_null() {
+                return Err(
+                    "whitelist must not be null when whitelist_count is greater than zero".to_string(),
+                );
+            }
+            let whitelist = if whitelist_count == 0 {
+                None
+            } else {
+                // SAFETY: `whitelist` is checked for null and caller promises `whitelist_count` entries.
+                let values = std::slice::from_raw_parts(whitelist, whitelist_count)
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &value)| {
+                        // SAFETY: Each entry is a caller-owned C string pointer; null/UTF-8 are checked.
+                        cstr_arg(value, &format!("whitelist[{index}]"))?
+                            .parse()
+                            .map_err(|e| format!("invalid RPC portal whitelist entry #{index}: {e}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Some(values)
+            };
 
-        let server = RPC_RUNTIME.block_on(async {
-            let server = ApiRpcServer::new(Some(listen_addr), whitelist, INSTANCE_MANAGER.clone())
-                .map_err(|e| format!("failed to create RPC portal: {e}"))?;
-            server
-                .serve()
-                .await
-                .map_err(|e| format!("failed to start RPC portal: {e}"))
-        })?;
-        *slot = Some(server);
-        Ok(())
-    })
+            let server = RPC_RUNTIME.block_on(async {
+                let server = ApiRpcServer::new(Some(listen_addr), whitelist, INSTANCE_MANAGER.clone())
+                    .map_err(|e| format!("failed to create RPC portal: {e}"))?;
+                server
+                    .serve()
+                    .await
+                    .map_err(|e| format!("failed to start RPC portal: {e}"))
+            })?;
+            *slot = Some(server);
+            Ok(())
+        })
+    }
 }
 
 /// # Safety
 /// `client_id` and `url` must be valid NUL-terminated C string pointers.
+/// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn connect_rpc_client(client_id: *const c_char, url: *const c_char) -> c_int {
-    ffi_result(|| {
-        // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
-        let client_id = unsafe { cstr_arg(client_id, "client_id") }?;
-        // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
-        let url_string = unsafe { cstr_arg(url, "url") }?;
-        if client_id.trim().is_empty() {
-            return Err("client_id must not be empty".to_string());
-        }
-        register_rpc_client(client_id, url_string)
-    })
+pub unsafe extern "C" fn connect_rpc_client(
+    client_id: *const c_char,
+    url: *const c_char,
+    out_error: *mut *const c_char,
+) -> c_int {
+    // SAFETY: `out_error` is caller-owned storage or null.
+    unsafe {
+        ffi_result_with_error(out_error, || {
+            // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
+            let client_id = cstr_arg(client_id, "client_id")?;
+            // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
+            let url_string = cstr_arg(url, "url")?;
+            if client_id.trim().is_empty() {
+                return Err("client_id must not be empty".to_string());
+            }
+            register_rpc_client(client_id, url_string)
+        })
+    }
 }
 
 fn register_rpc_client(client_id: String, url_string: String) -> Result<(), String> {
     let url = validate_rpc_url(&url_string)?;
 
-    if let Some(entry) = RPC_CLIENTS.get(&client_id) {
-        if entry.url == url_string {
-            return entry.check_cooldown();
-        }
+    if let Some(entry) = RPC_CLIENTS.get(&client_id)
+        && entry.url == url_string
+    {
+        return entry.check_cooldown();
     }
 
     RPC_CLIENTS.insert(client_id, Arc::new(RpcEndpoint::new(url_string, url)));
@@ -739,14 +864,21 @@ fn register_rpc_client(client_id: String, url_string: String) -> Result<(), Stri
 
 /// # Safety
 /// `client_id` must be a valid NUL-terminated C string pointer.
+/// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn disconnect_rpc_client(client_id: *const c_char) -> c_int {
-    ffi_result(|| {
-        // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
-        let client_id = unsafe { cstr_arg(client_id, "client_id") }?;
-        disconnect_rpc_client_inner(&client_id);
-        Ok(())
-    })
+pub unsafe extern "C" fn disconnect_rpc_client(
+    client_id: *const c_char,
+    out_error: *mut *const c_char,
+) -> c_int {
+    // SAFETY: `out_error` is caller-owned storage or null.
+    unsafe {
+        ffi_result_with_error(out_error, || {
+            // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
+            let client_id = cstr_arg(client_id, "client_id")?;
+            disconnect_rpc_client_inner(&client_id);
+            Ok(())
+        })
+    }
 }
 
 fn disconnect_rpc_client_inner(client_id: &str) {
@@ -756,6 +888,8 @@ fn disconnect_rpc_client_inner(client_id: &str) {
 /// # Safety
 /// String pointers must be valid NUL-terminated C strings. `out_json` must point to writable
 /// storage for one C string pointer and must be released by calling `free_string`.
+/// `out_error` must point to caller-owned storage for one `*const c_char`, or be null;
+/// on failure it owns a `CString` that must be released with `free_string`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn call_json_rpc(
     client_id: *const c_char,
@@ -764,33 +898,35 @@ pub unsafe extern "C" fn call_json_rpc(
     domain: *const c_char,
     payload_json: *const c_char,
     out_json: *mut *const c_char,
+    out_error: *mut *const c_char,
 ) -> c_int {
-    ffi_result(|| {
-        if !out_json.is_null() {
-            // SAFETY: `out_json` was checked for null and points to caller-owned storage.
-            unsafe {
+    // SAFETY: `out_error` is caller-owned storage or null.
+    unsafe {
+        ffi_result_with_error(out_error, || {
+            if !out_json.is_null() {
+                // SAFETY: `out_json` was checked for null and points to caller-owned storage.
                 *out_json = std::ptr::null();
             }
-        }
 
-        // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
-        let client_id = unsafe { cstr_arg(client_id, "client_id") }?;
-        // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
-        let service_name = unsafe { cstr_arg(service_name, "service_name") }?;
-        // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
-        let method_name = unsafe { cstr_arg(method_name, "method_name") }?;
-        let domain = if domain.is_null() {
-            String::new()
-        } else {
             // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
-            unsafe { cstr_arg(domain, "domain") }?
-        };
-        // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
-        let payload_json = unsafe { cstr_arg(payload_json, "payload_json") }?;
-        let response_json =
-            call_json_rpc_inner(client_id, service_name, method_name, domain, payload_json)?;
-        write_cstring_out(response_json, out_json)
-    })
+            let client_id = cstr_arg(client_id, "client_id")?;
+            // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
+            let service_name = cstr_arg(service_name, "service_name")?;
+            // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
+            let method_name = cstr_arg(method_name, "method_name")?;
+            let domain = if domain.is_null() {
+                String::new()
+            } else {
+                // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
+                cstr_arg(domain, "domain")?
+            };
+            // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
+            let payload_json = cstr_arg(payload_json, "payload_json")?;
+            let response_json =
+                call_json_rpc_inner(client_id, service_name, method_name, domain, payload_json)?;
+            write_cstring_out(response_json, out_json)
+        })
+    }
 }
 
 fn call_json_rpc_inner(
@@ -960,17 +1096,28 @@ mod tests {
 
     #[test]
     fn c_abi_null_pointer_returns_error() {
-        // SAFETY: This intentionally passes a null pointer to exercise the FFI guard.
-        let result = unsafe { parse_config(std::ptr::null()) };
-        assert_eq!(result, -1);
-
         let mut error: *const c_char = std::ptr::null();
-        // SAFETY: `error` is valid writable storage for one pointer.
-        unsafe { get_error_msg(&mut error) };
+        // SAFETY: This intentionally passes a null pointer to exercise the FFI guard.
+        // `error` is valid writable storage for one pointer.
+        let result = unsafe { parse_config(std::ptr::null(), &mut error) };
+        assert_eq!(result, -1);
         assert!(!error.is_null());
         let message = unsafe { CStr::from_ptr(error) }.to_string_lossy();
         assert!(message.contains("cfg_str must not be null"));
         free_string(error);
+
+        // Success path should clear the out-error slot.
+        let valid_cfg = "instance_name = \"t\"\nnetwork_name = \"n\"\n";
+        let mut error2: *const c_char = std::ptr::null();
+        // SAFETY: `valid_cfg` is a valid NUL-terminated C string; `error2` is valid storage.
+        let result2 = unsafe {
+            parse_config(
+                CString::new(valid_cfg).unwrap().as_ptr(),
+                &mut error2,
+            )
+        };
+        assert_eq!(result2, 0);
+        assert!(error2.is_null());
     }
 
     #[test]

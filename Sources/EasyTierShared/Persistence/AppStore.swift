@@ -115,6 +115,7 @@ public final class EasyTierAppStore {
             lastError = error.localizedDescription
             log("Failed to load state: \(error.localizedDescription)")
         }
+        await refreshRuntime()
         startPolling()
     }
 
@@ -501,11 +502,13 @@ public final class EasyTierAppStore {
     private func refreshRuntimeThrowing() async throws {
         let infos = try await client.collectNetworkInfos()
         var running = infos.keys.sorted().map { key in
-            NetworkInstance(
-                instance_id: key,
+            let detail = infos[key]
+            let resolvedID = detail?.instance_id ?? key
+            return NetworkInstance(
+                instance_id: resolvedID,
                 name: key,
                 running: true,
-                detail: infos[key]
+                detail: detail
             )
         }
         mergePendingStarts(into: &running)
