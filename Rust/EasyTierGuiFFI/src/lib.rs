@@ -620,10 +620,11 @@ pub unsafe extern "C" fn retain_network_instance(
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
-            let inst_ids: Vec<uuid::Uuid> = inst_names
+            let mut inst_ids: Vec<uuid::Uuid> = inst_names
                 .iter()
                 .filter_map(|name| INSTANCE_NAME_ID_MAP.get(name).map(|id| *id))
                 .collect();
+            inst_ids.reverse();
 
             INSTANCE_MANAGER
                 .retain_network_instance(inst_ids)
@@ -662,10 +663,11 @@ pub unsafe extern "C" fn stop_network_instance(
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
-            let inst_ids: Vec<uuid::Uuid> = inst_names
+            let mut inst_ids: Vec<uuid::Uuid> = inst_names
                 .iter()
                 .filter_map(|name| INSTANCE_NAME_ID_MAP.get(name).map(|id| *id))
                 .collect();
+            inst_ids.reverse();
 
             INSTANCE_MANAGER
                 .delete_network_instance(inst_ids)

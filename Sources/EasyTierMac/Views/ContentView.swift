@@ -477,7 +477,6 @@ struct ContentView: View {
     private func memberSearchResultFields(for member: NetworkMemberStatus) -> [SearchResultField] {
         var fields = [
             SearchResultField("Hostname", member.hostname),
-            SearchResultField("Peer ID", member.peerID),
             SearchResultField("Virtual IPv4", member.virtualIPv4),
             SearchResultField("IPv4", member.copyableIPv4Address ?? ""),
             SearchResultField("Version", member.version),
@@ -524,7 +523,6 @@ struct ContentView: View {
 
     private func deviceResultSubtitle(for member: NetworkMemberStatus, networkName: String) -> String {
         var parts = ["Network \(networkName)"]
-        parts.append("Peer \(member.peerID)")
         if let ip = member.copyableIPv4Address {
             parts.append("IPv4 \(ip)")
         }

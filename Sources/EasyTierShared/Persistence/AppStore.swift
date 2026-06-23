@@ -161,7 +161,8 @@ public final class EasyTierAppStore {
             log("Config TOML delete failed: \(error.localizedDescription)")
         }
         if configs.isEmpty { configs.append(StoredNetworkConfig(config: NetworkConfig())) }
-        self.selectedConfigID = configs.first?.id
+        let nextIndex = min(index, configs.count - 1)
+        self.selectedConfigID = configs.isEmpty ? nil : configs[nextIndex].id
         save()
         await refreshRuntime()
     }
@@ -490,16 +491,19 @@ public final class EasyTierAppStore {
 
     private func refreshRuntimeThrowing() async throws {
         let infos = try await client.collectNetworkInfos()
-        var running = infos.keys.sorted().map { key in
-            let detail = infos[key]
-            let resolvedID = detail?.instance_id ?? key
-            let instance = NetworkInstance(
+        let previousOrder = instances.map(\.name)
+        let newNames = infos.keys.filter { !previousOrder.contains($0) }
+        let keptNames = previousOrder.filter { infos.keys.contains($0) }
+        let orderedNames = newNames + keptNames
+        var running = orderedNames.compactMap { key -> NetworkInstance? in
+            guard let detail = infos[key] else { return nil }
+            let resolvedID = detail.instance_id ?? key
+            return NetworkInstance(
                 instance_id: resolvedID,
                 name: key,
                 running: true,
                 detail: detail
             )
-            return instance
         }
         mergePendingStarts(into: &running)
         recordTrafficSamples(for: running)

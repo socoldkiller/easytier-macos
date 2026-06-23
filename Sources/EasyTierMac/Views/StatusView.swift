@@ -754,32 +754,9 @@ private struct MemberStatusIdentity: View {
     }
 
     private var memberSubtitle: String {
-        [member.memberStateLabel, "Peer \(member.peerID)"]
+        [member.memberStateLabel]
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0 != "-" }
             .joined(separator: " · ")
-    }
-}
-
-private struct PointingHandOnHover: ViewModifier {
-    @State private var isHovering = false
-
-    func body(content: Content) -> some View {
-        content
-            .onHover { hovering in
-                guard hovering != isHovering else { return }
-                isHovering = hovering
-                if hovering {
-                    NSCursor.pointingHand.push()
-                } else {
-                    NSCursor.pop()
-                }
-            }
-            .onDisappear {
-                if isHovering {
-                    NSCursor.pop()
-                    isHovering = false
-                }
-            }
     }
 }
 
@@ -796,7 +773,13 @@ private extension View {
     }
 
     func pointingHandOnHover() -> some View {
-        modifier(PointingHandOnHover())
+        onHover { hovering in
+            if hovering {
+                NSCursor.pointingHand.set()
+            } else {
+                NSCursor.arrow.set()
+            }
+        }
     }
 }
 
@@ -1205,16 +1188,14 @@ private struct ConnectionEmptyState: View {
     }
 
     var body: some View {
-        VStack(spacing: 12) {
-            ConnectionGlyph(state: state, size: 46)
-                .padding(.bottom, 2)
-            Text(title)
-                .font(.title3.weight(.semibold))
+        ContentUnavailableView {
+            Label {
+                Text(title)
+            } icon: {
+                ConnectionGlyph(state: state, size: 46)
+            }
+        } description: {
             description
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 360)
         }
         .padding()
     }

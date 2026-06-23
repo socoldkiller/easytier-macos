@@ -240,7 +240,7 @@ private struct TrafficLineChart: View {
                 AxisValueLabel {
                     if let date = value.as(Date.self) {
                         Text(date.formatted(date: .omitted, time: .standard))
-                            .font(.caption2.weight(.medium))
+                            .font(.caption)
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
                     }
@@ -254,7 +254,7 @@ private struct TrafficLineChart: View {
                 AxisValueLabel {
                     if let rate = value.as(Double.self) {
                         Text(ByteFormatter.formatRate(rate))
-                            .font(.caption2.weight(.medium))
+                            .font(.caption)
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
                     }
@@ -420,12 +420,10 @@ private struct RateLegendItem: View {
                 .fill(color)
                 .frame(width: 18, height: 3)
             Text(title)
-                .font(.caption.weight(.medium))
+                .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             Text(value)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.primary)
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
@@ -450,7 +448,6 @@ private struct TrafficTooltip: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(sample.timestamp.formatted(date: .omitted, time: .standard))
-                .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
             VStack(alignment: .leading, spacing: 6) {
@@ -488,7 +485,6 @@ private struct TooltipRateRow: View {
                 .fill(color)
                 .frame(width: 7, height: 7)
             Text("\(title): \(value)")
-                .font(.caption.weight(.semibold))
                 .foregroundStyle(.primary)
                 .monospacedDigit()
         }

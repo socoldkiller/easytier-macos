@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 struct AboutView: View {
@@ -8,21 +7,16 @@ struct AboutView: View {
     private let appInfo = AppVersionInfo.current
     private let revisions = SourceRevisionInfo.current
 
-    private let background = Color(nsColor: .windowBackgroundColor)
-    private let divider = Color(nsColor: .separatorColor).opacity(0.72)
-
     var body: some View {
         VStack(spacing: 0) {
             content
 
             Divider()
-                .overlay(divider)
                 .padding(.horizontal, 32)
 
             maintenance
         }
         .frame(width: 620, height: 400)
-        .background(background)
         .foregroundStyle(.primary)
         .presentedSurfaceMotion()
     }
@@ -144,21 +138,13 @@ struct EasyTierMark: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Image(nsImage: Self.iconImage)
+        Image("easytier-icon")
             .resizable()
             .interpolation(.high)
             .aspectRatio(contentMode: .fit)
             .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.24 : 0.12), radius: 10, x: 0, y: 5)
             .accessibilityLabel(Text("EasyTier app icon"))
     }
-
-    private static let iconImage: NSImage = {
-        guard let url = Bundle.main.url(forResource: "easytier-icon", withExtension: "png"),
-              let image = NSImage(contentsOf: url) else {
-            preconditionFailure("Missing bundled resource: easytier-icon.png")
-        }
-        return image
-    }()
 }
 
 private struct MetadataRow: View {
