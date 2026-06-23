@@ -55,8 +55,6 @@ const RPC_MAX_CONCURRENT_PER_ENDPOINT: usize = 4;
 const RPC_MAX_CONCURRENT_TOTAL: usize = 32;
 const RPC_MAX_CONNECTING_TOTAL: usize = 8;
 
-static ERROR_MSG: Lazy<Mutex<Vec<u8>>> = Lazy::new(|| Mutex::new(Vec::new()));
-
 struct RpcEndpoint {
     url: String,
     limit: Arc<Semaphore>,
@@ -492,38 +490,6 @@ async fn call_rpc_by_service(
             RpcFailureKind::RpcError,
             format!("Unknown service: {service_name}"),
         )),
-    }
-}
-
-/// Anchor so the linker preserves `get_error_msg` under LTO even when no
-/// Rust/Swift code calls it directly at compile time.
-#[used]
-static KEEP_GET_ERROR_MSG: unsafe extern "C" fn(*mut *const c_char) = get_error_msg;
-
-/// # Safety
-/// `out` must point to writable storage for one C string pointer.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn get_error_msg(out: *mut *const c_char) {
-    if out.is_null() {
-        return;
-    }
-
-    let mut msg_buf = ERROR_MSG.lock().unwrap();
-    if msg_buf.is_empty() {
-        // SAFETY: `out` was checked for null and points to caller-owned storage.
-        unsafe {
-            *out = std::ptr::null();
-        }
-        return;
-    }
-
-    let cstr = CString::new(msg_buf.as_slice()).unwrap_or_else(|_| {
-        CString::new("EasyTier FFI error contained an invalid NUL byte").unwrap()
-    });
-    msg_buf.clear();
-    // SAFETY: `out` was checked for null and points to caller-owned storage.
-    unsafe {
-        *out = cstr.into_raw();
     }
 }
 

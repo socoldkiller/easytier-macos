@@ -12,7 +12,6 @@ REQUIRED_FFI_SYMBOLS=(
   run_network_instance
   retain_network_instance
   collect_network_infos
-  get_error_msg
   free_string
 )
 
