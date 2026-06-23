@@ -9,6 +9,7 @@ struct StatusView: View {
     @State private var renameHostnameRequest: RenameHostnameRequest?
     @State private var memberSearchText = ""
     @State private var memberTableIsScrolling = false
+    @State private var tableDidAppear = false
 
     var highlightedMemberPeerID: String? = nil
     var onRenameLocalHostname: (String) -> Void = { _ in }
@@ -147,63 +148,63 @@ struct StatusView: View {
                     )
                 }
             }
-            .width(min: 220, ideal: 260, max: 360)
+            .width(min: 180, ideal: 240)
 
             TableColumn("IPv4") { row in
                 expandablePublicServerCell(for: row) {
                     MemberIPv4Cell(row: row)
                 }
             }
-            .width(ipv4ColumnWidth)
+            .width(min: 120, ideal: 148)
 
             TableColumn("Route") { row in
                 expandablePublicServerCell(for: row) {
                     MemberRouteCell(row: row)
                 }
             }
-            .width(min: 74, ideal: 96, max: 140)
+            .width(min: 72, ideal: 88)
 
             TableColumn("Tunnel") { row in
                 expandablePublicServerCell(for: row) {
                     Text(row.tunnelProto)
                 }
             }
-            .width(min: 80, ideal: 92, max: 120)
+            .width(min: 76, ideal: 88)
 
             TableColumn("Latency") { row in
                 expandablePublicServerCell(for: row) {
                     LatencyMetricText(value: row.latency, animates: !memberTableIsScrolling)
                 }
             }
-            .width(min: 78, ideal: 90, max: 118)
+            .width(min: 74, ideal: 84)
 
             TableColumn("Upload") { row in
                 expandablePublicServerCell(for: row) {
                     AnimatedMetricText(value: row.uploadTotal, animates: !memberTableIsScrolling)
                 }
             }
-            .width(min: 84, ideal: 96, max: 124)
+            .width(min: 80, ideal: 92)
 
             TableColumn("Download") { row in
                 expandablePublicServerCell(for: row) {
                     AnimatedMetricText(value: row.downloadTotal, animates: !memberTableIsScrolling)
                 }
             }
-            .width(min: 96, ideal: 108, max: 138)
+            .width(min: 90, ideal: 104)
 
             TableColumn("Loss") { row in
                 expandablePublicServerCell(for: row) {
                     AnimatedMetricText(value: row.lossRate, animates: !memberTableIsScrolling)
                 }
             }
-            .width(min: 66, ideal: 78, max: 100)
+            .width(min: 62, ideal: 72)
 
             TableColumn("NAT") { row in
                 expandablePublicServerCell(for: row) {
                     Text(row.natType)
                 }
             }
-            .width(min: 86, ideal: 104, max: 150)
+            .width(min: 82, ideal: 98)
 
             TableColumn("Version") { row in
                 expandablePublicServerCell(for: row) {
@@ -211,7 +212,7 @@ struct StatusView: View {
                         .lineLimit(1)
                 }
             }
-            .width(min: 120, ideal: 150, max: 220)
+            .width(min: 100, ideal: 130)
         } rows: {
             ForEach(memberTableRows) { row in
                 if let children = row.children {
@@ -227,6 +228,14 @@ struct StatusView: View {
         }
         .scrollIndicators(.never, axes: [.vertical, .horizontal])
         .trackScrollPhase(isScrolling: $memberTableIsScrolling)
+        .scaleEffect(tableDidAppear ? 1 : 0.96, anchor: .top)
+        .opacity(tableDidAppear ? 1 : 0)
+        .animation(.spring(response: 0.5, dampingFraction: 0.72), value: tableDidAppear)
+        .onAppear { tableDidAppear = true }
+        .onChange(of: filteredMembers.count) { _, _ in
+            tableDidAppear = false
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.72)) { tableDidAppear = true }
+        }
     }
 
     private var memberTableRows: [MemberTableRow] {
@@ -252,10 +261,6 @@ struct StatusView: View {
             insertedPublicServerGroup = true
             return .publicServerGroup(publicServers)
         }
-    }
-
-    private var ipv4ColumnWidth: CGFloat {
-        IPv4CellMetrics.columnWidth(for: filteredMembers.map(\.displayedIPv4Address))
     }
 
     private var memberSearchQuery: SearchQuery {
@@ -1034,19 +1039,12 @@ private enum IPv4CellMetrics {
     static let horizontalPadding: CGFloat = 10
     static let verticalPadding: CGFloat = 6
     static let trailingReservation: CGFloat = 28
-    static let minimumWidth: CGFloat = 148
-    static let maximumWidth: CGFloat = 220
-
-    static func columnWidth(for values: [String]) -> CGFloat {
-        let longest = values.max { textWidth(for: $0) < textWidth(for: $1) } ?? "255.255.255.255"
-        return width(for: longest)
-    }
 
     static func width(for value: String) -> CGFloat {
         let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let measuredTextWidth = textWidth(for: text.isEmpty ? "255.255.255.255" : text)
         let targetWidth = measuredTextWidth + horizontalPadding * 2 + trailingReservation
-        return min(max(ceil(targetWidth), minimumWidth), maximumWidth)
+        return max(ceil(targetWidth), 120)
     }
 
     private static func textWidth(for value: String) -> CGFloat {

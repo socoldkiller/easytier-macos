@@ -110,8 +110,18 @@ private struct TrafficLineChart: View {
                 Spacer(minLength: 16)
 
                 HStack(spacing: 8) {
-                    RateLegendItem(color: uploadColor, title: "Upload", value: ByteFormatter.formatRate(latest?.txBytesPerSecond ?? 0))
-                    RateLegendItem(color: downloadColor, title: "Download", value: ByteFormatter.formatRate(latest?.rxBytesPerSecond ?? 0))
+                    RateLegendItem(
+                        color: uploadColor,
+                        title: "Upload",
+                        value: ByteFormatter.formatRate(latest?.txBytesPerSecond ?? 0),
+                        systemImage: "arrow.up"
+                    )
+                    RateLegendItem(
+                        color: downloadColor,
+                        title: "Download",
+                        value: ByteFormatter.formatRate(latest?.rxBytesPerSecond ?? 0),
+                        systemImage: "arrow.down"
+                    )
                 }
             }
 
@@ -413,27 +423,24 @@ private struct RateLegendItem: View {
     var color: Color
     var title: String
     var value: String
+    var systemImage: String
 
     var body: some View {
-        HStack(spacing: 6) {
-            RoundedRectangle(cornerRadius: 2, style: .continuous)
-                .fill(color)
-                .frame(width: 18, height: 3)
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: systemImage)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(color)
+                .frame(width: 12)
             Text(title)
-                .font(.caption)
+                .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             Text(value)
+                .font(.callout.weight(.semibold))
                 .monospacedDigit()
+                .foregroundStyle(.primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(color.opacity(0.18), lineWidth: 1)
         }
     }
 }

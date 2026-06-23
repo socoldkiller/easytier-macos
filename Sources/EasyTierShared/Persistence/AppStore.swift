@@ -133,7 +133,22 @@ public final class EasyTierAppStore {
         configs.append(config)
         selectedConfigID = config.id
         selectedTab = .config
-        save()
+        saveInBackground()
+        log("Added \(config.config.network_name).")
+    }
+
+    private func saveInBackground() {
+        let snapshot = AppSnapshot(
+            configs: configs,
+            mode: mode,
+            lastSelectedConfigID: selectedConfigID,
+            runtimeIntents: runtimeIntents,
+            reversedPortForwardFingerprints: reversedPortForwardFingerprints
+        )
+        let storage = self.storage
+        Task.detached(priority: .background) {
+            try? storage.save(snapshot)
+        }
     }
 
     public func deleteSelectedConfig() async {
@@ -154,16 +169,14 @@ public final class EasyTierAppStore {
         }
         reversedPortForwardFingerprints.removeValue(forKey: config.instance_id)
         let removed = configs.remove(at: index)
-        do {
-            try storage.deleteConfig(removed)
-        } catch {
-            lastError = error.localizedDescription
-            log("Config TOML delete failed: \(error.localizedDescription)")
+        let storage = self.storage
+        Task.detached(priority: .background) {
+            try? storage.deleteConfig(removed)
         }
         if configs.isEmpty { configs.append(StoredNetworkConfig(config: NetworkConfig())) }
         let nextIndex = min(index, configs.count - 1)
         self.selectedConfigID = configs.isEmpty ? nil : configs[nextIndex].id
-        save()
+        saveInBackground()
         await refreshRuntime()
     }
 
@@ -288,6 +301,10 @@ public final class EasyTierAppStore {
             log("Stopped all EasyTier instances.")
             try await refreshRuntimeThrowing()
         }
+    }
+
+    public func clearLogs() {
+        logLines.removeAll()
     }
 
     public func refreshRuntime() async {

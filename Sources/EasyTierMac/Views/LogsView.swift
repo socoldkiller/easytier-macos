@@ -10,6 +10,10 @@ struct LogsView: View {
                 Text("Runtime Log")
                     .font(.headline)
                 Spacer()
+                Button("Clear") {
+                    store.clearLogs()
+                }
+                .disabled(store.logLines.isEmpty)
                 Text("\(store.logLines.count) entries")
                     .font(.caption)
                     .foregroundStyle(.secondary)

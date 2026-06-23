@@ -245,7 +245,7 @@ struct ContentView: View {
                 store.selectedConfig == nil || store.isBusy
                     || permissionController.state != .enabled
             )
-            .help("Run selected network")
+            .help(connectionActionHelp)
 
             Menu {
                 Button("Import TOML") {
@@ -299,6 +299,12 @@ struct ContentView: View {
         draftIsDirty && store.selectedConfigIsRunning
     }
 
+    private var selectedConfigHasRuntimeError: Bool {
+        guard !draftIsDirty else { return false }
+        guard let instance = store.selectedRunningInstance else { return false }
+        return instance.runtimeErrorMessage != nil || instance.listenerErrorFromEvents != nil
+    }
+
     private var workspaceMotionID: String {
         "\(store.selectedTab.id)-\(store.selectedConfigID ?? "none")"
     }
@@ -306,13 +312,22 @@ struct ContentView: View {
     private var connectionActionTitle: String {
         if store.isBusy { return "Working" }
         if selectedConfigNeedsRestart { return "Restart" }
+        if selectedConfigHasRuntimeError { return "Stop" }
         return selectedConfigIsRunning ? "Pause" : "Run"
     }
 
     private var connectionActionSystemImage: String {
         if store.isBusy { return "hourglass" }
         if selectedConfigNeedsRestart { return "arrow.clockwise" }
+        if selectedConfigHasRuntimeError { return "stop.fill" }
         return selectedConfigIsRunning ? "pause.fill" : "play.fill"
+    }
+
+    private var connectionActionHelp: String {
+        if store.isBusy { return "Working" }
+        if selectedConfigNeedsRestart { return "Restart selected network" }
+        if selectedConfigHasRuntimeError { return "Stop selected network" }
+        return selectedConfigIsRunning ? "Pause selected network" : "Run selected network"
     }
 
     private func connectionState(for stored: StoredNetworkConfig) -> ConnectionGlyphState {
