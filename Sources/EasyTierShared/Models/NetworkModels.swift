@@ -339,6 +339,26 @@ public extension NetworkInstance {
         return nil
     }
 
+    var listenerErrorFromEvents: String? {
+        guard let events = detail?.events, !events.isEmpty else { return nil }
+        for eventJSON in events {
+            guard let data = eventJSON.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { continue }
+            guard let event = obj["event"] as? [String: Any] else { continue }
+            if let failed = event["ListenerAddFailed"] as? [String], failed.count == 2 {
+                return "Listener \(failed[0]) failed: \(failed[1])"
+            }
+            if let failed = event["ListenerAcceptFailed"] as? [String], failed.count == 2 {
+                return "Listener \(failed[0]) accept failed: \(failed[1])"
+            }
+            if let error = event["TunDeviceError"] as? String {
+                return "TUN device error: \(error)"
+            }
+        }
+        return nil
+    }
+
     var isFullyConnected: Bool {
         isFullyConnected(expectRemotePeers: false)
     }

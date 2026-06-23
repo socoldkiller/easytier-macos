@@ -589,8 +589,11 @@ pub unsafe extern "C" fn run_network_instance(
                 return Err("instance already exists".to_string());
             }
 
-            let instance_id = INSTANCE_MANAGER
-                .run_network_instance(cfg, false, ConfigFileControl::STATIC_CONFIG)
+            let instance_id = RPC_RUNTIME
+                .block_on(async {
+                    INSTANCE_MANAGER
+                        .run_network_instance(cfg, true, ConfigFileControl::STATIC_CONFIG)
+                })
                 .map_err(|e| format!("failed to start instance: {e}"))?;
 
             INSTANCE_NAME_ID_MAP.insert(inst_name, instance_id);

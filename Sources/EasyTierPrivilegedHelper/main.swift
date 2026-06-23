@@ -25,6 +25,7 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
             try client.run(toml: configTOML)
             reply("ok", nil)
         } catch {
+            fputs("helper run error: \(error.localizedDescription)\n", stderr)
             replyFailure(error, code: "runFailed", reply: reply)
         }
     }
@@ -42,6 +43,7 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
             let instances = try client.listInstancesSync()
             reply(String(decoding: try encoder.encode(instances), as: UTF8.self), nil)
         } catch {
+            fputs("helper listInstances error: \(error.localizedDescription)\n", stderr)
             replyFailure(error, code: "listInstancesFailed", reply: reply)
         }
     }
@@ -52,6 +54,7 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
             let json = try buildCollectNetworkInfoJSON(from: infos)
             reply(json, nil)
         } catch {
+            fputs("helper collectNetworkInfos error: \(error.localizedDescription)\n", stderr)
             replyFailure(error, code: "collectNetworkInfosFailed", reply: reply)
         }
     }

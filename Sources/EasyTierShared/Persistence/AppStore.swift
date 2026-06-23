@@ -215,6 +215,9 @@ public final class EasyTierAppStore {
             recordPendingStart(for: config)
             log("Started \(config.network_name).")
             try await refreshRuntimeThrowing()
+            if let error = selectedRunningInstance?.runtimeErrorMessage ?? selectedRunningInstance?.listenerErrorFromEvents {
+                lastError = error
+            }
         }
     }
 
@@ -504,12 +507,13 @@ public final class EasyTierAppStore {
         var running = infos.keys.sorted().map { key in
             let detail = infos[key]
             let resolvedID = detail?.instance_id ?? key
-            return NetworkInstance(
+            let instance = NetworkInstance(
                 instance_id: resolvedID,
                 name: key,
                 running: true,
                 detail: detail
             )
+            return instance
         }
         mergePendingStarts(into: &running)
         recordTrafficSamples(for: running)
