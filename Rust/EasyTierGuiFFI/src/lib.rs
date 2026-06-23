@@ -495,6 +495,11 @@ async fn call_rpc_by_service(
     }
 }
 
+/// Anchor so the linker preserves `get_error_msg` under LTO even when no
+/// Rust/Swift code calls it directly at compile time.
+#[used]
+static KEEP_GET_ERROR_MSG: unsafe extern "C" fn(*mut *const c_char) = get_error_msg;
+
 /// # Safety
 /// `out` must point to writable storage for one C string pointer.
 #[unsafe(no_mangle)]
