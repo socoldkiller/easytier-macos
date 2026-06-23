@@ -434,54 +434,6 @@ import Testing
 }
 
 @MainActor
-@Test func loadMigratesUnavailableServiceModeToNormalMode() async throws {
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-    let storage = EasyTierStorage(baseDirectory: directory)
-    let config = NetworkConfig(network_name: "legacy-service")
-    let snapshot = AppSnapshot(
-        configs: [StoredNetworkConfig(config: config)],
-        mode: .service(
-            configDir: directory.appendingPathComponent("config.d", isDirectory: true),
-            rpcPortal: "127.0.0.1:15999",
-            fileLogLevel: .off,
-            fileLogDir: directory.appendingPathComponent("logs", isDirectory: true),
-            configServerURL: nil
-        ),
-        lastSelectedConfigID: config.instance_id
-    )
-    try storage.save(snapshot)
-
-    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"), storage: storage)
-
-    await store.load()
-    store.stopPolling()
-
-    #expect(store.mode == .default)
-    #expect(store.selectedConfigID == config.instance_id)
-    #expect(store.logLines.contains { $0.contains("Service mode is not available") })
-}
-
-@MainActor
-@Test func applyModeDoesNotPersistUnavailableServiceMode() async throws {
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-    let storage = EasyTierStorage(baseDirectory: directory)
-    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"), storage: storage)
-    let serviceMode = AppMode.service(
-        configDir: directory.appendingPathComponent("config.d", isDirectory: true),
-        rpcPortal: "127.0.0.1:15999",
-        fileLogLevel: .off,
-        fileLogDir: directory.appendingPathComponent("logs", isDirectory: true),
-        configServerURL: nil
-    )
-
-    await store.applyMode(serviceMode)
-
-    let snapshot = try storage.load()
-    #expect(store.mode == .default)
-    #expect(snapshot.mode == .default)
-}
-
-@MainActor
 @Test func applyModeConfiguresRPCPortal() async throws {
     let client = RecordingToggleClient()
     let store = EasyTierAppStore(client: client)

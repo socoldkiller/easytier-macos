@@ -92,13 +92,7 @@ public final class EasyTierAppStore {
             configs = snapshot.configs.isEmpty ? [StoredNetworkConfig(config: NetworkConfig())] : snapshot.configs
             runtimeIntents = snapshot.runtimeIntents
             reversedPortForwardFingerprints = snapshot.reversedPortForwardFingerprints
-            let loadedMode = snapshot.mode ?? .default
-            if case .service = loadedMode {
-                mode = .default
-                log("Service mode is not available in this build; switched to Normal mode.")
-            } else {
-                mode = loadedMode
-            }
+            mode = snapshot.mode ?? .default
             if let lastSelectedConfigID = snapshot.lastSelectedConfigID,
                configs.contains(where: { $0.id == lastSelectedConfigID })
             {
@@ -309,7 +303,7 @@ public final class EasyTierAppStore {
     }
 
     public func clearHelperPermissionError() {
-        if isHelperPermissionErrorMessage(lastError) {
+        if Self.isHelperPermissionErrorMessage(lastError) {
             lastError = nil
         }
     }
@@ -432,27 +426,19 @@ public final class EasyTierAppStore {
     }
 
     public func applyMode(_ mode: AppMode) async {
-        let effectiveMode: AppMode
-        if case .service = mode {
-            effectiveMode = .default
-            log("Service mode is not available in this build; switched to Normal mode.")
-        } else {
-            effectiveMode = mode
-        }
-
-        self.mode = effectiveMode
+        self.mode = mode
         save()
 
         await busy {
-            try await client.configureRPCPortal(effectiveMode.rpcPortal, whitelist: effectiveMode.rpcPortalWhitelist)
-            if let rpcPortal = effectiveMode.rpcPortal {
+            try await client.configureRPCPortal(mode.rpcPortal, whitelist: mode.rpcPortalWhitelist)
+            if let rpcPortal = mode.rpcPortal {
                 log("RPC portal listening: \(rpcPortal)")
             } else {
                 log("RPC portal disabled.")
             }
         }
 
-        if let url = effectiveMode.configServerURL {
+        if let url = mode.configServerURL {
             await busy {
                 try await client.startConfigServerClient(url: url)
                 isConfigServerConnected = try await client.isConfigServerClientConnected()
@@ -669,8 +655,7 @@ public final class EasyTierAppStore {
     }
 
     private func nonEmptyTrimmed(_ value: String?) -> String? {
-        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? nil : trimmed
+        value?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
     }
 
     private func uniquelyMatchedInstance(named networkName: String) -> NetworkInstance? {
@@ -812,7 +797,7 @@ public final class EasyTierAppStore {
                 return false
             }
         }
-        return isHelperPermissionErrorMessage(error.localizedDescription)
+        return Self.isHelperPermissionErrorMessage(error.localizedDescription)
     }
 
     private static func isHelperPermissionErrorMessage(_ message: String?) -> Bool {
@@ -821,10 +806,6 @@ public final class EasyTierAppStore {
             || message.contains("macOS has not allowed")
             || message.contains("Click Install Helper")
             || message.contains("privileged helper is not installed")
-    }
-
-    private func isHelperPermissionErrorMessage(_ message: String?) -> Bool {
-        Self.isHelperPermissionErrorMessage(message)
     }
 
     private func log(_ message: String) {

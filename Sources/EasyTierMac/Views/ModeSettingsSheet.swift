@@ -59,13 +59,6 @@ struct EasyTierSettingsSheet: View {
             _rpcPortalWhitelist = State(initialValue: AppMode.defaultRPCPortalWhitelist)
             _configServerURL = State(initialValue: "")
             _remoteRPCAddress = State(initialValue: remoteRPCAddress)
-        case let .service(_, _, _, _, configServerURL):
-            _kind = State(initialValue: .normal)
-            _rpcListenEnabled = State(initialValue: true)
-            _rpcListenPort = State(initialValue: AppMode.defaultRPCListenPort)
-            _rpcPortalWhitelist = State(initialValue: AppMode.defaultRPCPortalWhitelist)
-            _configServerURL = State(initialValue: configServerURL?.absoluteString ?? "")
-            _remoteRPCAddress = State(initialValue: Self.defaultRemoteRPCAddress)
         }
     }
 

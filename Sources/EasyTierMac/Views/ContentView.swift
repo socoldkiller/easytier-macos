@@ -518,7 +518,7 @@ struct ContentView: View {
             connectionState(for: stored).displayLabel,
             instance?.detail?.dev_name,
         ]
-        .compactMap { $0?.nilIfEmptyForSearchResult }
+        .compactMap { $0?.nilIfEmpty }
         .joined(separator: " · ")
     }
 
@@ -611,7 +611,7 @@ struct ContentView: View {
 
         let trimmed = hostname.trimmingCharacters(in: .whitespacesAndNewlines)
         let newHostname = trimmed.isEmpty ? nil : trimmed
-        let previousHostname = storedConfig.hostname?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmptyForSearchResult
+        let previousHostname = storedConfig.hostname?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         let runningInstanceToPatch = draftIsDirty ? nil : store.runningInstance(matching: storedConfig)
         if previousHostname == newHostname {
             guard newHostname == nil, runningInstanceToPatch != nil else { return }

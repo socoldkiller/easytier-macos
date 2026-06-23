@@ -46,7 +46,7 @@ public enum NetworkConfigValidator {
             validatePort(forward.dst_port, field: "Port forward #\(index + 1) destination port", issues: &issues)
             validateIPv4OrWildcard(forward.bind_ip, field: "Port forward #\(index + 1) bind IP", issues: &issues)
             validateIPv4(forward.dst_ip, field: "Port forward #\(index + 1) destination IP", issues: &issues)
-            if forward.proto != "tcp", forward.proto != "udp" {
+            if forward.proto.lowercased() != "tcp", forward.proto.lowercased() != "udp" {
                 issues.append("Port forward #\(index + 1) protocol must be tcp or udp.")
             }
         }

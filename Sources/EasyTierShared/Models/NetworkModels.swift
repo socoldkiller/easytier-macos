@@ -1033,8 +1033,14 @@ public enum ByteFormatter {
     }
 }
 
-private extension String {
+public extension String {
     var nilIfEmpty: String? {
+        isEmpty ? nil : self
+    }
+}
+
+public extension Array {
+    var nilIfEmpty: [Element]? {
         isEmpty ? nil : self
     }
 }

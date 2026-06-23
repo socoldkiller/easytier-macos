@@ -1,19 +1,8 @@
 import Foundation
 
-public enum LogLevel: String, Codable, CaseIterable, Identifiable, Sendable {
-    case off
-    case warn
-    case info
-    case debug
-    case trace
-
-    public var id: String { rawValue }
-}
-
 public enum AppMode: Codable, Equatable, Sendable {
     case normal(rpcPortal: String?, rpcListenEnabled: Bool, rpcListenPort: Int, rpcPortalWhitelist: [String]?, configServerURL: URL?)
     case remote(remoteRPCAddress: String)
-    case service(configDir: URL, rpcPortal: String, fileLogLevel: LogLevel, fileLogDir: URL, configServerURL: URL?)
 
     public static let defaultRPCListenPort = 15_888
     public static let defaultRPCPortalWhitelist = ["127.0.0.0/8", "::1/128"]
@@ -32,14 +21,12 @@ public enum AppMode: Codable, Equatable, Sendable {
             configServerURL == nil ? "Normal" : "Remote"
         case .remote:
             "Remote"
-        case .service:
-            "Service"
         }
     }
 
     public var configServerURL: URL? {
         switch self {
-        case let .normal(_, _, _, _, url), let .service(_, _, _, _, url):
+        case let .normal(_, _, _, _, url):
             url
         case .remote:
             nil
@@ -50,8 +37,6 @@ public enum AppMode: Codable, Equatable, Sendable {
         switch self {
         case let .normal(rpcPortal, _, _, _, _):
             rpcPortal
-        case let .service(_, rpcPortal, _, _, _):
-            rpcPortal
         case .remote:
             nil
         }
@@ -61,8 +46,6 @@ public enum AppMode: Codable, Equatable, Sendable {
         switch self {
         case let .normal(_, _, _, whitelist, _):
             whitelist
-        case .service:
-            Self.defaultRPCPortalWhitelist
         case .remote:
             nil
         }

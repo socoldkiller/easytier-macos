@@ -84,13 +84,6 @@ extension NetworkingMethod {
     }
 }
 
-extension String {
-    var nilIfEmptyForSearchResult: String? {
-        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-}
-
 extension NetworkConfig {
     var enabledSearchFeatureLabels: [String] {
         var labels: [String] = []

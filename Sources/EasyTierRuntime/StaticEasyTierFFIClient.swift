@@ -209,7 +209,7 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
             defer { free_string(error) }
             throw EasyTierCoreError.operationFailed(String(cString: error))
         }
-        throw Self.lastError()
+        throw EasyTierCoreError.operationFailed("EasyTier FFI operation failed")
     }
 
     private func readPairs(command: (UnsafeMutablePointer<KeyValuePair>?, UInt, UnsafeMutablePointer<UnsafePointer<CChar>?>?) -> CInt) throws -> [(key: String, value: String)] {
@@ -225,7 +225,7 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
                     defer { free_string(error) }
                     throw EasyTierCoreError.operationFailed(String(cString: error))
                 }
-                throw Self.lastError()
+                throw EasyTierCoreError.operationFailed("EasyTier FFI operation failed")
             }
             if count < capacity {
                 let returnedPairs = Array(pairs.prefix(Int(count)))
@@ -261,15 +261,5 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
         return try pointers.withUnsafeMutableBufferPointer { buffer in
             try body(buffer)
         }
-    }
-
-    private static func lastError() -> EasyTierCoreError {
-        var pointer: UnsafePointer<CChar>?
-        get_error_msg(&pointer)
-        defer { free_string(pointer) }
-        if let pointer {
-            return .operationFailed(String(cString: pointer))
-        }
-        return .operationFailed("EasyTier FFI operation failed")
     }
 }

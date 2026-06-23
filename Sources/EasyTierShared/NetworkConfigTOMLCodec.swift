@@ -332,14 +332,4 @@ private func parseSocketAddress(_ value: String) -> (host: String, port: Int)? {
     return (host, port)
 }
 
-private extension Array {
-    var nilIfEmpty: [Element]? {
-        isEmpty ? nil : self
-    }
-}
 
-private extension String {
-    var nilIfEmpty: String? {
-        isEmpty ? nil : self
-    }
-}

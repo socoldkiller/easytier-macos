@@ -157,23 +157,10 @@ pub struct KeyValuePair {
     pub value: *const c_char,
 }
 
-fn set_error_msg(msg: &str) {
-    let sanitized = msg.replace('\0', "\\0");
-    let bytes = sanitized.as_bytes();
-    let mut msg_buf = ERROR_MSG.lock().unwrap();
-    msg_buf.resize(bytes.len(), 0);
-    msg_buf[..].copy_from_slice(bytes);
-}
-
-fn clear_error_msg() {
-    ERROR_MSG.lock().unwrap().clear();
-}
-
 /// Write an error message into the caller-provided out-param.
 ///
 /// On success the caller observes a null pointer; on failure the caller owns the returned
-/// `CString` and must release it with `free_string`. The global `ERROR_MSG` is also updated
-/// as a compatibility fallback for callers that did not pass an out-param.
+/// `CString` and must release it with `free_string`.
 ///
 /// # Safety
 /// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
@@ -227,8 +214,8 @@ fn write_cstring_out(value: String, out: *mut *const c_char) -> Result<(), Strin
 }
 
 /// Run `operation` and map its result to the FFI convention:
-/// - `Ok(())` → returns 0, clears `out_error` and the global `ERROR_MSG`
-/// - `Err(e)` → returns -1, writes `e` into `out_error` (if non-null) and the global `ERROR_MSG`
+/// - `Ok(())` → returns 0, clears `out_error`
+/// - `Err(e)` → returns -1, writes `e` into `out_error` (if non-null)
 ///
 /// # Safety
 /// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
@@ -240,13 +227,11 @@ unsafe fn ffi_result_with_error(
         Ok(()) => {
             // SAFETY: caller owns `out_error` storage; null is a valid sentinel for "no error".
             unsafe { clear_error_out(out_error) };
-            clear_error_msg();
             0
         }
         Err(error) => {
             // SAFETY: caller owns `out_error` storage; `write_error_out` checks for null.
             unsafe { write_error_out(out_error, &error) };
-            set_error_msg(&error);
             -1
         }
     }
@@ -752,13 +737,11 @@ pub unsafe extern "C" fn collect_network_infos(
         Ok(count) => {
             // SAFETY: caller owns `out_error` storage; null is a valid sentinel for "no error".
             unsafe { clear_error_out(out_error) };
-            clear_error_msg();
             count
         }
         Err(error) => {
             // SAFETY: caller owns `out_error` storage; `write_error_out` checks for null.
             unsafe { write_error_out(out_error, &error) };
-            set_error_msg(&error);
             -1
         }
     }
