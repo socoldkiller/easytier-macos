@@ -19,6 +19,8 @@ struct ContentView: View {
     @State private var highlightedSearchPeerID: String?
     @State private var highlightToken = 0
     @State private var selectedSearchResultID: String?
+    @State private var selectedTabLocal: WorkspaceTab = .status
+    @State private var selectedConfigIDLocal: String?
 
     private static let tabTransitionDistance: CGFloat = 14
     private static let networkTransitionDistance: CGFloat = 7
@@ -48,7 +50,23 @@ struct ContentView: View {
             loadDraft(for: store.selectedConfigID)
         }
         .task {
+            selectedTabLocal = store.selectedTab
+            selectedConfigIDLocal = store.selectedConfigID
             await permissionController.refresh()
+        }
+        .onChange(of: store.selectedTab) { _, newTab in
+            selectedTabLocal = newTab
+        }
+        .onChange(of: store.selectedConfigID) { _, newID in
+            if selectedConfigIDLocal != newID {
+                selectedConfigIDLocal = newID
+            }
+        }
+        .onChange(of: selectedConfigIDLocal) { _, newID in
+            selectConfig(id: newID)
+        }
+        .onChange(of: selectedTabLocal) { _, newTab in
+            selectWorkspaceTab(newTab)
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
@@ -119,11 +137,10 @@ struct ContentView: View {
     }
 
     private var sidebar: some View {
-        @Bindable var store = store
 
         return Group {
             if networkSearchQuery.isEmpty {
-                List(selection: selectedConfigIDBinding) {
+                List(selection: $selectedConfigIDLocal) {
                     Section("Networks") {
                         ForEach(store.configs) { stored in
                             NetworkRow(stored: stored, state: connectionState(for: stored))
@@ -207,7 +224,7 @@ struct ContentView: View {
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .principal) {
-            WorkspaceTabPicker(selection: tabSelectionBinding)
+            WorkspaceTabPicker(selection: $selectedTabLocal)
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
@@ -587,24 +604,6 @@ struct ContentView: View {
             store.selectedConfigID = newValue
             loadDraft(for: newValue)
         }
-    }
-
-    private var selectedConfigIDBinding: Binding<String?> {
-        Binding(
-            get: { store.selectedConfigID },
-            set: { newValue in
-                selectConfig(id: newValue)
-            }
-        )
-    }
-
-    private var tabSelectionBinding: Binding<WorkspaceTab> {
-        Binding(
-            get: { store.selectedTab },
-            set: { newValue in
-                selectWorkspaceTab(newValue)
-            }
-        )
     }
 
     private func selectWorkspaceTab(_ tab: WorkspaceTab) {

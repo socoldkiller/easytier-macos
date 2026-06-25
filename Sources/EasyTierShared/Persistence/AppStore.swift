@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 
@@ -29,6 +30,7 @@ public final class EasyTierAppStore {
     private var pollingTask: Task<Void, Never>?
     private var lastTrafficCounters: [String: (timestamp: Date, txBytes: Int64, rxBytes: Int64)] = [:]
     private var pendingStarts: [String: PendingNetworkStart] = [:]
+    private var pollingEnabled: Bool = true
 
     public init(client: any EasyTierCoreClient = PrivilegedEasyTierClient(), storage: EasyTierStorage = .default) {
         self.client = client
@@ -496,14 +498,52 @@ public final class EasyTierAppStore {
         pollingTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
-                await self?.refreshRuntime()
+                guard let self, self.pollingEnabled else { continue }
+                await self.refreshRuntime()
             }
         }
+        registerSleepWakeNotifications()
     }
 
     public func stopPolling() {
         pollingTask?.cancel()
         pollingTask = nil
+        unregisterSleepWakeNotifications()
+    }
+
+    public func pausePolling() {
+        pollingEnabled = false
+    }
+
+    public func resumePolling() {
+        pollingEnabled = true
+    }
+
+    private func registerSleepWakeNotifications() {
+        let center = NSWorkspace.shared.notificationCenter
+        center.addObserver(
+            forName: NSWorkspace.willSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.pausePolling()
+            }
+        }
+        center.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(3))
+                self?.resumePolling()
+            }
+        }
+    }
+
+    private func unregisterSleepWakeNotifications() {
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
     private func refreshRuntimeThrowing() async throws {
@@ -524,7 +564,9 @@ public final class EasyTierAppStore {
         }
         mergePendingStarts(into: &running)
         recordTrafficSamples(for: running)
-        instances = running
+        if running != instances {
+            instances = running
+        }
         await reconcileRuntimeIntents()
         if mode.configServerURL == nil {
             isConfigServerConnected = false
@@ -539,6 +581,29 @@ public final class EasyTierAppStore {
             .map(\.id)
         for id in ids {
             await reconcileHostnameIntent(id: id)
+        }
+        cleanupExpiredIntents()
+    }
+
+    private func cleanupExpiredIntents() {
+        let now = Date()
+        let appliedExpiration = now.addingTimeInterval(-300)
+        let unreachableExpiration = now.addingTimeInterval(-600)
+        let maxIntents = 20
+
+        runtimeIntents.removeAll { intent in
+            if intent.status == .applied, intent.updatedAt < appliedExpiration {
+                return true
+            }
+            if intent.status == .unreachable, intent.updatedAt < unreachableExpiration {
+                return true
+            }
+            return false
+        }
+
+        if runtimeIntents.count > maxIntents {
+            runtimeIntents = Array(runtimeIntents.suffix(maxIntents))
+            save()
         }
     }
 

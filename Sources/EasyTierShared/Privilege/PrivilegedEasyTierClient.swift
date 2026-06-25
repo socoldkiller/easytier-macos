@@ -2,7 +2,43 @@ import Foundation
 import ServiceManagement
 
 public final class PrivilegedEasyTierClient: EasyTierCoreClient, @unchecked Sendable {
+    private let connectionLock = NSLock()
+    private var _connection: NSXPCConnection?
+
     public init() {}
+
+    deinit {
+        let conn = _connection
+        _connection = nil
+        conn?.invalidate()
+    }
+
+    private func acquireConnection() throws -> NSXPCConnection {
+        try ensureHelperIsEnabled()
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
+
+        if let conn = _connection {
+            return conn
+        }
+
+        let conn = NSXPCConnection(
+            machServiceName: EasyTierPrivilegedHelperConstants.machServiceName,
+            options: [.privileged]
+        )
+        conn.remoteObjectInterface = NSXPCInterface(with: EasyTierPrivilegedServiceProtocol.self)
+        conn.resume()
+        _connection = conn
+        return conn
+    }
+
+    private func dropConnection() {
+        connectionLock.lock()
+        let conn = _connection
+        _connection = nil
+        connectionLock.unlock()
+        conn?.invalidate()
+    }
 
     public func version() async throws -> String {
         let payload = try await helperPingPayload()
@@ -123,28 +159,30 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, @unchecked Send
     }
 
     private func callHelperReturningPayload(timeoutError: @escaping @Sendable () -> PrivilegedHelperError, _ body: @escaping (EasyTierPrivilegedServiceProtocol, @escaping (String?, String?) -> Void) -> Void) async throws -> String {
-        try ensureHelperIsEnabled()
-
-        let connection = Self.makeConnection()
-        defer { connection.invalidate() }
+        let connection = try acquireConnection()
 
         return try await withCheckedThrowingContinuation { continuation in
-            let state = HelperCallState(connection: connection, continuation: continuation)
-
-            DispatchQueue.global().asyncAfter(deadline: .now() + 15) {
-                state.finish(.failure(timeoutError()))
+            let state = HelperCallState(continuation: continuation)
+            let timeoutWork = DispatchWorkItem { [weak state] in
+                state?.finish(.failure(timeoutError()))
             }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 15, execute: timeoutWork)
 
-            let proxy = connection.remoteObjectProxyWithErrorHandler { _ in
+            let proxy = connection.remoteObjectProxyWithErrorHandler { [weak self] _ in
+                timeoutWork.cancel()
+                self?.dropConnection()
                 let status = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName).status
                 state.finish(.failure(status == .enabled ? Self.helperUnavailableError() : Self.statusError(status)))
             }
             guard let service = proxy as? EasyTierPrivilegedServiceProtocol else {
+                timeoutWork.cancel()
+                dropConnection()
                 let status = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName).status
                 state.finish(.failure(status == .enabled ? Self.helperUnavailableError() : Self.statusError(status)))
                 return
             }
             body(service) { payload, error in
+                timeoutWork.cancel()
                 if let error, !error.isEmpty {
                     state.finish(.failure(PrivilegedHelperError.helperReported(PrivilegedHelperErrorPayload.decode(from: error))))
                 } else if let payload {
@@ -154,16 +192,6 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, @unchecked Send
                 }
             }
         }
-    }
-
-    private static func makeConnection() -> NSXPCConnection {
-        let connection = NSXPCConnection(
-            machServiceName: EasyTierPrivilegedHelperConstants.machServiceName,
-            options: [.privileged]
-        )
-        connection.remoteObjectInterface = NSXPCInterface(with: EasyTierPrivilegedServiceProtocol.self)
-        connection.resume()
-        return connection
     }
 
     private static let decoder = JSONDecoder()
@@ -262,11 +290,9 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, @unchecked Send
 private final class HelperCallState: @unchecked Sendable {
     private let lock = NSLock()
     private var didFinish = false
-    private let connection: NSXPCConnection
     private let continuation: CheckedContinuation<String, Error>
 
-    init(connection: NSXPCConnection, continuation: CheckedContinuation<String, Error>) {
-        self.connection = connection
+    init(continuation: CheckedContinuation<String, Error>) {
         self.continuation = continuation
     }
 
@@ -279,7 +305,6 @@ private final class HelperCallState: @unchecked Sendable {
         didFinish = true
         lock.unlock()
 
-        connection.invalidate()
         switch result {
         case let .success(payload):
             continuation.resume(returning: payload)
