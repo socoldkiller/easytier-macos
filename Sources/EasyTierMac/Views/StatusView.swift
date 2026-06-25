@@ -9,7 +9,6 @@ struct StatusView: View {
     @State private var renameHostnameRequest: RenameHostnameRequest?
     @State private var memberSearchText = ""
     @State private var memberTableIsScrolling = false
-    @State private var tableDidAppear = false
 
     var highlightedMemberPeerID: String? = nil
     var onRenameLocalHostname: (String) -> Void = { _ in }
@@ -114,7 +113,8 @@ struct StatusView: View {
     private var contentMotionID: String {
         if instance == nil { return "empty-no-running" }
         if members.isEmpty { return "empty-no-members" }
-        return "members-\(memberSearchQuery.isEmpty ? "all" : "search")-\(filteredMembers.count)"
+        if !memberSearchQuery.isEmpty, filteredMembers.isEmpty { return "members-search-empty" }
+        return "members-\(memberSearchQuery.isEmpty ? "all" : "search")"
     }
 
     private var header: some View {
@@ -228,14 +228,6 @@ struct StatusView: View {
         }
         .scrollIndicators(.never, axes: [.vertical, .horizontal])
         .trackScrollPhase(isScrolling: $memberTableIsScrolling)
-        .scaleEffect(tableDidAppear ? 1 : 0.96, anchor: .top)
-        .opacity(tableDidAppear ? 1 : 0)
-        .animation(.spring(response: 0.5, dampingFraction: 0.72), value: tableDidAppear)
-        .onAppear { tableDidAppear = true }
-        .onChange(of: filteredMembers.count) { _, _ in
-            tableDidAppear = false
-            withAnimation(.spring(response: 0.5, dampingFraction: 0.72)) { tableDidAppear = true }
-        }
     }
 
     private var memberTableRows: [MemberTableRow] {

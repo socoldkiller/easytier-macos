@@ -21,6 +21,7 @@ struct ContentView: View {
     @State private var selectedSearchResultID: String?
     @State private var selectedTabLocal: WorkspaceTab = .status
     @State private var selectedConfigIDLocal: String?
+    @State private var showingDeleteRunningNetworkConfirmation = false
 
     private static let tabTransitionDistance: CGFloat = 14
     private static let networkTransitionDistance: CGFloat = 7
@@ -102,6 +103,14 @@ struct ContentView: View {
             Button("OK") { store.lastError = nil }
         } message: {
             Text(store.lastError ?? "")
+        }
+        .alert("Delete Running Network?", isPresented: $showingDeleteRunningNetworkConfirmation) {
+            Button("Delete", role: .destructive) {
+                deleteSelectedConfig()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("\(deleteConfirmationNetworkName) is running. Deleting it will stop the network first.")
         }
     }
 
@@ -200,8 +209,7 @@ struct ContentView: View {
                 }
                 .help("Add network")
                 Button(role: .destructive) {
-                    draftIsDirty = false
-                    Task { await store.deleteSelectedConfig() }
+                    requestDeleteSelectedConfig()
                 } label: {
                     Image(systemName: "trash")
                 }
@@ -273,6 +281,7 @@ struct ContentView: View {
                     commitDraft(saveImmediately: true)
                     openExportTOML()
                 }
+                .disabled(store.selectedConfig == nil)
             } label: {
                 Label("TOML", systemImage: "doc.text")
             }
@@ -314,6 +323,10 @@ struct ContentView: View {
 
     private var selectedConfigNeedsRestart: Bool {
         draftIsDirty && store.selectedConfigIsRunning
+    }
+
+    private var deleteConfirmationNetworkName: String {
+        store.selectedConfig?.network_name.nilIfEmpty ?? "The selected network"
     }
 
     private var selectedConfigHasRuntimeError: Bool {
@@ -614,6 +627,19 @@ struct ContentView: View {
         withAnimation(EasyTierMotion.selection(reduceMotion: reduceMotion)) {
             store.selectedTab = tab
         }
+    }
+
+    private func requestDeleteSelectedConfig() {
+        if selectedConfigIsRunning {
+            showingDeleteRunningNetworkConfirmation = true
+        } else {
+            deleteSelectedConfig()
+        }
+    }
+
+    private func deleteSelectedConfig() {
+        draftIsDirty = false
+        Task { await store.deleteSelectedConfig() }
     }
 
     private func renameSelectedHostname(_ hostname: String) {

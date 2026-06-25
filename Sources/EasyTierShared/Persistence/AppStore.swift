@@ -91,7 +91,7 @@ public final class EasyTierAppStore {
     public func load() async {
         do {
             let snapshot = try storage.load()
-            configs = snapshot.configs.isEmpty ? [StoredNetworkConfig(config: NetworkConfig())] : snapshot.configs
+            configs = snapshot.configs
             runtimeIntents = snapshot.runtimeIntents
             reversedPortForwardFingerprints = snapshot.reversedPortForwardFingerprints
             mode = snapshot.mode ?? .default
@@ -175,7 +175,6 @@ public final class EasyTierAppStore {
         Task.detached(priority: .background) {
             try? storage.deleteConfig(removed)
         }
-        if configs.isEmpty { configs.append(StoredNetworkConfig(config: NetworkConfig())) }
         let nextIndex = min(index, configs.count - 1)
         self.selectedConfigID = configs.isEmpty ? nil : configs[nextIndex].id
         saveInBackground()
@@ -481,7 +480,10 @@ public final class EasyTierAppStore {
 
     public func importTOML(_ toml: String) {
         do {
-            let config = try NetworkConfigTOMLCodec.decode(toml)
+            var config = try NetworkConfigTOMLCodec.decode(toml)
+            if configs.contains(where: { $0.id == config.instance_id }) {
+                config.instance_id = UUID().uuidString.lowercased()
+            }
             configs.append(StoredNetworkConfig(config: config))
             selectedConfigID = config.instance_id
             selectedTab = .config

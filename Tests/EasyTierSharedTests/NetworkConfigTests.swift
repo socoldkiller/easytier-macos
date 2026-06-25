@@ -94,6 +94,19 @@ import Testing
     #expect(decoded.enable_magic_dns == true)
 }
 
+@MainActor
+@Test func importTOMLGeneratesNewInstanceIDWhenImportedIDAlreadyExists() throws {
+    let config = NetworkConfig(instance_id: "duplicate-id", network_name: "office")
+    let store = EasyTierAppStore()
+    store.configs = [StoredNetworkConfig(config: config)]
+
+    store.importTOML(try NetworkConfigTOMLCodec.encode(config))
+
+    #expect(store.configs.count == 2)
+    #expect(Set(store.configs.map(\.id)).count == 2)
+    #expect(store.selectedConfigID != "duplicate-id")
+}
+
 @Test func tomlUsesCurrentEasyTierFlagNames() throws {
     var config = NetworkConfig()
     config.disable_encryption = true
@@ -431,6 +444,21 @@ import Testing
 
     #expect(store.selectedConfigID == config.instance_id)
     #expect(store.selectedConfig?.network_name == config.network_name)
+}
+
+@MainActor
+@Test func loadKeepsSavedEmptyConfigList() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let storage = EasyTierStorage(baseDirectory: directory)
+    try storage.save(AppSnapshot(configs: [], mode: .default, lastSelectedConfigID: nil))
+
+    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"), storage: storage)
+
+    await store.load()
+    store.stopPolling()
+
+    #expect(store.configs.isEmpty)
+    #expect(store.selectedConfigID == nil)
 }
 
 @MainActor
@@ -780,6 +808,20 @@ import Testing
     #expect(store.selectedConfigID == config.instance_id)
     #expect(client.stoppedInstanceNames == [[config.network_name]])
     #expect(store.lastError?.contains("stop failed") == true)
+}
+
+@MainActor
+@Test func deleteSelectedConfigCanRemoveLastStoppedConfig() async {
+    let config = NetworkConfig(instance_id: "last-id", network_name: "last-network")
+    let store = EasyTierAppStore(client: RecordingToggleClient())
+
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.selectedConfigID = config.instance_id
+
+    await store.deleteSelectedConfig()
+
+    #expect(store.configs.isEmpty)
+    #expect(store.selectedConfigID == nil)
 }
 
 @Test func unavailableClientReportsClearRuntimeFailure() async {
