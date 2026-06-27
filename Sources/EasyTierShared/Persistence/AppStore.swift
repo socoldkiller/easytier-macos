@@ -27,14 +27,20 @@ public final class EasyTierAppStore {
 
     private let client: any EasyTierCoreClient
     private let storage: EasyTierStorage
+    private let networkSecretStore: any NetworkSecretStore
     private var pollingTask: Task<Void, Never>?
     private var lastTrafficCounters: [String: (timestamp: Date, txBytes: Int64, rxBytes: Int64)] = [:]
     private var pendingStarts: [String: PendingNetworkStart] = [:]
     private var pollingEnabled: Bool = true
 
-    public init(client: any EasyTierCoreClient = PrivilegedEasyTierClient(), storage: EasyTierStorage = .default) {
+    public init(
+        client: any EasyTierCoreClient = PrivilegedEasyTierClient(),
+        storage: EasyTierStorage = .default,
+        networkSecretStore: any NetworkSecretStore = SystemNetworkSecretStore()
+    ) {
         self.client = client
         self.storage = storage
+        self.networkSecretStore = networkSecretStore
     }
 
     public var selectedConfig: NetworkConfig? {
@@ -91,7 +97,7 @@ public final class EasyTierAppStore {
     public func load() async {
         do {
             let snapshot = try storage.load()
-            configs = snapshot.configs
+            configs = try configsWithSecretsStored(snapshot.configs)
             runtimeIntents = snapshot.runtimeIntents
             reversedPortForwardFingerprints = snapshot.reversedPortForwardFingerprints
             mode = snapshot.mode ?? .default
@@ -102,6 +108,7 @@ public final class EasyTierAppStore {
             } else {
                 selectedConfigID = configs.first?.id
             }
+            saveInBackground()
             log("Loaded \(configs.count) saved network config(s).")
         } catch {
             if configs.isEmpty {
@@ -117,13 +124,9 @@ public final class EasyTierAppStore {
 
     public func save() {
         do {
-            try storage.save(AppSnapshot(
-                configs: configs,
-                mode: mode,
-                lastSelectedConfigID: selectedConfigID,
-                runtimeIntents: runtimeIntents,
-                reversedPortForwardFingerprints: reversedPortForwardFingerprints
-            ))
+            let snapshot = try snapshotForStorage()
+            try storage.save(snapshot)
+            configs = snapshot.configs
         } catch {
             lastError = error.localizedDescription
             log("Save failed: \(error.localizedDescription)")
@@ -140,13 +143,15 @@ public final class EasyTierAppStore {
     }
 
     private func saveInBackground() {
-        let snapshot = AppSnapshot(
-            configs: configs,
-            mode: mode,
-            lastSelectedConfigID: selectedConfigID,
-            runtimeIntents: runtimeIntents,
-            reversedPortForwardFingerprints: reversedPortForwardFingerprints
-        )
+        let snapshot: AppSnapshot
+        do {
+            snapshot = try snapshotForStorage()
+            configs = snapshot.configs
+        } catch {
+            lastError = error.localizedDescription
+            log("Save failed: \(error.localizedDescription)")
+            return
+        }
         let storage = self.storage
         Task.detached(priority: .background) {
             try? storage.save(snapshot)
@@ -171,6 +176,7 @@ public final class EasyTierAppStore {
         }
         reversedPortForwardFingerprints.removeValue(forKey: config.instance_id)
         let removed = configs.remove(at: index)
+        try? networkSecretStore.deleteSecret(for: removed.config)
         let storage = self.storage
         Task.detached(priority: .background) {
             try? storage.deleteConfig(removed)
@@ -209,7 +215,8 @@ public final class EasyTierAppStore {
         guard let config = selectedConfig else { return }
         await busy {
             try validateConfigForCurrentRuntime(config)
-            try await client.validate(toml: try NetworkConfigTOMLCodec.encode(config))
+            let keychainConfig = try configWithKeychainSecret(config, reason: "Use the network secret for validation.")
+            try await client.validate(toml: try NetworkConfigTOMLCodec.encode(keychainConfig))
             log("Validated \(config.network_name).")
         }
     }
@@ -219,7 +226,8 @@ public final class EasyTierAppStore {
         await busy {
             log("Starting \(config.network_name)...")
             try validateConfigForCurrentRuntime(config)
-            let cleanConfig = Self.configWithoutReversedPortForwards(config, fingerprints: reversedPortForwardFingerprints)
+            let keychainConfig = try configWithKeychainSecret(config, reason: "Use the network secret to start \(config.network_name).")
+            let cleanConfig = Self.configWithoutReversedPortForwards(keychainConfig, fingerprints: reversedPortForwardFingerprints)
             try await client.run(config: cleanConfig)
             recordPendingStart(for: config)
             log("Started \(config.network_name).")
@@ -251,7 +259,8 @@ public final class EasyTierAppStore {
         await busy {
             log("Restarting \(config.network_name)...")
             try validateConfigForCurrentRuntime(config, replacing: instance)
-            let cleanConfig = Self.configWithoutReversedPortForwards(config, fingerprints: reversedPortForwardFingerprints)
+            let keychainConfig = try configWithKeychainSecret(config, reason: "Use the network secret to restart \(config.network_name).")
+            let cleanConfig = Self.configWithoutReversedPortForwards(keychainConfig, fingerprints: reversedPortForwardFingerprints)
             try await client.validate(toml: try NetworkConfigTOMLCodec.encode(cleanConfig))
             try await client.stop(instanceNames: [instance.name])
             clearPendingStart(for: config)
@@ -475,7 +484,8 @@ public final class EasyTierAppStore {
 
     public func exportSelectedTOML() throws -> String {
         guard let selectedConfig else { return "" }
-        return try NetworkConfigTOMLCodec.encode(selectedConfig)
+        let config = try configWithKeychainSecret(selectedConfig, reason: "Use the network secret for TOML export.")
+        return try NetworkConfigTOMLCodec.encode(config)
     }
 
     public func importTOML(_ toml: String) {
@@ -484,15 +494,32 @@ public final class EasyTierAppStore {
             if configs.contains(where: { $0.id == config.instance_id }) {
                 config.instance_id = UUID().uuidString.lowercased()
             }
-            configs.append(StoredNetworkConfig(config: config))
-            selectedConfigID = config.instance_id
+            let stored = try configsWithSecretsStored([StoredNetworkConfig(config: config)])[0]
+            configs.append(stored)
+            selectedConfigID = stored.id
             selectedTab = .config
             save()
-            log("Imported \(config.network_name).")
+            log("Imported \(stored.config.network_name).")
         } catch {
             lastError = error.localizedDescription
             log("Import failed: \(error.localizedDescription)")
         }
+    }
+
+    public func networkSecretIsSaved(for config: NetworkConfig) -> Bool {
+        networkSecretStore.containsSecret(for: config)
+    }
+
+    public func networkSecretCanAutofill(for config: NetworkConfig) -> Bool {
+        networkSecretStore.containsSecret(for: config) && networkSecretStore.canAutofillWithBiometrics()
+    }
+
+    public func autofillNetworkSecret(for config: NetworkConfig) -> String? {
+        try? configWithKeychainSecret(config, reason: "Use Touch ID to fill the network secret for \(config.network_name).").network_secret?.nilIfEmpty
+    }
+
+    public func revealNetworkSecret(for config: NetworkConfig) throws -> String? {
+        try configWithKeychainSecret(config, reason: "Show the network secret for \(config.network_name).").network_secret?.nilIfEmpty
     }
 
     public func startPolling() {
@@ -740,6 +767,34 @@ public final class EasyTierAppStore {
             selectedConfigID = configs[index].id
         }
         save()
+    }
+
+    private func snapshotForStorage() throws -> AppSnapshot {
+        AppSnapshot(
+            configs: try configsWithSecretsStored(configs),
+            mode: mode,
+            lastSelectedConfigID: selectedConfigID,
+            runtimeIntents: runtimeIntents,
+            reversedPortForwardFingerprints: reversedPortForwardFingerprints
+        )
+    }
+
+    private func configsWithSecretsStored(_ storedConfigs: [StoredNetworkConfig]) throws -> [StoredNetworkConfig] {
+        var storedConfigs = storedConfigs
+        for index in storedConfigs.indices {
+            guard let secret = storedConfigs[index].config.network_secret?.nilIfEmpty else { continue }
+            try networkSecretStore.save(secret, for: storedConfigs[index].config)
+            storedConfigs[index].config.network_secret = nil
+        }
+        return storedConfigs
+    }
+
+    private func configWithKeychainSecret(_ config: NetworkConfig, reason: String) throws -> NetworkConfig {
+        guard config.network_secret?.nilIfEmpty == nil else { return config }
+        guard let secret = try networkSecretStore.secret(for: config, reason: reason) else { return config }
+        var config = config
+        config.network_secret = secret
+        return config
     }
 
     private func nonEmptyTrimmed(_ value: String?) -> String? {

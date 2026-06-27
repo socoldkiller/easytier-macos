@@ -290,6 +290,165 @@ import Testing
     #expect(loaded.lastSelectedConfigID == "abc")
 }
 
+@MainActor
+@Test func appStoreSavesNetworkSecretInKeychainNotToml() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let storage = EasyTierStorage(baseDirectory: directory)
+    let secrets = MemoryNetworkSecretStore()
+    let config = NetworkConfig(instance_id: "secret-id", network_name: "lab", network_secret: "super-secret")
+    let store = EasyTierAppStore(
+        client: UnavailableEasyTierCoreClient(reason: "test"),
+        storage: storage,
+        networkSecretStore: secrets
+    )
+
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.selectedConfigID = config.instance_id
+    store.save()
+
+    let toml = try String(contentsOf: directory.appendingPathComponent("configs/secret-id.toml"), encoding: .utf8)
+
+    #expect(secrets.secrets["secret-id"] == "super-secret")
+    #expect(!toml.contains("super-secret"))
+    #expect(store.configs.first?.config.network_secret?.nilIfEmpty == nil)
+}
+
+@MainActor
+@Test func runSelectedConfigUsesKeychainNetworkSecret() async throws {
+    let client = RecordingToggleClient()
+    let secrets = MemoryNetworkSecretStore(secrets: ["run-id": "run-secret"])
+    let config = NetworkConfig(instance_id: "run-id", network_name: "office", network_secret: nil)
+    let store = EasyTierAppStore(client: client, networkSecretStore: secrets)
+
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.selectedConfigID = config.instance_id
+
+    await store.runSelectedConfig()
+
+    #expect(client.runConfigs.first?.network_secret == "run-secret")
+}
+
+@MainActor
+@Test func exportSelectedTOMLUsesKeychainNetworkSecret() throws {
+    let secrets = MemoryNetworkSecretStore(secrets: ["export-id": "export-secret"])
+    let config = NetworkConfig(instance_id: "export-id", network_name: "office", network_secret: nil)
+    let store = EasyTierAppStore(
+        client: UnavailableEasyTierCoreClient(reason: "test"),
+        networkSecretStore: secrets
+    )
+
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.selectedConfigID = config.instance_id
+
+    let toml = try store.exportSelectedTOML()
+
+    #expect(toml.contains("export-secret"))
+}
+
+@MainActor
+@Test func networkSecretAutofillRequiresSavedSecretAndBiometrics() {
+    let config = NetworkConfig(instance_id: "autofill-id", network_name: "office")
+    let secrets = MemoryNetworkSecretStore(secrets: ["autofill-id": "secret"], canAutofill: true)
+    let store = EasyTierAppStore(
+        client: UnavailableEasyTierCoreClient(reason: "test"),
+        networkSecretStore: secrets
+    )
+
+    #expect(store.networkSecretCanAutofill(for: config))
+
+    secrets.canAutofill = false
+
+    #expect(!store.networkSecretCanAutofill(for: config))
+    #expect(secrets.readReasons.isEmpty)
+}
+
+@MainActor
+@Test func networkSecretAutofillSilentlyIgnoresReadErrors() {
+    let config = NetworkConfig(instance_id: "autofill-error-id", network_name: "office")
+    let secrets = MemoryNetworkSecretStore(secrets: ["autofill-error-id": "secret"], canAutofill: true)
+    secrets.readError = EasyTierCoreError.operationFailed("user canceled")
+    let store = EasyTierAppStore(
+        client: UnavailableEasyTierCoreClient(reason: "test"),
+        networkSecretStore: secrets
+    )
+
+    let secret = store.autofillNetworkSecret(for: config)
+
+    #expect(secret == nil)
+    #expect(store.lastError == nil)
+    #expect(secrets.readReasons.count == 1)
+}
+
+@MainActor
+@Test func explicitNetworkSecretReadReportsErrors() {
+    let config = NetworkConfig(instance_id: "explicit-error-id", network_name: "office")
+    let secrets = MemoryNetworkSecretStore(secrets: ["explicit-error-id": "secret"], canAutofill: true)
+    secrets.readError = EasyTierCoreError.operationFailed("keychain failed")
+    let store = EasyTierAppStore(
+        client: UnavailableEasyTierCoreClient(reason: "test"),
+        networkSecretStore: secrets
+    )
+
+    do {
+        _ = try store.revealNetworkSecret(for: config)
+        Issue.record("explicit read should throw")
+    } catch {
+        #expect(error.localizedDescription.contains("keychain failed"))
+    }
+}
+
+@MainActor
+@Test func importTOMLMigratesNetworkSecretToKeychain() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let storage = EasyTierStorage(baseDirectory: directory)
+    let secrets = MemoryNetworkSecretStore()
+    let config = NetworkConfig(instance_id: "import-id", network_name: "office", network_secret: "import-secret")
+    let store = EasyTierAppStore(
+        client: UnavailableEasyTierCoreClient(reason: "test"),
+        storage: storage,
+        networkSecretStore: secrets
+    )
+
+    store.importTOML(try NetworkConfigTOMLCodec.encode(config))
+
+    let toml = try String(contentsOf: directory.appendingPathComponent("configs/import-id.toml"), encoding: .utf8)
+
+    #expect(secrets.secrets["import-id"] == "import-secret")
+    #expect(!toml.contains("import-secret"))
+    #expect(store.configs.first?.config.network_secret?.nilIfEmpty == nil)
+}
+
+@MainActor
+@Test func deleteSelectedConfigDeletesKeychainNetworkSecret() async {
+    let secrets = MemoryNetworkSecretStore(secrets: ["delete-id": "secret"])
+    let config = NetworkConfig(instance_id: "delete-id", network_name: "office")
+    let store = EasyTierAppStore(client: RecordingToggleClient(), networkSecretStore: secrets)
+
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.selectedConfigID = config.instance_id
+
+    await store.deleteSelectedConfig()
+
+    #expect(secrets.secrets["delete-id"] == nil)
+}
+
+@MainActor
+@Test func keychainNetworkSecretsAreScopedByInstanceID() {
+    let secrets = MemoryNetworkSecretStore()
+    let first = NetworkConfig(instance_id: "first-id", network_name: "shared", network_secret: "first-secret")
+    let second = NetworkConfig(instance_id: "second-id", network_name: "shared", network_secret: "second-secret")
+    let store = EasyTierAppStore(
+        client: UnavailableEasyTierCoreClient(reason: "test"),
+        networkSecretStore: secrets
+    )
+
+    store.configs = [StoredNetworkConfig(config: first), StoredNetworkConfig(config: second)]
+    store.save()
+
+    #expect(secrets.secrets["first-id"] == "first-secret")
+    #expect(secrets.secrets["second-id"] == "second-secret")
+}
+
 @Test func stateJsonWithoutRuntimeIntentsDefaultsToEmptyIntentList() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let storage = EasyTierStorage(baseDirectory: directory)
@@ -1287,6 +1446,42 @@ private func rpcPayloadObject(_ payload: String) throws -> [String: Any] {
         throw EasyTierCoreError.invalidResponse("RPC payload is not a JSON object")
     }
     return object
+}
+
+private final class MemoryNetworkSecretStore: NetworkSecretStore, @unchecked Sendable {
+    var secrets: [String: String]
+    var deletedIDs: [String] = []
+    var readReasons: [String?] = []
+    var canAutofill: Bool
+    var readError: Error?
+
+    init(secrets: [String: String] = [:], canAutofill: Bool = false) {
+        self.secrets = secrets
+        self.canAutofill = canAutofill
+    }
+
+    func save(_ secret: String, for config: NetworkConfig) throws {
+        secrets[config.instance_id] = secret
+    }
+
+    func secret(for config: NetworkConfig, reason: String?) throws -> String? {
+        readReasons.append(reason)
+        if let readError { throw readError }
+        return secrets[config.instance_id]
+    }
+
+    func deleteSecret(for config: NetworkConfig) throws {
+        deletedIDs.append(config.instance_id)
+        secrets.removeValue(forKey: config.instance_id)
+    }
+
+    func containsSecret(for config: NetworkConfig) -> Bool {
+        secrets[config.instance_id] != nil
+    }
+
+    func canAutofillWithBiometrics() -> Bool {
+        canAutofill
+    }
 }
 
 private final class PendingStartClient: EasyTierCoreClient, @unchecked Sendable {

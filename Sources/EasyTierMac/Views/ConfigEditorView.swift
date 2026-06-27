@@ -17,8 +17,7 @@ struct ConfigEditorView: View {
                             .textFieldStyle(.roundedBorder)
                     }
                     FieldRow("Network secret") {
-                        SecureField("Optional shared secret", text: Binding($config.network_secret, replacingNilWith: ""))
-                            .textFieldStyle(.roundedBorder)
+                        NetworkSecretField(config: $config)
                     }
                     FieldRow("DHCP virtual IPv4") {
                         Toggle("", isOn: $config.dhcp)
@@ -394,6 +393,71 @@ private struct FieldRow<Content: View>: View {
                 .frame(width: 152, alignment: .leading)
             content
                 .frame(maxWidth: 520, alignment: .leading)
+        }
+    }
+}
+
+private struct NetworkSecretField: View {
+    @Environment(EasyTierAppStore.self) private var store
+    @Binding var config: NetworkConfig
+    @State private var isRevealed = false
+    @State private var autofillAttemptedForInstanceID: String?
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            secretInput
+                .textFieldStyle(.roundedBorder)
+                .focused($isFocused)
+                .onChange(of: isFocused) { _, focused in
+                    guard focused else { return }
+                    autofillIfAvailable()
+                }
+
+            Button {
+                isRevealed.toggle()
+            } label: {
+                Image(systemName: isRevealed ? "eye.slash" : "eye")
+            }
+            .buttonStyle(.borderless)
+            .help(isRevealed ? "Hide secret" : "Show secret")
+            .accessibilityLabel(Text(isRevealed ? "Hide secret" : "Show secret"))
+
+            Button {
+                fillFromKeychain()
+            } label: {
+                Image(systemName: "key.fill")
+            }
+            .buttonStyle(.borderless)
+            .help("Fill from Keychain")
+            .accessibilityLabel(Text("Fill from Keychain"))
+        }
+    }
+
+    @ViewBuilder
+    private var secretInput: some View {
+        if isRevealed {
+            TextField("Optional shared secret", text: Binding($config.network_secret, replacingNilWith: ""))
+        } else {
+            SecureField("Optional shared secret", text: Binding($config.network_secret, replacingNilWith: ""))
+        }
+    }
+
+    private func autofillIfAvailable() {
+        guard config.network_secret?.nilIfEmpty == nil else { return }
+        guard autofillAttemptedForInstanceID != config.instance_id else { return }
+        guard store.networkSecretCanAutofill(for: config) else { return }
+        autofillAttemptedForInstanceID = config.instance_id
+        guard let secret = store.autofillNetworkSecret(for: config) else { return }
+        config.network_secret = secret
+    }
+
+    private func fillFromKeychain() {
+        do {
+            guard let secret = try store.revealNetworkSecret(for: config) else { return }
+            config.network_secret = secret
+        } catch {
+            store.lastError = error.localizedDescription
         }
     }
 }
