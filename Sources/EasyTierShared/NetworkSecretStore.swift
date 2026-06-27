@@ -96,7 +96,7 @@ public struct SystemNetworkSecretStore: NetworkSecretStore {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.service,
-            kSecAttrAccount as String: config.instance_id,
+            kSecAttrAccount as String: config.network_name,
         ]
     }
 

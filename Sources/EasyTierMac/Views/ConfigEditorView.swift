@@ -13,8 +13,19 @@ struct ConfigEditorView: View {
             VStack(alignment: .leading, spacing: 17) {
                 CardSection("Basic") {
                     FieldRow("Network name") {
-                        TextField("easytier", text: $config.network_name)
-                            .textFieldStyle(.glassField)
+                        VStack(alignment: .leading, spacing: 6) {
+                            TextField("easytier", text: $config.network_name)
+                                .textFieldStyle(.glassField)
+                            if networkNameHasDuplicate {
+                                Label(
+                                    "Another network already uses this name. Letting it persist will reuse that network's saved secret.",
+                                    systemImage: "exclamationmark.triangle.fill"
+                                )
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
                     }
                     FieldRow("Network secret") {
                         NetworkSecretField(config: $config)
@@ -155,6 +166,14 @@ struct ConfigEditorView: View {
     }
 
     private typealias RuleKey = String
+
+    private var networkNameHasDuplicate: Bool {
+        let name = config.network_name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return false }
+        return store.configs.contains { other in
+            other.id != config.instance_id && other.config.network_name == name
+        }
+    }
 
     private var portForwardKeys: [UUID: RuleKey] {
         Dictionary(uniqueKeysWithValues: config.port_forwards.map { rule in

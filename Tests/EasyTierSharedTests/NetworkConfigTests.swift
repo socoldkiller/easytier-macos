@@ -308,7 +308,7 @@ import Testing
 
     let toml = try String(contentsOf: directory.appendingPathComponent("configs/secret-id.toml"), encoding: .utf8)
 
-    #expect(secrets.secrets["secret-id"] == "super-secret")
+    #expect(secrets.secrets["lab"] == "super-secret")
     #expect(!toml.contains("super-secret"))
     #expect(store.configs.first?.config.network_secret?.nilIfEmpty == nil)
 }
@@ -316,7 +316,7 @@ import Testing
 @MainActor
 @Test func runSelectedConfigUsesKeychainNetworkSecret() async throws {
     let client = RecordingToggleClient()
-    let secrets = MemoryNetworkSecretStore(secrets: ["run-id": "run-secret"])
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "run-secret"])
     let config = NetworkConfig(instance_id: "run-id", network_name: "office", network_secret: nil)
     let store = EasyTierAppStore(client: client, networkSecretStore: secrets)
 
@@ -330,7 +330,7 @@ import Testing
 
 @MainActor
 @Test func exportSelectedTOMLUsesKeychainNetworkSecret() throws {
-    let secrets = MemoryNetworkSecretStore(secrets: ["export-id": "export-secret"])
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "export-secret"])
     let config = NetworkConfig(instance_id: "export-id", network_name: "office", network_secret: nil)
     let store = EasyTierAppStore(
         client: UnavailableEasyTierCoreClient(reason: "test"),
@@ -348,7 +348,7 @@ import Testing
 @MainActor
 @Test func networkSecretAutofillRequiresSavedSecretAndBiometrics() {
     let config = NetworkConfig(instance_id: "autofill-id", network_name: "office")
-    let secrets = MemoryNetworkSecretStore(secrets: ["autofill-id": "secret"], canAutofill: true)
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"], canAutofill: true)
     let store = EasyTierAppStore(
         client: UnavailableEasyTierCoreClient(reason: "test"),
         networkSecretStore: secrets
@@ -365,7 +365,7 @@ import Testing
 @MainActor
 @Test func networkSecretAutofillSilentlyIgnoresReadErrors() {
     let config = NetworkConfig(instance_id: "autofill-error-id", network_name: "office")
-    let secrets = MemoryNetworkSecretStore(secrets: ["autofill-error-id": "secret"], canAutofill: true)
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"], canAutofill: true)
     secrets.readError = EasyTierCoreError.operationFailed("user canceled")
     let store = EasyTierAppStore(
         client: UnavailableEasyTierCoreClient(reason: "test"),
@@ -382,7 +382,7 @@ import Testing
 @MainActor
 @Test func explicitNetworkSecretReadReportsErrors() {
     let config = NetworkConfig(instance_id: "explicit-error-id", network_name: "office")
-    let secrets = MemoryNetworkSecretStore(secrets: ["explicit-error-id": "secret"], canAutofill: true)
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"], canAutofill: true)
     secrets.readError = EasyTierCoreError.operationFailed("keychain failed")
     let store = EasyTierAppStore(
         client: UnavailableEasyTierCoreClient(reason: "test"),
@@ -413,14 +413,14 @@ import Testing
 
     let toml = try String(contentsOf: directory.appendingPathComponent("configs/import-id.toml"), encoding: .utf8)
 
-    #expect(secrets.secrets["import-id"] == "import-secret")
+    #expect(secrets.secrets["office"] == "import-secret")
     #expect(!toml.contains("import-secret"))
     #expect(store.configs.first?.config.network_secret?.nilIfEmpty == nil)
 }
 
 @MainActor
-@Test func deleteSelectedConfigDeletesKeychainNetworkSecret() async {
-    let secrets = MemoryNetworkSecretStore(secrets: ["delete-id": "secret"])
+@Test func deleteSelectedConfigKeepsKeychainNetworkSecret() async {
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"])
     let config = NetworkConfig(instance_id: "delete-id", network_name: "office")
     let store = EasyTierAppStore(client: RecordingToggleClient(), networkSecretStore: secrets)
 
@@ -429,14 +429,14 @@ import Testing
 
     await store.deleteSelectedConfig()
 
-    #expect(secrets.secrets["delete-id"] == nil)
+    #expect(secrets.secrets["office"] == "secret")
 }
 
 @MainActor
-@Test func keychainNetworkSecretsAreScopedByInstanceID() {
+@Test func keychainNetworkSecretsAreScopedByNetworkName() {
     let secrets = MemoryNetworkSecretStore()
-    let first = NetworkConfig(instance_id: "first-id", network_name: "shared", network_secret: "first-secret")
-    let second = NetworkConfig(instance_id: "second-id", network_name: "shared", network_secret: "second-secret")
+    let first = NetworkConfig(instance_id: "first-id", network_name: "office", network_secret: "office-secret")
+    let second = NetworkConfig(instance_id: "second-id", network_name: "lab", network_secret: "lab-secret")
     let store = EasyTierAppStore(
         client: UnavailableEasyTierCoreClient(reason: "test"),
         networkSecretStore: secrets
@@ -445,8 +445,28 @@ import Testing
     store.configs = [StoredNetworkConfig(config: first), StoredNetworkConfig(config: second)]
     store.save()
 
-    #expect(secrets.secrets["first-id"] == "first-secret")
-    #expect(secrets.secrets["second-id"] == "second-secret")
+    #expect(secrets.secrets["office"] == "office-secret")
+    #expect(secrets.secrets["lab"] == "lab-secret")
+}
+
+@MainActor
+@Test func updateConfigMigratesKeychainSecretWhenNetworkNameChanges() {
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "office-secret"])
+    let original = NetworkConfig(instance_id: "rename-id", network_name: "office")
+    let store = EasyTierAppStore(
+        client: UnavailableEasyTierCoreClient(reason: "test"),
+        networkSecretStore: secrets
+    )
+
+    store.configs = [StoredNetworkConfig(config: original)]
+    store.selectedConfigID = original.instance_id
+
+    var updated = original
+    updated.network_name = "renamed"
+    store.updateConfig(id: original.instance_id, with: updated, saveImmediately: true)
+
+    #expect(secrets.secrets["renamed"] == "office-secret")
+    #expect(secrets.secrets["office"] == nil)
 }
 
 @Test func stateJsonWithoutRuntimeIntentsDefaultsToEmptyIntentList() throws {
@@ -1461,22 +1481,22 @@ private final class MemoryNetworkSecretStore: NetworkSecretStore, @unchecked Sen
     }
 
     func save(_ secret: String, for config: NetworkConfig) throws {
-        secrets[config.instance_id] = secret
+        secrets[config.network_name] = secret
     }
 
     func secret(for config: NetworkConfig, reason: String?) throws -> String? {
         readReasons.append(reason)
         if let readError { throw readError }
-        return secrets[config.instance_id]
+        return secrets[config.network_name]
     }
 
     func deleteSecret(for config: NetworkConfig) throws {
-        deletedIDs.append(config.instance_id)
-        secrets.removeValue(forKey: config.instance_id)
+        deletedIDs.append(config.network_name)
+        secrets.removeValue(forKey: config.network_name)
     }
 
     func containsSecret(for config: NetworkConfig) -> Bool {
-        secrets[config.instance_id] != nil
+        secrets[config.network_name] != nil
     }
 
     func canAutofillWithBiometrics() -> Bool {

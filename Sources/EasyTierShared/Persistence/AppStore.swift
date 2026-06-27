@@ -176,7 +176,6 @@ public final class EasyTierAppStore {
         }
         reversedPortForwardFingerprints.removeValue(forKey: config.instance_id)
         let removed = configs.remove(at: index)
-        try? networkSecretStore.deleteSecret(for: removed.config)
         let storage = self.storage
         Task.detached(priority: .background) {
             try? storage.deleteConfig(removed)
@@ -194,12 +193,26 @@ public final class EasyTierAppStore {
 
     public func updateConfig(id: String, with config: NetworkConfig, saveImmediately: Bool = false) {
         guard let index = configs.firstIndex(where: { $0.id == id }) else { return }
+        let oldConfig = configs[index].config
+        if oldConfig.network_name != config.network_name {
+            migrateNetworkSecret(from: oldConfig, to: config)
+        }
         configs[index].config = config
         if selectedConfigID == id {
             selectedConfigID = configs[index].id
         }
         if saveImmediately {
             save()
+        }
+    }
+
+    private func migrateNetworkSecret(from oldConfig: NetworkConfig, to newConfig: NetworkConfig) {
+        do {
+            guard let secret = try networkSecretStore.secret(for: oldConfig, reason: nil) else { return }
+            try networkSecretStore.save(secret, for: newConfig)
+            try networkSecretStore.deleteSecret(for: oldConfig)
+        } catch {
+            log("Skipped keychain secret migration from \(oldConfig.network_name) to \(newConfig.network_name): \(error.localizedDescription)")
         }
     }
 
