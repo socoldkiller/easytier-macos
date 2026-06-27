@@ -387,7 +387,7 @@ private struct CardSection<Content: View>: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+            .glassSurface(.panel)
         }
     }
 }

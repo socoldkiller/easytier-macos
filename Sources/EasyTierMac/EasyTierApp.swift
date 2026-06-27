@@ -830,7 +830,19 @@ struct GlassFieldStyle: TextFieldStyle {
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .strokeBorder(.primary.opacity(0.1), lineWidth: 0.5)
+                    .strokeBorder(.white.opacity(0.14), lineWidth: 0.5)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .inset(by: 0.5)
+                    .fill(
+                        LinearGradient(
+                            colors: [.white.opacity(0.18), .white.opacity(0.06), .clear],
+                            startPoint: .top,
+                            endPoint: .center
+                        )
+                    )
+                    .allowsHitTesting(false)
             }
     }
 }

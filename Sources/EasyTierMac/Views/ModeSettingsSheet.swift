@@ -80,7 +80,7 @@ struct EasyTierSettingsSheet: View {
                 .frame(height: Self.footerHeight)
         }
         .frame(width: Self.windowSize.width, height: Self.windowSize.height)
-        .presentationBackground(.thinMaterial)
+        .glassPresentationBackground()
         .presentedSurfaceMotion()
         .alert("Disable TCP RPC Listen?", isPresented: $showingDisableRPCListenWarning) {
             Button("Keep Enabled", role: .cancel) {}

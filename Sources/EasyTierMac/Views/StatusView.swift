@@ -537,11 +537,7 @@ private struct MemberSearchField: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(.primary.opacity(0.055), lineWidth: 1)
-        }
+        .glassSurface(.field, isInteractive: true)
     }
 }
 
@@ -1286,7 +1282,7 @@ private struct StatusBadge: View {
         }
         .padding(10)
         .frame(width: width, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .glassSurface(.card)
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: value)
     }
 }
@@ -1300,7 +1296,7 @@ private struct ErrorBanner: View {
             .font(.callout)
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            .glassSurface(.card, tint: .danger)
     }
 }
 
@@ -1348,6 +1344,6 @@ private struct RuntimeIntentConflictBanner: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .glassSurface(.card, tint: .warning)
     }
 }

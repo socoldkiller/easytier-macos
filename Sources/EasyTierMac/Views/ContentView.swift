@@ -44,7 +44,6 @@ struct ContentView: View {
                     workspaceContent
                 }
             }
-            .background(FrostedWindowBackground())
             .navigationTitle(navigationTitle)
             .toolbar { toolbar }
             .toolbarBackground(.thinMaterial, for: .windowToolbar)
@@ -1106,7 +1105,7 @@ private struct PermissionBanner: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
-                .background(.thinMaterial)
+                .glassSurface(.card)
                 .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 10))
                 .task(id: controller.state) {
                     await refreshUntilHelperApproved()

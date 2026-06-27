@@ -69,7 +69,7 @@ private struct StatusMetric: View {
         }
         .padding(10)
         .frame(width: width, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .glassSurface(.card)
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: value)
     }
 }
@@ -143,12 +143,7 @@ private struct TrafficLineChart: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(18)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(panelStroke, lineWidth: 1)
-        }
-        .shadow(color: shadowColor, radius: 10, y: 5)
+        .glassSurface(.panel)
         .animation(.easeOut(duration: 0.16), value: selectedSample?.id)
         .onChange(of: samples) { _, newSamples in
             if let selectedSample, !newSamples.contains(where: { $0.id == selectedSample.id }) {
@@ -335,14 +330,6 @@ private struct TrafficLineChart: View {
         return "Last \(String(format: "%.1f", seconds / 60)) min"
     }
 
-    private var panelStroke: Color {
-        colorScheme == .dark ? Color.white.opacity(0.055) : Color.black.opacity(0.06)
-    }
-
-    private var shadowColor: Color {
-        Color.black.opacity(colorScheme == .dark ? 0.08 : 0.07)
-    }
-
     private var axisGridColor: Color {
         colorScheme == .dark ? Color.white.opacity(0.085) : Color.black.opacity(0.085)
     }
@@ -446,16 +433,7 @@ private struct TrafficTooltip: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(.thickMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(tooltipStroke, lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(colorScheme == .dark ? 0.20 : 0.10), radius: 9, y: 4)
-    }
-
-    private var tooltipStroke: Color {
-        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.07)
+        .glassSurface(.panel)
     }
 }
 
