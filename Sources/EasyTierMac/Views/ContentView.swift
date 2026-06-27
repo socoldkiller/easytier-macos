@@ -139,6 +139,7 @@ struct ContentView: View {
                     systemImage: "network",
                     description: Text("Create a network config to begin.")
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         case .logs:
             LogsView()

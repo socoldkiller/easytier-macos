@@ -418,22 +418,21 @@ private struct SettingsAboutView: View {
             }
 
             SettingBlock("Software Update") {
-                HStack(alignment: .center, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .center, spacing: 10) {
                         Text(updateStatusText)
                             .font(.system(size: 13.5))
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
+
+                        Spacer(minLength: 0)
+
+                        updateAction
+                            .font(.system(size: 14))
+                            .controlSize(.small)
                     }
 
-                    Spacer(minLength: 0)
-
-                    Button(updater.isChecking ? "Checking..." : "Check Now") {
-                        updater.checkForUpdates(presentsWindow: false)
-                    }
-                    .font(.system(size: 14))
-                    .controlSize(.small)
-                    .disabled(updater.isChecking)
+                    updateProgress
                 }
                 .padding(.leading, 6)
                 .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: updateStatusText)
@@ -457,6 +456,60 @@ private struct SettingsAboutView: View {
             "Updater needs attention."
         case .idle:
             "Checks stable releases only."
+        }
+    }
+
+    @ViewBuilder
+    private var updateAction: some View {
+        switch updater.state {
+        case .checking:
+            Button("Checking...") {}
+                .disabled(true)
+        case .available:
+            Button("Download") { updater.downloadAvailableUpdate() }
+        case .downloading:
+            Button("Downloading...") {}
+                .disabled(true)
+        case .downloadFailed, .verificationFailed:
+            Button("Try Again") { updater.downloadAvailableUpdate() }
+        case .readyToInstall:
+            Button("Quit EasyTier") { updater.quitEasyTier() }
+                .keyboardShortcut(.defaultAction)
+        default:
+            Button("Check Now") { updater.checkForUpdates() }
+        }
+    }
+
+    @ViewBuilder
+    private var updateProgress: some View {
+        switch updater.state {
+        case .available:
+            Button("Release Notes") { updater.openReleaseNotes() }
+                .buttonStyle(.link)
+                .font(.system(size: 12.5))
+        case .downloading(_, let progress):
+            HStack(spacing: 8) {
+                if let progress {
+                    ProgressView(value: progress)
+                    Text("\(Int((progress * 100).rounded()))%")
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 38, alignment: .trailing)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Downloading...")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        case .failed(let message), .downloadFailed(_, let message), .verificationFailed(_, let message):
+            Text(message)
+                .font(.system(size: 12.5))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+        default:
+            EmptyView()
         }
     }
 }

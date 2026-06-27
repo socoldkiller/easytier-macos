@@ -9,6 +9,7 @@ struct StatusView: View {
     @State private var renameHostnameRequest: RenameHostnameRequest?
     @State private var memberSearchText = ""
     @State private var memberTableIsScrolling = false
+    @State private var displayedMembers: [NetworkMemberStatus] = []
 
     var highlightedMemberPeerID: String? = nil
     var onRenameLocalHostname: (String) -> Void = { _ in }
@@ -70,6 +71,15 @@ struct StatusView: View {
         }
         .padding()
         .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: runtimeError)
+        .onAppear { displayedMembers = members }
+        .onChange(of: members) { _, newMembers in
+            guard !memberTableIsScrolling else { return }
+            displayedMembers = newMembers
+        }
+        .onChange(of: memberTableIsScrolling) { _, isScrolling in
+            guard !isScrolling else { return }
+            displayedMembers = members
+        }
         .sheet(item: $renameHostnameRequest) { request in
             RenameHostnameSheet(request: request) { hostname in
                 if request.member.isLocal {
@@ -173,28 +183,28 @@ struct StatusView: View {
 
             TableColumn("Latency") { row in
                 expandablePublicServerCell(for: row) {
-                    LatencyMetricText(value: row.latency, animates: !memberTableIsScrolling)
+                    LatencyMetricText(value: row.latency, animates: false)
                 }
             }
             .width(min: 74, ideal: 84)
 
             TableColumn("Upload") { row in
                 expandablePublicServerCell(for: row) {
-                    AnimatedMetricText(value: row.uploadTotal, animates: !memberTableIsScrolling)
+                    AnimatedMetricText(value: row.uploadTotal, animates: false)
                 }
             }
             .width(min: 80, ideal: 92)
 
             TableColumn("Download") { row in
                 expandablePublicServerCell(for: row) {
-                    AnimatedMetricText(value: row.downloadTotal, animates: !memberTableIsScrolling)
+                    AnimatedMetricText(value: row.downloadTotal, animates: false)
                 }
             }
             .width(min: 90, ideal: 104)
 
             TableColumn("Loss") { row in
                 expandablePublicServerCell(for: row) {
-                    AnimatedMetricText(value: row.lossRate, animates: !memberTableIsScrolling)
+                    AnimatedMetricText(value: row.lossRate, animates: false)
                 }
             }
             .width(min: 62, ideal: 72)
@@ -259,11 +269,15 @@ struct StatusView: View {
         SearchQuery(memberSearchText)
     }
 
+    private var tableMembers: [NetworkMemberStatus] {
+        memberTableIsScrolling && !displayedMembers.isEmpty ? displayedMembers : members
+    }
+
     private var filteredMembers: [NetworkMemberStatus] {
         let query = memberSearchQuery
-        guard !query.isEmpty else { return members }
-        if query.matches(networkSearchFields) { return members }
-        return members.filter { member in
+        guard !query.isEmpty else { return tableMembers }
+        if query.matches(networkSearchFields) { return tableMembers }
+        return tableMembers.filter { member in
             query.matches(member.searchFields)
         }
     }

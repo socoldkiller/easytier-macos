@@ -3,7 +3,6 @@ import EasyTierShared
 import Foundation
 import Observation
 import ServiceManagement
-import SwiftUI
 
 @MainActor
 @Observable
@@ -11,7 +10,6 @@ final class SoftwareUpdateController {
     var state: SoftwareUpdateState = .idle
 
     @ObservationIgnored private var activeTask: Task<Void, Never>?
-    @ObservationIgnored private var window: NSWindow?
 
     private let service: GitHubReleaseUpdateService
     private let userDefaults: UserDefaults
@@ -29,12 +27,9 @@ final class SoftwareUpdateController {
         return false
     }
 
-    func checkForUpdates(presentsWindow: Bool = true) {
-        if presentsWindow {
-            showWindow()
-        }
+    func checkForUpdates() {
         activeTask?.cancel()
-        activeTask = Task { await runUpdateCheck(presentsWindow: presentsWindow) }
+        activeTask = Task { await runUpdateCheck() }
     }
 
     func downloadAvailableUpdate() {
@@ -46,12 +41,9 @@ final class SoftwareUpdateController {
     func skipAvailableUpdate() {
         guard let update = state.availableUpdate else { return }
         userDefaults.set(update.version, forKey: Self.skippedVersionKey)
-        closeWindow()
     }
 
-    func remindLater() {
-        closeWindow()
-    }
+    func remindLater() {}
 
     func openReleaseNotes() {
         guard let update = state.visibleUpdate else { return }
@@ -59,10 +51,10 @@ final class SoftwareUpdateController {
     }
 
     func quitEasyTier() {
-        NSApp.terminate(nil)
+        EasyTierApplicationDelegate.terminateNow()
     }
 
-    private func runUpdateCheck(presentsWindow: Bool) async {
+    private func runUpdateCheck() async {
         state = .checking
         do {
             let manifest = try await service.fetchManifest()
@@ -75,22 +67,10 @@ final class SoftwareUpdateController {
                 architecture: Self.currentArchitecture
             )
             state = update.map { .available($0, currentVersion: appInfo.version) } ?? .noUpdate(currentVersion: appInfo.version)
-            presentWindowIfNeeded(presentsWindow: presentsWindow)
         } catch is CancellationError {
             return
         } catch {
             state = .failed(message: Self.message(for: error))
-            presentWindowIfNeeded(presentsWindow: presentsWindow)
-        }
-    }
-
-    private func presentWindowIfNeeded(presentsWindow: Bool) {
-        guard !presentsWindow else { return }
-        switch state {
-        case .available, .failed:
-            showWindow()
-        default:
-            break
         }
     }
 
@@ -117,33 +97,6 @@ final class SoftwareUpdateController {
         } catch {
             state = .downloadFailed(update, message: Self.message(for: error))
         }
-    }
-
-    private func showWindow() {
-        if let window {
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-
-        let view = SoftwareUpdateWindowView(controller: self)
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 620, height: 292),
-            styleMask: [.titled, .closable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "Software Update"
-        window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: view)
-        window.center()
-        self.window = window
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    private func closeWindow() {
-        window?.close()
     }
 
     private static func message(for error: Error) -> String {

@@ -5,6 +5,7 @@ import SwiftUI
 
 @main
 struct EasyTierApp: App {
+    @NSApplicationDelegateAdaptor(EasyTierApplicationDelegate.self) private var appDelegate
     @State private var store = EasyTierAppStore()
     @State private var updater = SoftwareUpdateController()
     @State private var menuBarController = MenuBarStatusItemController()
@@ -47,7 +48,17 @@ struct EasyTierApp: App {
             }
 
             CommandGroup(after: .appInfo) {
-                Button("Check for Updates...") { updater.checkForUpdates() }
+                Button("Check for Updates...") {
+                    store.isShowingAbout = true
+                    updater.checkForUpdates()
+                }
+            }
+
+            CommandGroup(replacing: .appTermination) {
+                Button("Hide EasyTier") {
+                    EasyTierApplicationDelegate.hideToMenuBar()
+                }
+                .keyboardShortcut("q")
             }
         }
     }
@@ -130,6 +141,31 @@ struct EasyTierApp: App {
     }
 }
 
+@MainActor
+final class EasyTierApplicationDelegate: NSObject, NSApplicationDelegate {
+    private static var allowsTermination = false
+
+    static func hideToMenuBar() {
+        NSApp.hide(nil)
+    }
+
+    static func terminateNow() {
+        allowsTermination = true
+        NSApp.terminate(nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            Foundation.exit(EXIT_SUCCESS)
+        }
+    }
+
+    func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
+        guard Self.allowsTermination else {
+            Self.hideToMenuBar()
+            return .terminateCancel
+        }
+        return .terminateNow
+    }
+}
+
 private struct MenuBarStatusItemBridge: NSViewRepresentable {
     @Environment(\.openWindow) private var openWindow
 
@@ -159,6 +195,7 @@ private struct MenuBarStatusItemBridge: NSViewRepresentable {
     }
 
     private func openMainWindow() {
+        NSApp.unhide(nil)
         openWindow(id: "main")
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -576,8 +613,8 @@ private struct MenuBarContent: View {
 
             MenuBarDivider()
 
-            MenuBarListButton(title: "Quit", shortcut: "⌘ Q") {
-                NSApp.terminate(nil)
+            MenuBarListButton(title: "Hide EasyTier", shortcut: "⌘ Q") {
+                EasyTierApplicationDelegate.hideToMenuBar()
             }
         }
         .frame(width: 292)
@@ -664,6 +701,7 @@ private struct MenuBarContent: View {
             return
         }
 
+        NSApp.unhide(nil)
         openWindow(id: "main")
         NSApp.activate(ignoringOtherApps: true)
     }

@@ -82,7 +82,7 @@ struct AboutView: View {
             Spacer(minLength: 0)
 
             VStack(alignment: .trailing, spacing: 7) {
-                Button(updater.isChecking ? "Checking..." : "Check Now") { updater.checkForUpdates(presentsWindow: false) }
+                Button(updater.isChecking ? "Checking..." : "Check Now") { updater.checkForUpdates() }
                     .font(.system(size: 12, weight: .regular))
                     .controlSize(.small)
                     .disabled(updater.isChecking)
