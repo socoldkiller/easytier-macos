@@ -69,7 +69,7 @@ private struct StatusMetric: View {
         }
         .padding(10)
         .frame(width: width, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: value)
     }
 }
@@ -143,7 +143,7 @@ private struct TrafficLineChart: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(18)
-        .background(panelFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(panelStroke, lineWidth: 1)
@@ -273,12 +273,7 @@ private struct TrafficLineChart: View {
         }
         .chartPlotStyle { plotArea in
             plotArea
-                .background(plotFill, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(plotStroke, lineWidth: 1)
-                }
         }
         .chartOverlay { chartProxy in
             GeometryReader { geometryProxy in
@@ -340,25 +335,12 @@ private struct TrafficLineChart: View {
         return "Last \(String(format: "%.1f", seconds / 60)) min"
     }
 
-    private var panelFill: AnyShapeStyle {
-        let color = Color(nsColor: colorScheme == .dark ? .controlBackgroundColor : .windowBackgroundColor)
-        return AnyShapeStyle(color.opacity(colorScheme == .dark ? 0.86 : 0.96))
-    }
-
     private var panelStroke: Color {
         colorScheme == .dark ? Color.white.opacity(0.055) : Color.black.opacity(0.06)
     }
 
     private var shadowColor: Color {
         Color.black.opacity(colorScheme == .dark ? 0.08 : 0.07)
-    }
-
-    private var plotFill: Color {
-        colorScheme == .dark ? Color.black.opacity(0.10) : Color(nsColor: .controlBackgroundColor).opacity(0.55)
-    }
-
-    private var plotStroke: Color {
-        colorScheme == .dark ? Color.white.opacity(0.035) : Color.black.opacity(0.045)
     }
 
     private var axisGridColor: Color {
@@ -464,16 +446,12 @@ private struct TrafficTooltip: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(tooltipFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(.thickMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .strokeBorder(tooltipStroke, lineWidth: 1)
         }
         .shadow(color: .black.opacity(colorScheme == .dark ? 0.20 : 0.10), radius: 9, y: 4)
-    }
-
-    private var tooltipFill: Color {
-        Color(nsColor: colorScheme == .dark ? .controlBackgroundColor : .windowBackgroundColor).opacity(0.98)
     }
 
     private var tooltipStroke: Color {

@@ -80,6 +80,7 @@ struct EasyTierSettingsSheet: View {
                 .frame(height: Self.footerHeight)
         }
         .frame(width: Self.windowSize.width, height: Self.windowSize.height)
+        .presentationBackground(.thinMaterial)
         .presentedSurfaceMotion()
         .alert("Disable TCP RPC Listen?", isPresented: $showingDisableRPCListenWarning) {
             Button("Keep Enabled", role: .cancel) {}
@@ -182,7 +183,7 @@ struct EasyTierSettingsSheet: View {
                         ForEach(listenerURLs.indices, id: \.self) { index in
                             HStack(spacing: 5) {
                                 TextField("scheme://host:port", text: $listenerURLs[index])
-                                    .textFieldStyle(.roundedBorder)
+                                    .textFieldStyle(.glassField)
                                     .font(.system(size: 13, design: .monospaced))
                                     .frame(width: 190)
                                 Button {
@@ -227,7 +228,7 @@ struct EasyTierSettingsSheet: View {
                 ControlRow("Listen Port") {
                     HStack(spacing: 6) {
                         TextField("15888", value: $rpcListenPort, format: .number)
-                            .textFieldStyle(.roundedBorder)
+                            .textFieldStyle(.glassField)
                             .frame(width: 72)
                         Stepper("", value: $rpcListenPort, in: 1...65_535)
                             .labelsHidden()
@@ -240,7 +241,7 @@ struct EasyTierSettingsSheet: View {
                 }
                 ControlRow("Remote RPC") {
                     TextField(Self.defaultRemoteRPCAddress, text: $remoteRPCAddress)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.glassField)
                         .frame(width: 180)
                 }
             }
@@ -248,7 +249,7 @@ struct EasyTierSettingsSheet: View {
             VStack(alignment: .leading, spacing: 6) {
                 ControlRow("Config Server") {
                     TextField("https://example.com/config", text: $configServerURL)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.glassField)
                         .frame(width: 180)
                 }
             }
@@ -656,7 +657,7 @@ private struct RPCPortalWhitelistEditor: View {
                             values[index] = newValue
                         }
                     ))
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.glassField)
                     .font(.system(size: 13, design: .monospaced))
                     .frame(width: 190)
 
@@ -723,7 +724,7 @@ private struct DisabledField: View {
 
     var body: some View {
         TextField(value, text: .constant(value))
-            .textFieldStyle(.roundedBorder)
+            .textFieldStyle(.glassField)
             .frame(width: width)
     }
 }

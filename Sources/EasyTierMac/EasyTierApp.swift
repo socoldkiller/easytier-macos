@@ -20,6 +20,9 @@ struct EasyTierApp: App {
                 .environment(store)
                 .environment(updater)
                 .background(
+                    FrostedWindowBackground()
+                )
+                .background(
                     MenuBarStatusItemBridge(
                         controller: menuBarController,
                         store: store,
@@ -28,9 +31,19 @@ struct EasyTierApp: App {
                     )
                     .frame(width: 0, height: 0)
                 )
+                .background(
+                    WindowAccessor { window in
+                        window.titlebarAppearsTransparent = true
+                        window.styleMask.insert(.fullSizeContentView)
+                        window.isOpaque = false
+                        window.backgroundColor = .clear
+                    }
+                    .frame(width: 0, height: 0)
+                )
                 .frame(minWidth: 900, minHeight: 620)
                 .task { await store.load() }
         }
+        .windowToolbarStyle(.unified)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Network") { store.addConfig() }
@@ -757,9 +770,9 @@ private struct MenuBarContent: View {
 }
 
 private enum MenuBarPalette {
-    static let primaryText = Color.primary.opacity(0.88)
-    static let secondaryText = Color.primary.opacity(0.58)
-    static let mutedText = Color.primary.opacity(0.34)
+    static let primaryText = Color.primary
+    static let secondaryText = Color.secondary
+    static let mutedText = Color.secondary.opacity(0.6)
     static let divider = Color.primary.opacity(0.14)
     static let rowHighlight = Color.primary.opacity(0.08)
     static let selectedRow = Color(red: 0.10, green: 0.37, blue: 0.78)
@@ -781,10 +794,68 @@ private struct MenuBarPanelBackground: NSViewRepresentable {
     }
 
     private func configure(_ view: NSVisualEffectView) {
-        view.material = .popover
+        view.material = .sidebar
         view.blendingMode = .behindWindow
         view.state = .active
-        view.alphaValue = 0.92
+    }
+}
+
+struct FrostedWindowBackground: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        configure(view)
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {
+        configure(view)
+    }
+
+    private func configure(_ view: NSVisualEffectView) {
+        view.material = .sidebar
+        view.blendingMode = .behindWindow
+        view.state = .active
+    }
+}
+
+struct GlassFieldStyle: TextFieldStyle {
+    func _body(configuration: TextField<Self._Label>) -> some View {
+        configuration
+            .textFieldStyle(.plain)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(
+                Color.primary.opacity(0.05),
+                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(.primary.opacity(0.1), lineWidth: 0.5)
+            }
+    }
+}
+
+extension TextFieldStyle where Self == GlassFieldStyle {
+    static var glassField: GlassFieldStyle { .init() }
+}
+
+private struct WindowAccessor: NSViewRepresentable {
+    var configure: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            if let window = view.window {
+                configure(window)
+            }
+        }
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        if let window = view.window {
+            configure(window)
+        }
     }
 }
 

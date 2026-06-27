@@ -72,6 +72,7 @@ struct LinuxInstallGuideView: View {
             .padding(.vertical, 13)
         }
         .frame(width: 640, height: 520)
+        .presentationBackground(.thinMaterial)
     }
 }
 
@@ -165,7 +166,7 @@ private struct CommandField: View {
             .padding(.trailing, 3)
         }
         .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
-        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .stroke(Color.primary.opacity(0.12), lineWidth: 0.7)

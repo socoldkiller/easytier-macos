@@ -26,7 +26,7 @@ struct TOMLSheet: View {
             editor
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(8)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
 
             HStack {
                 if mode == .export {
@@ -48,6 +48,7 @@ struct TOMLSheet: View {
         }
         .padding(24)
         .frame(width: 720, height: 560)
+        .presentationBackground(.thinMaterial)
         .presentedSurfaceMotion()
     }
 

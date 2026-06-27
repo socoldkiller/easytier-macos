@@ -236,6 +236,9 @@ struct StatusView: View {
                 }
             }
         }
+        .tableStyle(.inset)
+        .alternatingRowBackgrounds(.disabled)
+        .scrollContentBackground(.hidden)
         .scrollIndicators(.never, axes: [.vertical, .horizontal])
         .trackScrollPhase(isScrolling: $memberTableIsScrolling)
     }
@@ -444,7 +447,7 @@ private struct RenameHostnameSheet: View {
             }
 
             TextField("Hostname", text: $hostname)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.glassField)
                 .focused($isHostnameFieldFocused)
                 .disabled(isSaving)
                 .onSubmit(save)
@@ -534,7 +537,7 @@ private struct MemberSearchField: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .strokeBorder(.primary.opacity(0.055), lineWidth: 1)
@@ -1283,7 +1286,7 @@ private struct StatusBadge: View {
         }
         .padding(10)
         .frame(width: width, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: value)
     }
 }

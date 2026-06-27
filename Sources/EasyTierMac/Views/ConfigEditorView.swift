@@ -14,7 +14,7 @@ struct ConfigEditorView: View {
                 CardSection("Basic") {
                     FieldRow("Network name") {
                         TextField("easytier", text: $config.network_name)
-                            .textFieldStyle(.roundedBorder)
+                            .textFieldStyle(.glassField)
                     }
                     FieldRow("Network secret") {
                         NetworkSecretField(config: $config)
@@ -26,7 +26,7 @@ struct ConfigEditorView: View {
                     FieldRow("Virtual IPv4") {
                         HStack(spacing: 10) {
                             TextField("10.144.144.10", text: $config.virtual_ipv4)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(.glassField)
                                 .disabled(config.dhcp)
                             Stepper("/\(config.network_length)", value: $config.network_length, in: 1...32)
                                 .frame(width: 110)
@@ -35,7 +35,7 @@ struct ConfigEditorView: View {
                     }
                     FieldRow("Hostname") {
                         TextField("Optional hostname", text: Binding($config.hostname, replacingNilWith: ""))
-                            .textFieldStyle(.roundedBorder)
+                            .textFieldStyle(.glassField)
                     }
                 }
 
@@ -73,18 +73,18 @@ struct ConfigEditorView: View {
                             Toggle("Enable SOCKS5", isOn: optionalBool($config.enable_socks5, defaultValue: false))
                             FieldRow("SOCKS5 port") {
                                 TextField("1080", value: $config.socks5_port, format: .number)
-                                    .textFieldStyle(.roundedBorder)
+                                    .textFieldStyle(.glassField)
                                     .disabled(config.enable_socks5 != true)
                             }
                             Toggle("VPN portal", isOn: $config.enable_vpn_portal)
                             FieldRow("VPN portal port") {
                                 TextField("22022", value: $config.vpn_portal_listen_port, format: .number)
-                                    .textFieldStyle(.roundedBorder)
+                                    .textFieldStyle(.glassField)
                                     .disabled(!config.enable_vpn_portal)
                             }
                             FieldRow("VPN client network") {
                                 TextField("10.0.0.0", text: $config.vpn_portal_client_network_addr)
-                                    .textFieldStyle(.roundedBorder)
+                                    .textFieldStyle(.glassField)
                                     .disabled(!config.enable_vpn_portal)
                             }
                             FieldRow("VPN client prefix") {
@@ -135,6 +135,7 @@ struct ConfigEditorView: View {
             .padding(18)
         }
         .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
+        .textFieldStyle(.glassField)
         .onAppear {
             Task { await refreshReverseStatus() }
         }
@@ -368,10 +369,6 @@ private struct CardSection<Content: View>: View {
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
-            .overlay {
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(.primary.opacity(0.045), lineWidth: 1)
-            }
         }
     }
 }
@@ -407,7 +404,7 @@ private struct NetworkSecretField: View {
     var body: some View {
         HStack(spacing: 8) {
             secretInput
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.glassField)
                 .focused($isFocused)
                 .onChange(of: isFocused) { _, focused in
                     guard focused else { return }

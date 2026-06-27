@@ -44,8 +44,10 @@ struct ContentView: View {
                     workspaceContent
                 }
             }
+            .background(FrostedWindowBackground())
             .navigationTitle(navigationTitle)
             .toolbar { toolbar }
+            .toolbarBackground(.thinMaterial, for: .windowToolbar)
         }
         .task(id: store.selectedConfigID) {
             loadDraft(for: store.selectedConfigID)
@@ -158,6 +160,7 @@ struct ContentView: View {
                         }
                     }
                 }
+                .scrollContentBackground(.hidden)
             } else {
                 List(selection: $selectedSearchResultID) {
                     Section("Search Results") {
@@ -178,6 +181,7 @@ struct ContentView: View {
                         }
                     }
                 }
+                .scrollContentBackground(.hidden)
             }
         }
         .searchable(
@@ -1102,7 +1106,7 @@ private struct PermissionBanner: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
-                .background(.bar)
+                .background(.thinMaterial)
                 .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 10))
                 .task(id: controller.state) {
                     await refreshUntilHelperApproved()
