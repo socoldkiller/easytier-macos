@@ -554,6 +554,7 @@ GUI_COMMIT="$(git_revision "$ROOT_DIR")"
 CORE_TAG="$(git_exact_tag "$ROOT_DIR/Vendor/EasyTier")"
 CORE_COMMIT="$(git_revision "$ROOT_DIR/Vendor/EasyTier")"
 SWIFT_BUILD_ARGS=(--configuration "$BUILD_CONFIGURATION")
+swift --version >&2
 if [[ "$BUILD_CONFIGURATION" == "release" && "$DEAD_STRIP_RELEASE" == "1" ]]; then
   SWIFT_BUILD_ARGS+=(-Xlinker -dead_strip)
   echo "Swift release linker: -dead_strip"

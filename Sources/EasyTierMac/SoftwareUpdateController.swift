@@ -196,10 +196,12 @@ struct GitHubReleaseUpdateService {
 
         try? FileManager.default.removeItem(at: temporaryURL)
         try? FileManager.default.removeItem(at: destinationURL)
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
 
         if update.asset.url.isFileURL {
             try FileManager.default.copyItem(at: update.asset.url, to: temporaryURL)
             await progress(1)
+            try Task.checkCancellation()
             try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
             return destinationURL
         }
@@ -234,10 +236,10 @@ struct GitHubReleaseUpdateService {
             try handle.close()
         } catch {
             try? handle.close()
-            try? FileManager.default.removeItem(at: temporaryURL)
             throw error
         }
 
+        try Task.checkCancellation()
         try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
         return destinationURL
     }

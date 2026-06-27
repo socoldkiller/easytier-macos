@@ -129,5 +129,8 @@ final class PermissionController {
         process.arguments = ["resetbtm"]
         try process.run()
         process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw CocoaError(.executableLoad)
+        }
     }
 }
