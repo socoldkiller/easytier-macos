@@ -14,13 +14,21 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, @unchecked Send
     }
 
     private func acquireConnection() throws -> NSXPCConnection {
-        try ensureHelperIsEnabled()
         connectionLock.lock()
         defer { connectionLock.unlock() }
 
         if let conn = _connection {
             return conn
         }
+
+        // SMAppService.status triggers a synchronous XPC round-trip to the
+        // system daemon (smd), which is expensive. Only pay that cost when we
+        // are about to open a fresh connection. Once a cached NSXPCConnection
+        // exists, the helper's liveness is already observable through the
+        // proxy error handler in callHelperReturningPayload, which drops the
+        // connection and re-checks status on failure — so this guard is not
+        // needed on every poll.
+        try ensureHelperIsEnabled()
 
         let conn = NSXPCConnection(
             machServiceName: EasyTierPrivilegedHelperConstants.machServiceName,
