@@ -25,6 +25,9 @@ struct EasyTierApp: App {
                     if appearanceSettings.glassEffectsEnabled {
                         FrostedWindowBackground()
                             .ignoresSafeArea()
+                    } else {
+                        Color(nsColor: .windowBackgroundColor)
+                            .ignoresSafeArea()
                     }
                 }
                 .background(
