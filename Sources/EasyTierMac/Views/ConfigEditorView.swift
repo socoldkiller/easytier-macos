@@ -8,53 +8,134 @@ struct ConfigEditorView: View {
     @State private var reversePortForwardStatus: [UUID: Bool] = [:]
     @State private var reversePortForwardPending: Set<UUID> = []
 
+    @State private var displayAdvanced: Bool = false
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 17) {
-                CardSection("Basic") {
-                    FieldRow("Network name") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            TextField("easytier", text: $config.network_name)
-                                .textFieldStyle(.glassField)
-                            if networkNameHasDuplicate {
-                                Label(
-                                    "Another network already uses this name. Letting it persist will reuse that network's saved secret.",
-                                    systemImage: "exclamationmark.triangle.fill"
-                                )
-                                .font(.system(size: 11.5))
-                                .foregroundStyle(.orange)
-                                .fixedSize(horizontal: false, vertical: true)
-                            }
+            VStack(alignment: .leading, spacing: 22) {
+                modePicker
+
+                if displayAdvanced {
+                    advancedContent
+                } else {
+                    basicContent
+                }
+            }
+            .padding(18)
+        }
+        .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
+        .textFieldStyle(.glassField)
+        .onAppear {
+            syncDisplayMode()
+            Task { await refreshReverseStatus() }
+        }
+        .onChange(of: config.instance_id) { _, _ in
+            syncDisplayMode()
+        }
+        .onChange(of: portForwardKeys) { oldKeys, newKeys in
+            for (id, key) in oldKeys {
+                if newKeys[id] == nil || newKeys[id] != key {
+                    reversePortForwardStatus[id] = nil
+                    if let oldFP = oldKeys[id] {
+                        store.reversedPortForwardFingerprints[config.instance_id]?.remove(oldFP)
+                        if store.reversedPortForwardFingerprints[config.instance_id]?.isEmpty == true {
+                            store.reversedPortForwardFingerprints.removeValue(forKey: config.instance_id)
                         }
                     }
-                    FieldRow("Network secret") {
-                        NetworkSecretField(config: $config)
-                    }
-                    FieldRow("DHCP virtual IPv4") {
-                        Toggle("", isOn: $config.dhcp)
-                            .labelsHidden()
-                    }
-                    FieldRow("Virtual IPv4") {
-                        HStack(spacing: 10) {
-                            TextField("10.144.144.10", text: $config.virtual_ipv4)
-                                .textFieldStyle(.glassField)
-                                .disabled(config.dhcp)
-                            Stepper("/\(config.network_length)", value: $config.network_length, in: 1...32)
-                                .frame(width: 110)
-                                .disabled(config.dhcp)
-                        }
-                    }
-                    FieldRow("Hostname") {
-                        TextField("Optional hostname", text: Binding($config.hostname, replacingNilWith: ""))
-                            .textFieldStyle(.glassField)
-                    }
                 }
+            }
+        }
+    }
 
-                CardSection("Peers") {
-                    StringListEditor(title: "Initial nodes", placeholder: "tcp://host:11010", values: $config.peer_urls)
+    private var modePicker: some View {
+        HStack(spacing: 12) {
+            Picker("Config mode", selection: Binding(
+                get: { displayAdvanced },
+                set: { newValue in
+                    displayAdvanced = newValue
+                    config.advanced_settings = newValue
                 }
+            )) {
+                Text("Basic").tag(false)
+                Text("Advanced").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 220)
+            .accessibilityLabel("Configuration mode")
 
-                CardSection("Advanced") {
+            Spacer(minLength: 12)
+
+            if !displayAdvanced && hasHiddenAdvancedFields {
+                Label(
+                    "Has advanced settings hidden",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.orange)
+                .help("This network uses advanced settings that Basic mode hides.")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var basicContent: some View {
+        CardSection("Network") {
+            networkNameRow
+            FieldRow("Network secret") {
+                NetworkSecretField(config: $config)
+            }
+        }
+
+        CardSection("Peers") {
+            StringListEditor(title: "Initial nodes", placeholder: "tcp://host:11010", values: $config.peer_urls)
+        }
+
+        Text(basicHelperText)
+            .font(.caption)
+            .foregroundStyle(hasHiddenAdvancedFields ? .orange : .secondary)
+            .padding(.leading, 2)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var basicHelperText: String {
+        if hasHiddenAdvancedFields {
+            return "This network uses advanced settings that Basic mode hides. Switch to Advanced to edit them."
+        }
+        return "Virtual IP is auto-assigned (DHCP). Default listeners and TUN are preconfigured — fill these three fields to connect."
+    }
+
+    @ViewBuilder
+    private var advancedContent: some View {
+        CardSection("Network") {
+            networkNameRow
+            FieldRow("Network secret") {
+                NetworkSecretField(config: $config)
+            }
+            FieldRow("DHCP virtual IPv4") {
+                Toggle("", isOn: $config.dhcp)
+                    .labelsHidden()
+            }
+            FieldRow("Virtual IPv4") {
+                HStack(spacing: 10) {
+                    TextField("10.144.144.10", text: $config.virtual_ipv4)
+                        .textFieldStyle(.glassField)
+                        .disabled(config.dhcp)
+                    Stepper("/\(config.network_length)", value: $config.network_length, in: 1...32)
+                        .frame(width: 110)
+                        .disabled(config.dhcp)
+                }
+            }
+            FieldRow("Hostname") {
+                TextField("Optional hostname", text: Binding($config.hostname, replacingNilWith: ""))
+                    .textFieldStyle(.glassField)
+            }
+        }
+
+        CardSection("Peers") {
+            StringListEditor(title: "Initial nodes", placeholder: "tcp://host:11010", values: $config.peer_urls)
+        }
+
+        CardSection("Advanced") {
                     ExpandableSettingsGroup("Network routing") {
                         VStack(alignment: .leading, spacing: 12) {
                             StringListEditor(
@@ -142,30 +223,62 @@ struct ConfigEditorView: View {
                         }
                     )
                 }
-            }
-            .padding(18)
-        }
-        .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
-        .textFieldStyle(.glassField)
-        .onAppear {
-            Task { await refreshReverseStatus() }
-        }
-        .onChange(of: portForwardKeys) { oldKeys, newKeys in
-            for (id, key) in oldKeys {
-                if newKeys[id] == nil || newKeys[id] != key {
-                    reversePortForwardStatus[id] = nil
-                    if let oldFP = oldKeys[id] {
-                        store.reversedPortForwardFingerprints[config.instance_id]?.remove(oldFP)
-                        if store.reversedPortForwardFingerprints[config.instance_id]?.isEmpty == true {
-                            store.reversedPortForwardFingerprints.removeValue(forKey: config.instance_id)
-                        }
-                    }
+    }
+
+    private typealias RuleKey = String
+
+    @ViewBuilder
+    private var networkNameRow: some View {
+        FieldRow("Network name") {
+            VStack(alignment: .leading, spacing: 6) {
+                TextField("easytier", text: $config.network_name)
+                    .textFieldStyle(.glassField)
+                if networkNameHasDuplicate {
+                    Label(
+                        "Another network already uses this name. Letting it persist will reuse that network's saved secret.",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
     }
 
-    private typealias RuleKey = String
+    private func syncDisplayMode() {
+        displayAdvanced = hasHiddenAdvancedFields || config.advanced_settings
+    }
+
+    private var hasHiddenAdvancedFields: Bool {
+        if !config.dhcp { return true }
+        if !config.virtual_ipv4.isEmpty { return true }
+        if config.network_length != 24 { return true }
+        if config.listener_urls != Self.defaultListenerURLs { return true }
+        if !config.proxy_cidrs.isEmpty { return true }
+        if config.enable_manual_routes || !config.routes.isEmpty { return true }
+        if !config.exit_nodes.isEmpty { return true }
+        if !config.mapped_listeners.isEmpty { return true }
+        if config.enable_vpn_portal { return true }
+        if config.enable_socks5 == true { return true }
+        if config.latency_first { return true }
+        if config.disable_p2p == true { return true }
+        if config.no_tun == true { return true }
+        if config.multi_thread == false { return true }
+        if config.enable_magic_dns == true { return true }
+        if config.enable_private_mode == true { return true }
+        if config.disable_ipv6 == true { return true }
+        if config.bind_device == false { return true }
+        if config.disable_encryption == true { return true }
+        if config.enable_exit_node == true { return true }
+        if config.mtu != nil { return true }
+        if config.instance_recv_bps_limit != nil { return true }
+        if config.enable_relay_network_whitelist == true || !config.relay_network_whitelist.isEmpty { return true }
+        if !config.port_forwards.isEmpty { return true }
+        return false
+    }
+
+    private static let defaultListenerURLs = NetworkConfig().listener_urls
 
     private var networkNameHasDuplicate: Bool {
         let name = config.network_name.trimmingCharacters(in: .whitespacesAndNewlines)

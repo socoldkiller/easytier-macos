@@ -33,6 +33,25 @@ import Testing
     #expect(config.multi_thread == true)
 }
 
+@Test func defaultConfigUsesBasicMode() {
+    let config = NetworkConfig()
+
+    #expect(config.advanced_settings == false)
+    #expect(config.peer_urls == [])
+    #expect(config.network_secret == "")
+}
+
+@Test func togglingAdvancedSettingsPreservesBasicFields() {
+    var config = NetworkConfig(network_name: "office", network_secret: "secret")
+    config.peer_urls = ["tcp://example.com:11010"]
+    config.advanced_settings = true
+    config.advanced_settings = false
+
+    #expect(config.network_name == "office")
+    #expect(config.network_secret == "secret")
+    #expect(config.peer_urls == ["tcp://example.com:11010"])
+}
+
 @Test func listenerURLDefaultsSuggestNextMissingProtocol() {
     #expect(ListenerURLDefaults.next(excluding: NetworkConfig().listener_urls) == "ws://0.0.0.0:11011")
     #expect(ListenerURLDefaults.next(excluding: [" TCP://0.0.0.0:11010 "]) == "udp://0.0.0.0:11010")
