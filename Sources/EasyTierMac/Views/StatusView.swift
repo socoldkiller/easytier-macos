@@ -5,6 +5,7 @@ import SwiftUI
 struct StatusView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(EasyTierAppStore.self) private var store
+    @Environment(AppAppearanceSettings.self) private var appearanceSettings
     @State private var publicServerGroupExpanded = false
     @State private var renameHostnameRequest: RenameHostnameRequest?
     @State private var memberSearchText = ""
@@ -236,9 +237,7 @@ struct StatusView: View {
                 }
             }
         }
-        .tableStyle(.inset)
-        .alternatingRowBackgrounds(.disabled)
-        .scrollContentBackground(.hidden)
+        .modifier(MemberTableAppearanceModifier(glassEffectsEnabled: appearanceSettings.glassEffectsEnabled))
         .scrollIndicators(.never, axes: [.vertical, .horizontal])
         .trackScrollPhase(isScrolling: $memberTableIsScrolling)
     }
@@ -359,6 +358,22 @@ struct StatusView: View {
         )
     }
 
+}
+
+private struct MemberTableAppearanceModifier: ViewModifier {
+    var glassEffectsEnabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if glassEffectsEnabled {
+            content
+                .tableStyle(.inset)
+                .alternatingRowBackgrounds(.disabled)
+                .scrollContentBackground(.hidden)
+        } else {
+            content
+        }
+    }
 }
 
 private struct MemberTableRow: Identifiable, Equatable {

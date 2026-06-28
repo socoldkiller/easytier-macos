@@ -9,6 +9,7 @@ struct EasyTierApp: App {
     @State private var store = EasyTierAppStore()
     @State private var updater = SoftwareUpdateController()
     @State private var menuBarController = MenuBarStatusItemController()
+    @State private var appearanceSettings = AppAppearanceSettings()
 
     init() {
         Self.runHelperCommandIfRequested()
@@ -19,24 +20,26 @@ struct EasyTierApp: App {
             ContentView()
                 .environment(store)
                 .environment(updater)
-                .background(
-                    FrostedWindowBackground()
-                )
+                .environment(appearanceSettings)
+                .background {
+                    if appearanceSettings.glassEffectsEnabled {
+                        FrostedWindowBackground()
+                            .ignoresSafeArea()
+                    }
+                }
                 .background(
                     MenuBarStatusItemBridge(
                         controller: menuBarController,
                         store: store,
                         updater: updater,
+                        appearanceSettings: appearanceSettings,
                         connectionState: menuBarConnectionState
                     )
                     .frame(width: 0, height: 0)
                 )
                 .background(
                     WindowAccessor { window in
-                        window.titlebarAppearsTransparent = true
-                        window.styleMask.insert(.fullSizeContentView)
-                        window.isOpaque = false
-                        window.backgroundColor = .clear
+                        configureMainWindow(window)
                     }
                     .frame(width: 0, height: 0)
                 )
@@ -81,6 +84,22 @@ struct EasyTierApp: App {
         if store.isBusy { return .connecting }
         guard let instance = store.selectedRunningInstance else { return .idle }
         return store.instanceIsFullyConnected(instance) ? .connected : .connecting
+    }
+
+    private func configureMainWindow(_ window: NSWindow) {
+        let frame = window.frame
+        window.styleMask.insert(.fullSizeContentView)
+        window.titlebarAppearsTransparent = true
+        if appearanceSettings.glassEffectsEnabled {
+            window.isOpaque = false
+            window.backgroundColor = .clear
+        } else {
+            window.isOpaque = true
+            window.backgroundColor = .windowBackgroundColor
+        }
+        if window.frame != frame {
+            window.setFrame(frame, display: true)
+        }
     }
 
     private static func runHelperCommandIfRequested() {
@@ -185,6 +204,7 @@ private struct MenuBarStatusItemBridge: NSViewRepresentable {
     var controller: MenuBarStatusItemController
     var store: EasyTierAppStore
     var updater: SoftwareUpdateController
+    var appearanceSettings: AppAppearanceSettings
     var connectionState: ConnectionGlyphState
 
     func makeNSView(context: Context) -> NSView {
@@ -192,6 +212,7 @@ private struct MenuBarStatusItemBridge: NSViewRepresentable {
         controller.update(
             store: store,
             updater: updater,
+            appearanceSettings: appearanceSettings,
             connectionState: connectionState,
             openMainWindow: openMainWindow
         )
@@ -202,6 +223,7 @@ private struct MenuBarStatusItemBridge: NSViewRepresentable {
         controller.update(
             store: store,
             updater: updater,
+            appearanceSettings: appearanceSettings,
             connectionState: connectionState,
             openMainWindow: openMainWindow
         )
@@ -227,7 +249,7 @@ private final class MenuBarStatusItemController: NSObject {
     private var resignActiveObserver: NSObjectProtocol?
     private var openMainWindowAction: (() -> Void)?
 
-    private static let popoverSize = NSSize(width: 292, height: 334)
+    private static let popoverSize = NSSize(width: 292, height: 370)
     private static let counterclockwiseNodeIndexes = [0, 1, 2]
     private static let stepDurationNanoseconds: UInt64 = 340_000_000
 
@@ -242,6 +264,7 @@ private final class MenuBarStatusItemController: NSObject {
     func update(
         store: EasyTierAppStore,
         updater: SoftwareUpdateController,
+        appearanceSettings: AppAppearanceSettings,
         connectionState: ConnectionGlyphState,
         openMainWindow: @escaping () -> Void
     ) {
@@ -255,7 +278,7 @@ private final class MenuBarStatusItemController: NSObject {
         }
 
         refreshStatusImage()
-        updatePopoverContent(store: store, updater: updater)
+        updatePopoverContent(store: store, updater: updater, appearanceSettings: appearanceSettings)
     }
 
     func closePopover() {
@@ -277,7 +300,11 @@ private final class MenuBarStatusItemController: NSObject {
         statusItem = item
     }
 
-    private func updatePopoverContent(store: EasyTierAppStore, updater: SoftwareUpdateController) {
+    private func updatePopoverContent(
+        store: EasyTierAppStore,
+        updater: SoftwareUpdateController,
+        appearanceSettings: AppAppearanceSettings
+    ) {
         guard hostingController == nil else {
             popover.contentSize = Self.popoverSize
             return
@@ -289,6 +316,7 @@ private final class MenuBarStatusItemController: NSObject {
         )
         .environment(store)
         .environment(updater)
+        .environment(appearanceSettings)
 
         let rootView = AnyView(content)
         let controller = NSHostingController(rootView: rootView)
@@ -542,6 +570,7 @@ private enum MenuBarConnectionIcon {
 
 private struct MenuBarContent: View {
     @Environment(EasyTierAppStore.self) private var store
+    @Environment(AppAppearanceSettings.self) private var appearanceSettings
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismiss) private var dismiss
 
@@ -618,6 +647,10 @@ private struct MenuBarContent: View {
 
             MenuBarDivider()
 
+            MenuBarListButton(title: windowEffectTitle) {
+                appearanceSettings.glassEffectsEnabled.toggle()
+            }
+
             MenuBarListButton(title: "Settings...", shortcut: "⌘ ,") {
                 openMainWindow()
                 store.isShowingSettings = true
@@ -680,6 +713,10 @@ private struct MenuBarContent: View {
         let count = store.selectedMemberStatuses.count
         if count > 0 { return "\(count) Devices" }
         return store.selectedConfigIsRunning ? "Loading Devices..." : "No Devices"
+    }
+
+    private var windowEffectTitle: String {
+        "Window Effect: \(appearanceSettings.glassEffectsEnabled ? "Frosted Glass" : "Traditional")"
     }
 
     private var connectionSubtitle: String {

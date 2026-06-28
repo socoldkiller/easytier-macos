@@ -44,10 +44,8 @@ struct ContentView: View {
                     workspaceContent
                 }
             }
-            .background(FrostedWindowBackground())
             .navigationTitle(navigationTitle)
             .toolbar { toolbar }
-            .toolbarBackground(.thinMaterial, for: .windowToolbar)
         }
         .task(id: store.selectedConfigID) {
             loadDraft(for: store.selectedConfigID)
