@@ -1161,9 +1161,14 @@ private struct NetworkRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(stored.config.network_name)
                     .lineLimit(1)
-                Text(stored.source.rawValue.capitalized)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if let hostname = stored.config.hostname?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .nilIfEmpty {
+                    Text(hostname)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
         }
         .padding(.vertical, 4)
