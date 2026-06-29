@@ -9,6 +9,7 @@ public final class EasyTierAppStore {
     public var selectedConfigID: String?
     public var mode: AppMode = .default
     public var instances: [NetworkInstance] = []
+    public var runtimeDetails: [String: NetworkInstanceRunningInfo] = [:]
     public var selectedTab: WorkspaceTab = .status
     public var logLines: [LogEntry] = []
     public var isBusy = false
@@ -85,8 +86,13 @@ public final class EasyTierAppStore {
         instance.isFullyConnected(expectRemotePeers: config(matching: instance)?.expectsRemotePeerConnection == true)
     }
 
+    public var selectedRuntimeDetail: NetworkInstanceRunningInfo? {
+        guard let name = selectedRunningInstance?.name else { return nil }
+        return runtimeDetails[name]
+    }
+
     public var selectedMemberStatuses: [NetworkMemberStatus] {
-        selectedRunningInstance?.detail?.memberStatuses ?? []
+        selectedRuntimeDetail?.memberStatuses ?? []
     }
 
     public var selectedTrafficSamples: [TrafficSample] {
@@ -245,8 +251,11 @@ public final class EasyTierAppStore {
             recordPendingStart(for: config)
             log("Started \(config.network_name).")
             try await refreshRuntimeThrowing()
-            if let error = selectedRunningInstance?.runtimeErrorMessage ?? selectedRunningInstance?.listenerErrorFromEvents {
-                lastError = error
+            if var instance = selectedRunningInstance {
+                instance.detail = selectedRuntimeDetail
+                if let error = instance.runtimeErrorMessage ?? instance.listenerErrorFromEvents {
+                    lastError = error
+                }
             }
         }
     }
@@ -606,7 +615,16 @@ public final class EasyTierAppStore {
         }
         mergePendingStarts(into: &running)
         recordTrafficSamples(for: running)
-        if running != instances {
+
+        var newDetails: [String: NetworkInstanceRunningInfo] = [:]
+        for instance in running {
+            if let detail = instance.detail {
+                newDetails[instance.name] = detail
+            }
+        }
+        runtimeDetails = newDetails
+
+        if !instancesStructureUnchanged(instances, running) {
             instances = running
         }
         await reconcileRuntimeIntents()
@@ -615,6 +633,30 @@ public final class EasyTierAppStore {
         } else {
             isConfigServerConnected = try await client.isConfigServerClientConnected()
         }
+    }
+
+    private func instancesStructureUnchanged(_ current: [NetworkInstance], _ running: [NetworkInstance]) -> Bool {
+        guard current.count == running.count else { return false }
+        let currentByID = Dictionary(current.map { ($0.instance_id, $0) }, uniquingKeysWith: { $1 })
+        for newInstance in running {
+            guard let oldInstance = currentByID[newInstance.instance_id] else { return false }
+            if oldInstance.name != newInstance.name { return false }
+            if oldInstance.error_msg != newInstance.error_msg { return false }
+
+            let oldMembers = oldInstance.detail?.memberStatuses ?? []
+            let newMembers = newInstance.detail?.memberStatuses ?? []
+            guard oldMembers.count == newMembers.count else { return false }
+            for (old, new) in zip(oldMembers, newMembers) {
+                if old.id != new.id { return false }
+                if old.hostname != new.hostname { return false }
+                if old.isLocal != new.isLocal { return false }
+                if old.virtualIPv4 != new.virtualIPv4 { return false }
+                if old.isPublicServer != new.isPublicServer { return false }
+                if old.peerID != new.peerID { return false }
+                if old.instanceID != new.instanceID { return false }
+            }
+        }
+        return true
     }
 
     private func reconcileRuntimeIntents() async {
@@ -700,10 +742,11 @@ public final class EasyTierAppStore {
                 if let instanceID = target.instanceID, instance.instance_id == instanceID { return true }
                 return instance.name == target.networkName
             }) else { return nil }
+            let detail = runtimeDetails[instance.name]
             return RuntimeIntentObservation(
                 instanceID: instance.instance_id,
-                hostname: instance.detail?.my_node_info?.hostname,
-                ipv4: instance.detail?.my_node_info?.displayIPv4,
+                hostname: detail?.my_node_info?.hostname,
+                ipv4: detail?.my_node_info?.displayIPv4,
                 rpcURL: nil,
                 label: instance.name,
                 isLocal: true
@@ -714,7 +757,8 @@ public final class EasyTierAppStore {
             instance.name == target.networkName || config(matching: instance)?.network_name == target.networkName
         }
         for instance in candidateInstances {
-            guard let member = instance.detail?.memberStatuses.first(where: { member in
+            let detail = runtimeDetails[instance.name]
+            guard let member = (detail?.memberStatuses ?? instance.detail?.memberStatuses ?? []).first(where: { member in
                 guard !member.isLocal else { return false }
                 if let instanceID = target.instanceID, member.instanceID == instanceID { return true }
                 if let peerID = target.peerID, member.peerID == peerID { return true }
