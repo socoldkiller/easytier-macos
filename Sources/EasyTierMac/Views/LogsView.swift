@@ -19,10 +19,10 @@ struct LogsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            ScrollView {
+                ScrollView {
                 LazyVStack(alignment: .leading, spacing: 6) {
-                    ForEach(Array(store.logLines.enumerated()), id: \.offset) { _, line in
-                        Text(line)
+                    ForEach(store.logLines) { entry in
+                        Text(entry.text)
                             .font(.system(.callout, design: .monospaced))
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)

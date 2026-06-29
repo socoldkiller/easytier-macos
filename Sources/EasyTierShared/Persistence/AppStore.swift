@@ -10,7 +10,7 @@ public final class EasyTierAppStore {
     public var mode: AppMode = .default
     public var instances: [NetworkInstance] = []
     public var selectedTab: WorkspaceTab = .status
-    public var logLines: [String] = []
+    public var logLines: [LogEntry] = []
     public var isBusy = false
     public var lastError: String?
     public var isShowingSettings = false
@@ -966,7 +966,7 @@ public final class EasyTierAppStore {
 
     private func log(_ message: String) {
         let timestamp = Self.timestampFormatter.string(from: Date())
-        logLines.insert("[\(timestamp)] \(message)", at: 0)
+        logLines.insert(LogEntry(text: "[\(timestamp)] \(message)"), at: 0)
         if logLines.count > 300 { logLines.removeLast(logLines.count - 300) }
     }
 
@@ -990,6 +990,16 @@ public final class EasyTierAppStore {
         "helperRequiresApproval",
         "helperNotFound",
     ]
+}
+
+public struct LogEntry: Identifiable, Sendable, Equatable {
+    public let id: UUID
+    public let text: String
+
+    public init(id: UUID = UUID(), text: String) {
+        self.id = id
+        self.text = text
+    }
 }
 
 private struct PendingNetworkStart: Sendable {

@@ -1130,7 +1130,7 @@ import Testing
     await store.runSelectedConfig()
 
     #expect(store.lastError == nil)
-    #expect(store.logLines.contains { $0.contains("Privileged helper needs user approval") })
+    #expect(store.logLines.contains { $0.text.contains("Privileged helper needs user approval") })
 }
 
 @MainActor
