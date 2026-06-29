@@ -918,9 +918,6 @@ private struct AnimatedMetricText: View {
     var fontWeight: Font.Weight = .regular
     var animates = true
 
-    @State private var isPulsing = false
-    @State private var pulseToken = 0
-
     var body: some View {
         Text(value)
             .fontWeight(fontWeight)
@@ -929,39 +926,11 @@ private struct AnimatedMetricText: View {
             .lineLimit(1)
             .minimumScaleFactor(0.82)
             .contentTransition(shouldAnimate ? .numericText() : .identity)
-            .scaleEffect(shouldPulse ? 1.035 : 1, anchor: .leading)
-            .opacity(shouldPulse ? 0.9 : 1)
             .animation(shouldAnimate ? EasyTierMotion.quick(reduceMotion: reduceMotion) : nil, value: value)
-            .animation(shouldAnimate ? .easeOut(duration: 0.18) : nil, value: isPulsing)
-            .onChange(of: value) { oldValue, newValue in
-                guard shouldAnimate, oldValue != newValue else { return }
-                triggerPulse()
-            }
     }
 
     private var shouldAnimate: Bool {
         animates && !reduceMotion
-    }
-
-    private var shouldPulse: Bool {
-        shouldAnimate && isPulsing
-    }
-
-    private func triggerPulse() {
-        pulseToken += 1
-        let token = pulseToken
-
-        withAnimation(.easeOut(duration: 0.14)) {
-            isPulsing = true
-        }
-
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(0.18))
-            guard token == pulseToken else { return }
-            withAnimation(.easeOut(duration: 0.36)) {
-                isPulsing = false
-            }
-        }
     }
 }
 
