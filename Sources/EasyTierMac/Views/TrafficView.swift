@@ -32,6 +32,7 @@ struct TrafficView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     TrafficLineChart(samples: samples)
+                        .equatable()
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
             }
@@ -74,7 +75,7 @@ private struct StatusMetric: View {
     }
 }
 
-private struct TrafficLineChart: View {
+private struct TrafficLineChart: View, Equatable {
     var samples: [TrafficSample]
 
     @Environment(\.colorScheme) private var colorScheme
@@ -82,6 +83,10 @@ private struct TrafficLineChart: View {
 
     private let uploadColor = Color(red: 0.24, green: 0.74, blue: 0.50)
     private let downloadColor = Color(red: 0.35, green: 0.57, blue: 0.96)
+
+    nonisolated static func == (lhs: TrafficLineChart, rhs: TrafficLineChart) -> Bool {
+        lhs.samples == rhs.samples
+    }
 
     private var displaySamples: [TrafficSample] {
         samples

@@ -961,8 +961,8 @@ public final class EasyTierAppStore {
     private func appendTrafficSample(_ sample: TrafficSample, for instanceName: String) {
         var samples = trafficSamplesByInstance[instanceName] ?? []
         samples.append(sample)
-        if samples.count > 120 {
-            samples.removeFirst(samples.count - 120)
+        if samples.count > Self.trafficSampleWindow {
+            samples.removeFirst(samples.count - Self.trafficSampleWindow)
         }
         trafficSamplesByInstance[instanceName] = samples
     }
@@ -1029,6 +1029,7 @@ public final class EasyTierAppStore {
         formatter.dateFormat = "HH:mm:ss"
         return formatter
     }()
+    private static let trafficSampleWindow = 60
     private static let helperPermissionErrorCodes: Set<String> = [
         "helperNotRegistered",
         "helperRequiresApproval",
