@@ -1,7 +1,7 @@
 import EasyTierShared
 import SwiftUI
 
-enum EasyTierSettingsTab: String, CaseIterable, Identifiable {
+enum EasyTierSettingsTab: String, CaseIterable, Identifiable, Hashable {
     case general = "General"
     case easyTier = "EasyTier"
     case about = "About"
@@ -26,6 +26,9 @@ struct EasyTierSettingsSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(AppAppearanceSettings.self) private var appearance
+    @AppStorage(EasyTierSettingsTabRequest.key) private var requestedSettingsTab = EasyTierSettingsTab.general.rawValue
+    @State private var loginItem = LoginItemController()
     @State private var selectedTab: EasyTierSettingsTab
     @State private var kind: ModeKind
     @State private var rpcListenEnabled: Bool
@@ -62,22 +65,24 @@ struct EasyTierSettingsSheet: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-                .padding(.top, Self.headerTopPadding)
-                .padding(.bottom, Self.headerBottomPadding)
-                .frame(height: Self.headerHeight)
+        HStack(spacing: 0) {
+            SettingsSidebar(selection: $selectedTab)
+                .frame(width: Self.sidebarWidth)
 
             Divider()
+                .ignoresSafeArea()
 
             MotionSwitch(id: selectedTab, insertionEdge: .trailing, fillsAvailableSpace: false) {
-                tabContentContainer
+                detailContent
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-
-            Divider()
-            footer
-                .frame(height: Self.footerHeight)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .onAppear {
+            selectSettingsTab(requestedSettingsTab)
+        }
+        .onChange(of: requestedSettingsTab) { _, tab in
+            selectSettingsTab(tab)
         }
         .frame(width: Self.windowSize.width, height: Self.windowSize.height)
         .presentationBackground(.thinMaterial)
@@ -90,102 +95,174 @@ struct EasyTierSettingsSheet: View {
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 0) {
-            ForEach(EasyTierSettingsTab.allCases) { tab in
-                SettingsTabButton(tab: tab, selection: $selectedTab)
-            }
-        }
-        .fixedSize(horizontal: true, vertical: false)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    }
+    // MARK: Detail
 
     @ViewBuilder
-    private var tabContentContainer: some View {
+    private var detailContent: some View {
         switch selectedTab {
         case .general:
             generalSettings
-                .contentPadding()
         case .easyTier:
-            ScrollView(.vertical, showsIndicators: false) {
-                easyTierSettings
-                    .contentPadding()
-                    .frame(maxWidth: .infinity, alignment: .center)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            easyTierSettings
         case .about:
-            settingsAbout
-                .contentPadding()
+            SettingsAboutView()
         }
     }
+
+    // MARK: General
 
     private var generalSettings: some View {
-        SettingsPane(width: 430) {
-            SettingRow("VPN On Demand") {
-                StatusText("Not Enabled")
-                Button("Manage...") {}
-                    .disabled(true)
+        Form {
+            Section {
+                LabeledContent("Frosted Glass") {
+                    Toggle("", isOn: appearance.glassEffectsEnabledBinding).labelsHidden()
+                }
+                
+            } header: {
+                Text("Appearance")
+            } footer: {
+                Text("Translucent window background. Turn off for solid appearance or better performance.")
+            }
+
+            Section {
+                LabeledContent("Launch at Login") {
+                    Toggle("", isOn: $loginItem.isEnabled).labelsHidden()
+                }
+                .onChange(of: loginItem.isEnabled) { _, _ in loginItem.apply() }
+            } header: {
+                Text("General")
+            } footer: {
+                Text("Open EasyTier automatically when you sign in.")
+            }
+
+            Section {
+                LabeledContent("VPN On Demand") {
+                    StatusText("Not Enabled")
+                    Button("Manage…") {}
+                        .disabled(true)
+                }
+            } header: {
+                Text("VPN On Demand")
+            } footer: {
+                Text("VPN On Demand requires a managed configuration profile.")
             }
         }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .safeAreaInset(edge: .bottom) { footer }
+        .task { loginItem.refresh() }
     }
 
+    // MARK: EasyTier
+
     private var easyTierSettings: some View {
-        SettingsPane(width: 430) {
-            SettingBlock("EasyTier RPC") {
-                ControlRow("Mode") {
+        Form {
+            Section {
+                LabeledContent("Mode") {
                     Picker("Mode", selection: kindBinding) {
                         ForEach(ModeKind.allCases) { mode in
                             Text(mode.rawValue).tag(mode)
                         }
                     }
                     .pickerStyle(.segmented)
-                    .frame(width: 158)
+                    .frame(width: 200)
                     .labelsHidden()
                 }
-
-                MotionSwitch(id: kind.id, insertionEdge: kind == .remote ? .trailing : .leading, fillsAvailableSpace: false) {
-                    rpcModeFields
-                }
+            } header: {
+                Text("EasyTier RPC")
             }
 
             if kind == .normal {
-                SettingBlock("Listeners") {
-                    listenersEditor
+                Section {
+                    LabeledContent("TCP Listen") {
+                        Toggle("", isOn: rpcListenBinding).labelsHidden()
+                    }
+                    LabeledContent("Portal") {
+                        CodeText(rpcListenEnabled ? "tcp://0.0.0.0:\(rpcListenPort)" : "Off")
+                    }
+                    LabeledContent("Listen Port") {
+                        HStack(spacing: 8) {
+                            TextField("15888", value: $rpcListenPort, format: .number)
+                                .textFieldStyle(.glassField)
+                                .frame(width: 96)
+                            Stepper("", value: $rpcListenPort, in: 1...65_535)
+                                .labelsHidden()
+                        }
+                        .disabled(!rpcListenEnabled)
+                    }
+                    LabeledContent("Whitelist") {
+                        RPCPortalWhitelistEditor(values: $rpcPortalWhitelist)
+                            .disabled(!rpcListenEnabled)
+                    }
+                    LabeledContent("Remote RPC") {
+                        TextField(Self.defaultRemoteRPCAddress, text: $remoteRPCAddress)
+                            .textFieldStyle(.glassField)
+                    }
+                } header: {
+                    Text("RPC Server")
                 }
 
-                SettingBlock("VPN Portal") {
-                    ControlRow("Enabled") { Toggle("", isOn: .constant(false)).labelsHidden() }
-                    ControlRow("Listen Port") { DisabledField("22022", width: 72) }
-                    ControlRow("Client CIDR") {
+                Section {
+                    listenersEditor
+                } header: {
+                    Text("Listeners")
+                }
+
+                Section {
+                    LabeledContent("Enabled") {
+                        Toggle("", isOn: .constant(false)).labelsHidden()
+                    }
+                    LabeledContent("Listen Port") {
+                        DisabledField("22022", width: 96)
+                    }
+                    LabeledContent("Client CIDR") {
                         HStack(spacing: 5) {
-                            DisabledField("10.0.0.0", width: 104)
+                            DisabledField("10.0.0.0", width: 128)
                             Text("/").foregroundStyle(.secondary)
-                            DisabledField("24", width: 38)
+                            DisabledField("24", width: 44)
                         }
                     }
+                    LabeledContent("Enabled") {
+                        Toggle("", isOn: .constant(false)).labelsHidden()
+                    }
+                    LabeledContent("Port") {
+                        DisabledField("1080", width: 96)
+                    }
+                } header: {
+                    Text("VPN Portal · SOCKS5")
+                } footer: {
+                    Text("Requires a config file. Configured via TOML profile.")
                 }
                 .disabled(true)
-
-                SettingBlock("SOCKS5") {
-                    ControlRow("Enabled") { Toggle("", isOn: .constant(false)).labelsHidden() }
-                    ControlRow("Port") { DisabledField("1080", width: 72) }
+            } else {
+                Section {
+                    LabeledContent("Config Server") {
+                        TextField("https://example.com/config", text: $configServerURL)
+                            .textFieldStyle(.glassField)
+                    }
+                } header: {
+                    Text("Remote Config")
+                } footer: {
+                    Text("EasyTier pulls its network profile from this URL on launch.")
                 }
-                .disabled(true)
             }
         }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .safeAreaInset(edge: .bottom) { footer }
     }
 
     private var listenersEditor: some View {
         DisclosureGroup(isExpanded: $listenersExpanded) {
             VStack(alignment: .leading, spacing: 6) {
-                ControlRow("URLs") {
-                    VStack(alignment: .leading, spacing: 5) {
+                LabeledContent("URLs") {
+                    VStack(alignment: .leading, spacing: 6) {
                         ForEach(listenerURLs.indices, id: \.self) { index in
-                            HStack(spacing: 5) {
+                            HStack(spacing: 6) {
                                 TextField("scheme://host:port", text: $listenerURLs[index])
                                     .textFieldStyle(.glassField)
                                     .font(.system(size: 13, design: .monospaced))
-                                    .frame(width: 190)
+                                    .frame(width: 220)
                                 Button {
                                     listenerURLs.remove(at: index)
                                 } label: {
@@ -206,59 +283,18 @@ struct EasyTierSettingsSheet: View {
                         .font(.system(size: 13.5))
                     }
                 }
-                ControlRow("Mapped") { StatusText("None") }
+                LabeledContent("Mapped") { StatusText("None") }
             }
         } label: {
             HStack(spacing: 8) {
                 Text("Default listener set")
-                    .font(.system(size: 14.5))
                 StatusText("\(listenerURLs.count) listeners")
             }
         }
         .controlSize(.small)
     }
 
-    @ViewBuilder
-    private var rpcModeFields: some View {
-        switch kind {
-        case .normal:
-            VStack(alignment: .leading, spacing: 6) {
-                ControlRow("TCP Listen") { Toggle("", isOn: rpcListenBinding).labelsHidden() }
-                ControlRow("Portal") { CodeText(rpcListenEnabled ? "tcp://0.0.0.0:\(rpcListenPort)" : "Off") }
-                ControlRow("Listen Port") {
-                    HStack(spacing: 6) {
-                        TextField("15888", value: $rpcListenPort, format: .number)
-                            .textFieldStyle(.glassField)
-                            .frame(width: 72)
-                        Stepper("", value: $rpcListenPort, in: 1...65_535)
-                            .labelsHidden()
-                    }
-                        .disabled(!rpcListenEnabled)
-                }
-                ControlRow("Whitelist") {
-                    RPCPortalWhitelistEditor(values: $rpcPortalWhitelist)
-                        .disabled(!rpcListenEnabled)
-                }
-                ControlRow("Remote RPC") {
-                    TextField(Self.defaultRemoteRPCAddress, text: $remoteRPCAddress)
-                        .textFieldStyle(.glassField)
-                        .frame(width: 180)
-                }
-            }
-        case .remote:
-            VStack(alignment: .leading, spacing: 6) {
-                ControlRow("Config Server") {
-                    TextField("https://example.com/config", text: $configServerURL)
-                        .textFieldStyle(.glassField)
-                        .frame(width: 180)
-                }
-            }
-        }
-    }
-
-    private var settingsAbout: some View {
-        SettingsAboutView()
-    }
+    // MARK: Footer
 
     private var footer: some View {
         HStack(spacing: 8) {
@@ -277,6 +313,8 @@ struct EasyTierSettingsSheet: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 10)
     }
+
+    // MARK: Bindings
 
     private var kindBinding: Binding<ModeKind> {
         Binding(
@@ -322,6 +360,13 @@ struct EasyTierSettingsSheet: View {
         }
     }
 
+    private func selectSettingsTab(_ rawValue: String) {
+        guard let tab = EasyTierSettingsTab(rawValue: rawValue), selectedTab != tab else { return }
+        withAnimation(EasyTierMotion.selection(reduceMotion: reduceMotion)) {
+            selectedTab = tab
+        }
+    }
+
     private var normalizedRPCPortalWhitelist: [String]? {
         let values = rpcPortalWhitelist.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         return values.isEmpty ? nil : values
@@ -335,122 +380,133 @@ struct EasyTierSettingsSheet: View {
         "wg://0.0.0.0:11011",
     ]
 
-    private static let windowSize = CGSize(width: 525, height: 620)
-    private static let headerTopPadding: CGFloat = 10
-    private static let headerBottomPadding: CGFloat = 8
-    private static let headerHeight: CGFloat = 64
-    private static let footerHeight: CGFloat = 42
+    private static let sidebarWidth: CGFloat = 220
+    private static let windowSize = CGSize(width: 720, height: 560)
 }
 
-private extension View {
-    func contentPadding() -> some View {
-        self
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
+// MARK: - About
+
+enum EasyTierSettingsTabRequest {
+    static let key = "EasyTierSettingsTab"
+
+    static func set(_ tab: EasyTierSettingsTab) {
+        UserDefaults.standard.set(tab.rawValue, forKey: key)
     }
 }
 
-private struct SettingsTabButton: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var tab: EasyTierSettingsTab
+private struct SettingsSidebar: View {
     @Binding var selection: EasyTierSettingsTab
 
-    private var isSelected: Bool { selection == tab }
-
     var body: some View {
-        Button {
-            withAnimation(EasyTierMotion.selection(reduceMotion: reduceMotion)) { selection = tab }
-        } label: {
-            VStack(spacing: 2) {
-                Image(systemName: tab.systemImage)
-                    .font(.system(size: 18, weight: .medium))
-                Text(tab.rawValue)
-                    .font(.system(size: 12.5, weight: .medium))
+        List(selection: $selection) {
+            Section("Settings") {
+                ForEach(EasyTierSettingsTab.allCases) { tab in
+                    Label(tab.rawValue, systemImage: tab.systemImage)
+                        .tag(tab)
+                }
             }
-            .frame(width: 68, height: 46)
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .foregroundStyle(isSelected ? Color.accentColor : .secondary)
         }
-        .buttonStyle(.plain)
+        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
     }
 }
 
 private struct SettingsAboutView: View {
     @Environment(SoftwareUpdateController.self) private var updater
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dismiss) private var dismiss
 
     private let appInfo = AppVersionInfo.current
     private let revisions = SettingsSourceRevisionInfo.current
 
     var body: some View {
-        SettingsPane(width: 430) {
-            HStack(alignment: .center, spacing: 18) {
+        VStack(spacing: 0) {
+            VStack(spacing: 10) {
                 EasyTierMark()
-                    .frame(width: 70, height: 70)
+                    .frame(width: 96, height: 96)
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("EasyTier for macOS")
-                        .font(.system(size: 15, weight: .semibold))
-                    Text("Native GUI for managing EasyTier networks.")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                Text("EasyTier for macOS")
+                    .font(.largeTitle.weight(.semibold))
+
+                Text("Version \(appInfo.version)")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+
+                Text("Native GUI for managing EasyTier networks.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 18)
+            .padding(.bottom, 14)
+
+            Form {
+                Section {
+                    SettingsMetadataRow(label: "GUI", value: "\(appInfo.version) · \(revisions.guiCommit)")
+                    SettingsMetadataRow(label: "Core", value: revisions.coreVersion)
+                    SettingsMetadataRow(label: "Build", value: appInfo.build)
+                } header: {
+                    Text("Version")
                 }
-            }
-            .padding(.bottom, 1)
 
-            SettingBlock("Version") {
-                SettingsMetadataRow(label: "GUI", value: "\(appInfo.version) · \(revisions.guiCommit)")
-                SettingsMetadataRow(label: "Core", value: revisions.coreVersion)
-                SettingsMetadataRow(label: "Build", value: appInfo.build)
-            }
-
-            SettingBlock("Resources") {
-                HStack(spacing: 14) {
-                    Link("Docs", destination: URL(string: "https://easytier.cn")!)
-                    Link("Releases", destination: URL(string: "https://github.com/socoldkiller/easytier-swift/releases")!)
-                    Link("GitHub", destination: URL(string: "https://github.com/socoldkiller/easytier-swift")!)
-                    Link("License", destination: URL(string: "https://github.com/socoldkiller/easytier-swift/blob/main/LICENSE")!)
+                Section {
+                    HStack(spacing: 14) {
+                        Link("Docs", destination: URL(string: "https://easytier.cn")!)
+                        Link("Releases", destination: URL(string: "https://github.com/socoldkiller/easytier-swift/releases")!)
+                        Link("GitHub", destination: URL(string: "https://github.com/socoldkiller/easytier-swift")!)
+                        Link("License", destination: URL(string: "https://github.com/socoldkiller/easytier-swift/blob/main/LICENSE")!)
+                    }
+                    .controlSize(.small)
+                    SettingsMetadataRow(label: "License", value: "LGPL-3.0 © 2026 contributors")
+                } header: {
+                    Text("Resources")
                 }
-                .font(.system(size: 13))
-                .controlSize(.small)
-                .padding(.leading, 6)
-            }
 
-            SettingBlock("Software Update") {
-                VStack(alignment: .leading, spacing: 10) {
+                Section {
                     HStack(alignment: .center, spacing: 10) {
                         Text(updateStatusText)
-                            .font(.system(size: 13.5))
+                            .font(.body)
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
 
                         Spacer(minLength: 0)
 
                         updateAction
-                            .font(.system(size: 14))
                             .controlSize(.small)
                     }
 
                     updateProgress
+                } header: {
+                    Text("Software Update")
                 }
-                .padding(.leading, 6)
-                .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: updateStatusText)
             }
+            .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+            .safeAreaInset(edge: .bottom) {
+                HStack {
+                    Spacer()
+                    Button("Done") { dismiss() }
+                        .keyboardShortcut(.defaultAction)
+                        .controlSize(.small)
+                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+            }
+            .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: updateStatusText)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private var updateStatusText: String {
         switch updater.state {
         case .checking:
-            "Checking stable releases..."
+            "Checking stable releases…"
         case .noUpdate:
             "EasyTier is already the latest version."
         case .available(let update, _):
             "EasyTier \(update.version) is available."
         case .downloading:
-            "Downloading update..."
+            "Downloading update…"
         case .readyToInstall:
             "DMG opened. Quit before replacing EasyTier."
         case .failed, .downloadFailed, .verificationFailed:
@@ -464,12 +520,12 @@ private struct SettingsAboutView: View {
     private var updateAction: some View {
         switch updater.state {
         case .checking:
-            Button("Checking...") {}
+            Button("Checking…") {}
                 .disabled(true)
         case .available:
             Button("Download") { updater.downloadAvailableUpdate() }
         case .downloading:
-            Button("Downloading...") {}
+            Button("Downloading…") {}
                 .disabled(true)
         case .downloadFailed, .verificationFailed:
             Button("Try Again") { updater.downloadAvailableUpdate() }
@@ -487,26 +543,26 @@ private struct SettingsAboutView: View {
         case .available:
             Button("Release Notes") { updater.openReleaseNotes() }
                 .buttonStyle(.link)
-                .font(.system(size: 12.5))
+                .font(.callout)
         case .downloading(_, let progress):
             HStack(spacing: 8) {
                 if let progress {
                     ProgressView(value: progress)
                     Text("\(Int((progress * 100).rounded()))%")
-                        .font(.system(size: 12, design: .monospaced))
+                        .font(.callout.monospacedDigit())
                         .foregroundStyle(.secondary)
-                        .frame(width: 38, alignment: .trailing)
+                        .frame(width: 42, alignment: .trailing)
                 } else {
                     ProgressView()
                         .controlSize(.small)
-                    Text("Downloading...")
-                        .font(.system(size: 12.5))
+                    Text("Downloading…")
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
             }
         case .failed(let message), .downloadFailed(_, let message), .verificationFailed(_, let message):
             Text(message)
-                .font(.system(size: 12.5))
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
         default:
@@ -515,23 +571,25 @@ private struct SettingsAboutView: View {
     }
 }
 
+// MARK: - Reusable pieces
+
 private struct SettingsMetadataRow: View {
     var label: String
     var value: String
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(label)
-                .font(.system(size: 13.5, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 58, alignment: .trailing)
+        LabeledContent {
             Text(value)
-                .font(.system(size: 14, weight: .regular, design: .monospaced))
+                .font(.body.monospaced())
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } label: {
+            Text(label)
+                .font(.body.weight(.medium))
+                .foregroundStyle(.secondary)
         }
-        .controlSize(.small)
     }
 }
 
@@ -557,99 +615,14 @@ private struct SettingsSourceRevisionInfo: Equatable {
     }
 }
 
-private struct SettingsPane<Content: View>: View {
-    var width: CGFloat
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            content
-        }
-        .frame(width: width, alignment: .leading)
-    }
-}
-
-private struct SettingRow<Content: View>: View {
-    var title: String
-    @ViewBuilder var content: Content
-
-    init(_ title: String, @ViewBuilder content: () -> Content) {
-        self.title = title
-        self.content = content()
-    }
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(title)
-                .font(.system(size: 14.5))
-                .foregroundStyle(.primary)
-                .frame(width: 130, alignment: .trailing)
-            content
-                .font(.system(size: 14.5))
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .controlSize(.small)
-    }
-}
-
-private struct SettingBlock<Content: View>: View {
-    var title: String
-    @ViewBuilder var content: Content
-
-    init(_ title: String, @ViewBuilder content: () -> Content) {
-        self.title = title
-        self.content = content()
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(title)
-                .font(.system(size: 13.5, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .padding(.leading, 6)
-
-            VStack(alignment: .leading, spacing: 6) {
-                content
-            }
-            .padding(.vertical, 8)
-            .overlay(alignment: .top) {
-                Divider()
-            }
-        }
-    }
-}
-
-private struct ControlRow<Content: View>: View {
-    var title: String
-    @ViewBuilder var content: Content
-
-    init(_ title: String, @ViewBuilder content: () -> Content) {
-        self.title = title
-        self.content = content()
-    }
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(title)
-                .font(.system(size: 14))
-                .foregroundStyle(.secondary)
-                .frame(width: 120, alignment: .trailing)
-            content
-                .font(.system(size: 14.5))
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .controlSize(.small)
-    }
-}
-
 private struct RPCPortalWhitelistEditor: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var values: [String]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 6) {
             ForEach(values.indices, id: \.self) { index in
-                HStack(spacing: 5) {
+                HStack(spacing: 6) {
                     TextField("10.126.126.0/24", text: Binding(
                         get: { values.indices.contains(index) ? values[index] : "" },
                         set: { newValue in
@@ -659,7 +632,7 @@ private struct RPCPortalWhitelistEditor: View {
                     ))
                     .textFieldStyle(.glassField)
                     .font(.system(size: 13, design: .monospaced))
-                    .frame(width: 190)
+                    .frame(width: 220)
 
                     Button(role: .destructive) {
                         guard values.indices.contains(index) else { return }
@@ -696,7 +669,7 @@ private struct StatusText: View {
 
     var body: some View {
         Text(value)
-            .font(.system(size: 14.5))
+            .font(.body)
             .foregroundStyle(.secondary)
     }
 }
@@ -708,7 +681,7 @@ private struct CodeText: View {
 
     var body: some View {
         Text(value)
-            .font(.system(size: 13, design: .monospaced))
+            .font(.callout.monospaced())
             .foregroundStyle(.secondary)
     }
 }
@@ -726,5 +699,16 @@ private struct DisabledField: View {
         TextField(value, text: .constant(value))
             .textFieldStyle(.glassField)
             .frame(width: width)
+    }
+}
+
+// MARK: - Appearance binding helper
+
+private extension AppAppearanceSettings {
+    var glassEffectsEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { self.glassEffectsEnabled },
+            set: { self.glassEffectsEnabled = $0 }
+        )
     }
 }
