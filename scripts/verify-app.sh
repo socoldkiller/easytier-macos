@@ -115,7 +115,8 @@ if "EasyTierCore" in targets:
     fail("EasyTierCore target must not exist after splitting shared/runtime modules.")
 
 mac_deps = deps("EasyTierMac")
-forbidden_mac_deps = {"EasyTierCore", "EasyTierRuntime", "CEasyTierFFI"}
+forbidden_mac_deps = {"CEasyTierFFI"}
+# EasyTierMac may depend on EasyTierRuntime so it can run no_tun instances in-process via StaticEasyTierFFIClient.
 forbidden_found = sorted(mac_deps & forbidden_mac_deps)
 if forbidden_found:
     fail(f"EasyTierMac must not depend on FFI/runtime targets: {', '.join(forbidden_found)}")
