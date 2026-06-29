@@ -278,9 +278,9 @@ private final class MenuBarStatusItemController: NSObject {
             self.connectionState = connectionState
             activeNodeIndex = 0
             updateAnimation()
+            refreshStatusImage()
         }
 
-        refreshStatusImage()
         updatePopoverContent(store: store, updater: updater, appearanceSettings: appearanceSettings)
     }
 
