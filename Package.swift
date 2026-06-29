@@ -42,7 +42,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "EasyTierMac",
-            dependencies: ["EasyTierShared"],
+            dependencies: ["EasyTierShared", "EasyTierRuntime"],
             resources: [
                 .process("Resources"),
             ]

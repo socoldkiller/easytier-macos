@@ -3,10 +3,10 @@ import EasyTierShared
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(\.openWindow) private var openWindow
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(EasyTierAppStore.self) private var store
-    @State private var permissionController = PermissionController()
     @State private var showingTOML = false
     @State private var tomlMode: TOMLSheet.Mode = .export
     @State private var tomlText = ""
@@ -34,16 +34,14 @@ struct ContentView: View {
             sidebar
         } detail: {
             VStack(spacing: 0) {
-                PermissionBanner(controller: permissionController)
-
-                MotionSwitch(
-                    id: workspaceMotionID,
-                    insertionEdge: workspaceTransitionEdge,
-                    distance: workspaceTransitionDistance
-                ) {
-                    workspaceContent
-                }
+            MotionSwitch(
+                id: workspaceMotionID,
+                insertionEdge: workspaceTransitionEdge,
+                distance: workspaceTransitionDistance
+            ) {
+                workspaceContent
             }
+        }
             .navigationTitle(navigationTitle)
             .toolbar { toolbar }
         }
@@ -53,7 +51,6 @@ struct ContentView: View {
         .task {
             selectedTabLocal = store.selectedTab
             selectedConfigIDLocal = store.selectedConfigID
-            await permissionController.refresh()
         }
         .onChange(of: store.selectedTab) { _, newTab in
             selectedTabLocal = newTab
@@ -71,12 +68,21 @@ struct ContentView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
-                Task { await permissionController.refresh() }
+                Task { await store.helperRegistration?.refresh() }
             }
         }
-        .sheet(isPresented: $store.isShowingSettings) {
-            EasyTierSettingsSheet(initialTab: .general, mode: store.mode) { mode in
-                Task { await store.applyMode(mode) }
+        .onChange(of: store.isShowingSettings) { _, isShowing in
+            if isShowing {
+                EasyTierSettingsTabRequest.set(.general)
+                openWindow(id: "settings")
+                store.isShowingSettings = false
+            }
+        }
+        .onChange(of: store.isShowingAbout) { _, isShowing in
+            if isShowing {
+                EasyTierSettingsTabRequest.set(.about)
+                openWindow(id: "settings")
+                store.isShowingAbout = false
             }
         }
         .sheet(isPresented: $showingTOML) {
@@ -90,17 +96,38 @@ struct ContentView: View {
         .sheet(isPresented: $store.isShowingLinuxInstallGuide) {
             LinuxInstallGuideView()
         }
-        .sheet(isPresented: $store.isShowingAbout) {
-            EasyTierSettingsSheet(initialTab: .about, mode: store.mode) { mode in
-                Task { await store.applyMode(mode) }
-            }
-        }
         .alert(
             "EasyTier",
             isPresented: Binding(
-                get: { store.lastError != nil }, set: { if !$0 { store.lastError = nil } })
+                get: { store.lastError != nil && !store.lastErrorIsHelperPermission },
+                set: { if !$0 { store.lastError = nil } })
         ) {
             Button("OK") { store.lastError = nil }
+        } message: {
+            Text(store.lastError ?? "")
+        }
+        .alert(
+            "EasyTier Needs Background Permission",
+            isPresented: Binding(
+                get: { store.lastError != nil && store.lastErrorIsHelperPermission },
+                set: { if !$0 { store.lastError = nil } })
+        ) {
+            Button("Allow") {
+                Task {
+                    store.lastError = nil
+                    if let registration = store.helperRegistration {
+                        try? await registration.ensureRegistered()
+                        if registration.state == .enabled {
+                            await store.retryStartAfterHelperApproval()
+                        }
+                    }
+                }
+            }
+            Button("Open System Settings") {
+                store.lastError = nil
+                store.helperRegistration?.openSystemSettings()
+            }
+            Button("Cancel", role: .cancel) { store.lastError = nil }
         } message: {
             Text(store.lastError ?? "")
         }
@@ -250,11 +277,6 @@ struct ContentView: View {
                 let runningInstanceToRestart = draftIsDirty ? store.selectedRunningInstance : nil
                 commitDraft(saveImmediately: true)
                 Task {
-                    await permissionController.refresh()
-                    guard permissionController.state == .enabled else {
-                        store.clearHelperPermissionError()
-                        return
-                    }
                     if let runningInstanceToRestart {
                         await store.restartSelectedConfig(replacing: runningInstanceToRestart)
                     } else if selectedConfigIsRunning {
@@ -269,10 +291,7 @@ struct ContentView: View {
                     systemImage: connectionActionSystemImage
                 )
             }
-            .disabled(
-                store.selectedConfig == nil || store.isBusy
-                    || permissionController.state != .enabled
-            )
+            .disabled(store.selectedConfig == nil || store.isBusy)
             .help(connectionActionHelp)
 
             Menu {
@@ -677,11 +696,6 @@ struct ContentView: View {
             return
         }
         Task {
-            await permissionController.refresh()
-            guard permissionController.state == .enabled else {
-                store.clearHelperPermissionError()
-                return
-            }
             await store.applyLocalHostnameRuntimeIntent(
                 configID: selectedID,
                 runningInstance: runningInstanceToPatch,
@@ -713,12 +727,6 @@ struct ContentView: View {
             desiredHostname: trimmed
         )
 
-        await permissionController.refresh()
-        guard permissionController.state == .enabled else {
-            store.clearHelperPermissionError()
-            store.markRuntimeIntent(intent.id, status: .unreachable)
-            return false
-        }
         do {
             try await EasyTierRemoteRPCClient.patchHostname(rpcURL: rpcURL, instanceID: instanceID, hostname: trimmed)
         } catch {
@@ -1063,75 +1071,6 @@ private extension NSEvent.ModifierFlags {
     func containsAny(of flags: NSEvent.ModifierFlags) -> Bool {
         !intersection(flags).isEmpty
     }
-}
-
-private struct PermissionBanner: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var controller: PermissionController
-
-    var body: some View {
-        VStack(spacing: 0) {
-            if controller.state != .enabled {
-                HStack(spacing: 12) {
-                    Image(systemName: "lock.shield")
-                        .font(.title3)
-                        .foregroundStyle(.orange)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("EasyTier needs a privileged helper to create TUN devices.")
-                            .font(.subheadline.weight(.semibold))
-                        Text(controller.detail)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-
-                    if controller.state == .requiresApproval {
-                        Button("Open Settings") { controller.openSystemSettings() }
-                    }
-                    switch controller.state {
-                    case .requiresApproval:
-                        Button("Refresh") { Task { await controller.refresh() } }
-                            .disabled(controller.isBusy)
-                    case .error:
-                        Button("Repair Helper") { Task { await controller.repair() } }
-                            .disabled(controller.isBusy)
-                    default:
-                        Button("Install Helper") {
-                            Task { await controller.install() }
-                        }
-                        .disabled(controller.isBusy)
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(.thinMaterial)
-                .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 10))
-                .task(id: controller.state) {
-                    await refreshUntilHelperApproved()
-                }
-                Divider()
-            }
-        }
-        .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: controller.state)
-    }
-
-    private func refreshUntilHelperApproved() async {
-        guard controller.state == .requiresApproval else { return }
-
-        while !Task.isCancelled {
-            do {
-                try await Task.sleep(nanoseconds: Self.approvalRefreshIntervalNanoseconds)
-            } catch {
-                return
-            }
-            guard controller.state == .requiresApproval else { return }
-            await controller.refresh()
-        }
-    }
-
-    private static let approvalRefreshIntervalNanoseconds: UInt64 = 2_000_000_000
 }
 
 extension WorkspaceTab {

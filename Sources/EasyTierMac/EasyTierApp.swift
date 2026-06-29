@@ -1,4 +1,5 @@
 import EasyTierShared
+import EasyTierRuntime
 import AppKit
 import ServiceManagement
 import SwiftUI
@@ -6,7 +7,10 @@ import SwiftUI
 @main
 struct EasyTierApp: App {
     @NSApplicationDelegateAdaptor(EasyTierApplicationDelegate.self) private var appDelegate
-    @State private var store = EasyTierAppStore()
+    @State private var store = EasyTierAppStore(
+        inProcessClient: StaticEasyTierFFIClient(),
+        helperRegistration: HelperRegistrationService()
+    )
     @State private var updater = SoftwareUpdateController()
     @State private var menuBarController = MenuBarStatusItemController()
     @State private var appearanceSettings = AppAppearanceSettings()
@@ -50,6 +54,17 @@ struct EasyTierApp: App {
                 .task { await store.load() }
         }
         .windowToolbarStyle(.unified)
+
+        Window("Settings", id: "settings") {
+            EasyTierSettingsSheet(initialTab: .general, mode: store.mode) { mode in
+                Task { await store.applyMode(mode) }
+            }
+            .environment(store)
+            .environment(updater)
+            .environment(appearanceSettings)
+        }
+        .windowToolbarStyle(.unified)
+
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Network") { store.addConfig() }

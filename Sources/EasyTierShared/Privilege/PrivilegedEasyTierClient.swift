@@ -167,6 +167,21 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, @unchecked Send
     }
 
     private func callHelperReturningPayload(timeoutError: @escaping @Sendable () -> PrivilegedHelperError, _ body: @escaping (EasyTierPrivilegedServiceProtocol, @escaping (String?, String?) -> Void) -> Void) async throws -> String {
+        do {
+            return try await performHelperCall(timeoutError: timeoutError, body: body, isRetry: false)
+        } catch PrivilegedHelperError.unavailable {
+            // Daemon may have idle-exited even though it is still registered.
+            // Drop the cached connection and retry once — launchd will relaunch the helper.
+            dropConnection()
+            return try await performHelperCall(timeoutError: timeoutError, body: body, isRetry: true)
+        }
+    }
+
+    private func performHelperCall(
+        timeoutError: @escaping @Sendable () -> PrivilegedHelperError,
+        body: @escaping (EasyTierPrivilegedServiceProtocol, @escaping (String?, String?) -> Void) -> Void,
+        isRetry: Bool
+    ) async throws -> String {
         let connection = try acquireConnection()
 
         return try await withCheckedThrowingContinuation { continuation in
@@ -180,13 +195,21 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, @unchecked Send
                 timeoutWork.cancel()
                 self?.dropConnection()
                 let status = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName).status
-                state.finish(.failure(status == .enabled ? Self.helperUnavailableError() : Self.statusError(status)))
+                if status == .enabled, !isRetry {
+                    state.finish(.failure(PrivilegedHelperError.unavailable))
+                } else {
+                    state.finish(.failure(status == .enabled ? Self.helperUnavailableError() : Self.statusError(status)))
+                }
             }
             guard let service = proxy as? EasyTierPrivilegedServiceProtocol else {
                 timeoutWork.cancel()
                 dropConnection()
                 let status = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName).status
-                state.finish(.failure(status == .enabled ? Self.helperUnavailableError() : Self.statusError(status)))
+                if status == .enabled, !isRetry {
+                    state.finish(.failure(PrivilegedHelperError.unavailable))
+                } else {
+                    state.finish(.failure(status == .enabled ? Self.helperUnavailableError() : Self.statusError(status)))
+                }
                 return
             }
             body(service) { payload, error in
@@ -210,8 +233,14 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, @unchecked Send
 
     private func ensureHelperIsEnabled() throws {
         let service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
-        guard service.status == .enabled else {
-            throw Self.statusError(service.status)
+        let status = service.status
+        switch status {
+        case .enabled:
+            return
+        case .notRegistered:
+            throw PrivilegedHelperError.needsRegistration
+        default:
+            throw Self.statusError(status)
         }
     }
 
@@ -258,13 +287,7 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, @unchecked Send
     private static func statusError(_ status: SMAppService.Status) -> PrivilegedHelperError {
         switch status {
         case .notRegistered:
-            .helperReported(
-                PrivilegedHelperErrorPayload(
-                    code: "helperNotRegistered",
-                    message: "Privileged helper is not installed.",
-                    recoverySuggestion: "Click Install Helper before starting TUN networking."
-                )
-            )
+            .needsRegistration
         case .requiresApproval:
             .helperReported(
                 PrivilegedHelperErrorPayload(

@@ -26,22 +26,55 @@ public final class EasyTierAppStore {
         "\(rule.bind_ip):\(rule.bind_port)-\(rule.dst_ip):\(rule.dst_port)-\(rule.proto)"
     }
 
-    private let client: any EasyTierCoreClient
+    private let privilegedClient: any EasyTierCoreClient
+    private let inProcessClient: any EasyTierCoreClient
+    public let helperRegistration: HelperRegistrationService?
     private let storage: EasyTierStorage
     private let networkSecretStore: any NetworkSecretStore
     private var pollingTask: Task<Void, Never>?
     private var lastTrafficCounters: [String: (timestamp: Date, txBytes: Int64, rxBytes: Int64)] = [:]
     private var pendingStarts: [String: PendingNetworkStart] = [:]
     private var pollingEnabled: Bool = true
+    private var instanceClientKind: [String: ClientKind] = [:]
+    private var pendingStartAfterApproval: NetworkConfig?
+
+    public enum ClientKind: Sendable { case inProcess, privileged }
 
     public init(
+        privilegedClient: any EasyTierCoreClient = PrivilegedEasyTierClient(),
+        inProcessClient: (any EasyTierCoreClient)? = nil,
+        helperRegistration: HelperRegistrationService? = nil,
+        storage: EasyTierStorage = .default,
+        networkSecretStore: any NetworkSecretStore = SystemNetworkSecretStore()
+    ) {
+        self.privilegedClient = privilegedClient
+        self.inProcessClient = inProcessClient ?? privilegedClient
+        self.helperRegistration = helperRegistration
+        self.storage = storage
+        self.networkSecretStore = networkSecretStore
+    }
+
+    /// Backwards-compatible single-client initializer (for tests).
+    public convenience init(
         client: any EasyTierCoreClient = PrivilegedEasyTierClient(),
         storage: EasyTierStorage = .default,
         networkSecretStore: any NetworkSecretStore = SystemNetworkSecretStore()
     ) {
-        self.client = client
-        self.storage = storage
-        self.networkSecretStore = networkSecretStore
+        self.init(
+            privilegedClient: client,
+            inProcessClient: client,
+            helperRegistration: nil,
+            storage: storage,
+            networkSecretStore: networkSecretStore
+        )
+    }
+
+    private func client(for config: NetworkConfig) -> any EasyTierCoreClient {
+        config.requiresTUN ? privilegedClient : inProcessClient
+    }
+
+    private func clientKind(for config: NetworkConfig) -> ClientKind {
+        config.requiresTUN ? .privileged : .inProcess
     }
 
     public var selectedConfig: NetworkConfig? {
@@ -173,13 +206,14 @@ public final class EasyTierAppStore {
         let config = configs[index].config
         if let runningInstance = runningInstance(matching: config) {
             do {
-                try await client.stop(instanceNames: [runningInstance.name])
+                try await client(for: config).stop(instanceNames: [runningInstance.name])
             } catch {
                 lastError = error.localizedDescription
                 log("Delete canceled because \(config.network_name) could not be stopped: \(error.localizedDescription)")
                 return
             }
         }
+        instanceClientKind.removeValue(forKey: config.instance_id)
         clearPendingStart(for: config)
         runtimeIntents.removeAll { intent in
             intent.target.isLocal && (intent.target.instanceID == config.instance_id || intent.target.networkName == config.network_name)
@@ -236,7 +270,7 @@ public final class EasyTierAppStore {
         await busy {
             try validateConfigForCurrentRuntime(config)
             let keychainConfig = try configWithKeychainSecret(config, reason: "Use the network secret for validation.")
-            try await client.validate(toml: try NetworkConfigTOMLCodec.encode(keychainConfig))
+            try await client(for: config).validate(toml: try NetworkConfigTOMLCodec.encode(keychainConfig))
             log("Validated \(config.network_name).")
         }
     }
@@ -248,7 +282,16 @@ public final class EasyTierAppStore {
             try validateConfigForCurrentRuntime(config)
             let keychainConfig = try configWithKeychainSecret(config, reason: "Use the network secret to start \(config.network_name).")
             let cleanConfig = Self.configWithoutReversedPortForwards(keychainConfig, fingerprints: reversedPortForwardFingerprints)
-            try await client.run(config: cleanConfig)
+            if config.requiresTUN, let helperRegistration {
+                do {
+                    try await helperRegistration.ensureRegistered()
+                } catch {
+                    pendingStartAfterApproval = cleanConfig
+                    throw error
+                }
+            }
+            try await client(for: config).run(config: cleanConfig)
+            instanceClientKind[cleanConfig.instance_id] = clientKind(for: cleanConfig)
             recordPendingStart(for: config)
             log("Started \(config.network_name).")
             try await refreshRuntimeThrowing()
@@ -261,6 +304,28 @@ public final class EasyTierAppStore {
         }
     }
 
+    /// Retry the most recent start after the user approved the privileged helper.
+    public func retryStartAfterHelperApproval() async {
+        guard let config = pendingStartAfterApproval else { return }
+        pendingStartAfterApproval = nil
+        if let helperRegistration {
+            await helperRegistration.refresh()
+            guard helperRegistration.state == .enabled else {
+                lastError = "Privileged helper is still not enabled. Approve EasyTier in System Settings > Login Items & Extensions, then try again."
+                return
+            }
+        }
+        await busy {
+            try await client(for: config).run(config: config)
+            instanceClientKind[config.instance_id] = clientKind(for: config)
+            if let selectedConfig, selectedConfig.instance_id == config.instance_id {
+                recordPendingStart(for: selectedConfig)
+            }
+            log("Started \(config.network_name) after helper approval.")
+            try await refreshRuntimeThrowing()
+        }
+    }
+
     public func stopSelectedConfig() async {
         guard let config = selectedConfig else { return }
         await busy {
@@ -270,8 +335,9 @@ public final class EasyTierAppStore {
                 return
             }
             persistRuntimeHostname(from: runningInstance, forConfigID: config.instance_id)
-            try await client.stop(instanceNames: [runningInstance.name])
+            try await client(for: config).stop(instanceNames: [runningInstance.name])
             clearPendingStart(for: config)
+            instanceClientKind.removeValue(forKey: config.instance_id)
             log("Stopped \(config.network_name).")
             try await refreshRuntimeThrowing()
         }
@@ -284,10 +350,20 @@ public final class EasyTierAppStore {
             try validateConfigForCurrentRuntime(config, replacing: instance)
             let keychainConfig = try configWithKeychainSecret(config, reason: "Use the network secret to restart \(config.network_name).")
             let cleanConfig = Self.configWithoutReversedPortForwards(keychainConfig, fingerprints: reversedPortForwardFingerprints)
-            try await client.validate(toml: try NetworkConfigTOMLCodec.encode(cleanConfig))
-            try await client.stop(instanceNames: [instance.name])
+            let targetClient = client(for: config)
+            try await targetClient.validate(toml: try NetworkConfigTOMLCodec.encode(cleanConfig))
+            try await targetClient.stop(instanceNames: [instance.name])
             clearPendingStart(for: config)
-            try await client.run(config: cleanConfig)
+            if config.requiresTUN, let helperRegistration {
+                do {
+                    try await helperRegistration.ensureRegistered()
+                } catch {
+                    pendingStartAfterApproval = cleanConfig
+                    throw error
+                }
+            }
+            try await targetClient.run(config: cleanConfig)
+            instanceClientKind[cleanConfig.instance_id] = clientKind(for: cleanConfig)
             recordPendingStart(for: config)
             log("Restarted \(config.network_name).")
             try await refreshRuntimeThrowing()
@@ -329,7 +405,18 @@ public final class EasyTierAppStore {
 
     public func stopAll() async {
         await busy {
-            try await client.retain(instanceNames: [])
+            // Stop privileged instances via the daemon's retain-by-allowlist call.
+            if instances.contains(where: { instanceClientKind[$0.instance_id] != .inProcess }) {
+                try? await privilegedClient.retain(instanceNames: [])
+            }
+            // Stop in-process instances individually (no retain API).
+            let inProcessInstanceNames = instances
+                .filter { instanceClientKind[$0.instance_id] == .inProcess }
+                .map(\.name)
+            if !inProcessInstanceNames.isEmpty {
+                try? await inProcessClient.stop(instanceNames: inProcessInstanceNames)
+            }
+            instanceClientKind.removeAll()
             pendingStarts.removeAll()
             log("Stopped all EasyTier instances.")
             try await refreshRuntimeThrowing()
@@ -344,7 +431,8 @@ public final class EasyTierAppStore {
         do {
             try await refreshRuntimeThrowing()
         } catch {
-            guard !handleHelperPermissionError(error) else { return }
+            // Do not silently swallow helper-permission errors here. Surface them
+            // via `lastError` so the UI can prompt the user to approve or retry.
             lastError = error.localizedDescription
         }
     }
@@ -354,9 +442,14 @@ public final class EasyTierAppStore {
     }
 
     public func clearHelperPermissionError() {
-        if Self.isHelperPermissionErrorMessage(lastError) {
-            lastError = nil
-        }
+        // Retained as a no-op for callers that used to clear the old suppressed banner.
+    }
+
+    public var lastErrorIsHelperPermission: Bool {
+        guard let message = lastError else { return false }
+        return message.contains("needs background permission")
+            || message.contains("System Settings")
+            || message.contains("macOS has not allowed")
     }
 
     @discardableResult
@@ -473,15 +566,29 @@ public final class EasyTierAppStore {
     }
 
     public func easyTierCoreVersion() async throws -> String {
-        try await client.version()
+        // Prefer the privileged client when enabled (it tracks the canonical core build);
+        // fall back to the in-process client for no_tun-only sessions.
+        if helperRegistration?.state == .enabled {
+            return try await privilegedClient.version()
+        }
+        return try await inProcessClient.version()
     }
 
     public func applyMode(_ mode: AppMode) async {
         self.mode = mode
         save()
 
+        // The RPC portal and config-server client are daemon-side concerns.
+        // Only route them through the privileged client when it is enabled.
+        // When helperRegistration is nil (e.g. testing), allow direct configuration.
+        if let helperRegistration, helperRegistration.state != .enabled {
+            if mode.rpcPortal == nil { log("RPC portal disabled.") }
+            if mode.configServerURL == nil { isConfigServerConnected = false }
+            return
+        }
+
         await busy {
-            try await client.configureRPCPortal(mode.rpcPortal, whitelist: mode.rpcPortalWhitelist)
+            try await privilegedClient.configureRPCPortal(mode.rpcPortal, whitelist: mode.rpcPortalWhitelist)
             if let rpcPortal = mode.rpcPortal {
                 log("RPC portal listening: \(rpcPortal)")
             } else {
@@ -491,13 +598,13 @@ public final class EasyTierAppStore {
 
         if let url = mode.configServerURL {
             await busy {
-                try await client.startConfigServerClient(url: url)
-                isConfigServerConnected = try await client.isConfigServerClientConnected()
+                try await privilegedClient.startConfigServerClient(url: url)
+                isConfigServerConnected = try await privilegedClient.isConfigServerClientConnected()
                 log("Config server client started: \(url.absoluteString)")
             }
         } else {
             do {
-                try await client.stopConfigServerClient()
+                try await privilegedClient.stopConfigServerClient()
                 isConfigServerConnected = false
             } catch {
                 log("Config server stop failed: \(error.localizedDescription)")
@@ -599,7 +706,19 @@ public final class EasyTierAppStore {
     }
 
     private func refreshRuntimeThrowing() async throws {
-        let infos = try await client.collectNetworkInfos()
+        // Merge runtime info from both the privileged daemon (TUN instances) and
+        // the in-process client (no_tun instances). Failures from either side
+        // are tolerated so a missing/unapproved helper does not break no_tun.
+        var infos: [String: NetworkInstanceRunningInfo] = [:]
+        if helperRegistration?.state == .enabled {
+            if let daemonInfos = try? await privilegedClient.collectNetworkInfos() {
+                infos.merge(daemonInfos) { _, new in new }
+            }
+        }
+        if let inProcessInfos = try? await inProcessClient.collectNetworkInfos() {
+            infos.merge(inProcessInfos) { _, new in new }
+        }
+
         let previousOrder = instances.map(\.name)
         let newNames = infos.keys.filter { !previousOrder.contains($0) }
         let keptNames = previousOrder.filter { infos.keys.contains($0) }
@@ -631,8 +750,10 @@ public final class EasyTierAppStore {
         await reconcileRuntimeIntents()
         if mode.configServerURL == nil {
             isConfigServerConnected = false
+        } else if helperRegistration?.state == .enabled {
+            isConfigServerConnected = try await privilegedClient.isConfigServerClientConnected()
         } else {
-            isConfigServerConnected = try await client.isConfigServerClientConnected()
+            isConfigServerConnected = false
         }
     }
 
@@ -791,7 +912,7 @@ public final class EasyTierAppStore {
         guard !observation.instanceID.isEmpty else {
             throw EasyTierCoreError.invalidResponse("runtime RPC target is missing")
         }
-        let transport = EasyTierCoreRPCTransport(client: client, rpcURL: observation.rpcURL)
+        let transport = EasyTierCoreRPCTransport(client: privilegedClient, rpcURL: observation.rpcURL)
         try await EasyTierRemoteRPCClient(transport: transport).patchHostname(
             instanceID: observation.instanceID,
             hostname: hostname
@@ -974,39 +1095,10 @@ public final class EasyTierAppStore {
         do {
             try await operation()
         } catch {
-            guard !handleHelperPermissionError(error) else { return }
+            // Surface the error to the UI instead of suppressing helper-permission messages.
             lastError = error.localizedDescription
             log("Error: \(error.localizedDescription)")
         }
-    }
-
-    private func handleHelperPermissionError(_ error: Error) -> Bool {
-        guard Self.isHelperPermissionError(error) else { return false }
-        lastError = nil
-        log("Privileged helper needs user approval before TUN networking can start.")
-        return true
-    }
-
-    private static func isHelperPermissionError(_ error: Error) -> Bool {
-        if let helperError = error as? PrivilegedHelperError {
-            switch helperError {
-            case let .helperReported(payload):
-                return Self.helperPermissionErrorCodes.contains(payload.code)
-            case .unavailable:
-                return true
-            case .invalidPayload:
-                return false
-            }
-        }
-        return Self.isHelperPermissionErrorMessage(error.localizedDescription)
-    }
-
-    private static func isHelperPermissionErrorMessage(_ message: String?) -> Bool {
-        guard let message else { return false }
-        return helperPermissionErrorCodes.contains { message.contains($0) }
-            || message.contains("macOS has not allowed")
-            || message.contains("Click Install Helper")
-            || message.contains("privileged helper is not installed")
     }
 
     private func log(_ message: String) {
@@ -1031,11 +1123,6 @@ public final class EasyTierAppStore {
         return formatter
     }()
     private static let trafficSampleWindow = 60
-    private static let helperPermissionErrorCodes: Set<String> = [
-        "helperNotRegistered",
-        "helperRequiresApproval",
-        "helperNotFound",
-    ]
 }
 
 public struct LogEntry: Identifiable, Sendable, Equatable {

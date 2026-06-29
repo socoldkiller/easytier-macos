@@ -1129,8 +1129,8 @@ import Testing
 
     await store.runSelectedConfig()
 
-    #expect(store.lastError == nil)
-    #expect(store.logLines.contains { $0.text.contains("Privileged helper needs user approval") })
+    #expect(store.lastError?.contains("macOS has not allowed") == true)
+    #expect(store.logLines.contains { $0.text.contains("Error:") && $0.text.contains("macOS has not allowed") })
 }
 
 @MainActor

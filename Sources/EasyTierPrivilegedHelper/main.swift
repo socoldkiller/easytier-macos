@@ -147,14 +147,44 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
     }
 }
 
-final class HelperDelegate: NSObject, NSXPCListenerDelegate {
+final class HelperDelegate: NSObject, NSXPCListenerDelegate, @unchecked Sendable {
     private let service = PrivilegedService()
+    private var activeConnections: Set<ObjectIdentifier> = []
+    private let idleTimer = DispatchSource.makeTimerSource(queue: .main)
+    private let idleTimeout: DispatchTimeInterval = .seconds(5)
+    private var didExit = false
+
+    override init() {
+        super.init()
+        idleTimer.setEventHandler { [weak self] in self?.exitIdle() }
+    }
 
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
         connection.exportedInterface = NSXPCInterface(with: EasyTierPrivilegedServiceProtocol.self)
         connection.exportedObject = service
+        let token = ObjectIdentifier(connection)
+        connection.invalidationHandler = {
+            DispatchQueue.main.async {
+                self.activeConnections.remove(token)
+                if self.activeConnections.isEmpty { self.scheduleIdleExit() }
+            }
+        }
+        activeConnections.insert(token)
+        idleTimer.suspend()
         connection.resume()
         return true
+    }
+
+    private func scheduleIdleExit() {
+        idleTimer.suspend()
+        idleTimer.schedule(deadline: .now() + idleTimeout)
+        idleTimer.resume()
+    }
+
+    private func exitIdle() {
+        guard !didExit, activeConnections.isEmpty else { return }
+        didExit = true
+        Foundation.exit(EXIT_SUCCESS)
     }
 }
 

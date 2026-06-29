@@ -60,6 +60,7 @@ public protocol EasyTierPrivilegedServiceProtocol {
 
 public enum PrivilegedHelperError: LocalizedError, Equatable {
     case unavailable
+    case needsRegistration
     case helperReported(PrivilegedHelperErrorPayload)
     case invalidPayload(String)
 
@@ -67,6 +68,8 @@ public enum PrivilegedHelperError: LocalizedError, Equatable {
         switch self {
         case .unavailable:
             "EasyTier privileged helper is not installed or not enabled. Install the helper before starting TUN networking."
+        case .needsRegistration:
+            "EasyTier needs background permission to create a TUN interface. Approve EasyTier in System Settings > Login Items & Extensions, then start the network again."
         case let .helperReported(payload):
             if let recoverySuggestion = payload.recoverySuggestion?.trimmingCharacters(in: .whitespacesAndNewlines),
                !recoverySuggestion.isEmpty {

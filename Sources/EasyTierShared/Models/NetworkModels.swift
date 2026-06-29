@@ -90,6 +90,10 @@ public struct NetworkConfig: Codable, Equatable, Identifiable, Sendable {
     public var lazy_p2p: Bool?
     public var bind_device: Bool?
     public var no_tun: Bool?
+    /// True unless the config opts out of a TUN interface via `no_tun = true`.
+    /// Only TUN-requiring instances need the privileged helper; everything else
+    /// can run in-process without touching SMAppService or root.
+    public var requiresTUN: Bool { no_tun != true }
     public var enable_exit_node: Bool?
     public var relay_all_peer_rpc: Bool?
     public var need_p2p: Bool?
