@@ -41,7 +41,7 @@ struct EasyTierApp: App {
                     .frame(width: 0, height: 0)
                 )
                 .background(
-                    WindowAccessor { window in
+                    WindowAccessor(glassEffectsEnabled: appearanceSettings.glassEffectsEnabled) { window in
                         configureMainWindow(window)
                     }
                     .frame(width: 0, height: 0)
@@ -880,22 +880,31 @@ extension TextFieldStyle where Self == GlassFieldStyle {
 }
 
 private struct WindowAccessor: NSViewRepresentable {
+    var glassEffectsEnabled: Bool
     var configure: (NSWindow) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         DispatchQueue.main.async {
             if let window = view.window {
                 configure(window)
+                context.coordinator.lastAppliedGlass = glassEffectsEnabled
             }
         }
         return view
     }
 
     func updateNSView(_ view: NSView, context: Context) {
-        if let window = view.window {
-            configure(window)
-        }
+        guard context.coordinator.lastAppliedGlass != glassEffectsEnabled else { return }
+        guard let window = view.window else { return }
+        configure(window)
+        context.coordinator.lastAppliedGlass = glassEffectsEnabled
+    }
+
+    final class Coordinator {
+        var lastAppliedGlass: Bool?
     }
 }
 
