@@ -137,7 +137,7 @@ helper_deps = deps("EasyTierPrivilegedHelper")
 if "EasyTierRuntime" not in helper_deps or "EasyTierShared" not in helper_deps:
     fail("EasyTierPrivilegedHelper must depend on EasyTierShared and EasyTierRuntime.")
 
-print("SwiftPM target graph keeps EasyTierMac FFI-free and helper runtime-enabled.")
+print("SwiftPM target graph: EasyTierMac and EasyTierPrivilegedHelper both depend on EasyTierRuntime.")
 PY
 }
 
@@ -198,13 +198,11 @@ verify_binary_symbols() {
   [[ -n "$helper_archs" ]] || fail "Could not determine architectures for $HELPER_BINARY."
 
   for symbol in "${REQUIRED_FFI_SYMBOLS[@]}"; do
-    if has_symbol "$GUI_BINARY" "$symbol" "$gui_archs"; then
-      fail "EasyTierMac must not contain EasyTier FFI symbol: $symbol"
-    fi
+    has_symbol "$GUI_BINARY" "$symbol" "$gui_archs" || fail "EasyTierMac must contain EasyTier FFI symbol: $symbol"
     has_symbol "$HELPER_BINARY" "$symbol" "$helper_archs" || fail "EasyTierPrivilegedHelper must contain EasyTier FFI symbol: $symbol"
   done
 
-  echo "Binary symbol checks passed: GUI is FFI-free and helper contains EasyTier FFI."
+  echo "Binary symbol checks passed: both GUI and helper contain EasyTier FFI."
 }
 
 verify_static_ffi_library
