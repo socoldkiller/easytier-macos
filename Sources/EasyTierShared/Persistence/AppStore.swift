@@ -132,7 +132,9 @@ public final class EasyTierAppStore {
         do {
             let snapshot = try snapshotForStorage()
             try storage.save(snapshot)
-            configs = snapshot.configs
+            if snapshot.configs != configs {
+                configs = snapshot.configs
+            }
         } catch {
             lastError = error.localizedDescription
             log("Save failed: \(error.localizedDescription)")
@@ -148,15 +150,17 @@ public final class EasyTierAppStore {
         log("Added \(config.config.network_name).")
     }
 
-    private func saveInBackground() {
+    public func saveInBackground() {
         let snapshot: AppSnapshot
         do {
             snapshot = try snapshotForStorage()
-            configs = snapshot.configs
         } catch {
             lastError = error.localizedDescription
             log("Save failed: \(error.localizedDescription)")
             return
+        }
+        if snapshot.configs != configs {
+            configs = snapshot.configs
         }
         let storage = self.storage
         Task.detached(priority: .background) {
@@ -204,9 +208,6 @@ public final class EasyTierAppStore {
             migrateNetworkSecret(from: oldConfig, to: config)
         }
         configs[index].config = config
-        if selectedConfigID == id {
-            selectedConfigID = configs[index].id
-        }
         if saveImmediately {
             save()
         }

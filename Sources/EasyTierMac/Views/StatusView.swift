@@ -774,6 +774,12 @@ private struct MemberStatusIdentity: View {
 
     @ViewBuilder
     private var memberContextMenu: some View {
+        if !member.peerID.isEmpty, member.peerID != "-" {
+            Button("Copy Peer ID") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(member.peerID, forType: .string)
+            }
+        }
         if let renameAction {
             Button("Rename Hostname...") {
                 renameAction()
@@ -787,7 +793,7 @@ private struct MemberStatusIdentity: View {
     }
 
     private var memberSubtitle: String {
-        [member.memberStateLabel]
+        [member.memberStateLabel, member.peerIDLabel].compactMap { $0 }
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0 != "-" }
             .joined(separator: " · ")
     }
@@ -1209,7 +1215,15 @@ private extension NetworkMemberStatus {
     }
 
     var memberStateLabel: String {
-        isLocal ? "Local" : "Online"
+        if isLocal { return "Local" }
+        if isPublicServer { return "Public Server" }
+        return "Peer"
+    }
+
+    var peerIDLabel: String? {
+        let id = peerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty, id != "-" else { return nil }
+        return "#\(id)"
     }
 
     var memberStateColor: Color {

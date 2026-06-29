@@ -10,123 +10,158 @@ enum ConnectionGlyphState: Equatable {
 struct ConnectionGlyph: View {
     var state: ConnectionGlyphState
     var size: CGFloat = 18
-    var templateMode = false
-    var statusNodeColor: Color?
 
-    @State private var activeConnectingNodeIndex = 0
+    @State private var activeNodeIndex = 0
 
     var body: some View {
         ZStack {
-            ConnectionGlyphLines(state: state, templateMode: templateMode)
-                .stroke(lineColor, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round))
-                .opacity(lineOpacity)
+            ForEach(0..<Self.nodeCount, id: \.self) { segIndex in
+                segmentView(segIndex)
+            }
 
-            ForEach(ConnectionGlyphNode.allCases) { node in
-                nodeView(for: node, activeConnectingNode: activeConnectingNode)
+            ForEach(0..<Self.nodeCount, id: \.self) { index in
+                nodeView(index)
             }
         }
         .frame(width: size, height: size)
-        .animation(.easeInOut(duration: 0.16), value: activeConnectingNode)
         .task(id: state) {
             await runConnectingAnimationIfNeeded()
         }
         .accessibilityLabel(accessibilityLabel)
     }
 
+    private static let nodeCount = 3
     private static let stepDurationNanoseconds: UInt64 = 340_000_000
-
-    private var activeConnectingNode: ConnectionGlyphNode? {
-        guard state == .connecting else { return nil }
-        return Self.connectingSequence[activeConnectingNodeIndex % Self.connectingSequence.count]
-    }
-
-    private static let connectingSequence: [ConnectionGlyphNode] = [.top, .bottomLeft, .bottomRight]
 
     private func runConnectingAnimationIfNeeded() async {
         guard state == .connecting else {
-            activeConnectingNodeIndex = 0
+            activeNodeIndex = 0
             return
         }
 
-        activeConnectingNodeIndex = 0
+        activeNodeIndex = 0
         while !Task.isCancelled {
             do {
                 try await Task.sleep(nanoseconds: Self.stepDurationNanoseconds)
             } catch {
                 break
             }
-            activeConnectingNodeIndex = (activeConnectingNodeIndex + 1) % Self.connectingSequence.count
+            withAnimation(.easeInOut(duration: Double(Self.stepDurationNanoseconds) / 1_000_000_000)) {
+                activeNodeIndex = (activeNodeIndex + 1) % Self.nodeCount
+            }
         }
     }
 
     private var lineWidth: CGFloat {
-        max(size * 0.072, 1.05)
+        max(size * 0.048, 0.75)
     }
 
-    private var nodeSize: CGFloat {
-        max(size * 0.24, 3.6)
+    private var nodeRadius: CGFloat {
+        max(size * 0.130, 1.90)
     }
 
-    private var lineOpacity: Double {
-        switch state {
-        case .idle: 0.18
-        case .connecting: 0.34
-        case .connected: 0.50
-        case .error: 0.34
-        }
+    private var ringStroke: CGFloat {
+        max(size * 0.105, 1.65)
+    }
+
+    private var lineInset: CGFloat {
+        size * 0.12
+    }
+
+    private var dashPattern: [CGFloat] {
+        [size * 0.16, size * 0.064]
+    }
+
+    private var nodeCenters: [CGPoint] {
+        [
+            CGPoint(x: size * 0.50, y: size * 0.36),
+            CGPoint(x: size * 0.23, y: size * 0.82),
+            CGPoint(x: size * 0.77, y: size * 0.82),
+        ]
     }
 
     private var lineColor: Color {
-        if templateMode { return .primary.opacity(state == .idle ? 0.42 : 0.72) }
         switch state {
-        case .idle: return .secondary
-        case .connecting, .connected, .error: return .primary
+        case .idle: return .black.opacity(0.34)
+        case .connected, .error: return .black.opacity(0.72)
+        case .connecting: return .black.opacity(0.50)
         }
     }
 
-    private func nodeView(for node: ConnectionGlyphNode, activeConnectingNode: ConnectionGlyphNode?) -> some View {
-        let position = node.position(in: size)
-        return Circle()
-            .fill(nodeFill(for: node, activeConnectingNode: activeConnectingNode))
-            .overlay {
-                Circle()
-                    .stroke(nodeStroke(for: node), lineWidth: nodeStrokeWidth)
-            }
-            .frame(width: nodeSize, height: nodeSize)
-            .position(position)
-    }
-
-    private var nodeStrokeWidth: CGFloat {
-        0
-    }
-
-    private func nodeFill(for node: ConnectionGlyphNode, activeConnectingNode: ConnectionGlyphNode?) -> Color {
-        if !templateMode, node == .bottomRight, let statusNodeColor {
-            return statusNodeColor
-        }
-
-        if templateMode {
-            return .primary.opacity(nodeOpacity(for: node, activeConnectingNode: activeConnectingNode))
-        }
-
-        return .primary.opacity(nodeOpacity(for: node, activeConnectingNode: activeConnectingNode))
-    }
-
-    private func nodeOpacity(for node: ConnectionGlyphNode, activeConnectingNode: ConnectionGlyphNode?) -> Double {
+    private var statusColor: Color? {
         switch state {
-        case .idle:
-            return 0.32
+        case .idle: nil
+        case .connecting: .orange
+        case .connected: Color(nsColor: .systemGreen)
+        case .error: .red
+        }
+    }
+
+    private func segmentPath(_ segIndex: Int) -> Path {
+        let start = nodeCenters[segIndex]
+        let end = nodeCenters[(segIndex + 1) % Self.nodeCount]
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let length = max(sqrt(dx * dx + dy * dy), 0.001)
+        let inset = min(lineInset, length * 0.43)
+        let unit = CGPoint(x: dx / length, y: dy / length)
+        var path = Path()
+        path.move(to: CGPoint(x: start.x + unit.x * inset, y: start.y + unit.y * inset))
+        path.addLine(to: CGPoint(x: end.x - unit.x * inset, y: end.y - unit.y * inset))
+        return path
+    }
+
+    @ViewBuilder
+    private func segmentView(_ segIndex: Int) -> some View {
+        switch state {
+        case .idle, .connected, .error:
+            segmentPath(segIndex).stroke(lineColor, style: StrokeStyle(
+                lineWidth: lineWidth,
+                lineCap: .round,
+                lineJoin: .round
+            ))
         case .connecting:
-            return node == activeConnectingNode ? 1.0 : 0.32
-        case .connected:
-            return 1.0
-        case .error:
-            return node == .bottomRight ? 1.0 : 0.34
+            segmentPath(segIndex).stroke(lineColor, style: StrokeStyle(
+                lineWidth: lineWidth,
+                lineCap: .round,
+                lineJoin: .round
+            ))
+            if segIndex == activeNodeIndex, let statusColor {
+                segmentPath(segIndex).stroke(statusColor, style: StrokeStyle(
+                    lineWidth: lineWidth,
+                    lineCap: .butt,
+                    lineJoin: .round,
+                    dash: dashPattern
+                ))
+            }
         }
     }
 
-    private func nodeStroke(for node: ConnectionGlyphNode) -> Color {
-        .clear
+    @ViewBuilder
+    private func nodeView(_ index: Int) -> some View {
+        let position = nodeCenters[index]
+        let diameter = nodeRadius * 2
+        let fill: Color? = {
+            switch state {
+            case .idle:
+                return nil
+            case .connecting:
+                return index == activeNodeIndex ? statusColor : nil
+            case .connected, .error:
+                return statusColor
+            }
+        }()
+        ZStack {
+            if let fill {
+                Circle()
+                    .fill(fill)
+                    .frame(width: diameter, height: diameter)
+            }
+            Circle()
+                .stroke(Color.black.opacity(0.82), lineWidth: ringStroke)
+                .frame(width: diameter, height: diameter)
+        }
+        .position(position)
     }
 
     private var accessibilityLabel: Text {
@@ -136,70 +171,5 @@ struct ConnectionGlyph: View {
         case .connected: Text("Connected")
         case .error: Text("Connection error")
         }
-    }
-}
-
-private enum ConnectionGlyphNode: CaseIterable, Identifiable {
-    case top
-    case bottomLeft
-    case bottomRight
-
-    var id: Self { self }
-
-    func position(in size: CGFloat) -> CGPoint {
-        switch self {
-        case .top:
-            CGPoint(x: size * 0.50, y: size * 0.18)
-        case .bottomLeft:
-            CGPoint(x: size * 0.23, y: size * 0.78)
-        case .bottomRight:
-            CGPoint(x: size * 0.77, y: size * 0.78)
-        }
-    }
-}
-
-private struct ConnectionGlyphLines: Shape {
-    var state: ConnectionGlyphState
-    var templateMode: Bool
-
-    func path(in rect: CGRect) -> Path {
-        let size = min(rect.width, rect.height)
-        let origin = CGPoint(x: rect.midX - size / 2, y: rect.midY - size / 2)
-
-        func point(_ node: ConnectionGlyphNode) -> CGPoint {
-            let position = node.position(in: size)
-            return CGPoint(x: origin.x + position.x, y: origin.y + position.y)
-        }
-
-        var path = Path()
-
-        func addSegment(from start: ConnectionGlyphNode, to end: ConnectionGlyphNode, gap: CGFloat = size * 0.28) {
-            let startPoint = point(start)
-            let endPoint = point(end)
-            let dx = endPoint.x - startPoint.x
-            let dy = endPoint.y - startPoint.y
-            let length = max(sqrt(dx * dx + dy * dy), 0.001)
-            let inset = min(gap, length * 0.43)
-            let unit = CGPoint(x: dx / length, y: dy / length)
-            path.move(to: CGPoint(x: startPoint.x + unit.x * inset, y: startPoint.y + unit.y * inset))
-            path.addLine(to: CGPoint(x: endPoint.x - unit.x * inset, y: endPoint.y - unit.y * inset))
-        }
-
-        switch state {
-        case .idle:
-            addSegment(from: .top, to: .bottomLeft)
-        case .connecting:
-            addSegment(from: .top, to: .bottomLeft)
-            addSegment(from: .bottomLeft, to: .bottomRight)
-            addSegment(from: .bottomRight, to: .top)
-        case .connected:
-            addSegment(from: .top, to: .bottomLeft)
-            addSegment(from: .bottomLeft, to: .bottomRight)
-            addSegment(from: .bottomRight, to: .top)
-        case .error:
-            addSegment(from: .top, to: .bottomLeft)
-        }
-
-        return path
     }
 }

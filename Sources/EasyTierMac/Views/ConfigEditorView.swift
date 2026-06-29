@@ -9,17 +9,23 @@ struct ConfigEditorView: View {
     @State private var reversePortForwardPending: Set<UUID> = []
 
     @State private var displayAdvanced: Bool = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                modePicker
-
-                if displayAdvanced {
-                    advancedContent
-                } else {
-                    basicContent
+            VStack(alignment: .leading, spacing: 14) {
+                CardSection("Network") {
+                    networkNameRow
+                    FieldRow("Network secret") {
+                        NetworkSecretField(config: $config)
+                    }
                 }
+
+                CardSection("Peers") {
+                    StringListEditor(title: "Initial nodes", placeholder: "tcp://host:11010", values: $config.peer_urls)
+                }
+
+                advancedDisclosure
             }
             .padding(18)
         }
@@ -31,6 +37,9 @@ struct ConfigEditorView: View {
         }
         .onChange(of: config.instance_id) { _, _ in
             syncDisplayMode()
+        }
+        .onChange(of: displayAdvanced) { _, newValue in
+            config.advanced_settings = newValue
         }
         .onChange(of: portForwardKeys) { oldKeys, newKeys in
             for (id, key) in oldKeys {
@@ -46,186 +55,6 @@ struct ConfigEditorView: View {
             }
         }
     }
-
-    private var modePicker: some View {
-        HStack(spacing: 12) {
-            Picker("Config mode", selection: Binding(
-                get: { displayAdvanced },
-                set: { newValue in
-                    displayAdvanced = newValue
-                    config.advanced_settings = newValue
-                }
-            )) {
-                Text("Basic").tag(false)
-                Text("Advanced").tag(true)
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 220)
-            .accessibilityLabel("Configuration mode")
-
-            Spacer(minLength: 12)
-
-            if !displayAdvanced && hasHiddenAdvancedFields {
-                Label(
-                    "Has advanced settings hidden",
-                    systemImage: "exclamationmark.triangle.fill"
-                )
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.orange)
-                .help("This network uses advanced settings that Basic mode hides.")
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var basicContent: some View {
-        CardSection("Network") {
-            networkNameRow
-            FieldRow("Network secret") {
-                NetworkSecretField(config: $config)
-            }
-        }
-
-        CardSection("Peers") {
-            StringListEditor(title: "Initial nodes", placeholder: "tcp://host:11010", values: $config.peer_urls)
-        }
-
-        Text(basicHelperText)
-            .font(.caption)
-            .foregroundStyle(hasHiddenAdvancedFields ? .orange : .secondary)
-            .padding(.leading, 2)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private var basicHelperText: String {
-        if hasHiddenAdvancedFields {
-            return "This network uses advanced settings that Basic mode hides. Switch to Advanced to edit them."
-        }
-        return "Virtual IP is auto-assigned (DHCP). Default listeners and TUN are preconfigured — fill these three fields to connect."
-    }
-
-    @ViewBuilder
-    private var advancedContent: some View {
-        CardSection("Network") {
-            networkNameRow
-            FieldRow("Network secret") {
-                NetworkSecretField(config: $config)
-            }
-            FieldRow("DHCP virtual IPv4") {
-                Toggle("", isOn: $config.dhcp)
-                    .labelsHidden()
-            }
-            FieldRow("Virtual IPv4") {
-                HStack(spacing: 10) {
-                    TextField("10.144.144.10", text: $config.virtual_ipv4)
-                        .textFieldStyle(.glassField)
-                        .disabled(config.dhcp)
-                    Stepper("/\(config.network_length)", value: $config.network_length, in: 1...32)
-                        .frame(width: 110)
-                        .disabled(config.dhcp)
-                }
-            }
-            FieldRow("Hostname") {
-                TextField("Optional hostname", text: Binding($config.hostname, replacingNilWith: ""))
-                    .textFieldStyle(.glassField)
-            }
-        }
-
-        CardSection("Peers") {
-            StringListEditor(title: "Initial nodes", placeholder: "tcp://host:11010", values: $config.peer_urls)
-        }
-
-        CardSection("Advanced") {
-                    ExpandableSettingsGroup("Network routing") {
-                        VStack(alignment: .leading, spacing: 12) {
-                            StringListEditor(
-                                title: "Listeners",
-                                placeholder: "tcp://0.0.0.0:11010",
-                                values: $config.listener_urls,
-                                defaultNewValue: ListenerURLDefaults.next
-                            )
-                            StringListEditor(
-                                title: "Proxy CIDRs",
-                                placeholder: "10.0.0.0/24",
-                                values: $config.proxy_cidrs,
-                                defaultNewValue: { HostProxyCIDR.first(excluding: $0) }
-                            )
-                            Toggle("Manual routes", isOn: $config.enable_manual_routes)
-                            StringListEditor(title: "Routes", placeholder: "192.168.0.0/16", values: $config.routes)
-                                .disabled(!config.enable_manual_routes)
-                            StringListEditor(title: "Exit nodes", placeholder: "10.144.144.1", values: $config.exit_nodes)
-                            StringListEditor(title: "Mapped listeners", placeholder: "tcp://0.0.0.0:8080", values: $config.mapped_listeners)
-                        }
-                    }
-
-                    Divider()
-
-                    ExpandableSettingsGroup("SOCKS5 and VPN portal") {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Toggle("Enable SOCKS5", isOn: optionalBool($config.enable_socks5, defaultValue: false))
-                            FieldRow("SOCKS5 port") {
-                                TextField("1080", value: $config.socks5_port, format: .number)
-                                    .textFieldStyle(.glassField)
-                                    .disabled(config.enable_socks5 != true)
-                            }
-                            Toggle("VPN portal", isOn: $config.enable_vpn_portal)
-                            FieldRow("VPN portal port") {
-                                TextField("22022", value: $config.vpn_portal_listen_port, format: .number)
-                                    .textFieldStyle(.glassField)
-                                    .disabled(!config.enable_vpn_portal)
-                            }
-                            FieldRow("VPN client network") {
-                                TextField("10.0.0.0", text: $config.vpn_portal_client_network_addr)
-                                    .textFieldStyle(.glassField)
-                                    .disabled(!config.enable_vpn_portal)
-                            }
-                            FieldRow("VPN client prefix") {
-                                Stepper("/\(config.vpn_portal_client_network_len)", value: $config.vpn_portal_client_network_len, in: 1...32)
-                                    .disabled(!config.enable_vpn_portal)
-                            }
-                        }
-                    }
-                }
-
-                CardSection("Flags") {
-                    Grid(alignment: .leading, horizontalSpacing: 26, verticalSpacing: 9) {
-                        GridRow {
-                            Toggle("Latency first", isOn: $config.latency_first)
-                            Toggle("Disable P2P", isOn: optionalBool($config.disable_p2p, defaultValue: false))
-                        }
-                        GridRow {
-                            Toggle("No TUN", isOn: optionalBool($config.no_tun, defaultValue: false))
-                            Toggle("Multi thread", isOn: optionalBool($config.multi_thread, defaultValue: true))
-                        }
-                        GridRow {
-                            Toggle("Magic DNS", isOn: optionalBool($config.enable_magic_dns, defaultValue: false))
-                            Toggle("Private mode", isOn: optionalBool($config.enable_private_mode, defaultValue: false))
-                        }
-                        GridRow {
-                            Toggle("Disable IPv6", isOn: optionalBool($config.disable_ipv6, defaultValue: false))
-                            Toggle("Bind device", isOn: optionalBool($config.bind_device, defaultValue: true))
-                        }
-                        GridRow {
-                            Toggle("Disable encryption", isOn: optionalBool($config.disable_encryption, defaultValue: false))
-                            Toggle("Enable exit node", isOn: optionalBool($config.enable_exit_node, defaultValue: false))
-                        }
-                    }
-                }
-
-                CardSection("Port Forwarding") {
-                    PortForwardEditor(
-                        portForwards: $config.port_forwards,
-                        members: members,
-                        reverseStatus: reversePortForwardStatus,
-                        reversePending: reversePortForwardPending,
-                        onToggleReverse: { rule in
-                            Task { await toggleReverse(for: rule) }
-                        }
-                    )
-                }
-    }
-
-    private typealias RuleKey = String
 
     @ViewBuilder
     private var networkNameRow: some View {
@@ -246,11 +75,154 @@ struct ConfigEditorView: View {
         }
     }
 
-    private func syncDisplayMode() {
-        displayAdvanced = hasHiddenAdvancedFields || config.advanced_settings
+    @ViewBuilder
+    private var advancedDisclosure: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            DisclosureHeader(
+                isExpanded: displayAdvanced,
+                title: "Advanced",
+                onToggle: {
+                    withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
+                        displayAdvanced.toggle()
+                    }
+                },
+                trailing: {
+                    if !displayAdvanced && hasActiveAdvancedSettings {
+                        Text("Some advanced settings are active")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            )
+
+            if displayAdvanced {
+                advancedSections
+                    .padding(.top, 8)
+                    .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 8))
+            }
+        }
     }
 
-    private var hasHiddenAdvancedFields: Bool {
+    @ViewBuilder
+    private var advancedSections: some View {
+        CardSection("IP & Hostname") {
+            FieldRow("DHCP virtual IPv4") {
+                Toggle("", isOn: $config.dhcp)
+                    .labelsHidden()
+            }
+            FieldRow("Virtual IPv4") {
+                HStack(spacing: 10) {
+                    TextField("10.144.144.10", text: $config.virtual_ipv4)
+                        .textFieldStyle(.glassField)
+                        .disabled(config.dhcp)
+                    Stepper("/\(config.network_length)", value: $config.network_length, in: 1...32)
+                        .frame(width: 110)
+                        .disabled(config.dhcp)
+                }
+            }
+            FieldRow("Hostname") {
+                TextField("Optional hostname", text: Binding($config.hostname, replacingNilWith: ""))
+                    .textFieldStyle(.glassField)
+            }
+        }
+
+        CardSection("Routing & Portal") {
+            ExpandableSettingsGroup("Network routing") {
+                VStack(alignment: .leading, spacing: 12) {
+                    StringListEditor(
+                        title: "Listeners",
+                        placeholder: "tcp://0.0.0.0:11010",
+                        values: $config.listener_urls,
+                        defaultNewValue: ListenerURLDefaults.next
+                    )
+                    StringListEditor(
+                        title: "Proxy CIDRs",
+                        placeholder: "10.0.0.0/24",
+                        values: $config.proxy_cidrs,
+                        defaultNewValue: { HostProxyCIDR.first(excluding: $0) }
+                    )
+                    Toggle("Manual routes", isOn: $config.enable_manual_routes)
+                    StringListEditor(title: "Routes", placeholder: "192.168.0.0/16", values: $config.routes)
+                        .disabled(!config.enable_manual_routes)
+                    StringListEditor(title: "Exit nodes", placeholder: "10.144.144.1", values: $config.exit_nodes)
+                    StringListEditor(title: "Mapped listeners", placeholder: "tcp://0.0.0.0:8080", values: $config.mapped_listeners)
+                }
+            }
+
+            Divider()
+
+            ExpandableSettingsGroup("SOCKS5 and VPN portal") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Toggle("Enable SOCKS5", isOn: optionalBool($config.enable_socks5, defaultValue: false))
+                    FieldRow("SOCKS5 port") {
+                        TextField("1080", value: $config.socks5_port, format: .number)
+                            .textFieldStyle(.glassField)
+                            .disabled(config.enable_socks5 != true)
+                    }
+                    Toggle("VPN portal", isOn: $config.enable_vpn_portal)
+                    FieldRow("VPN portal port") {
+                        TextField("22022", value: $config.vpn_portal_listen_port, format: .number)
+                            .textFieldStyle(.glassField)
+                            .disabled(!config.enable_vpn_portal)
+                    }
+                    FieldRow("VPN client network") {
+                        TextField("10.0.0.0", text: $config.vpn_portal_client_network_addr)
+                            .textFieldStyle(.glassField)
+                            .disabled(!config.enable_vpn_portal)
+                    }
+                    FieldRow("VPN client prefix") {
+                        Stepper("/\(config.vpn_portal_client_network_len)", value: $config.vpn_portal_client_network_len, in: 1...32)
+                            .disabled(!config.enable_vpn_portal)
+                    }
+                }
+            }
+        }
+
+        CardSection("Flags") {
+            Grid(alignment: .leading, horizontalSpacing: 26, verticalSpacing: 9) {
+                GridRow {
+                    Toggle("Latency first", isOn: $config.latency_first)
+                    Toggle("Disable P2P", isOn: optionalBool($config.disable_p2p, defaultValue: false))
+                }
+                GridRow {
+                    Toggle("No TUN", isOn: optionalBool($config.no_tun, defaultValue: false))
+                    Toggle("Multi thread", isOn: optionalBool($config.multi_thread, defaultValue: true))
+                }
+                GridRow {
+                    Toggle("Magic DNS", isOn: optionalBool($config.enable_magic_dns, defaultValue: false))
+                    Toggle("Private mode", isOn: optionalBool($config.enable_private_mode, defaultValue: false))
+                }
+                GridRow {
+                    Toggle("Disable IPv6", isOn: optionalBool($config.disable_ipv6, defaultValue: false))
+                    Toggle("Bind device", isOn: optionalBool($config.bind_device, defaultValue: true))
+                }
+                GridRow {
+                    Toggle("Disable encryption", isOn: optionalBool($config.disable_encryption, defaultValue: false))
+                    Toggle("Enable exit node", isOn: optionalBool($config.enable_exit_node, defaultValue: false))
+                }
+            }
+        }
+
+        CardSection("Port Forwarding") {
+            PortForwardEditor(
+                portForwards: $config.port_forwards,
+                members: members,
+                reverseStatus: reversePortForwardStatus,
+                reversePending: reversePortForwardPending,
+                onToggleReverse: { rule in
+                    Task { await toggleReverse(for: rule) }
+                }
+            )
+        }
+    }
+
+    private typealias RuleKey = String
+
+    private func syncDisplayMode() {
+        displayAdvanced = hasActiveAdvancedSettings || config.advanced_settings
+    }
+
+    private var hasActiveAdvancedSettings: Bool {
         if !config.dhcp { return true }
         if !config.virtual_ipv4.isEmpty { return true }
         if config.network_length != 24 { return true }
@@ -453,25 +425,15 @@ private struct ExpandableSettingsGroup<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button {
-                withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
-                    isExpanded.toggle()
+            DisclosureHeader(
+                isExpanded: isExpanded,
+                title: title,
+                onToggle: {
+                    withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
+                        isExpanded.toggle()
+                    }
                 }
-            } label: {
-                HStack(spacing: 9) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 11, weight: .medium))
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                        .frame(width: 12)
-                    Text(title)
-                        .font(.system(size: 14, weight: .medium))
-                    Spacer(minLength: 12)
-                }
-                .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+            )
 
             if isExpanded {
                 content
@@ -479,6 +441,52 @@ private struct ExpandableSettingsGroup<Content: View>: View {
                     .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 8))
             }
         }
+    }
+}
+
+private struct DisclosureHeader<Trailing: View>: View {
+    var isExpanded: Bool
+    var title: String
+    var onToggle: () -> Void
+    @ViewBuilder var trailing: Trailing
+
+    init(
+        isExpanded: Bool,
+        title: String,
+        onToggle: @escaping () -> Void,
+        @ViewBuilder trailing: () -> Trailing
+    ) {
+        self.isExpanded = isExpanded
+        self.title = title
+        self.onToggle = onToggle
+        self.trailing = trailing()
+    }
+
+    var body: some View {
+        Button {
+            onToggle()
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .medium))
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .frame(width: 12)
+                Text(title)
+                    .font(.system(size: 14, weight: .medium))
+                Spacer(minLength: 12)
+                trailing
+            }
+            .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+    }
+}
+
+private extension DisclosureHeader where Trailing == EmptyView {
+    init(isExpanded: Bool, title: String, onToggle: @escaping () -> Void) {
+        self.init(isExpanded: isExpanded, title: title, onToggle: onToggle, trailing: { EmptyView() })
     }
 }
 
@@ -492,13 +500,13 @@ private struct CardSection<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             Text(title)
                 .font(.system(size: 16, weight: .medium))
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
                 content
             }
-            .padding(14)
+            .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
         }

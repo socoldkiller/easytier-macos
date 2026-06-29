@@ -614,7 +614,7 @@ struct ContentView: View {
         let previousValue = store.selectedConfigID
         guard newValue != previousValue else { return }
 
-        commitDraft(saveImmediately: true)
+        commitDraft(saveImmediately: false)
         workspaceTransitionEdge = networkTransitionEdge(from: previousValue, to: newValue)
         workspaceTransitionDistance = Self.networkTransitionDistance
         withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
@@ -805,6 +805,7 @@ struct ContentView: View {
             return
         }
         store.updateConfig(id: draftConfigID, with: draftConfig, saveImmediately: saveImmediately)
+        if !saveImmediately { store.saveInBackground() }
         self.draftConfigID = store.selectedConfigID
         draftIsDirty = false
     }

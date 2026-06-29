@@ -279,8 +279,8 @@ private final class MenuBarStatusItemController: NSObject {
             self.connectionState = connectionState
             activeNodeIndex = 0
             updateAnimation()
-            refreshStatusImage()
         }
+        refreshStatusImage()
 
         updatePopoverContent(store: store, updater: updater, appearanceSettings: appearanceSettings)
     }
@@ -444,28 +444,58 @@ extension MenuBarStatusItemController: NSPopoverDelegate {
 }
 
 private enum MenuBarConnectionIcon {
+    static let canvas: CGFloat = 22
+    static let nodeRadius: CGFloat = 2.75
+    static let nodeStroke: CGFloat = 1.7
+    static let lineWidth: CGFloat = 1.0
+    static let lineInset: CGFloat = 2.65
+
+    static let nodeCenters: [CGPoint] = [
+        CGPoint(x: 11, y: 16.7),
+        CGPoint(x: 4.4, y: 3.9),
+        CGPoint(x: 17.6, y: 3.9),
+    ]
+    static let segments: [(Int, Int)] = [(0, 1), (1, 2), (2, 0)]
+
     static func image(
         for state: ConnectionGlyphState,
         activeNodeIndex: Int? = nil,
         appearance: NSAppearance
     ) -> NSImage {
-        let image = NSImage(size: NSSize(width: 22, height: 18))
+        let image = NSImage(size: NSSize(width: canvas, height: canvas))
         image.lockFocus()
         defer { image.unlockFocus() }
 
         appearance.performAsCurrentDrawingAppearance {
-            let nodeCenters = [
-                CGPoint(x: 11, y: 14),
-                CGPoint(x: 5, y: 4),
-                CGPoint(x: 17, y: 4),
-            ]
+            if state == .connecting {
+                for (a, b) in segments {
+                    drawSegment(from: nodeCenters[a], to: nodeCenters[b], color: lineColor(for: state))
+                }
+            }
 
-            drawDashedSegment(from: nodeCenters[0], to: nodeCenters[1], state: state)
-            drawDashedSegment(from: nodeCenters[1], to: nodeCenters[2], state: state)
-            drawDashedSegment(from: nodeCenters[2], to: nodeCenters[0], state: state)
+            for (segIndex, (a, b)) in segments.enumerated() {
+                switch state {
+                case .idle, .connected, .error:
+                    drawSegment(from: nodeCenters[a], to: nodeCenters[b], color: lineColor(for: state))
+                case .connecting:
+                    if let active = activeNodeIndex, segIndex == active {
+                        drawSegment(from: nodeCenters[a], to: nodeCenters[b],
+                                    dashed: true, color: statusColor(for: state) ?? .systemOrange)
+                    }
+                }
+            }
 
             for (index, point) in nodeCenters.enumerated() {
-                drawNode(at: point, state: state, index: index, activeNodeIndex: activeNodeIndex)
+                let fill: NSColor?
+                switch state {
+                case .idle:
+                    fill = nil
+                case .connecting:
+                    fill = (index == activeNodeIndex) ? statusColor(for: state) : nil
+                case .connected, .error:
+                    fill = statusColor(for: state)
+                }
+                drawNode(at: point, fill: fill)
             }
         }
 
@@ -473,43 +503,46 @@ private enum MenuBarConnectionIcon {
         return image
     }
 
-    private static func drawDashedSegment(from start: CGPoint, to end: CGPoint, state: ConnectionGlyphState) {
+    private static func drawSegment(from start: CGPoint, to end: CGPoint, dashed: Bool = false, color: NSColor) {
         let dx = end.x - start.x
         let dy = end.y - start.y
         let length = max(sqrt(dx * dx + dy * dy), 0.001)
-        let inset = min(CGFloat(4.35), length * 0.43)
+        let inset = min(lineInset, length * 0.43)
         let unit = CGPoint(x: dx / length, y: dy / length)
         let path = NSBezierPath()
 
-        path.lineWidth = 1.25
-        path.lineCapStyle = .round
+        path.lineWidth = lineWidth
+        path.lineCapStyle = dashed ? .butt : .round
         path.lineJoinStyle = .round
-        path.setLineDash([1.3, 1.75], count: 2, phase: 0)
+        if dashed {
+            path.setLineDash([3.4, 1.4], count: 2, phase: 0)
+        }
         path.move(to: CGPoint(x: start.x + unit.x * inset, y: start.y + unit.y * inset))
         path.line(to: CGPoint(x: end.x - unit.x * inset, y: end.y - unit.y * inset))
 
-        baseColor(for: state).withAlphaComponent(lineAlpha(for: state)).setStroke()
+        color.setStroke()
         path.stroke()
     }
 
-    private static func drawNode(at point: CGPoint, state: ConnectionGlyphState, index: Int, activeNodeIndex: Int?) {
-        let radius: CGFloat = 2.5
-        let stroke = nodeStrokeColor(for: state, index: index)
-            .withAlphaComponent(nodeStrokeAlpha(for: state, index: index, activeNodeIndex: activeNodeIndex))
-        let fill = nodeFillColor(for: state, index: index, activeNodeIndex: activeNodeIndex)
-
-        drawCircle(center: point, radius: radius, fill: fill, stroke: (stroke, 1.55))
+    private static func drawNode(at point: CGPoint, fill: NSColor?) {
+        if let fill {
+            drawCircle(center: point, radius: nodeRadius, fill: fill, stroke: nil)
+        }
+        drawCircle(
+            center: point,
+            radius: nodeRadius,
+            fill: nil,
+            stroke: (color: NSColor.black.withAlphaComponent(0.82), width: nodeStroke)
+        )
     }
 
     private static func drawCircle(center: CGPoint, radius: CGFloat, fill: NSColor?, stroke: (color: NSColor, width: CGFloat)?) {
         let rect = NSRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
         let path = NSBezierPath(ovalIn: rect)
-
         if let fill {
             fill.setFill()
             path.fill()
         }
-
         if let stroke {
             stroke.color.setStroke()
             path.lineWidth = stroke.width
@@ -517,59 +550,26 @@ private enum MenuBarConnectionIcon {
         }
     }
 
-    private static func nodeFillColor(for state: ConnectionGlyphState, index: Int, activeNodeIndex: Int?) -> NSColor? {
+    private static func lineColor(for state: ConnectionGlyphState) -> NSColor {
+        switch state {
+        case .idle: return NSColor.black.withAlphaComponent(0.34)
+        case .connected, .error: return NSColor.black.withAlphaComponent(0.72)
+        case .connecting: return NSColor.black.withAlphaComponent(0.50)
+        }
+    }
+
+    private static func statusColor(for state: ConnectionGlyphState) -> NSColor? {
         switch state {
         case .idle:
-            return nil
+            nil
         case .connecting:
-            return index == activeNodeIndex ? baseColor(for: state) : nil
+            .systemOrange
         case .connected:
-            return baseColor(for: state)
+            .systemGreen
         case .error:
-            return index == errorNodeIndex ? baseColor(for: state) : nil
+            .systemRed
         }
     }
-
-    private static func nodeStrokeColor(for state: ConnectionGlyphState, index: Int) -> NSColor {
-        return baseColor(for: state)
-    }
-
-    private static func nodeStrokeAlpha(for state: ConnectionGlyphState, index: Int, activeNodeIndex: Int?) -> CGFloat {
-        switch state {
-        case .idle:
-            return 0.92
-        case .connecting:
-            return index == activeNodeIndex ? 1.0 : 0.80
-        case .connected:
-            return 1.0
-        case .error:
-            return index == errorNodeIndex ? 1.0 : 0.80
-        }
-    }
-
-    private static func lineAlpha(for state: ConnectionGlyphState) -> CGFloat {
-        switch state {
-        case .idle: 0.58
-        case .connecting: 0.68
-        case .connected: 1.0
-        case .error: 0.68
-        }
-    }
-
-    private static func baseColor(for state: ConnectionGlyphState) -> NSColor {
-        switch state {
-        case .idle:
-            return .secondaryLabelColor
-        case .connecting:
-            return .systemBlue
-        case .connected:
-            return NSColor(srgbRed: 0.35, green: 0.78, blue: 0.42, alpha: 1)
-        case .error:
-            return .systemRed
-        }
-    }
-
-    private static let errorNodeIndex = 2
 }
 
 private struct MenuBarContent: View {

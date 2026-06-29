@@ -1,17 +1,16 @@
-<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<svg width="22" height="22" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg">
   <title>Menu bar connection glyph</title>
-  <g color="#111820">
+  <g color="#000000">
     <path
-      d="M8.3 7.8 9.8 14.4M15.7 7.8 14.2 14.4M9.5 5h5"
+      d="M10.05 6.25L5.35 15.35M6.35 17.2h9.3M16.65 15.35L11.95 6.25"
       stroke="currentColor"
-      stroke-width="1.45"
+      stroke-width="1.15"
       stroke-linecap="round"
-      stroke-dasharray="1.2 2"
-      opacity="0.72"
+      stroke-linejoin="round"
+      opacity="0.34"
     />
-
-    <circle cx="6" cy="5" r="2" stroke="currentColor" stroke-width="1.8" />
-    <circle cx="18" cy="5" r="2" stroke="currentColor" stroke-width="1.8" />
-    <circle cx="12" cy="18" r="2" stroke="currentColor" stroke-width="1.8" />
+    <circle cx="11" cy="4.4" r="2.15" fill="none" stroke="currentColor" stroke-width="1.15" opacity="0.82" />
+    <circle cx="4.4" cy="17.2" r="2.15" fill="none" stroke="currentColor" stroke-width="1.15" opacity="0.82" />
+    <circle cx="17.6" cy="17.2" r="2.15" fill="none" stroke="currentColor" stroke-width="1.15" opacity="0.82" />
   </g>
 </svg>

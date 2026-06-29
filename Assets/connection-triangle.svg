@@ -1,13 +1,10 @@
-<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+<svg width="22" height="22" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg">
   <title>Connection triangle glyph</title>
-  <path
-    d="M29 25L25 33M28 42H36M39 33L35 25"
-    stroke="currentColor"
-    stroke-width="4"
-    stroke-linecap="round"
-    opacity="0.56"
-  />
-  <circle cx="32" cy="14" r="6" fill="currentColor" opacity="0.86" />
-  <circle cx="18" cy="42" r="6" fill="currentColor" opacity="0.86" />
-  <circle cx="46" cy="42" r="6" fill="currentColor" opacity="0.86" />
+  <g stroke="#000000" fill="none">
+    <path d="M10.05 6.25L5.35 15.35M6.35 17.2h9.3M16.65 15.35L11.95 6.25"
+          stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" opacity="0.34" />
+    <circle cx="11" cy="4.4" r="2.15" stroke-width="1.15" opacity="0.82" />
+    <circle cx="4.4" cy="17.2" r="2.15" stroke-width="1.15" opacity="0.82" />
+    <circle cx="17.6" cy="17.2" r="2.15" stroke-width="1.15" opacity="0.82" />
+  </g>
 </svg>
