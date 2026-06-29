@@ -190,7 +190,7 @@ struct ContentView: View {
         .onChange(of: networkSearchText) { _, _ in
             selectDefaultSearchResult()
         }
-        .onChange(of: networkSearchResultIDs) { _, ids in
+        .onChange(of: networkSearchQuery.isEmpty ? [] : networkSearchResultIDs) { _, ids in
             reconcileSearchSelection(with: ids)
         }
         .background {
