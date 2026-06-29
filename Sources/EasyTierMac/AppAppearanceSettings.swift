@@ -14,7 +14,7 @@ final class AppAppearanceSettings {
     init(userDefaults: UserDefaults = .standard) {
         self.userDefaults = userDefaults
         if userDefaults.object(forKey: Self.glassEffectsEnabledKey) == nil {
-            glassEffectsEnabled = true
+            glassEffectsEnabled = false
         } else {
             glassEffectsEnabled = userDefaults.bool(forKey: Self.glassEffectsEnabledKey)
         }
