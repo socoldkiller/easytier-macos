@@ -334,7 +334,8 @@ struct ContentView: View {
 
     private var selectedConfigHasRuntimeError: Bool {
         guard !draftIsDirty else { return false }
-        guard let instance = store.selectedRunningInstance else { return false }
+        guard var instance = store.selectedRunningInstance else { return false }
+        instance.detail = store.selectedRuntimeDetail
         return instance.runtimeErrorMessage != nil || instance.listenerErrorFromEvents != nil
     }
 

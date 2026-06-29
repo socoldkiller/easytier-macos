@@ -20,7 +20,9 @@ struct StatusView: View {
     private var instance: NetworkInstance? { store.selectedRunningInstance }
     private var members: [NetworkMemberStatus] { store.selectedMemberStatuses }
     private var runtimeError: String? {
-        instance?.runtimeErrorMessage
+        var inst = instance
+        inst?.detail = store.selectedRuntimeDetail
+        return inst?.runtimeErrorMessage
     }
     private var runtimeIntentConflict: RuntimeIntent? {
         let networkName = instance?.name ?? store.selectedConfig?.network_name
@@ -32,7 +34,9 @@ struct StatusView: View {
         if runtimeError != nil { return .error }
         if store.isBusy { return .connecting }
         guard let instance else { return .idle }
-        return store.instanceIsFullyConnected(instance) ? .connected : .connecting
+        var inst = instance
+        inst.detail = store.selectedRuntimeDetail
+        return store.instanceIsFullyConnected(inst) ? .connected : .connecting
     }
 
     var body: some View {
@@ -138,7 +142,7 @@ struct StatusView: View {
             StatusBadge(title: "Members", value: "\(members.count)", systemImage: "person.2.fill", width: 136)
             StatusBadge(
                 title: "Device",
-                value: instance?.detail?.dev_name ?? "-",
+                value: store.selectedRuntimeDetail?.dev_name ?? instance?.detail?.dev_name ?? "-",
                 systemImage: "desktopcomputer",
                 width: 152
             )

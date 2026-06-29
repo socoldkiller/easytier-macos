@@ -85,7 +85,8 @@ struct EasyTierApp: App {
     private var menuBarConnectionState: ConnectionGlyphState {
         if store.lastError != nil { return .error }
         if store.isBusy { return .connecting }
-        guard let instance = store.selectedRunningInstance else { return .idle }
+        guard var instance = store.selectedRunningInstance else { return .idle }
+        instance.detail = store.selectedRuntimeDetail
         return store.instanceIsFullyConnected(instance) ? .connected : .connecting
     }
 
@@ -675,7 +676,8 @@ private struct MenuBarContent: View {
     private var selectedNetworkState: ConnectionGlyphState {
         if store.lastError != nil { return .error }
         if store.isBusy { return .connecting }
-        guard let instance = selectedRunningInstance else { return .idle }
+        guard var instance = selectedRunningInstance else { return .idle }
+        instance.detail = store.selectedRuntimeDetail
         return store.instanceIsFullyConnected(instance) ? .connected : .connecting
     }
 
@@ -697,13 +699,13 @@ private struct MenuBarContent: View {
     }
 
     private var deviceName: String {
-        let runtimeHostname = store.selectedRunningInstance?.detail?.my_node_info?.hostname
+        let runtimeHostname = store.selectedRuntimeDetail?.my_node_info?.hostname
         let configHostname = store.selectedConfig?.hostname
         return firstNonEmpty(runtimeHostname, configHostname, Host.current().localizedName) ?? "This Mac"
     }
 
     private var deviceAddress: String {
-        let node = store.selectedRunningInstance?.detail?.my_node_info
+        let node = store.selectedRuntimeDetail?.my_node_info
         return firstNonEmpty(node?.virtual_ipv4?.displayString, node?.ipv4_addr) ?? "-"
     }
 
@@ -726,14 +728,16 @@ private struct MenuBarContent: View {
         if store.isBusy { return "Working" }
         if store.lastError != nil { return "Needs Attention" }
         guard store.selectedConfig != nil else { return "No Network" }
-        guard let instance = selectedRunningInstance else { return "Not Connected" }
+        guard var instance = selectedRunningInstance else { return "Not Connected" }
+        instance.detail = store.selectedRuntimeDetail
         return store.instanceIsFullyConnected(instance) ? "Connected" : "Connecting"
     }
 
     private var connectionIndicatorColor: Color {
         if store.lastError != nil { return .orange }
         if store.isBusy { return .yellow.opacity(0.82) }
-        guard let instance = selectedRunningInstance else { return MenuBarPalette.mutedText }
+        guard var instance = selectedRunningInstance else { return MenuBarPalette.mutedText }
+        instance.detail = store.selectedRuntimeDetail
         return store.instanceIsFullyConnected(instance) ? MenuBarPalette.connected : .yellow.opacity(0.82)
     }
 
@@ -744,7 +748,8 @@ private struct MenuBarContent: View {
 
     private var selectedNetworkSubtitle: String {
         if store.selectedConfig == nil { return "Select a network" }
-        guard let instance = selectedRunningInstance else { return "Disconnected" }
+        guard var instance = selectedRunningInstance else { return "Disconnected" }
+        instance.detail = store.selectedRuntimeDetail
         return store.instanceIsFullyConnected(instance) ? "Connected" : "Connecting"
     }
 
