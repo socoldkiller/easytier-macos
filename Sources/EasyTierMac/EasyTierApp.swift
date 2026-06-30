@@ -485,15 +485,15 @@ extension MenuBarStatusItemController: NSPopoverDelegate {
 
 private enum MenuBarConnectionIcon {
     static let canvas: CGFloat = 22
-    static let nodeRadius: CGFloat = 2.75
-    static let nodeStroke: CGFloat = 1.7
-    static let lineWidth: CGFloat = 1.0
-    static let lineInset: CGFloat = 2.65
+    static let nodeRadius: CGFloat = 2.95
+    static let nodeStroke: CGFloat = 1.75
+    static let lineWidth: CGFloat = 1.05
+    static let lineInset: CGFloat = 2.85
 
     static let nodeCenters: [CGPoint] = [
-        CGPoint(x: 11, y: 16.7),
-        CGPoint(x: 4.4, y: 3.9),
-        CGPoint(x: 17.6, y: 3.9),
+        CGPoint(x: 11, y: 17.15),
+        CGPoint(x: 4.25, y: 3.7),
+        CGPoint(x: 17.75, y: 3.7),
     ]
     static let segments: [(Int, Int)] = [(0, 1), (1, 2), (2, 0)]
 
