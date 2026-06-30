@@ -26,7 +26,7 @@ CLEAN_HELPER_STATE="${EASYTIER_CLEAN_HELPER_STATE:-}"
 ALLOW_UNINSTALLABLE_HELPER="${EASYTIER_ALLOW_UNINSTALLABLE_HELPER:-0}"
 AUTO_CODESIGN_IDENTITY="${EASYTIER_AUTO_CODESIGN_IDENTITY:-1}"
 RESET_BTM_STATE="${EASYTIER_RESET_BTM:-0}"
-REQUIRE_TEAM_ID="${EASYTIER_REQUIRE_TEAM_ID:-}"
+REQUIRE_TEAM_ID="${EASYTIER_REQUIRE_TEAM_ID:-$REQUIRE_DISTRIBUTION_SIGNING}"
 USE_LOCAL_CODESIGN="${EASYTIER_USE_LOCAL_CODESIGN:-1}"
 LOCAL_CODESIGN_IDENTITY="${EASYTIER_LOCAL_CODESIGN_IDENTITY:-EasyTierLocalCodeSigning}"
 LOCAL_SIGNING_DIR="${EASYTIER_LOCAL_SIGNING_DIR:-$HOME/Library/Application Support/easytier/LocalSigning}"
@@ -65,14 +65,6 @@ if [[ -z "$CLEAN_LOCAL_CODESIGN_KEYCHAIN" ]]; then
     CLEAN_LOCAL_CODESIGN_KEYCHAIN=1
   else
     CLEAN_LOCAL_CODESIGN_KEYCHAIN=0
-  fi
-fi
-
-if [[ -z "$REQUIRE_TEAM_ID" ]]; then
-  if [[ "$ALLOW_UNINSTALLABLE_HELPER" == "1" ]]; then
-    REQUIRE_TEAM_ID=0
-  else
-    REQUIRE_TEAM_ID=1
   fi
 fi
 
@@ -312,19 +304,9 @@ if [[ "$CODE_SIGN_IDENTITY" == "-" && "$AUTO_CODESIGN_IDENTITY" == "1" ]]; then
   if [[ -n "$AUTO_SELECTED_IDENTITY" ]]; then
     CODE_SIGN_IDENTITY="$AUTO_SELECTED_IDENTITY"
     echo "Using code signing identity: $CODE_SIGN_IDENTITY" >&2
-  elif [[ "$ALLOW_UNINSTALLABLE_HELPER" == "1" && "$USE_LOCAL_CODESIGN" == "1" && "$REQUIRE_DISTRIBUTION_SIGNING" != "1" ]]; then
+  elif [[ "$ALLOW_UNINSTALLABLE_HELPER" != "1" && "$USE_LOCAL_CODESIGN" == "1" && "$REQUIRE_DISTRIBUTION_SIGNING" != "1" ]]; then
     use_local_codesigning_identity
   fi
-fi
-
-if [[ "$CODE_SIGN_IDENTITY" == "$LOCAL_CODESIGN_IDENTITY" && "$ALLOW_UNINSTALLABLE_HELPER" != "1" ]]; then
-  cat >&2 <<EOF
-Local self-signed signing identity '$LOCAL_CODESIGN_IDENTITY' cannot produce an installable SMAppService privileged helper.
-
-Use an Apple Development or Developer ID Application identity with a Team ID, or
-set EASYTIER_ALLOW_UNINSTALLABLE_HELPER=1 for CI/symbol verification only.
-EOF
-  exit 1
 fi
 
 if [[ "$CODE_SIGN_IDENTITY" == "$LOCAL_CODESIGN_IDENTITY" ]]; then
@@ -343,14 +325,13 @@ fi
 
 if [[ "$ALLOW_UNINSTALLABLE_HELPER" != "1" && ( -z "$CODE_SIGN_IDENTITY" || "$CODE_SIGN_IDENTITY" == "-" ) ]]; then
   cat >&2 <<EOF
-Packaging an installable privileged helper requires an Apple code signing identity with a Team ID.
+Packaging an installable privileged helper requires a code signing identity.
 
-Install an Apple Development or Developer ID Application certificate, or set
-EASYTIER_CODESIGN_IDENTITY to one explicitly.
+Install an Apple Development or Developer ID Application certificate, or allow
+this script to use a local development identity by leaving
+EASYTIER_USE_LOCAL_CODESIGN=1.
 
-Local self-signed identities cannot install or launch the SMAppService privileged
-helper. For CI/symbol verification or no-helper smoke builds only, set
-EASYTIER_ALLOW_UNINSTALLABLE_HELPER=1.
+For CI/symbol verification only, set EASYTIER_ALLOW_UNINSTALLABLE_HELPER=1.
 EOF
   exit 1
 fi
@@ -673,6 +654,8 @@ cat > "$LAUNCH_DAEMONS_DIR/com.kkrainbow.easytier.mac.helper.plist" <<PLIST
     </array>
     <key>BundleProgram</key>
     <string>Contents/MacOS/EasyTierPrivilegedHelper</string>
+    <key>RunAtLoad</key>
+    <true/>
     <key>StandardOutPath</key>
     <string>/var/log/easytier-helper.log</string>
     <key>StandardErrorPath</key>
