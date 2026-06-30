@@ -52,8 +52,13 @@ public final class HelperRegistrationService {
         detail = "Registering privileged helper..."
 
         do {
-            try? await service.unregister()
-            try service.register()
+            if LegacyPrivilegedHelperService.shouldUseLegacyInstaller {
+                try? await service.unregister()
+                try LegacyPrivilegedHelperService.installUsingAdministratorPrivileges()
+            } else {
+                try? await service.unregister()
+                try service.register()
+            }
             refreshSync()
             if state != .enabled {
                 throw PrivilegedHelperError.needsRegistration
@@ -78,6 +83,17 @@ public final class HelperRegistrationService {
     // MARK: - Internals
 
     private func refreshSync() {
+        if LegacyPrivilegedHelperService.shouldUseLegacyInstaller {
+            if LegacyPrivilegedHelperService.isInstalled {
+                state = .enabled
+                detail = "Privileged helper is enabled."
+            } else {
+                state = .notRegistered
+                detail = "Privileged helper is not installed. Starting a TUN network will prompt for administrator permission."
+            }
+            return
+        }
+
         switch service.status {
         case .notRegistered:
             state = .notRegistered

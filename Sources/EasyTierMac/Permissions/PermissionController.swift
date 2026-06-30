@@ -13,6 +13,16 @@ final class PermissionController {
     private let service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
 
     func refresh() async {
+        if LegacyPrivilegedHelperService.shouldUseLegacyInstaller {
+            if LegacyPrivilegedHelperService.isInstalled {
+                await verifyEnabledHelper()
+            } else {
+                state = .notRegistered
+                detail = "Install the privileged helper with administrator permission before starting TUN networking."
+            }
+            return
+        }
+
         switch service.status {
         case .notRegistered:
             state = .notRegistered
@@ -43,8 +53,12 @@ final class PermissionController {
         defer { isBusy = false }
 
         do {
-            try? await service.unregister()
-            try service.register()
+            if LegacyPrivilegedHelperService.shouldUseLegacyInstaller {
+                try LegacyPrivilegedHelperService.installUsingAdministratorPrivileges()
+            } else {
+                try? await service.unregister()
+                try service.register()
+            }
             await refresh()
         } catch {
             refreshAfterRegistrationFailure(error)
@@ -63,11 +77,15 @@ final class PermissionController {
         defer { isBusy = false }
 
         detail = "Repairing privileged helper registration..."
-        try? await service.unregister()
-        try? Self.resetBackgroundTaskManagementState()
 
         do {
-            try service.register()
+            if LegacyPrivilegedHelperService.shouldUseLegacyInstaller {
+                try LegacyPrivilegedHelperService.installUsingAdministratorPrivileges()
+            } else {
+                try? await service.unregister()
+                try? Self.resetBackgroundTaskManagementState()
+                try service.register()
+            }
             await refresh()
         } catch {
             refreshAfterRegistrationFailure(error)

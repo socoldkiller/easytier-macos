@@ -131,25 +131,31 @@ struct EasyTierApp: App {
 
         guard arguments.contains("--register-helper") || arguments.contains("--unregister-helper") || arguments.contains("--helper-status") else { return }
 
-        let service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
-        do {
+        if arguments.contains("--register-helper") || arguments.contains("--unregister-helper") || arguments.contains("--helper-status") {
             if arguments.contains("--register-helper"), let locationError = helperInstallLocationError() {
                 fputs("helper command failed: \(locationError)\n", stderr)
-                print("helper status: \(Self.describe(service.status))")
+                print("helper status: \(Self.currentHelperStatusDescription())")
                 Foundation.exit(EXIT_FAILURE)
             }
-            if arguments.contains("--unregister-helper") || arguments.contains("--register-helper") {
-                try? service.unregister()
+
+            runAsyncHelperCommandAndExit { @MainActor in
+                let service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
+                if arguments.contains("--unregister-helper") || arguments.contains("--register-helper") {
+                    try? await service.unregister()
+                }
+                if arguments.contains("--unregister-helper"),
+                   LegacyPrivilegedHelperService.isInstalled,
+                   ProcessInfo.processInfo.environment["EASYTIER_SKIP_LEGACY_HELPER_UNINSTALL"] != "1" {
+                    try LegacyPrivilegedHelperService.uninstallUsingAdministratorPrivileges()
+                }
+                let registration = HelperRegistrationService()
+                if arguments.contains("--register-helper") {
+                    try await registration.ensureRegistered()
+                } else {
+                    await registration.refresh()
+                }
+                return "helper status: \(Self.describe(registration.state))"
             }
-            if arguments.contains("--register-helper") {
-                try service.register()
-            }
-            print("helper status: \(Self.describe(service.status))")
-            Foundation.exit(EXIT_SUCCESS)
-        } catch {
-            fputs("helper command failed: \(error.localizedDescription)\n", stderr)
-            print("helper status: \(Self.describe(service.status))")
-            Foundation.exit(EXIT_FAILURE)
         }
     }
 
@@ -173,6 +179,25 @@ struct EasyTierApp: App {
         case .notFound: "notFound"
         @unknown default: "unknown"
         }
+    }
+
+    private static func describe(_ state: HelperRegistrationService.State) -> String {
+        switch state {
+        case .notRegistered: "notRegistered"
+        case .registering: "registering"
+        case .requiresApproval: "requiresApproval"
+        case .enabled: "enabled"
+        case .notFound: "notFound"
+        case .error: "error"
+        }
+    }
+
+    private static func currentHelperStatusDescription() -> String {
+        if LegacyPrivilegedHelperService.shouldUseLegacyInstaller {
+            return LegacyPrivilegedHelperService.isInstalled ? "enabled" : "notRegistered"
+        }
+        let service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
+        return describe(service.status)
     }
 
     private static func runAsyncHelperCommandAndExit(_ command: @escaping () async throws -> String) {

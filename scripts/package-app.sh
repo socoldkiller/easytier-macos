@@ -536,7 +536,7 @@ clean_development_helper_state() {
 
   for binary in "${candidates[@]}"; do
     if [[ -x "$binary" ]]; then
-      "$binary" --unregister-helper >/dev/null 2>&1 || true
+      EASYTIER_SKIP_LEGACY_HELPER_UNINSTALL=1 "$binary" --unregister-helper >/dev/null 2>&1 || true
     fi
   done
 
