@@ -25,15 +25,7 @@ struct EasyTierApp: App {
                 .environment(store)
                 .environment(updater)
                 .environment(appearanceSettings)
-                .background {
-                    if appearanceSettings.glassEffectsEnabled {
-                        FrostedWindowBackground()
-                            .ignoresSafeArea()
-                    } else {
-                        Color(nsColor: .windowBackgroundColor)
-                            .ignoresSafeArea()
-                    }
-                }
+                .easyTierWindowBackground(glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
                 .background(
                     MenuBarStatusItemBridge(
                         controller: menuBarController,
@@ -45,8 +37,8 @@ struct EasyTierApp: App {
                     .frame(width: 0, height: 0)
                 )
                 .background(
-                    WindowAccessor(glassEffectsEnabled: appearanceSettings.glassEffectsEnabled) { window in
-                        configureMainWindow(window)
+                    WindowAccessor { window in
+                        configureMainWindow(window, glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
                     }
                     .frame(width: 0, height: 0)
                 )
@@ -55,15 +47,23 @@ struct EasyTierApp: App {
         }
         .windowToolbarStyle(.unified)
 
-        Window("Settings", id: "settings") {
+        Window("EasyTier", id: "settings") {
             EasyTierSettingsSheet(initialTab: .general, mode: store.mode) { mode in
                 Task { await store.applyMode(mode) }
             }
             .environment(store)
             .environment(updater)
             .environment(appearanceSettings)
+            .easyTierWindowBackground(glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
+            .background(
+                WindowAccessor { window in
+                    configureMainWindow(window, glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
+                }
+                .frame(width: 0, height: 0)
+            )
         }
         .windowToolbarStyle(.unified)
+        .windowResizability(.contentSize)
 
         .commands {
             CommandGroup(replacing: .newItem) {
@@ -105,17 +105,12 @@ struct EasyTierApp: App {
         return store.instanceIsFullyConnected(instance) ? .connected : .connecting
     }
 
-    private func configureMainWindow(_ window: NSWindow) {
+    private func configureMainWindow(_ window: NSWindow, glassEffectsEnabled: Bool) {
         let frame = window.frame
         window.styleMask.insert(.fullSizeContentView)
         window.titlebarAppearsTransparent = true
-        if appearanceSettings.glassEffectsEnabled {
-            window.isOpaque = false
-            window.backgroundColor = .clear
-        } else {
-            window.isOpaque = true
-            window.backgroundColor = .windowBackgroundColor
-        }
+        window.isOpaque = !glassEffectsEnabled
+        window.backgroundColor = glassEffectsEnabled ? .clear : .windowBackgroundColor
         if window.frame != frame {
             window.setFrame(frame, display: true)
         }
@@ -885,7 +880,22 @@ private struct MenuBarPanelBackground: NSViewRepresentable {
     }
 }
 
-struct FrostedWindowBackground: NSViewRepresentable {
+extension View {
+    @ViewBuilder
+    func easyTierWindowBackground(glassEffectsEnabled: Bool) -> some View {
+        if glassEffectsEnabled {
+            containerBackground(for: .window) { FrostedGlass() }
+        } else {
+            containerBackground(Color(nsColor: .windowBackgroundColor), for: .window)
+        }
+    }
+
+    func frostedGlassBackground<S: Shape>(in shape: S) -> some View {
+        background { FrostedGlass().clipShape(shape) }
+    }
+}
+
+struct FrostedGlass: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
         configure(view)
@@ -900,6 +910,7 @@ struct FrostedWindowBackground: NSViewRepresentable {
         view.material = .sidebar
         view.blendingMode = .behindWindow
         view.state = .active
+        view.autoresizingMask = [.width, .height]
     }
 }
 
@@ -925,31 +936,21 @@ extension TextFieldStyle where Self == GlassFieldStyle {
 }
 
 private struct WindowAccessor: NSViewRepresentable {
-    var glassEffectsEnabled: Bool
     var configure: (NSWindow) -> Void
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         DispatchQueue.main.async {
             if let window = view.window {
                 configure(window)
-                context.coordinator.lastAppliedGlass = glassEffectsEnabled
             }
         }
         return view
     }
 
     func updateNSView(_ view: NSView, context: Context) {
-        guard context.coordinator.lastAppliedGlass != glassEffectsEnabled else { return }
         guard let window = view.window else { return }
         configure(window)
-        context.coordinator.lastAppliedGlass = glassEffectsEnabled
-    }
-
-    final class Coordinator {
-        var lastAppliedGlass: Bool?
     }
 }
 

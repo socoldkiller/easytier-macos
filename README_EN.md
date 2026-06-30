@@ -108,7 +108,7 @@ TUN interfaces need root. The app walks you through installing a privileged help
 
 ## Install
 
-macOS 14 or later.
+macOS 15 or later.
 
 Grab the latest DMG from [Releases](https://github.com/socoldkiller/easytier-swift/releases) and drag it into Applications.
 

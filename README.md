@@ -108,7 +108,7 @@ TUN 网卡需要 root 权限。App 会引导你安装一个 privileged helper（
 
 ## 安装
 
-macOS 14 及以上。
+macOS 15 及以上。
 
 去 [Releases](https://github.com/socoldkiller/easytier-swift/releases) 下载最新 DMG，拖进 Applications。
 

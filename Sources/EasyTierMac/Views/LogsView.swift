@@ -31,7 +31,7 @@ struct LogsView: View {
                 .padding(12)
             }
             .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .frostedGlassBackground(in: RoundedRectangle(cornerRadius: 8))
         }
         .padding()
     }

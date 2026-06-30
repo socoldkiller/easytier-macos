@@ -556,7 +556,7 @@ private struct MemberSearchField: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .frostedGlassBackground(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .strokeBorder(.primary.opacity(0.055), lineWidth: 1)
@@ -800,14 +800,9 @@ private struct MemberStatusIdentity: View {
 }
 
 private extension View {
-    @ViewBuilder
     func trackScrollPhase(isScrolling: Binding<Bool>) -> some View {
-        if #available(macOS 15.0, *) {
-            onScrollPhaseChange { _, phase in
-                isScrolling.wrappedValue = phase.isScrolling
-            }
-        } else {
-            self
+        onScrollPhaseChange { _, phase in
+            isScrolling.wrappedValue = phase.isScrolling
         }
     }
 
@@ -1288,7 +1283,7 @@ private struct StatusBadge: View {
         }
         .padding(10)
         .frame(width: width, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .frostedGlassBackground(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: value)
     }
 }

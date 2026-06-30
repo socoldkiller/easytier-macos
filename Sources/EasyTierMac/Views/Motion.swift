@@ -136,6 +136,11 @@ extension View {
     func presentedSurfaceMotion() -> some View {
         modifier(PresentedSurfaceMotionModifier())
     }
+
+    func toolbarAutoHidden(_ hidden: Bool, reduceMotion: Bool) -> some View {
+        opacity(hidden ? 0 : 1)
+            .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: hidden)
+    }
 }
 
 private struct PresentedSurfaceMotionModifier: ViewModifier {

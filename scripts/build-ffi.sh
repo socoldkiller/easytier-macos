@@ -131,7 +131,7 @@ ensure_easytier_core_tag() {
 }
 
 cd "$ROOT_DIR"
-export MACOSX_DEPLOYMENT_TARGET=14.0
+export MACOSX_DEPLOYMENT_TARGET=15.0
 ensure_easytier_core_tag
 configure_rust_release_profile
 

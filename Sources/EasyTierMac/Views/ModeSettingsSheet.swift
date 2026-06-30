@@ -65,13 +65,10 @@ struct EasyTierSettingsSheet: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
+        NavigationSplitView {
             SettingsSidebar(selection: $selectedTab)
-                .frame(width: Self.sidebarWidth)
-
-            Divider()
-                .ignoresSafeArea()
-
+                .navigationSplitViewColumnWidth(min: 200, ideal: Self.sidebarWidth, max: 280)
+        } detail: {
             MotionSwitch(id: selectedTab, insertionEdge: .trailing, fillsAvailableSpace: false) {
                 detailContent
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -85,8 +82,6 @@ struct EasyTierSettingsSheet: View {
             selectSettingsTab(tab)
         }
         .frame(width: Self.windowSize.width, height: Self.windowSize.height)
-        .presentationBackground(.thinMaterial)
-        .presentedSurfaceMotion()
         .alert("Disable TCP RPC Listen?", isPresented: $showingDisableRPCListenWarning) {
             Button("Keep Enabled", role: .cancel) {}
             Button("Disable", role: .destructive) { rpcListenEnabled = false }
