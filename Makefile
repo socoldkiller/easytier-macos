@@ -31,7 +31,7 @@ help:
 	@printf '%-24s %s\n' 'make test' 'Run Swift package tests.'
 	@printf '%s\n' ''
 	@printf '%-24s %s\n' 'make app-debug' 'Build a debug .app for local development.'
-	@printf '%-24s %s\n' 'make app-release-local' 'Build a release .app signed with local/self-signed identity when needed.'
+	@printf '%-24s %s\n' 'make app-release-local' 'Build a self-signed release .app for local smoke tests; helper is not verified installable.'
 	@printf '%-24s %s\n' 'make app-release-adhoc' 'Build a release .app for symbol/bundle checks only; helper is not installable.'
 	@printf '%-24s %s\n' 'make app-release-signed' 'Build a Developer ID signed release .app. Requires CODESIGN_IDENTITY=...'
 	@printf '%s\n' ''
@@ -73,12 +73,14 @@ require-codesign-identity:
 app-debug: ffi
 	mkdir -p "$(ARTIFACTS_DIR)"
 	EASYTIER_BUILD_CONFIGURATION=debug \
+	EASYTIER_ALLOW_UNINSTALLABLE_HELPER=1 \
 	EASYTIER_EXPORT_APP_DIR="$(APP_PATH)" \
 	./scripts/package-app.sh
 
 app-release-local: ffi
 	mkdir -p "$(ARTIFACTS_DIR)"
 	EASYTIER_BUILD_CONFIGURATION=release \
+	EASYTIER_ALLOW_UNINSTALLABLE_HELPER=1 \
 	EASYTIER_EXPORT_APP_DIR="$(APP_PATH)" \
 	EASYTIER_EXPORT_CODESIGN_CERT_PATH="$(LOCAL_CERT_PATH)" \
 	./scripts/package-app.sh
@@ -105,11 +107,13 @@ $(LOCAL_INSTALL_NOTES_PATH):
 		'' \
 		'This DMG is not Developer ID signed or Apple notarized.' \
 		'' \
-		'To try the privileged helper on macOS:' \
-		'1. Import and trust EasyTierLocalCodeSigning.cer for Code Signing.' \
-		'2. Drag EasyTier.app to Applications.' \
-		'3. Run xattr -cr /Applications/EasyTier.app if macOS copied quarantine attributes.' \
-		'4. Open EasyTier.app, click Install Helper, and approve it in System Settings if prompted.' \
+		'The privileged helper is not verified installable in this self-signed build.' \
+		'Use this DMG for UI/no_tun smoke testing, or build with an Apple Development/Developer ID identity to test TUN helper installation.' \
+		'' \
+		'To launch the app for smoke testing:' \
+		'1. Drag EasyTier.app to Applications.' \
+		'2. Run xattr -cr /Applications/EasyTier.app if macOS copied quarantine attributes.' \
+		'3. Open EasyTier.app with Control-click > Open, or use Privacy & Security > Open Anyway if macOS blocks first launch.' \
 		'' \
 		'Do not use this self-signed build as a production release.' \
 		> "$(LOCAL_INSTALL_NOTES_PATH)"

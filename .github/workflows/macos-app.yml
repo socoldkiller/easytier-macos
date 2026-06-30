@@ -159,6 +159,7 @@ jobs:
             export EASYTIER_REQUIRE_DISTRIBUTION_SIGNING=1
           else
             export EASYTIER_CODESIGN_IDENTITY="-"
+            export EASYTIER_ALLOW_UNINSTALLABLE_HELPER=1
             export EASYTIER_LOCAL_SIGNING_DIR="$RUNNER_TEMP/EasyTierLocalSigning"
             export EASYTIER_EXPORT_CODESIGN_CERT_PATH="$GITHUB_WORKSPACE/.build/artifacts/EasyTierLocalCodeSigning.cer"
           fi
@@ -210,15 +211,13 @@ jobs:
 
           This artifact is not Developer ID signed or Apple notarized.
 
-          To try the privileged helper on macOS:
-          1. Import and trust EasyTierLocalCodeSigning.cer for Code Signing.
-          2. Quit EasyTier if it is running.
-          3. When replacing another self-signed test build, run `sfltool resetbtm` to clear stale ServiceManagement records.
-          4. Open EasyTier-macOS-*.dmg and drag EasyTier.app to Applications.
-          5. Run `xattr -cr ~/Applications/EasyTier.app` if macOS copied quarantine attributes.
-          6. Open EasyTier.app from Applications with Control-click > Open, or use Privacy & Security > Open Anyway if macOS blocks first launch.
-          7. In EasyTier, click Install Helper.
-          8. If macOS asks, allow EasyTier in System Settings > General > Login Items & Extensions.
+          The privileged helper is not verified installable in this self-signed build.
+          Use this DMG for UI/no_tun smoke testing, or build with an Apple Development/Developer ID identity to test TUN helper installation.
+
+          To launch the app for smoke testing:
+          1. Open EasyTier-macOS-*.dmg and drag EasyTier.app to Applications.
+          2. Run `xattr -cr /Applications/EasyTier.app` if macOS copied quarantine attributes.
+          3. Open EasyTier.app from Applications with Control-click > Open, or use Privacy & Security > Open Anyway if macOS blocks first launch.
 
           Do not use this self-signed build as a production release.
           EOF

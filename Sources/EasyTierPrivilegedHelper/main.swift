@@ -157,6 +157,8 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, @unchecked Sendable
     override init() {
         super.init()
         idleTimer.setEventHandler { [weak self] in self?.exitIdle() }
+        idleTimer.schedule(deadline: .distantFuture)
+        idleTimer.resume()
     }
 
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
@@ -170,15 +172,13 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, @unchecked Sendable
             }
         }
         activeConnections.insert(token)
-        idleTimer.suspend()
+        idleTimer.schedule(deadline: .distantFuture)
         connection.resume()
         return true
     }
 
     private func scheduleIdleExit() {
-        idleTimer.suspend()
         idleTimer.schedule(deadline: .now() + idleTimeout)
-        idleTimer.resume()
     }
 
     private func exitIdle() {
