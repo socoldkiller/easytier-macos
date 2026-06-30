@@ -185,7 +185,12 @@ struct ConfigEditorView: View {
                     Toggle("Disable P2P", isOn: optionalBool($config.disable_p2p, defaultValue: false))
                 }
                 GridRow {
-                    Toggle("No TUN", isOn: optionalBool($config.no_tun, defaultValue: false))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Toggle("No TUN", isOn: optionalBool($config.no_tun, defaultValue: false))
+                        Text("Off uses TUN and needs helper/root permission.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Toggle("Multi thread", isOn: optionalBool($config.multi_thread, defaultValue: true))
                 }
                 GridRow {

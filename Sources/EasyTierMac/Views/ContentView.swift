@@ -68,7 +68,14 @@ struct ContentView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
-                Task { await store.helperRegistration?.refresh() }
+                Task {
+                    if let registration = store.helperRegistration {
+                        await registration.refresh()
+                        if registration.state == .enabled {
+                            await store.retryStartAfterHelperApproval()
+                        }
+                    }
+                }
             }
         }
         .onChange(of: store.isShowingSettings) { _, isShowing in
@@ -112,20 +119,27 @@ struct ContentView: View {
                 get: { store.lastError != nil && store.lastErrorIsHelperPermission },
                 set: { if !$0 { store.lastError = nil } })
         ) {
-            Button("Allow") {
-                Task {
+            if store.helperRegistration?.state == .requiresApproval {
+                Button("Open System Settings") {
                     store.lastError = nil
-                    if let registration = store.helperRegistration {
-                        try? await registration.ensureRegistered()
-                        if registration.state == .enabled {
-                            await store.retryStartAfterHelperApproval()
+                    store.helperRegistration?.openSystemSettings()
+                }
+            } else {
+                Button("Install Helper") {
+                    Task {
+                        store.lastError = nil
+                        if let registration = store.helperRegistration {
+                            do {
+                                try await registration.ensureRegistered()
+                                if registration.state == .enabled {
+                                    await store.retryStartAfterHelperApproval()
+                                }
+                            } catch {
+                                store.lastError = error.localizedDescription
+                            }
                         }
                     }
                 }
-            }
-            Button("Open System Settings") {
-                store.lastError = nil
-                store.helperRegistration?.openSystemSettings()
             }
             Button("Cancel", role: .cancel) { store.lastError = nil }
         } message: {

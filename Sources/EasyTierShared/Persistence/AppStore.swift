@@ -39,6 +39,7 @@ public final class EasyTierAppStore {
     private var pollingEnabled: Bool = true
     private var instanceClientKind: [String: ClientKind] = [:]
     private var pendingStartAfterApproval: NetworkConfig?
+    private var lastErrorKind: LastErrorKind?
     private var sleepStartedAt: Date?
     private var runningConfigIDsBeforeSleep: [String] = []
     private var sleepWakeNotificationObservers: [NSObjectProtocol] = []
@@ -46,6 +47,7 @@ public final class EasyTierAppStore {
     private var wakeRecoveryTask: Task<Void, Never>?
 
     public enum ClientKind: Sendable { case inProcess, privileged }
+    private enum LastErrorKind { case helperPermission }
 
     public init(
         privilegedClient: any EasyTierCoreClient = PrivilegedEasyTierClient(),
@@ -165,7 +167,7 @@ public final class EasyTierAppStore {
                 configs = [StoredNetworkConfig(config: NetworkConfig())]
                 selectedConfigID = configs.first?.id
             }
-            lastError = error.localizedDescription
+            setLastError(error)
             log("Failed to load state: \(error.localizedDescription)")
         }
         await refreshRuntime()
@@ -180,7 +182,7 @@ public final class EasyTierAppStore {
                 configs = snapshot.configs
             }
         } catch {
-            lastError = error.localizedDescription
+            setLastError(error)
             log("Save failed: \(error.localizedDescription)")
         }
     }
@@ -199,7 +201,7 @@ public final class EasyTierAppStore {
         do {
             snapshot = try snapshotForStorage()
         } catch {
-            lastError = error.localizedDescription
+            setLastError(error)
             log("Save failed: \(error.localizedDescription)")
             return
         }
@@ -219,7 +221,7 @@ public final class EasyTierAppStore {
             do {
                 try await client(for: config).stop(instanceNames: [runningInstance.name])
             } catch {
-                lastError = error.localizedDescription
+                setLastError(error)
                 log("Delete canceled because \(config.network_name) could not be stopped: \(error.localizedDescription)")
                 return
             }
@@ -312,7 +314,7 @@ public final class EasyTierAppStore {
             if var instance = selectedRunningInstance {
                 instance.detail = selectedRuntimeDetail
                 if let error = instance.runtimeErrorMessage ?? instance.listenerErrorFromEvents {
-                    lastError = error
+                    setLastError(error)
                 }
             }
         }
@@ -325,7 +327,7 @@ public final class EasyTierAppStore {
         if let helperRegistration {
             await helperRegistration.refresh()
             guard helperRegistration.state == .enabled else {
-                lastError = "Privileged helper is still not enabled. Approve EasyTier in System Settings > Login Items & Extensions, then try again."
+                setLastError("Privileged helper is still not enabled. Approve EasyTier in System Settings > Login Items & Extensions, then try again.", kind: .helperPermission)
                 return
             }
         }
@@ -447,7 +449,7 @@ public final class EasyTierAppStore {
         } catch {
             // Do not silently swallow helper-permission errors here. Surface them
             // via `lastError` so the UI can prompt the user to approve or retry.
-            lastError = error.localizedDescription
+            setLastError(error)
         }
     }
 
@@ -461,6 +463,7 @@ public final class EasyTierAppStore {
 
     public var lastErrorIsHelperPermission: Bool {
         guard let message = lastError else { return false }
+        if lastErrorKind == .helperPermission { return true }
         return message.contains("needs background permission")
             || message.contains("System Settings")
             || message.contains("macOS has not allowed")
@@ -645,7 +648,7 @@ public final class EasyTierAppStore {
             save()
             log("Imported \(stored.config.network_name).")
         } catch {
-            lastError = error.localizedDescription
+            setLastError(error)
             log("Import failed: \(error.localizedDescription)")
         }
     }
@@ -1225,8 +1228,28 @@ public final class EasyTierAppStore {
             try await operation()
         } catch {
             // Surface the error to the UI instead of suppressing helper-permission messages.
-            lastError = error.localizedDescription
+            setLastError(error)
             log("Error: \(error.localizedDescription)")
+        }
+    }
+
+    private func setLastError(_ error: Error) {
+        setLastError(error.localizedDescription, kind: Self.lastErrorKind(for: error))
+    }
+
+    private func setLastError(_ message: String, kind: LastErrorKind? = nil) {
+        lastErrorKind = kind
+        lastError = message
+    }
+
+    private static func lastErrorKind(for error: Error) -> LastErrorKind? {
+        switch error {
+        case PrivilegedHelperError.needsRegistration:
+            return .helperPermission
+        case let PrivilegedHelperError.helperReported(payload) where payload.code == "helperRequiresApproval":
+            return .helperPermission
+        default:
+            return nil
         }
     }
 

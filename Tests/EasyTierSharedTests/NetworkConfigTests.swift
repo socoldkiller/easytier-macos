@@ -1,4 +1,5 @@
 import Foundation
+import ServiceManagement
 import Testing
 @testable import EasyTierShared
 
@@ -1210,7 +1211,7 @@ import Testing
     let client = HelperRunErrorClient(
         payload: PrivilegedHelperErrorPayload(
             code: "helperRequiresApproval",
-            message: "Privileged helper is installed but macOS has not allowed it to run in the background."
+            message: "Approval is pending."
         )
     )
     let config = NetworkConfig(instance_id: "approval-id", network_name: "approval-network")
@@ -1222,8 +1223,9 @@ import Testing
 
     await store.runSelectedConfig()
 
-    #expect(store.lastError?.contains("macOS has not allowed") == true)
-    #expect(store.logLines.contains { $0.text.contains("Error:") && $0.text.contains("macOS has not allowed") })
+    #expect(store.lastError?.contains("Approval is pending.") == true)
+    #expect(store.lastErrorIsHelperPermission)
+    #expect(store.logLines.contains { $0.text.contains("Error:") && $0.text.contains("Approval is pending.") })
 }
 
 @MainActor
@@ -1244,6 +1246,53 @@ import Testing
     await store.runSelectedConfig()
 
     #expect(store.lastError?.contains("not responding") == true)
+    #expect(!store.lastErrorIsHelperPermission)
+}
+
+@MainActor
+@Test func retryStartAfterHelperApprovalRunsPendingConfigWhenHelperIsEnabled() async throws {
+    let client = RecordingToggleClient()
+    let backend = HelperRegistrationBackendSpy(status: .requiresApproval)
+    let registration = HelperRegistrationService(backend: backend.backend(), refreshOnInit: false)
+    let config = NetworkConfig(instance_id: "pending-approval-id", network_name: "pending-approval-network")
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let store = EasyTierAppStore(
+        privilegedClient: client,
+        inProcessClient: client,
+        helperRegistration: registration,
+        storage: EasyTierStorage(baseDirectory: directory)
+    )
+
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.selectedConfigID = config.instance_id
+
+    await store.runSelectedConfig()
+    #expect(client.runConfigs.isEmpty)
+    #expect(store.lastErrorIsHelperPermission)
+
+    backend.status = .enabled
+    await store.retryStartAfterHelperApproval()
+
+    #expect(client.runConfigs.map(\.instance_id) == [config.instance_id])
+}
+
+@MainActor
+@Test func ensureRegisteredDoesNotReinstallWhenHelperRequiresApproval() async throws {
+    let backend = HelperRegistrationBackendSpy(status: .requiresApproval)
+    let registration = HelperRegistrationService(backend: backend.backend(), refreshOnInit: false)
+
+    do {
+        try await registration.ensureRegistered()
+        Issue.record("ensureRegistered should wait for approval")
+    } catch let error as PrivilegedHelperError {
+        #expect(error == .needsRegistration)
+    } catch {
+        Issue.record("unexpected error: \(error)")
+    }
+
+    #expect(registration.state == .requiresApproval)
+    #expect(backend.registerCount == 0)
+    #expect(backend.unregisterCount == 0)
 }
 
 @Test func runtimeInfoDerivesLocalAndPeerMembers() throws {
@@ -1716,6 +1765,28 @@ private final class RecordingSystemSleepPreventer: SystemSleepPreventing, @unche
         guard isPreventingSystemSleep != prevented else { return }
         isPreventingSystemSleep = prevented
         calls.append((prevented, reason))
+    }
+}
+
+@MainActor
+private final class HelperRegistrationBackendSpy {
+    var status: SMAppService.Status
+    var registerCount = 0
+    var unregisterCount = 0
+
+    init(status: SMAppService.Status) {
+        self.status = status
+    }
+
+    func backend() -> HelperRegistrationService.Backend {
+        HelperRegistrationService.Backend(
+            status: { self.status },
+            register: { self.registerCount += 1 },
+            unregister: { self.unregisterCount += 1 },
+            useLegacyInstaller: { false },
+            legacyIsInstalled: { false },
+            installLegacy: {}
+        )
     }
 }
 
