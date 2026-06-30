@@ -28,6 +28,9 @@ let package = Package(
             name: "EasyTierShared",
             dependencies: [
                 .product(name: "TOML", package: "swift-toml"),
+            ],
+            linkerSettings: [
+                .linkedFramework("IOKit"),
             ]
         ),
         .target(
