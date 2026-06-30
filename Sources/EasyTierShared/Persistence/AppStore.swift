@@ -31,12 +31,19 @@ public final class EasyTierAppStore {
     public let helperRegistration: HelperRegistrationService?
     private let storage: EasyTierStorage
     private let networkSecretStore: any NetworkSecretStore
+    private let systemSleepPreventer: any SystemSleepPreventing
+    private var secretCache: [String: String] = [:]
     private var pollingTask: Task<Void, Never>?
     private var lastTrafficCounters: [String: (timestamp: Date, txBytes: Int64, rxBytes: Int64)] = [:]
     private var pendingStarts: [String: PendingNetworkStart] = [:]
     private var pollingEnabled: Bool = true
     private var instanceClientKind: [String: ClientKind] = [:]
     private var pendingStartAfterApproval: NetworkConfig?
+    private var sleepStartedAt: Date?
+    private var runningConfigIDsBeforeSleep: [String] = []
+    private var sleepWakeNotificationObservers: [NSObjectProtocol] = []
+    private var resignActiveObserver: NSObjectProtocol?
+    private var wakeRecoveryTask: Task<Void, Never>?
 
     public enum ClientKind: Sendable { case inProcess, privileged }
 
@@ -45,27 +52,31 @@ public final class EasyTierAppStore {
         inProcessClient: (any EasyTierCoreClient)? = nil,
         helperRegistration: HelperRegistrationService? = nil,
         storage: EasyTierStorage = .default,
-        networkSecretStore: any NetworkSecretStore = SystemNetworkSecretStore()
+        networkSecretStore: any NetworkSecretStore = SystemNetworkSecretStore(),
+        systemSleepPreventer: any SystemSleepPreventing = IOKitSystemSleepPreventer()
     ) {
         self.privilegedClient = privilegedClient
         self.inProcessClient = inProcessClient ?? privilegedClient
         self.helperRegistration = helperRegistration
         self.storage = storage
         self.networkSecretStore = networkSecretStore
+        self.systemSleepPreventer = systemSleepPreventer
     }
 
     /// Backwards-compatible single-client initializer (for tests).
     public convenience init(
         client: any EasyTierCoreClient = PrivilegedEasyTierClient(),
         storage: EasyTierStorage = .default,
-        networkSecretStore: any NetworkSecretStore = SystemNetworkSecretStore()
+        networkSecretStore: any NetworkSecretStore = SystemNetworkSecretStore(),
+        systemSleepPreventer: any SystemSleepPreventing = IOKitSystemSleepPreventer()
     ) {
         self.init(
             privilegedClient: client,
             inProcessClient: client,
             helperRegistration: nil,
             storage: storage,
-            networkSecretStore: networkSecretStore
+            networkSecretStore: networkSecretStore,
+            systemSleepPreventer: systemSleepPreventer
         )
     }
 
@@ -219,6 +230,7 @@ public final class EasyTierAppStore {
             intent.target.isLocal && (intent.target.instanceID == config.instance_id || intent.target.networkName == config.network_name)
         }
         reversedPortForwardFingerprints.removeValue(forKey: config.instance_id)
+        secretCache.removeValue(forKey: config.network_name)
         let removed = configs.remove(at: index)
         let storage = self.storage
         Task.detached(priority: .background) {
@@ -252,6 +264,8 @@ public final class EasyTierAppStore {
             guard let secret = try networkSecretStore.secret(for: oldConfig, reason: nil) else { return }
             try networkSecretStore.save(secret, for: newConfig)
             try networkSecretStore.deleteSecret(for: oldConfig)
+            secretCache[oldConfig.network_name] = nil
+            secretCache[newConfig.network_name] = secret
         } catch {
             log("Skipped keychain secret migration from \(oldConfig.network_name) to \(newConfig.network_name): \(error.localizedDescription)")
         }
@@ -269,7 +283,7 @@ public final class EasyTierAppStore {
         guard let config = selectedConfig else { return }
         await busy {
             try validateConfigForCurrentRuntime(config)
-            let keychainConfig = try configWithKeychainSecret(config, reason: "Use the network secret for validation.")
+            let keychainConfig = try await configWithKeychainSecret(config, reason: "Use the network secret for validation.")
             try await client(for: config).validate(toml: try NetworkConfigTOMLCodec.encode(keychainConfig))
             log("Validated \(config.network_name).")
         }
@@ -280,7 +294,7 @@ public final class EasyTierAppStore {
         await busy {
             log("Starting \(config.network_name)...")
             try validateConfigForCurrentRuntime(config)
-            let keychainConfig = try configWithKeychainSecret(config, reason: "Use the network secret to start \(config.network_name).")
+            let keychainConfig = try await configWithKeychainSecret(config, reason: "Use the network secret to start \(config.network_name).")
             let cleanConfig = Self.configWithoutReversedPortForwards(keychainConfig, fingerprints: reversedPortForwardFingerprints)
             if config.requiresTUN, let helperRegistration {
                 do {
@@ -348,7 +362,7 @@ public final class EasyTierAppStore {
         await busy {
             log("Restarting \(config.network_name)...")
             try validateConfigForCurrentRuntime(config, replacing: instance)
-            let keychainConfig = try configWithKeychainSecret(config, reason: "Use the network secret to restart \(config.network_name).")
+            let keychainConfig = try await configWithKeychainSecret(config, reason: "Use the network secret to restart \(config.network_name).")
             let cleanConfig = Self.configWithoutReversedPortForwards(keychainConfig, fingerprints: reversedPortForwardFingerprints)
             let targetClient = client(for: config)
             try await targetClient.validate(toml: try NetworkConfigTOMLCodec.encode(cleanConfig))
@@ -612,9 +626,9 @@ public final class EasyTierAppStore {
         }
     }
 
-    public func exportSelectedTOML() throws -> String {
+    public func exportSelectedTOML() async throws -> String {
         guard let selectedConfig else { return "" }
-        let config = try configWithKeychainSecret(selectedConfig, reason: "Use the network secret for TOML export.")
+        let config = try await configWithKeychainSecret(selectedConfig, reason: "Use the network secret for TOML export.")
         return try NetworkConfigTOMLCodec.encode(config)
     }
 
@@ -636,20 +650,24 @@ public final class EasyTierAppStore {
         }
     }
 
-    public func networkSecretIsSaved(for config: NetworkConfig) -> Bool {
-        networkSecretStore.containsSecret(for: config)
+    public func networkSecretIsSaved(for config: NetworkConfig) async -> Bool {
+        let store = networkSecretStore
+        return await Task.detached { @Sendable in store.containsSecret(for: config) }.value
     }
 
-    public func networkSecretCanAutofill(for config: NetworkConfig) -> Bool {
-        networkSecretStore.containsSecret(for: config) && networkSecretStore.canAutofillWithBiometrics()
+    public func networkSecretCanAutofill(for config: NetworkConfig) async -> Bool {
+        let store = networkSecretStore
+        return await Task.detached { @Sendable in
+            store.containsSecret(for: config) && store.canAutofillWithBiometrics()
+        }.value
     }
 
-    public func autofillNetworkSecret(for config: NetworkConfig) -> String? {
-        try? configWithKeychainSecret(config, reason: "Use Touch ID to fill the network secret for \(config.network_name).").network_secret?.nilIfEmpty
+    public func autofillNetworkSecret(for config: NetworkConfig) async -> String? {
+        (try? await configWithKeychainSecret(config, reason: "Use Touch ID to fill the network secret for \(config.network_name).").network_secret?.nilIfEmpty)
     }
 
-    public func revealNetworkSecret(for config: NetworkConfig) throws -> String? {
-        try configWithKeychainSecret(config, reason: "Show the network secret for \(config.network_name).").network_secret?.nilIfEmpty
+    public func revealNetworkSecret(for config: NetworkConfig) async throws -> String? {
+        try await configWithKeychainSecret(config, reason: "Show the network secret for \(config.network_name).").network_secret?.nilIfEmpty
     }
 
     public func startPolling() {
@@ -667,6 +685,9 @@ public final class EasyTierAppStore {
     public func stopPolling() {
         pollingTask?.cancel()
         pollingTask = nil
+        wakeRecoveryTask?.cancel()
+        wakeRecoveryTask = nil
+        updateSystemSleepAssertion(for: [])
         unregisterSleepWakeNotifications()
     }
 
@@ -678,31 +699,122 @@ public final class EasyTierAppStore {
         pollingEnabled = true
     }
 
+    func handleSystemWillSleep(now: Date = Date()) {
+        wakeRecoveryTask?.cancel()
+        wakeRecoveryTask = nil
+        sleepStartedAt = now
+        runningConfigIDsBeforeSleep = configs
+            .filter { runningInstance(matching: $0.config) != nil }
+            .map(\.id)
+        pausePolling()
+    }
+
+    func handleSystemDidWake(now: Date = Date()) async {
+        let sleepDuration = sleepStartedAt.map { now.timeIntervalSince($0) } ?? 0
+        let configIDsToRecover = runningConfigIDsBeforeSleep
+        sleepStartedAt = nil
+        runningConfigIDsBeforeSleep = []
+        resumePolling()
+        await refreshRuntime()
+
+        guard sleepDuration >= Self.sleepRecoveryRestartThreshold,
+              !configIDsToRecover.isEmpty
+        else { return }
+
+        await recoverPreviouslyRunningConfigsAfterWake(configIDs: configIDsToRecover)
+    }
+
     private func registerSleepWakeNotifications() {
+        unregisterSleepWakeNotifications()
         let center = NSWorkspace.shared.notificationCenter
-        center.addObserver(
+        let willSleepObserver = center.addObserver(
             forName: NSWorkspace.willSleepNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.pausePolling()
+                self?.handleSystemWillSleep()
             }
         }
-        center.addObserver(
+        let didWakeObserver = center.addObserver(
             forName: NSWorkspace.didWakeNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .seconds(3))
-                self?.resumePolling()
+                self?.wakeRecoveryTask?.cancel()
+                self?.wakeRecoveryTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(3))
+                    await self?.handleSystemDidWake()
+                }
+            }
+        }
+        sleepWakeNotificationObservers = [willSleepObserver, didWakeObserver]
+        resignActiveObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.clearSecretCache()
             }
         }
     }
 
     private func unregisterSleepWakeNotifications() {
-        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        for observer in sleepWakeNotificationObservers {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+        sleepWakeNotificationObservers = []
+        if let resignActiveObserver {
+            NotificationCenter.default.removeObserver(resignActiveObserver)
+            self.resignActiveObserver = nil
+        }
+    }
+
+    private func clearSecretCache() {
+        secretCache.removeAll()
+    }
+
+    private func recoverPreviouslyRunningConfigsAfterWake(configIDs: [String]) async {
+        let configsToRecover = configIDs.compactMap { id in
+            configs.first { $0.id == id }?.config
+        }
+        guard !configsToRecover.isEmpty else { return }
+
+        await busy {
+            for config in configsToRecover {
+                try await recoverConfigAfterWake(config)
+            }
+            try await refreshRuntimeThrowing()
+        }
+    }
+
+    private func recoverConfigAfterWake(_ config: NetworkConfig) async throws {
+        log("Recovering \(config.network_name) after system wake...")
+        let runningInstance = runningInstance(matching: config)
+        try validateConfigForCurrentRuntime(config, replacing: runningInstance)
+        let keychainConfig = try await configWithKeychainSecret(config, reason: "Use the network secret to recover \(config.network_name) after system wake.")
+        let cleanConfig = Self.configWithoutReversedPortForwards(keychainConfig, fingerprints: reversedPortForwardFingerprints)
+        let targetClient = client(for: config)
+
+        if let runningInstance {
+            persistRuntimeHostname(from: runningInstance, forConfigID: config.instance_id)
+            try await targetClient.stop(instanceNames: [runningInstance.name])
+            clearPendingStart(for: config)
+        }
+        if config.requiresTUN, let helperRegistration {
+            do {
+                try await helperRegistration.ensureRegistered()
+            } catch {
+                pendingStartAfterApproval = cleanConfig
+                throw error
+            }
+        }
+        try await targetClient.run(config: cleanConfig)
+        instanceClientKind[cleanConfig.instance_id] = clientKind(for: cleanConfig)
+        recordPendingStart(for: config)
+        log("Recovered \(config.network_name) after system wake.")
     }
 
     private func refreshRuntimeThrowing() async throws {
@@ -747,6 +859,7 @@ public final class EasyTierAppStore {
         if !instancesStructureUnchanged(instances, running) {
             instances = running
         }
+        updateSystemSleepAssertion(for: running)
         await reconcileRuntimeIntents()
         if mode.configServerURL == nil {
             isConfigServerConnected = false
@@ -963,14 +1076,23 @@ public final class EasyTierAppStore {
         for index in storedConfigs.indices {
             guard let secret = storedConfigs[index].config.network_secret?.nilIfEmpty else { continue }
             try networkSecretStore.save(secret, for: storedConfigs[index].config)
+            secretCache[storedConfigs[index].config.network_name] = secret
             storedConfigs[index].config.network_secret = nil
         }
         return storedConfigs
     }
 
-    private func configWithKeychainSecret(_ config: NetworkConfig, reason: String) throws -> NetworkConfig {
+    private func configWithKeychainSecret(_ config: NetworkConfig, reason: String) async throws -> NetworkConfig {
         guard config.network_secret?.nilIfEmpty == nil else { return config }
-        guard let secret = try networkSecretStore.secret(for: config, reason: reason) else { return config }
+        if let cached = secretCache[config.network_name] {
+            var config = config
+            config.network_secret = cached
+            return config
+        }
+        let store = networkSecretStore
+        let secret = try await Task.detached { @Sendable in try store.secret(for: config, reason: reason) }.value
+        guard let secret else { return config }
+        secretCache[config.network_name] = secret
         var config = config
         config.network_secret = secret
         return config
@@ -1089,6 +1211,13 @@ public final class EasyTierAppStore {
         trafficSamplesByInstance[instanceName] = samples
     }
 
+    private func updateSystemSleepAssertion(for running: [NetworkInstance]) {
+        systemSleepPreventer.setSystemSleepPrevented(
+            !running.isEmpty,
+            reason: "EasyTier is keeping network instances reachable."
+        )
+    }
+
     private func busy(_ operation: () async throws -> Void) async {
         isBusy = true
         defer { isBusy = false }
@@ -1123,6 +1252,7 @@ public final class EasyTierAppStore {
         return formatter
     }()
     private static let trafficSampleWindow = 60
+    private static let sleepRecoveryRestartThreshold: TimeInterval = 30
 }
 
 public struct LogEntry: Identifiable, Sendable, Equatable {

@@ -22,19 +22,20 @@ public final class HelperRegistrationService {
     }
 
     public init() {
-        refreshSync()
+        Task { await refreshAsync() }
     }
 
     /// Register the privileged helper only when it is about to be used.
     /// Throws `PrivilegedHelperError.needsRegistration` if registration cannot complete.
     public func ensureRegistered() async throws {
-        refreshSync()
+        let useLegacy = await Self.readShouldUseLegacyInstaller()
+        await refreshAsync(useLegacy: useLegacy)
         switch state {
         case .enabled:
             return
         case .registering:
             await waitForBusy()
-            refreshSync()
+            await refreshAsync(useLegacy: useLegacy)
             if state == .enabled { return }
         case .notRegistered, .requiresApproval, .notFound, .error:
             break
@@ -52,26 +53,26 @@ public final class HelperRegistrationService {
         detail = "Registering privileged helper..."
 
         do {
-            if LegacyPrivilegedHelperService.shouldUseLegacyInstaller {
-                try? await service.unregister()
-                try LegacyPrivilegedHelperService.installUsingAdministratorPrivileges()
+            if useLegacy {
+                _ = try? await Self.serviceUnregister(serviceBox)
+                try await Self.installLegacy()
             } else {
-                try? await service.unregister()
-                try service.register()
+                _ = try? await Self.serviceUnregister(serviceBox)
+                try await Self.serviceRegister(serviceBox)
             }
-            refreshSync()
+            await refreshAsync(useLegacy: useLegacy)
             if state != .enabled {
                 throw PrivilegedHelperError.needsRegistration
             }
         } catch {
-            refreshAfterRegistrationFailure(error)
+            await refreshAfterRegistrationFailure(error, useLegacy: useLegacy)
             throw PrivilegedHelperError.needsRegistration
         }
     }
 
     /// Reflect SystemSettings changes without side effects. Safe to call on scenePhase change.
     public func refresh() async {
-        refreshSync()
+        await refreshAsync()
     }
 
     public func openSystemSettings() {
@@ -82,9 +83,15 @@ public final class HelperRegistrationService {
 
     // MARK: - Internals
 
-    private func refreshSync() {
-        if LegacyPrivilegedHelperService.shouldUseLegacyInstaller {
-            if LegacyPrivilegedHelperService.isInstalled {
+    private func refreshAsync() async {
+        let useLegacy = await Self.readShouldUseLegacyInstaller()
+        await refreshAsync(useLegacy: useLegacy)
+    }
+
+    private func refreshAsync(useLegacy: Bool) async {
+        if useLegacy {
+            let installed = await Self.readLegacyIsInstalled()
+            if installed {
                 state = .enabled
                 detail = "Privileged helper is enabled."
             } else {
@@ -94,7 +101,8 @@ public final class HelperRegistrationService {
             return
         }
 
-        switch service.status {
+        let status = await Self.readServiceStatus(serviceBox)
+        switch status {
         case .notRegistered:
             state = .notRegistered
             detail = "Privileged helper is not installed. Starting a TUN network will prompt for permission."
@@ -113,9 +121,15 @@ public final class HelperRegistrationService {
         }
     }
 
-    private func refreshAfterRegistrationFailure(_ error: Error) {
+    private func refreshAfterRegistrationFailure(_ error: Error, useLegacy: Bool) async {
         let message = error.localizedDescription
-        if service.status == .requiresApproval || message.localizedCaseInsensitiveContains("operation not permitted") {
+        if useLegacy {
+            state = .error
+            detail = message
+            return
+        }
+        let status = await Self.readServiceStatus(serviceBox)
+        if status == .requiresApproval || message.localizedCaseInsensitiveContains("operation not permitted") {
             state = .requiresApproval
             detail = "Approve EasyTier in System Settings to enable TUN networking."
             return
@@ -123,6 +137,8 @@ public final class HelperRegistrationService {
         state = .error
         detail = message
     }
+
+    private var serviceBox: ServiceBox { ServiceBox(service: service) }
 
     private func waitForBusy() async {
         while isBusy {
@@ -139,4 +155,36 @@ public final class HelperRegistrationService {
         let path = Bundle.main.bundleURL.standardizedFileURL.path
         return "Move EasyTier.app to /Applications/EasyTier.app before installing the privileged helper. Running from \(path) can leave macOS with a stale helper registration."
     }
+
+    // MARK: - Background execution helpers
+    // These run blocking calls (XPC to smd, Process.waitUntilExit, codesign, launchctl)
+    // off the main actor so the UI never freezes.
+
+    private nonisolated static func readServiceStatus(_ box: ServiceBox) async -> SMAppService.Status {
+        await Task.detached { @Sendable in box.service.status }.value
+    }
+
+    private nonisolated static func serviceRegister(_ box: ServiceBox) async throws {
+        try await Task.detached { @Sendable in try box.service.register() }.value
+    }
+
+    private nonisolated static func serviceUnregister(_ box: ServiceBox) async throws {
+        try await Task.detached { @Sendable in try box.service.unregister() }.value
+    }
+
+    private nonisolated static func readShouldUseLegacyInstaller() async -> Bool {
+        await Task.detached { @Sendable in LegacyPrivilegedHelperService.shouldUseLegacyInstaller }.value
+    }
+
+    private nonisolated static func readLegacyIsInstalled() async -> Bool {
+        await Task.detached { @Sendable in LegacyPrivilegedHelperService.isInstalled }.value
+    }
+
+    private nonisolated static func installLegacy() async throws {
+        try await Task.detached { @Sendable in try LegacyPrivilegedHelperService.installUsingAdministratorPrivileges() }.value
+    }
+}
+
+private struct ServiceBox: @unchecked Sendable {
+    let service: SMAppService
 }

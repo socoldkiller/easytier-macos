@@ -348,7 +348,84 @@ import Testing
 }
 
 @MainActor
-@Test func exportSelectedTOMLUsesKeychainNetworkSecret() throws {
+@Test func longSystemSleepRestartsPreviouslyRunningConfig() async throws {
+    let client = RecordingToggleClient()
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "wake-secret"])
+    let config = NetworkConfig(instance_id: "wake-id", network_name: "office", network_secret: nil)
+    let store = EasyTierAppStore(client: client, networkSecretStore: secrets)
+
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.selectedConfigID = config.instance_id
+    store.instances = [NetworkInstance(instance_id: config.instance_id, name: config.network_name, running: true)]
+    client.networkInfos = [
+        config.network_name: NetworkInstanceRunningInfo(running: true, instance_id: config.instance_id),
+    ]
+
+    store.handleSystemWillSleep(now: Date(timeIntervalSince1970: 100))
+    await store.handleSystemDidWake(now: Date(timeIntervalSince1970: 160))
+
+    #expect(client.stoppedInstanceNames == [[config.network_name]])
+    #expect(client.runConfigs.map(\.instance_id) == [config.instance_id])
+    #expect(client.runConfigs.first?.network_secret == "wake-secret")
+}
+
+@MainActor
+@Test func shortSystemSleepOnlyRefreshesRuntime() async throws {
+    let client = RecordingToggleClient()
+    let config = NetworkConfig(instance_id: "short-wake-id", network_name: "office")
+    let store = EasyTierAppStore(client: client)
+
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.selectedConfigID = config.instance_id
+    store.instances = [NetworkInstance(instance_id: config.instance_id, name: config.network_name, running: true)]
+    client.networkInfos = [
+        config.network_name: NetworkInstanceRunningInfo(running: true, instance_id: config.instance_id),
+    ]
+
+    store.handleSystemWillSleep(now: Date(timeIntervalSince1970: 100))
+    await store.handleSystemDidWake(now: Date(timeIntervalSince1970: 110))
+
+    #expect(client.stoppedInstanceNames.isEmpty)
+    #expect(client.runConfigs.isEmpty)
+    #expect(store.instances.first?.instance_id == config.instance_id)
+}
+
+@MainActor
+@Test func runningRuntimePreventsIdleSystemSleep() async {
+    let client = RecordingToggleClient()
+    let sleepPreventer = RecordingSystemSleepPreventer()
+    let config = NetworkConfig(instance_id: "awake-id", network_name: "office")
+    let store = EasyTierAppStore(client: client, systemSleepPreventer: sleepPreventer)
+    client.networkInfos = [
+        config.network_name: NetworkInstanceRunningInfo(running: true, instance_id: config.instance_id),
+    ]
+
+    await store.refreshRuntime()
+
+    #expect(sleepPreventer.isPreventingSystemSleep)
+    #expect(sleepPreventer.calls.last?.prevented == true)
+}
+
+@MainActor
+@Test func idleSystemSleepAssertionIsReleasedWhenRuntimeStops() async {
+    let client = RecordingToggleClient()
+    let sleepPreventer = RecordingSystemSleepPreventer()
+    let config = NetworkConfig(instance_id: "awake-release-id", network_name: "office")
+    let store = EasyTierAppStore(client: client, systemSleepPreventer: sleepPreventer)
+    client.networkInfos = [
+        config.network_name: NetworkInstanceRunningInfo(running: true, instance_id: config.instance_id),
+    ]
+    await store.refreshRuntime()
+
+    client.networkInfos = [:]
+    await store.refreshRuntime()
+
+    #expect(!sleepPreventer.isPreventingSystemSleep)
+    #expect(sleepPreventer.calls.map(\.prevented) == [true, false])
+}
+
+@MainActor
+@Test func exportSelectedTOMLUsesKeychainNetworkSecret() async throws {
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "export-secret"])
     let config = NetworkConfig(instance_id: "export-id", network_name: "office", network_secret: nil)
     let store = EasyTierAppStore(
@@ -359,13 +436,13 @@ import Testing
     store.configs = [StoredNetworkConfig(config: config)]
     store.selectedConfigID = config.instance_id
 
-    let toml = try store.exportSelectedTOML()
+    let toml = try await store.exportSelectedTOML()
 
     #expect(toml.contains("export-secret"))
 }
 
 @MainActor
-@Test func networkSecretAutofillRequiresSavedSecretAndBiometrics() {
+@Test func networkSecretAutofillRequiresSavedSecretAndBiometrics() async {
     let config = NetworkConfig(instance_id: "autofill-id", network_name: "office")
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"], canAutofill: true)
     let store = EasyTierAppStore(
@@ -373,16 +450,16 @@ import Testing
         networkSecretStore: secrets
     )
 
-    #expect(store.networkSecretCanAutofill(for: config))
+    #expect(await store.networkSecretCanAutofill(for: config))
 
     secrets.canAutofill = false
 
-    #expect(!store.networkSecretCanAutofill(for: config))
+    #expect(!(await store.networkSecretCanAutofill(for: config)))
     #expect(secrets.readReasons.isEmpty)
 }
 
 @MainActor
-@Test func networkSecretAutofillSilentlyIgnoresReadErrors() {
+@Test func networkSecretAutofillSilentlyIgnoresReadErrors() async {
     let config = NetworkConfig(instance_id: "autofill-error-id", network_name: "office")
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"], canAutofill: true)
     secrets.readError = EasyTierCoreError.operationFailed("user canceled")
@@ -391,7 +468,7 @@ import Testing
         networkSecretStore: secrets
     )
 
-    let secret = store.autofillNetworkSecret(for: config)
+    let secret = await store.autofillNetworkSecret(for: config)
 
     #expect(secret == nil)
     #expect(store.lastError == nil)
@@ -399,7 +476,7 @@ import Testing
 }
 
 @MainActor
-@Test func explicitNetworkSecretReadReportsErrors() {
+@Test func explicitNetworkSecretReadReportsErrors() async {
     let config = NetworkConfig(instance_id: "explicit-error-id", network_name: "office")
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"], canAutofill: true)
     secrets.readError = EasyTierCoreError.operationFailed("keychain failed")
@@ -409,11 +486,27 @@ import Testing
     )
 
     do {
-        _ = try store.revealNetworkSecret(for: config)
+        _ = try await store.revealNetworkSecret(for: config)
         Issue.record("explicit read should throw")
     } catch {
         #expect(error.localizedDescription.contains("keychain failed"))
     }
+}
+
+@MainActor
+@Test func secretCacheAvoidsRepeatedKeychainReads() async {
+    let config = NetworkConfig(instance_id: "cache-id", network_name: "office")
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "cached-secret"], canAutofill: true)
+    let store = EasyTierAppStore(
+        client: UnavailableEasyTierCoreClient(reason: "test"),
+        networkSecretStore: secrets
+    )
+
+    _ = try? await store.revealNetworkSecret(for: config)
+    #expect(secrets.readReasons.count == 1)
+
+    _ = try? await store.revealNetworkSecret(for: config)
+    #expect(secrets.readReasons.count == 1, "second read should hit the in-memory cache")
 }
 
 @MainActor
@@ -1613,6 +1706,17 @@ private final class RecordingToggleClient: EasyTierCoreClient, @unchecked Sendab
 
     func stopConfigServerClient() async throws {}
     func isConfigServerClientConnected() async throws -> Bool { false }
+}
+
+private final class RecordingSystemSleepPreventer: SystemSleepPreventing, @unchecked Sendable {
+    private(set) var calls: [(prevented: Bool, reason: String)] = []
+    private(set) var isPreventingSystemSleep = false
+
+    func setSystemSleepPrevented(_ prevented: Bool, reason: String) {
+        guard isPreventingSystemSleep != prevented else { return }
+        isPreventingSystemSleep = prevented
+        calls.append((prevented, reason))
+    }
 }
 
 private final class HelperRunErrorClient: EasyTierCoreClient, @unchecked Sendable {

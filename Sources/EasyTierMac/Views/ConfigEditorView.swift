@@ -583,18 +583,22 @@ private struct NetworkSecretField: View {
     private func autofillIfAvailable() {
         guard config.network_secret?.nilIfEmpty == nil else { return }
         guard autofillAttemptedForInstanceID != config.instance_id else { return }
-        guard store.networkSecretCanAutofill(for: config) else { return }
         autofillAttemptedForInstanceID = config.instance_id
-        guard let secret = store.autofillNetworkSecret(for: config) else { return }
-        config.network_secret = secret
+        Task {
+            guard await store.networkSecretCanAutofill(for: config) else { return }
+            guard let secret = await store.autofillNetworkSecret(for: config) else { return }
+            config.network_secret = secret
+        }
     }
 
     private func fillFromKeychain() {
-        do {
-            guard let secret = try store.revealNetworkSecret(for: config) else { return }
-            config.network_secret = secret
-        } catch {
-            store.lastError = error.localizedDescription
+        Task {
+            do {
+                guard let secret = try await store.revealNetworkSecret(for: config) else { return }
+                config.network_secret = secret
+            } catch {
+                store.lastError = error.localizedDescription
+            }
         }
     }
 }

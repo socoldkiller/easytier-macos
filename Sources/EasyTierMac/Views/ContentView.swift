@@ -825,12 +825,14 @@ struct ContentView: View {
     }
 
     private func openExportTOML() {
-        do {
-            tomlText = try store.exportSelectedTOML()
-            tomlMode = .export
-            showingTOML = true
-        } catch {
-            store.lastError = error.localizedDescription
+        Task {
+            do {
+                tomlText = try await store.exportSelectedTOML()
+                tomlMode = .export
+                showingTOML = true
+            } catch {
+                store.lastError = error.localizedDescription
+            }
         }
     }
 }
