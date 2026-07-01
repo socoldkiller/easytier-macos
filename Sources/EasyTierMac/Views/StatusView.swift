@@ -301,6 +301,7 @@ private struct MemberGridTable: View {
                                 item: item,
                                 columnWidths: widths,
                                 highlightedMemberPeerID: highlightedMemberPeerID,
+                                animationsPaused: isScrolling,
                                 publicServerGroupExpanded: $publicServerGroupExpanded,
                                 onRenameHostname: onRenameHostname,
                                 onConfigureLocalMember: onConfigureLocalMember
@@ -435,6 +436,7 @@ private struct MemberGridRowView: View {
     var item: MemberGridRowItem
     var columnWidths: [MemberGridColumn: CGFloat]
     var highlightedMemberPeerID: String?
+    var animationsPaused: Bool
     @Binding var publicServerGroupExpanded: Bool
     var onRenameHostname: (NetworkMemberStatus) -> Void
     var onConfigureLocalMember: () -> Void
@@ -459,8 +461,8 @@ private struct MemberGridRowView: View {
             cell(.route) { MemberRouteCell(row: row) }
             cell(.tunnel) { Text(row.tunnelProto).lineLimit(1) }
             cell(.latency) { LatencyMetricText(value: row.latency, animates: false) }
-            cell(.upload) { AnimatedMetricText(value: row.uploadTotal, animates: false) }
-            cell(.download) { AnimatedMetricText(value: row.downloadTotal, animates: false) }
+            cell(.upload) { TrafficMetricText(value: row.uploadTotal, accent: .cyan, animationsPaused: animationsPaused) }
+            cell(.download) { TrafficMetricText(value: row.downloadTotal, accent: .green, animationsPaused: animationsPaused) }
             cell(.loss) { AnimatedMetricText(value: row.lossRate, animates: false) }
             cell(.nat) { Text(row.natType).lineLimit(1) }
             cell(.version) { Text(row.version).lineLimit(1) }
@@ -1051,6 +1053,113 @@ private struct AnimatedMetricText: View {
 
     private var shouldAnimate: Bool {
         animates && !reduceMotion
+    }
+}
+
+private struct TrafficMetricText: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var value: String
+    var accent: Color
+    var animationsPaused: Bool
+
+    @State private var pulseTrigger = 0
+
+    var body: some View {
+        Text(value)
+            .fontWeight(.medium)
+            .foregroundStyle(textColor)
+            .monospacedDigit()
+            .lineLimit(1)
+            .minimumScaleFactor(0.82)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .frame(minWidth: 78, alignment: .leading)
+            .contentTransition(shouldAnimate ? .numericText() : .identity)
+            .trafficPulse(accent: accent, isVisible: shouldShowPulse, trigger: pulseTrigger)
+            .animation(shouldAnimate ? .spring(response: 0.26, dampingFraction: 0.72, blendDuration: 0.02) : nil, value: value)
+            .onChange(of: value) { oldValue, newValue in
+                guard oldValue != newValue else { return }
+                if shouldAnimate, oldValue != "-", newValue != "-" {
+                    triggerPulse()
+                }
+            }
+    }
+
+    private var shouldAnimate: Bool {
+        !animationsPaused && !reduceMotion
+    }
+
+    private var shouldShowPulse: Bool {
+        shouldAnimate && value != "-"
+    }
+
+    private var textColor: Color {
+        value == "-" ? .primary : accent
+    }
+
+    private func triggerPulse() {
+        pulseTrigger &+= 1
+    }
+}
+
+private struct TrafficPulseFrame {
+    var opacity: Double = 0
+    var width: CGFloat = 16
+    var offset: CGFloat = 0
+
+    static let idle = TrafficPulseFrame()
+}
+
+private extension View {
+    func trafficPulse(accent: Color, isVisible: Bool, trigger: Int) -> some View {
+        modifier(TrafficPulseModifier(accent: accent, isVisible: isVisible, trigger: trigger))
+    }
+}
+
+private struct TrafficPulseModifier: ViewModifier {
+    var accent: Color
+    var isVisible: Bool
+    var trigger: Int
+
+    func body(content: Content) -> some View {
+        content.keyframeAnimator(initialValue: TrafficPulseFrame.idle, trigger: trigger) { animatedContent, frame in
+            animatedContent.trafficPulseOverlay(accent: accent, isVisible: isVisible, frame: frame)
+        } keyframes: { _ in
+            KeyframeTrack(\.opacity) {
+                LinearKeyframe(1, duration: 0.10)
+                CubicKeyframe(0, duration: 0.48)
+            }
+            KeyframeTrack(\.width) {
+                CubicKeyframe(58, duration: 0.24)
+                CubicKeyframe(16, duration: 0.34)
+            }
+            KeyframeTrack(\.offset) {
+                CubicKeyframe(20, duration: 0.58)
+            }
+        }
+    }
+}
+
+private extension View {
+    nonisolated func trafficPulseOverlay(accent: Color, isVisible: Bool, frame: TrafficPulseFrame) -> some View {
+        overlay(alignment: .bottomLeading) {
+            Capsule()
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            accent.opacity(0),
+                            accent.opacity(0.95),
+                            accent.opacity(0),
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .frame(width: frame.width, height: 2)
+                .opacity(isVisible ? frame.opacity : 0)
+                .offset(x: frame.offset)
+        }
     }
 }
 
