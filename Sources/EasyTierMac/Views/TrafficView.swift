@@ -53,7 +53,7 @@ private struct StatusMetric: View {
         HStack(spacing: 9) {
             Image(systemName: systemImage)
                 .font(.title3)
-                .foregroundStyle(.tint)
+                .foregroundStyle(.secondary)
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
@@ -70,7 +70,7 @@ private struct StatusMetric: View {
         }
         .padding(10)
         .frame(width: width, alignment: .leading)
-        .frostedGlassBackground(in: RoundedRectangle(cornerRadius: 8))
+        .liquidGlassMetricBackground(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: value)
     }
 }

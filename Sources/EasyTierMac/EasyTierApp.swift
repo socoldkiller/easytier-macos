@@ -920,6 +920,10 @@ extension View {
     func frostedGlassBackground<S: Shape>(in shape: S) -> some View {
         modifier(FrostedGlassBackground(shape: shape))
     }
+
+    func liquidGlassMetricBackground<S: Shape>(in shape: S) -> some View {
+        modifier(LiquidGlassMetricBackground(shape: shape))
+    }
 }
 
 private struct FrostedGlassBackground<S: Shape>: ViewModifier {
@@ -929,15 +933,71 @@ private struct FrostedGlassBackground<S: Shape>: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
+        if appearanceSettings.glassEffectsEnabled && !appearanceSettings.glassPanelBackgroundsEnabled {
+            content
+        } else {
+            content.background {
+                if appearanceSettings.glassEffectsEnabled {
+                    FrostedGlass(blendingMode: .withinWindow)
+                        .clipShape(shape)
+                } else {
+                    shape.fill(Color.primary.opacity(0.045))
+                }
+            }
+        }
+    }
+}
+
+private struct LiquidGlassMetricBackground<S: Shape>: ViewModifier {
+    @Environment(AppAppearanceSettings.self) private var appearanceSettings
+    @Environment(\.colorScheme) private var colorScheme
+
+    var shape: S
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
         if appearanceSettings.glassEffectsEnabled {
-            content.background { FrostedGlass().clipShape(shape) }
+            liquidGlassContent(content)
         } else {
             content
+                .background { shape.fill(Color.primary.opacity(colorScheme == .dark ? 0.052 : 0.075)) }
+                .overlay { shape.stroke(Color.primary.opacity(0.075), lineWidth: 0.6) }
+        }
+    }
+
+    @ViewBuilder
+    private func liquidGlassContent(_ content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content
+                .glassEffect(.clear.interactive(false), in: shape)
+                .overlay {
+                    shape
+                        .stroke(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(colorScheme == .dark ? 0.10 : 0.22),
+                                    Color.white.opacity(0.035),
+                                    Color.primary.opacity(colorScheme == .dark ? 0.045 : 0.035),
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 0.45
+                        )
+                        .blendMode(colorScheme == .dark ? .screen : .normal)
+                }
+        } else {
+            content
+                .overlay { shape.stroke(Color.white.opacity(0.055), lineWidth: 0.45) }
         }
     }
 }
 
 struct FrostedGlass: NSViewRepresentable {
+    var material: NSVisualEffectView.Material = .sidebar
+    var blendingMode: NSVisualEffectView.BlendingMode = .behindWindow
+    var state: NSVisualEffectView.State = .active
+
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
         configure(view)
@@ -949,9 +1009,9 @@ struct FrostedGlass: NSViewRepresentable {
     }
 
     private func configure(_ view: NSVisualEffectView) {
-        view.material = .sidebar
-        view.blendingMode = .behindWindow
-        view.state = .active
+        view.material = material
+        view.blendingMode = blendingMode
+        view.state = state
         view.autoresizingMask = [.width, .height]
     }
 }

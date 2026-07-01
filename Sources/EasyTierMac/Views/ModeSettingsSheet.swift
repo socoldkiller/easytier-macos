@@ -113,11 +113,14 @@ struct EasyTierSettingsSheet: View {
                 LabeledContent("Frosted Glass") {
                     Toggle("", isOn: appearance.glassEffectsEnabledBinding).labelsHidden()
                 }
-                
+                LabeledContent("Panel Backgrounds") {
+                    Toggle("", isOn: appearance.glassPanelBackgroundsEnabledBinding).labelsHidden()
+                }
+                .disabled(!appearance.glassEffectsEnabled)
             } header: {
                 Text("Appearance")
             } footer: {
-                Text("Translucent window background. Turn off for solid appearance or better performance.")
+                Text("Panel backgrounds apply only while frosted glass is enabled. Traditional mode keeps solid panels for readability.")
             }
 
             Section {
@@ -713,6 +716,13 @@ private extension AppAppearanceSettings {
         Binding(
             get: { self.glassEffectsEnabled },
             set: { self.glassEffectsEnabled = $0 }
+        )
+    }
+
+    var glassPanelBackgroundsEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { self.glassPanelBackgroundsEnabled },
+            set: { self.glassPanelBackgroundsEnabled = $0 }
         )
     }
 }

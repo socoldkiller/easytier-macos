@@ -10,6 +10,12 @@ final class AppAppearanceSettings {
         }
     }
 
+    var glassPanelBackgroundsEnabled: Bool {
+        didSet {
+            userDefaults.set(glassPanelBackgroundsEnabled, forKey: Self.glassPanelBackgroundsEnabledKey)
+        }
+    }
+
     @ObservationIgnored private let userDefaults: UserDefaults
 
     init(userDefaults: UserDefaults = .standard) {
@@ -19,7 +25,13 @@ final class AppAppearanceSettings {
         } else {
             glassEffectsEnabled = userDefaults.bool(forKey: Self.glassEffectsEnabledKey)
         }
+        if userDefaults.object(forKey: Self.glassPanelBackgroundsEnabledKey) == nil {
+            glassPanelBackgroundsEnabled = false
+        } else {
+            glassPanelBackgroundsEnabled = userDefaults.bool(forKey: Self.glassPanelBackgroundsEnabledKey)
+        }
     }
 
     private static let glassEffectsEnabledKey = "EasyTierGlassEffectsEnabled"
+    private static let glassPanelBackgroundsEnabledKey = "EasyTierGlassPanelBackgroundsEnabled"
 }

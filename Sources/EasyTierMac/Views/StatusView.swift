@@ -152,98 +152,14 @@ struct StatusView: View {
     }
 
     private var memberTable: some View {
-        Table(of: MemberTableRow.self) {
-            TableColumn("Member") { row in
-                expandablePublicServerCell(for: row) {
-                    MemberIdentityCell(
-                        row: row,
-                        isHighlighted: row.contains(peerID: highlightedMemberPeerID),
-                        onRenameHostname: beginRenamingHostname,
-                        onConfigureLocalMember: onConfigureLocalMember
-                    )
-                }
-            }
-            .width(min: 180, ideal: 240)
-
-            TableColumn("IPv4") { row in
-                expandablePublicServerCell(for: row) {
-                    MemberIPv4Cell(row: row)
-                }
-            }
-            .width(min: 120, ideal: 148)
-
-            TableColumn("Route") { row in
-                expandablePublicServerCell(for: row) {
-                    MemberRouteCell(row: row)
-                }
-            }
-            .width(min: 72, ideal: 88)
-
-            TableColumn("Tunnel") { row in
-                expandablePublicServerCell(for: row) {
-                    Text(row.tunnelProto)
-                }
-            }
-            .width(min: 76, ideal: 88)
-
-            TableColumn("Latency") { row in
-                expandablePublicServerCell(for: row) {
-                    LatencyMetricText(value: row.latency, animates: false)
-                }
-            }
-            .width(min: 74, ideal: 84)
-
-            TableColumn("Upload") { row in
-                expandablePublicServerCell(for: row) {
-                    AnimatedMetricText(value: row.uploadTotal, animates: false)
-                }
-            }
-            .width(min: 80, ideal: 92)
-
-            TableColumn("Download") { row in
-                expandablePublicServerCell(for: row) {
-                    AnimatedMetricText(value: row.downloadTotal, animates: false)
-                }
-            }
-            .width(min: 90, ideal: 104)
-
-            TableColumn("Loss") { row in
-                expandablePublicServerCell(for: row) {
-                    AnimatedMetricText(value: row.lossRate, animates: false)
-                }
-            }
-            .width(min: 62, ideal: 72)
-
-            TableColumn("NAT") { row in
-                expandablePublicServerCell(for: row) {
-                    Text(row.natType)
-                }
-            }
-            .width(min: 82, ideal: 98)
-
-            TableColumn("Version") { row in
-                expandablePublicServerCell(for: row) {
-                    Text(row.version)
-                        .lineLimit(1)
-                }
-            }
-            .width(min: 100, ideal: 130)
-        } rows: {
-            ForEach(memberTableRows) { row in
-                if let children = row.children {
-                    DisclosureTableRow(row, isExpanded: $publicServerGroupExpanded) {
-                        ForEach(children) { child in
-                            TableRow(child)
-                        }
-                    }
-                } else {
-                    TableRow(row)
-                }
-            }
-        }
-        .modifier(MemberTableAppearanceModifier(glassEffectsEnabled: appearanceSettings.glassEffectsEnabled))
-        .scrollIndicators(.never, axes: [.vertical, .horizontal])
-        .trackScrollPhase(isScrolling: $memberTableIsScrolling)
+        MemberGridTable(
+            rows: memberTableRows,
+            highlightedMemberPeerID: highlightedMemberPeerID,
+            publicServerGroupExpanded: $publicServerGroupExpanded,
+            isScrolling: $memberTableIsScrolling,
+            onRenameHostname: beginRenamingHostname,
+            onConfigureLocalMember: onConfigureLocalMember
+        )
     }
 
     private var memberTableRows: [MemberTableRow] {
@@ -364,19 +280,222 @@ struct StatusView: View {
 
 }
 
-private struct MemberTableAppearanceModifier: ViewModifier {
-    var glassEffectsEnabled: Bool
+private struct MemberGridTable: View {
+    var rows: [MemberTableRow]
+    var highlightedMemberPeerID: String?
+    @Binding var publicServerGroupExpanded: Bool
+    @Binding var isScrolling: Bool
+    var onRenameHostname: (NetworkMemberStatus) -> Void
+    var onConfigureLocalMember: () -> Void
+
+    var body: some View {
+        GeometryReader { proxy in
+            let widths = MemberGridColumn.widths(for: proxy.size.width)
+            let tableWidth = max(proxy.size.width, MemberGridColumn.minimumTotalWidth)
+
+            ScrollView([.horizontal, .vertical]) {
+                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    Section {
+                        ForEach(flattenedRows) { item in
+                            MemberGridRowView(
+                                item: item,
+                                columnWidths: widths,
+                                highlightedMemberPeerID: highlightedMemberPeerID,
+                                publicServerGroupExpanded: $publicServerGroupExpanded,
+                                onRenameHostname: onRenameHostname,
+                                onConfigureLocalMember: onConfigureLocalMember
+                            )
+                        }
+                    } header: {
+                        MemberGridHeader(columnWidths: widths)
+                    }
+                }
+                .frame(width: tableWidth, alignment: .topLeading)
+            }
+            .scrollIndicators(.never, axes: [.vertical, .horizontal])
+            .defaultScrollAnchor(.topLeading)
+            .trackScrollPhase(isScrolling: $isScrolling)
+        }
+    }
+
+    private var flattenedRows: [MemberGridRowItem] {
+        rows.flatMap { row -> [MemberGridRowItem] in
+            guard let children = row.children else {
+                return [.init(row: row, depth: 0)]
+            }
+
+            var result = [MemberGridRowItem(row: row, depth: 0)]
+            if publicServerGroupExpanded {
+                result += children.map { MemberGridRowItem(row: $0, depth: 1) }
+            }
+            return result
+        }
+    }
+}
+
+private struct MemberGridRowItem: Identifiable {
+    var row: MemberTableRow
+    var depth: Int
+
+    var id: String { "\(row.id)-\(depth)" }
+}
+
+private enum MemberGridColumn: String, CaseIterable, Identifiable {
+    case member = "Member"
+    case ipv4 = "IPv4"
+    case route = "Route"
+    case tunnel = "Tunnel"
+    case latency = "Latency"
+    case upload = "Upload"
+    case download = "Download"
+    case loss = "Loss"
+    case nat = "NAT"
+    case version = "Version"
+
+    var id: String { rawValue }
+
+    var minWidth: CGFloat {
+        switch self {
+        case .member: 220
+        case .ipv4: 142
+        case .route: 88
+        case .tunnel: 84
+        case .latency: 94
+        case .upload: 92
+        case .download: 104
+        case .loss: 70
+        case .nat: 112
+        case .version: 132
+        }
+    }
+
+    var idealWidth: CGFloat {
+        switch self {
+        case .member: 270
+        case .ipv4: 156
+        case .route: 96
+        case .tunnel: 94
+        case .latency: 106
+        case .upload: 104
+        case .download: 118
+        case .loss: 78
+        case .nat: 126
+        case .version: 148
+        }
+    }
+
+    static var minimumTotalWidth: CGFloat {
+        allCases.reduce(0) { $0 + $1.minWidth }
+    }
+
+    private static var idealTotalWidth: CGFloat {
+        allCases.reduce(0) { $0 + $1.idealWidth }
+    }
+
+    static func widths(for availableWidth: CGFloat) -> [MemberGridColumn: CGFloat] {
+        let extraWidth = max(0, availableWidth - minimumTotalWidth)
+        let extraIdealWidth = max(1, idealTotalWidth - minimumTotalWidth)
+        return Dictionary(uniqueKeysWithValues: allCases.map { column in
+            let share = (column.idealWidth - column.minWidth) / extraIdealWidth
+            return (column, column.minWidth + extraWidth * share)
+        })
+    }
+}
+
+private struct MemberGridHeader: View {
+    var columnWidths: [MemberGridColumn: CGFloat]
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(MemberGridColumn.allCases) { column in
+                Text(column.rawValue)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .padding(.horizontal, 8)
+                    .frame(width: columnWidths[column, default: column.minWidth], alignment: .leading)
+                    .overlay(alignment: .trailing) {
+                        Rectangle()
+                            .fill(Color.primary.opacity(0.08))
+                            .frame(width: 0.6, height: 14)
+                    }
+            }
+        }
+        .frame(height: 28)
+        .background(.background.opacity(0.001))
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.primary.opacity(0.08))
+                .frame(height: 0.6)
+        }
+    }
+}
+
+private struct MemberGridRowView: View {
+    var item: MemberGridRowItem
+    var columnWidths: [MemberGridColumn: CGFloat]
+    var highlightedMemberPeerID: String?
+    @Binding var publicServerGroupExpanded: Bool
+    var onRenameHostname: (NetworkMemberStatus) -> Void
+    var onConfigureLocalMember: () -> Void
+
+    private var row: MemberTableRow { item.row }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            cell(.member) {
+                HStack(spacing: 6) {
+                    disclosureControl
+                    MemberIdentityCell(
+                        row: row,
+                        isHighlighted: row.contains(peerID: highlightedMemberPeerID),
+                        onRenameHostname: onRenameHostname,
+                        onConfigureLocalMember: onConfigureLocalMember
+                    )
+                    .padding(.leading, CGFloat(item.depth) * 18)
+                }
+            }
+            cell(.ipv4) { MemberIPv4Cell(row: row) }
+            cell(.route) { MemberRouteCell(row: row) }
+            cell(.tunnel) { Text(row.tunnelProto).lineLimit(1) }
+            cell(.latency) { LatencyMetricText(value: row.latency, animates: false) }
+            cell(.upload) { AnimatedMetricText(value: row.uploadTotal, animates: false) }
+            cell(.download) { AnimatedMetricText(value: row.downloadTotal, animates: false) }
+            cell(.loss) { AnimatedMetricText(value: row.lossRate, animates: false) }
+            cell(.nat) { Text(row.natType).lineLimit(1) }
+            cell(.version) { Text(row.version).lineLimit(1) }
+        }
+        .frame(minHeight: 44)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.primary.opacity(0.07))
+                .frame(height: 0.6)
+        }
+    }
 
     @ViewBuilder
-    func body(content: Content) -> some View {
-        if glassEffectsEnabled {
-            content
-                .tableStyle(.inset)
-                .alternatingRowBackgrounds(.disabled)
-                .scrollContentBackground(.hidden)
+    private var disclosureControl: some View {
+        if row.children != nil {
+            Button {
+                publicServerGroupExpanded.toggle()
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .rotationEffect(.degrees(publicServerGroupExpanded ? 90 : 0))
+                    .frame(width: 12)
+            }
+            .buttonStyle(.plain)
         } else {
-            content
+            Color.clear.frame(width: 12)
         }
+    }
+
+    private func cell<Content: View>(_ column: MemberGridColumn, @ViewBuilder content: () -> Content) -> some View {
+        content()
+            .font(.callout)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .frame(width: columnWidths[column, default: column.minWidth], alignment: .leading)
     }
 }
 
@@ -1266,7 +1385,7 @@ private struct StatusBadge: View {
             Image(systemName: systemImage)
                 .font(.title3)
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(.tint)
+                .foregroundStyle(.secondary)
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
@@ -1283,7 +1402,7 @@ private struct StatusBadge: View {
         }
         .padding(10)
         .frame(width: width, alignment: .leading)
-        .frostedGlassBackground(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .liquidGlassMetricBackground(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: value)
     }
 }
