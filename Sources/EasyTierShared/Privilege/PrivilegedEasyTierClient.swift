@@ -70,6 +70,10 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelperS
 
     public func run(config: NetworkConfig) async throws {
         let toml = try NetworkConfigTOMLCodec.encode(config)
+        try await run(toml: toml)
+    }
+
+    public func run(toml: String) async throws {
         try await validate(toml: toml)
         try await callHelper { service, reply in
             service.run(configTOML: toml, reply: reply)

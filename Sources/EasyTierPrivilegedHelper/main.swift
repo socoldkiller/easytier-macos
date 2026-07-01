@@ -22,7 +22,7 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
     func run(configTOML: String, reply: @escaping (String?, String?) -> Void) {
         do {
             try StaticEasyTierFFIClient.validateDirect(toml: configTOML)
-            try client.run(toml: configTOML)
+            try client.runSync(toml: configTOML)
             reply("ok", nil)
         } catch {
             fputs("helper run error: \(error.localizedDescription)\n", stderr)

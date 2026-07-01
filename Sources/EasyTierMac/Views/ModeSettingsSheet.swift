@@ -1,6 +1,10 @@
 import EasyTierShared
 import SwiftUI
 
+enum MagicDNSDisplay {
+    static let resolverIP = "100.100.100.101"
+}
+
 enum EasyTierSettingsTab: String, CaseIterable, Identifiable, Hashable {
     case general = "General"
     case easyTier = "EasyTier"
@@ -37,15 +41,23 @@ struct EasyTierSettingsSheet: View {
     @State private var rpcPortalWhitelist: [String]
     @State private var configServerURL: String
     @State private var remoteRPCAddress: String
+    @State private var magicDNSSuffix: String
+    @State private var settingsError: String?
     @State private var listenersExpanded = false
     @State private var listenerURLs = Self.defaultListeners
     @State private var showingDisableRPCListenWarning = false
 
-    var onSave: (AppMode) -> Void
+    var onSave: (AppMode, MagicDNSSettings) -> Void
 
-    init(initialTab: EasyTierSettingsTab = .general, mode: AppMode, onSave: @escaping (AppMode) -> Void) {
+    init(
+        initialTab: EasyTierSettingsTab = .general,
+        mode: AppMode,
+        magicDNSSettings: MagicDNSSettings,
+        onSave: @escaping (AppMode, MagicDNSSettings) -> Void
+    ) {
         self.onSave = onSave
         _selectedTab = State(initialValue: initialTab)
+        _magicDNSSuffix = State(initialValue: magicDNSSettings.dnsSuffix)
 
         switch mode {
         case let .normal(_, rpcListenEnabled, rpcListenPort, rpcPortalWhitelist, configServerURL):
@@ -88,6 +100,11 @@ struct EasyTierSettingsSheet: View {
             Button("Disable", role: .destructive) { rpcListenEnabled = false }
         } message: {
             Text("Remote devices may not be able to fetch this EasyTier instance's current information when TCP RPC listen is off.")
+        }
+        .alert("Settings Error", isPresented: settingsErrorPresented) {
+            Button("OK", role: .cancel) { settingsError = nil }
+        } message: {
+            Text(settingsError ?? "")
         }
     }
 
@@ -167,6 +184,25 @@ struct EasyTierSettingsSheet: View {
                 }
             } header: {
                 Text("EasyTier RPC")
+            }
+
+            Section {
+                LabeledContent("DNS Suffix") {
+                    TextField("", text: $magicDNSSuffix)
+                        .textFieldStyle(.glassField)
+                        .font(.system(size: 13.5, design: .monospaced))
+                        .frame(width: 160)
+                }
+                LabeledContent("DNS Routing") {
+                    StatusText("Split DNS")
+                }
+                LabeledContent("Resolver") {
+                    CodeText(MagicDNSDisplay.resolverIP)
+                }
+            } header: {
+                Text("Magic DNS")
+            } footer: {
+                Text("Only names under this suffix are resolved by EasyTier. Other domains keep using system DNS. Running networks need a restart after it changes.")
             }
 
             if kind == .normal {
@@ -297,11 +333,8 @@ struct EasyTierSettingsSheet: View {
         HStack(spacing: 8) {
             Spacer()
             if selectedTab == .easyTier {
-                Button("Save Mode") {
-                    onSave(buildMode())
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
+                Button("Save") { saveSettings() }
+                    .keyboardShortcut(.defaultAction)
             }
             Button("Done") { dismiss() }
                 .keyboardShortcut(selectedTab == .easyTier ? .cancelAction : .defaultAction)
@@ -344,6 +377,26 @@ struct EasyTierSettingsSheet: View {
                 store.saveInBackground()
             }
         )
+    }
+
+    private var settingsErrorPresented: Binding<Bool> {
+        Binding(
+            get: { settingsError != nil },
+            set: { isPresented in
+                if !isPresented { settingsError = nil }
+            }
+        )
+    }
+
+    private func saveSettings() {
+        do {
+            let settings = try MagicDNSSettings(dnsSuffix: magicDNSSuffix)
+            magicDNSSuffix = settings.dnsSuffix
+            onSave(buildMode(), settings)
+            dismiss()
+        } catch {
+            settingsError = error.localizedDescription
+        }
     }
 
     private func buildMode() -> AppMode {

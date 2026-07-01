@@ -23,6 +23,7 @@ public final class EasyTierAppStore {
     public var runtimeIntents: [RuntimeIntent] = []
     public var reversedPortForwardFingerprints: [String: Set<String>] = [:]
     public var vpnOnDemandEnabled = false
+    public var magicDNSSettings: MagicDNSSettings = .default
 
     public static func portForwardFingerprint(for rule: PortForwardConfig) -> String {
         "\(rule.bind_ip):\(rule.bind_port)-\(rule.dst_ip):\(rule.dst_port)-\(rule.proto)"
@@ -155,6 +156,7 @@ public final class EasyTierAppStore {
             runtimeIntents = snapshot.runtimeIntents
             reversedPortForwardFingerprints = snapshot.reversedPortForwardFingerprints
             vpnOnDemandEnabled = snapshot.vpnOnDemandEnabled
+            magicDNSSettings = snapshot.magicDNSSettings
             mode = snapshot.mode ?? .default
             if let lastSelectedConfigID = snapshot.lastSelectedConfigID,
                configs.contains(where: { $0.id == lastSelectedConfigID })
@@ -289,7 +291,7 @@ public final class EasyTierAppStore {
         await busy {
             try validateConfigForCurrentRuntime(config)
             let keychainConfig = try await configWithKeychainSecret(config, reason: "Use the network secret for validation.")
-            try await client(for: config).validate(toml: try NetworkConfigTOMLCodec.encode(keychainConfig))
+            try await client(for: config).validate(toml: try encodedTOML(for: keychainConfig))
             log("Validated \(config.network_name).")
         }
     }
@@ -309,7 +311,7 @@ public final class EasyTierAppStore {
                     throw error
                 }
             }
-            try await client(for: config).run(config: cleanConfig)
+            try await client(for: config).run(toml: try encodedTOML(for: cleanConfig))
             instanceClientKind[cleanConfig.instance_id] = clientKind(for: cleanConfig)
             recordPendingStart(for: config)
             log("Started \(config.network_name).")
@@ -335,7 +337,7 @@ public final class EasyTierAppStore {
             }
         }
         await busy {
-            try await client(for: config).run(config: config)
+            try await client(for: config).run(toml: try encodedTOML(for: config))
             instanceClientKind[config.instance_id] = clientKind(for: config)
             if let selectedConfig, selectedConfig.instance_id == config.instance_id {
                 recordPendingStart(for: selectedConfig)
@@ -370,7 +372,7 @@ public final class EasyTierAppStore {
             let keychainConfig = try await configWithKeychainSecret(config, reason: "Use the network secret to restart \(config.network_name).")
             let cleanConfig = Self.configWithoutReversedPortForwards(keychainConfig, fingerprints: reversedPortForwardFingerprints)
             let targetClient = client(for: config)
-            try await targetClient.validate(toml: try NetworkConfigTOMLCodec.encode(cleanConfig))
+            try await targetClient.validate(toml: try encodedTOML(for: cleanConfig))
             try await targetClient.stop(instanceNames: [instance.name])
             clearPendingStart(for: config)
             if config.requiresTUN, let helperRegistration {
@@ -381,7 +383,7 @@ public final class EasyTierAppStore {
                     throw error
                 }
             }
-            try await targetClient.run(config: cleanConfig)
+            try await targetClient.run(toml: try encodedTOML(for: cleanConfig))
             instanceClientKind[cleanConfig.instance_id] = clientKind(for: cleanConfig)
             recordPendingStart(for: config)
             log("Restarted \(config.network_name).")
@@ -670,17 +672,35 @@ public final class EasyTierAppStore {
         }
     }
 
+    public func applyMode(_ mode: AppMode, magicDNSSettings: MagicDNSSettings) async {
+        let magicDNSSuffixChanged = self.magicDNSSettings != magicDNSSettings
+        let runningMagicDNSNames = runningMagicDNSConfigNames()
+        self.magicDNSSettings = magicDNSSettings
+        if magicDNSSuffixChanged, !runningMagicDNSNames.isEmpty {
+            recordNotice("Magic DNS suffix changed to \(magicDNSSettings.dnsSuffix). Restart \(runningMagicDNSNames.joined(separator: ", ")) to apply it.")
+        }
+        await applyMode(mode)
+    }
+
     public func exportSelectedTOML() async throws -> String {
         guard let selectedConfig else { return "" }
         let config = try await configWithKeychainSecret(selectedConfig, reason: "Use the network secret for TOML export.")
-        return try NetworkConfigTOMLCodec.encode(config)
+        return try encodedTOML(for: config)
     }
 
     public func importTOML(_ toml: String) {
         do {
+            let metadata = try NetworkConfigTOMLCodec.metadata(from: toml)
             var config = try NetworkConfigTOMLCodec.decode(toml)
             if configs.contains(where: { $0.id == config.instance_id }) {
                 config.instance_id = UUID().uuidString.lowercased()
+            }
+            if let suffix = metadata.magicDNSSuffix?.nilIfEmpty {
+                let importedSettings = try MagicDNSSettings(dnsSuffix: suffix)
+                if importedSettings != magicDNSSettings {
+                    magicDNSSettings = importedSettings
+                    recordNotice("Detected custom Magic DNS suffix \(importedSettings.dnsSuffix); saved it as this Mac's Magic DNS suffix.")
+                }
             }
             let stored = try configsWithSecretsStored([StoredNetworkConfig(config: config)])[0]
             configs.append(stored)
@@ -855,7 +875,7 @@ public final class EasyTierAppStore {
                 throw error
             }
         }
-        try await targetClient.run(config: cleanConfig)
+        try await targetClient.run(toml: try encodedTOML(for: cleanConfig))
         instanceClientKind[cleanConfig.instance_id] = clientKind(for: cleanConfig)
         recordPendingStart(for: config)
         log("Recovered \(config.network_name) after system wake.")
@@ -1112,7 +1132,8 @@ public final class EasyTierAppStore {
             lastSelectedConfigID: selectedConfigID,
             vpnOnDemandEnabled: vpnOnDemandEnabled,
             runtimeIntents: runtimeIntents,
-            reversedPortForwardFingerprints: reversedPortForwardFingerprints
+            reversedPortForwardFingerprints: reversedPortForwardFingerprints,
+            magicDNSSettings: magicDNSSettings
         )
     }
 
@@ -1143,6 +1164,10 @@ public final class EasyTierAppStore {
         return config
     }
 
+    private func encodedTOML(for config: NetworkConfig) throws -> String {
+        try NetworkConfigTOMLCodec.encode(config, magicDNSSettings: magicDNSSettings)
+    }
+
     private func nonEmptyTrimmed(_ value: String?) -> String? {
         value?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
     }
@@ -1160,6 +1185,14 @@ public final class EasyTierAppStore {
     private func uniquelyMatchedConfig(named networkName: String) -> NetworkConfig? {
         let matches = configs.filter { $0.config.network_name == networkName }
         return matches.count == 1 ? matches[0].config : nil
+    }
+
+    private func runningMagicDNSConfigNames() -> [String] {
+        configs
+            .map(\.config)
+            .filter { $0.enable_magic_dns == true && runningInstance(matching: $0) != nil }
+            .map(\.network_name)
+            .sorted()
     }
 
     private func selectConfig(offset: Int) {

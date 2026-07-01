@@ -21,6 +21,7 @@ public protocol EasyTierCoreClient: Sendable {
     func version() async throws -> String
     func validate(toml: String) async throws
     func run(config: NetworkConfig) async throws
+    func run(toml: String) async throws
     func stop(instanceNames: [String]) async throws
     func retain(instanceNames: [String]) async throws
     func listInstances() async throws -> [NetworkInstance]
@@ -48,6 +49,7 @@ public struct UnavailableEasyTierCoreClient: EasyTierCoreClient {
     public func version() async throws -> String { "FFI not loaded" }
     public func validate(toml _: String) async throws { throw unavailable() }
     public func run(config _: NetworkConfig) async throws { throw unavailable() }
+    public func run(toml _: String) async throws { throw unavailable() }
     public func stop(instanceNames _: [String]) async throws { throw unavailable() }
     public func retain(instanceNames _: [String]) async throws { throw unavailable() }
     public func listInstances() async throws -> [NetworkInstance] { throw unavailable() }

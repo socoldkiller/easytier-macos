@@ -53,8 +53,8 @@ struct EasyTierApp: App {
         .windowToolbarStyle(.unified)
 
         Window("EasyTier", id: "settings") {
-            EasyTierSettingsSheet(initialTab: .general, mode: store.mode) { mode in
-                Task { await store.applyMode(mode) }
+            EasyTierSettingsSheet(initialTab: .general, mode: store.mode, magicDNSSettings: store.magicDNSSettings) { mode, magicDNSSettings in
+                Task { await store.applyMode(mode, magicDNSSettings: magicDNSSettings) }
             }
             .environment(store)
             .environment(updater)

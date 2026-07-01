@@ -16,11 +16,11 @@ public enum TOMLCodecError: LocalizedError, Equatable {
 }
 
 public enum NetworkConfigTOMLCodec {
-    public static func encode(_ config: NetworkConfig) throws -> String {
+    public static func encode(_ config: NetworkConfig, magicDNSSettings: MagicDNSSettings? = nil) throws -> String {
         let encoder = TOMLEncoder()
         encoder.outputFormatting = [.prettyPrinted]
 
-        let toml = try encoder.encodeToString(EasyTierTOMLDocument(config.normalized()))
+        let toml = try encoder.encodeToString(EasyTierTOMLDocument(config.normalized(), magicDNSSettings: magicDNSSettings))
         return toml.hasSuffix("\n") ? toml : toml + "\n"
     }
 
@@ -29,6 +29,19 @@ public enum NetworkConfigTOMLCodec {
         let config = try document.networkConfig().normalized()
         try NetworkConfigValidator.validate(config)
         return config
+    }
+
+    public static func metadata(from toml: String) throws -> NetworkConfigTOMLMetadata {
+        let document = try TOMLDecoder().decode(EasyTierTOMLDocument.self, from: toml)
+        return NetworkConfigTOMLMetadata(magicDNSSuffix: document.flags?.tld_dns_zone)
+    }
+}
+
+public struct NetworkConfigTOMLMetadata: Equatable, Sendable {
+    public var magicDNSSuffix: String?
+
+    public init(magicDNSSuffix: String? = nil) {
+        self.magicDNSSuffix = magicDNSSuffix
     }
 }
 
@@ -53,7 +66,7 @@ private struct EasyTierTOMLDocument: Codable {
     var port_forward: [PortForwardTOML]?
     var flags: FlagsTOML?
 
-    init(_ config: NetworkConfig) {
+    init(_ config: NetworkConfig, magicDNSSettings: MagicDNSSettings? = nil) {
         instance_name = config.network_name.isEmpty ? config.instance_id : config.network_name
         instance_id = config.instance_id
         dhcp = config.dhcp
@@ -86,7 +99,7 @@ private struct EasyTierTOMLDocument: Codable {
                 proto: $0.proto
             )
         }
-        flags = FlagsTOML(config)
+        flags = FlagsTOML(config, magicDNSSettings: magicDNSSettings)
     }
 
     func networkConfig() throws -> NetworkConfig {
@@ -222,11 +235,12 @@ private struct FlagsTOML: Codable {
     var enable_magic_dns: Bool?
     var private_mode: Bool?
     var enable_private_mode: Bool?
+    var tld_dns_zone: String?
     var relay_network_whitelist: String?
     var dev_name: String?
     var instance_recv_bps_limit: Int?
 
-    init(_ config: NetworkConfig) {
+    init(_ config: NetworkConfig, magicDNSSettings: MagicDNSSettings? = nil) {
         latency_first = config.latency_first
         use_smoltcp = config.use_smoltcp
         enable_ipv6 = config.disable_ipv6.map { !$0 }
@@ -251,6 +265,9 @@ private struct FlagsTOML: Codable {
         enable_udp_broadcast_relay = config.enable_udp_broadcast_relay
         disable_sym_hole_punching = config.disable_sym_hole_punching
         accept_dns = config.enable_magic_dns
+        if config.enable_magic_dns == true, let magicDNSSettings {
+            tld_dns_zone = magicDNSSettings.dnsSuffix
+        }
         private_mode = config.enable_private_mode
         relay_network_whitelist = config.enable_relay_network_whitelist == true ? config.relay_network_whitelist.joined(separator: " ") : nil
         dev_name = config.dev_name.nilIfEmpty
@@ -340,4 +357,3 @@ private func parseSocketAddress(_ value: String) -> (host: String, port: Int)? {
     }
     return (host, port)
 }
-

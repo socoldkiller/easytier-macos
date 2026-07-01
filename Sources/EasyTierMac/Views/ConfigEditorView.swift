@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ConfigEditorView: View {
     @Environment(EasyTierAppStore.self) private var store
+    @Environment(\.openWindow) private var openWindow
     @Binding var config: NetworkConfig
     var members: [NetworkMemberStatus] = []
     var onScrolledPastTopChange: (Bool) -> Void = { _ in }
@@ -141,6 +142,7 @@ struct ConfigEditorView: View {
                 TextField("Optional hostname", text: Binding($config.hostname, replacingNilWith: ""))
                     .textFieldStyle(.glassField)
             }
+            magicDNSRow
             FieldRow("Device name") {
                 TextField("Auto", text: $config.dev_name)
                     .textFieldStyle(.glassField)
@@ -256,7 +258,6 @@ struct ConfigEditorView: View {
 
                 FlagGroup("Security & DNS", systemImage: "lock.shield") {
                     FlagList {
-                        FlagToggle("Magic DNS", isOn: optionalBool($config.enable_magic_dns, defaultValue: false))
                         FlagToggle("Private mode", isOn: optionalBool($config.enable_private_mode, defaultValue: false))
                         FlagToggle("Disable IPv6", isOn: optionalBool($config.disable_ipv6, defaultValue: false))
                         FlagToggle("Disable encryption", isOn: optionalBool($config.disable_encryption, defaultValue: false), showsSeparator: false)
@@ -277,6 +278,58 @@ struct ConfigEditorView: View {
                 }
             )
         }
+    }
+
+    @ViewBuilder
+    private var magicDNSRow: some View {
+        FieldRow("Magic DNS") {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("", isOn: optionalBool($config.enable_magic_dns, defaultValue: false))
+                    .labelsHidden()
+                if config.enable_magic_dns == true {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 8) {
+                            Text(magicDNSPreview)
+                                .font(.callout.monospaced())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Button("Change in Settings") {
+                                EasyTierSettingsTabRequest.set(.easyTier)
+                                openWindow(id: "settings")
+                            }
+                            .buttonStyle(.link)
+                            .font(.system(size: 12.5))
+                        }
+                        Text("Suffix: \(store.magicDNSSettings.dnsSuffix)")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.tertiary)
+                        Text("Only \(magicDNSDisplaySuffix) names use EasyTier DNS. Other domains stay unchanged.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if store.selectedConfigIsRunning {
+                            Text("Restart this network to apply Magic DNS changes.")
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var magicDNSPreview: String {
+        let hostname = config.hostname?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !hostname.isEmpty else {
+            return "Uses this Mac's system hostname at runtime"
+        }
+        return "\(hostname).\(magicDNSDisplaySuffix)"
+    }
+
+    private var magicDNSDisplaySuffix: String {
+        let suffix = store.magicDNSSettings.dnsSuffix
+        return suffix.hasSuffix(".") ? String(suffix.dropLast()) : suffix
     }
 
     private typealias RuleKey = String

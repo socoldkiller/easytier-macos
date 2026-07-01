@@ -16,10 +16,15 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
     public func run(config: NetworkConfig) async throws {
         let toml = try NetworkConfigTOMLCodec.encode(config)
         try await validate(toml: toml)
-        try run(toml: toml)
+        try runSync(toml: toml)
     }
 
-    public func run(toml: String) throws {
+    public func run(toml: String) async throws {
+        try await validate(toml: toml)
+        try runSync(toml: toml)
+    }
+
+    public func runSync(toml: String) throws {
         var error: UnsafePointer<CChar>?
         let result = toml.withCString { cfg in run_network_instance(cfg, &error) }
         try Self.throwOnError(result, error: error)

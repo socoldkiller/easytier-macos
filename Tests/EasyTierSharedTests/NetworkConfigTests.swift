@@ -42,6 +42,23 @@ import Testing
     #expect(config.network_secret == "")
 }
 
+@Test func magicDNSSettingsNormalizeAndValidateSuffix() throws {
+    #expect(MagicDNSSettings.default.dnsSuffix == "et.net.")
+    #expect(try MagicDNSSettings(dnsSuffix: "example.internal").dnsSuffix == "example.internal.")
+    #expect(try MagicDNSSettings(dnsSuffix: "  LAB.Example  ").dnsSuffix == "lab.example.")
+    #expect(try MagicDNSSettings(dnsSuffix: "").dnsSuffix == "et.net.")
+
+    #expect(throws: MagicDNSSettingsValidationError.self) {
+        _ = try MagicDNSSettings(dnsSuffix: "https://example.internal")
+    }
+    #expect(throws: MagicDNSSettingsValidationError.self) {
+        _ = try MagicDNSSettings(dnsSuffix: "bad_suffix.local")
+    }
+    #expect(throws: MagicDNSSettingsValidationError.self) {
+        _ = try MagicDNSSettings(dnsSuffix: "bad..local")
+    }
+}
+
 @Test func togglingAdvancedSettingsPreservesBasicFields() {
     var config = NetworkConfig(network_name: "office", network_secret: "secret")
     config.peer_urls = ["tcp://example.com:11010"]
@@ -193,6 +210,30 @@ import Testing
     #expect(decoded.ipv6_public_addr_auto == true)
     #expect(decoded.enable_magic_dns == true)
     #expect(decoded.enable_private_mode == true)
+}
+
+@Test func tomlMagicDNSSuffixIsOnlyWrittenBySettingsOverlay() throws {
+    var config = NetworkConfig()
+    config.enable_magic_dns = true
+
+    let plainTOML = try NetworkConfigTOMLCodec.encode(config)
+    #expect(plainTOML.contains("accept_dns = true"))
+    #expect(!plainTOML.contains("tld_dns_zone"))
+
+    let overlayTOML = try NetworkConfigTOMLCodec.encode(
+        config,
+        magicDNSSettings: try MagicDNSSettings(dnsSuffix: "lab.internal")
+    )
+    #expect(overlayTOML.contains("accept_dns = true"))
+    #expect(overlayTOML.contains("tld_dns_zone = \"lab.internal.\""))
+    #expect(try NetworkConfigTOMLCodec.metadata(from: overlayTOML).magicDNSSuffix == "lab.internal.")
+
+    config.enable_magic_dns = false
+    let disabledTOML = try NetworkConfigTOMLCodec.encode(
+        config,
+        magicDNSSettings: try MagicDNSSettings(dnsSuffix: "lab.internal")
+    )
+    #expect(!disabledTOML.contains("tld_dns_zone"))
 }
 
 @Test func tomlRoundTripsPortalProxyAndPortForwardFields() throws {
@@ -534,6 +575,90 @@ import Testing
     let toml = try await store.exportSelectedTOML()
 
     #expect(toml.contains("export-secret"))
+}
+
+@MainActor
+@Test func exportSelectedTOMLAppliesMagicDNSSettingsOverlay() async throws {
+    var config = NetworkConfig(instance_id: "dns-export-id", network_name: "office")
+    config.enable_magic_dns = true
+    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"))
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.selectedConfigID = config.instance_id
+    store.magicDNSSettings = try MagicDNSSettings(dnsSuffix: "lab.internal")
+
+    let toml = try await store.exportSelectedTOML()
+
+    #expect(toml.contains("accept_dns = true"))
+    #expect(toml.contains("tld_dns_zone = \"lab.internal.\""))
+}
+
+@MainActor
+@Test func runSelectedConfigAppliesMagicDNSSettingsOverlay() async throws {
+    let client = RecordingToggleClient()
+    var config = NetworkConfig(instance_id: "dns-run-id", network_name: "office")
+    config.enable_magic_dns = true
+    config.no_tun = true
+    let store = EasyTierAppStore(client: client)
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.selectedConfigID = config.instance_id
+    store.magicDNSSettings = try MagicDNSSettings(dnsSuffix: "lab.internal")
+
+    await store.runSelectedConfig()
+
+    #expect(client.runTOMLs.first?.contains("tld_dns_zone = \"lab.internal.\"") == true)
+}
+
+@MainActor
+@Test func importTOMLPromotesMagicDNSSuffixToAppSettings() throws {
+    var config = NetworkConfig(instance_id: "dns-import-id", network_name: "office")
+    config.enable_magic_dns = true
+    let toml = try NetworkConfigTOMLCodec.encode(
+        config,
+        magicDNSSettings: try MagicDNSSettings(dnsSuffix: "imported.internal")
+    )
+    let store = EasyTierAppStore()
+
+    store.importTOML(toml)
+
+    #expect(store.magicDNSSettings.dnsSuffix == "imported.internal.")
+    #expect(store.configs.first?.config.enable_magic_dns == true)
+    #expect(store.configs.count == 1)
+}
+
+@MainActor
+@Test func changingMagicDNSSuffixRecordsRestartNoticeForRunningMagicDNSNetwork() async throws {
+    let client = RecordingToggleClient()
+    var config = NetworkConfig(instance_id: "dns-notice-id", network_name: "office")
+    config.enable_magic_dns = true
+    let store = EasyTierAppStore(client: client)
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.instances = [NetworkInstance(instance_id: config.instance_id, name: config.network_name, running: true)]
+
+    await store.applyMode(.default, magicDNSSettings: try MagicDNSSettings(dnsSuffix: "lab.internal"))
+
+    #expect(store.logLines.contains { $0.text.contains("Magic DNS suffix changed") && $0.text.contains("Restart office") })
+}
+
+@Test func storagePersistsMagicDNSSettingsInSnapshotOnly() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let storage = EasyTierStorage(baseDirectory: directory)
+    var config = NetworkConfig(instance_id: "dns-storage-id", network_name: "office")
+    config.enable_magic_dns = true
+    let snapshot = AppSnapshot(
+        configs: [StoredNetworkConfig(config: config)],
+        mode: .default,
+        lastSelectedConfigID: config.instance_id,
+        magicDNSSettings: try MagicDNSSettings(dnsSuffix: "stored.internal")
+    )
+
+    try storage.save(snapshot)
+
+    let loaded = try storage.load()
+    let tomlURL = directory.appendingPathComponent("configs/dns-storage-id.toml")
+    let toml = try String(contentsOf: tomlURL, encoding: .utf8)
+
+    #expect(loaded.magicDNSSettings.dnsSuffix == "stored.internal.")
+    #expect(!toml.contains("tld_dns_zone"))
 }
 
 @MainActor
@@ -1769,6 +1894,10 @@ private final class PendingStartClient: EasyTierCoreClient, @unchecked Sendable 
         didRun = true
     }
 
+    func run(toml _: String) async throws {
+        didRun = true
+    }
+
     func stop(instanceNames _: [String]) async throws {}
     func retain(instanceNames _: [String]) async throws {}
     func listInstances() async throws -> [NetworkInstance] { [] }
@@ -1797,6 +1926,7 @@ private final class PendingStartClient: EasyTierCoreClient, @unchecked Sendable 
 
 private final class RecordingToggleClient: EasyTierCoreClient, EasyTierHelperShutdownClient, @unchecked Sendable {
     var runConfigs: [NetworkConfig] = []
+    var runTOMLs: [String] = []
     var stoppedInstanceNames: [[String]] = []
     var retainedInstanceNames: [[String]] = []
     var listedInstances: [NetworkInstance] = []
@@ -1814,6 +1944,13 @@ private final class RecordingToggleClient: EasyTierCoreClient, EasyTierHelperShu
 
     func run(config: NetworkConfig) async throws {
         runConfigs.append(config)
+    }
+
+    func run(toml: String) async throws {
+        runTOMLs.append(toml)
+        if let config = try? NetworkConfigTOMLCodec.decode(toml) {
+            runConfigs.append(config)
+        }
     }
 
     func stop(instanceNames: [String]) async throws {
@@ -1900,6 +2037,10 @@ private final class HelperRunErrorClient: EasyTierCoreClient, @unchecked Sendabl
     func validate(toml _: String) async throws {}
 
     func run(config _: NetworkConfig) async throws {
+        throw PrivilegedHelperError.helperReported(payload)
+    }
+
+    func run(toml _: String) async throws {
         throw PrivilegedHelperError.helperReported(payload)
     }
 
