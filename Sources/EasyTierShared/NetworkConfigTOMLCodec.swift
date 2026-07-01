@@ -37,6 +37,7 @@ private struct EasyTierTOMLDocument: Codable {
     var instance_id: String?
     var dhcp: Bool?
     var ipv4: String?
+    var ipv6_public_addr_auto: Bool?
     var hostname: String?
     var listeners: [String]?
     var mapped_listeners: [String]?
@@ -57,6 +58,7 @@ private struct EasyTierTOMLDocument: Codable {
         instance_id = config.instance_id
         dhcp = config.dhcp
         ipv4 = (!config.dhcp && !config.virtual_ipv4.isEmpty) ? config.virtual_ipv4 : nil
+        ipv6_public_addr_auto = config.ipv6_public_addr_auto == true ? true : nil
         hostname = config.hostname?.nilIfEmpty
         listeners = config.listener_urls.nilIfEmpty
         mapped_listeners = config.mapped_listeners.nilIfEmpty
@@ -93,6 +95,7 @@ private struct EasyTierTOMLDocument: Codable {
         if let instance_id { config.instance_id = instance_id }
         if let dhcp { config.dhcp = dhcp }
         if let hostname { config.hostname = hostname }
+        if let ipv6_public_addr_auto { config.ipv6_public_addr_auto = ipv6_public_addr_auto }
         if let listeners { config.listener_urls = listeners }
         if let mapped_listeners { config.mapped_listeners = mapped_listeners }
         if let routes {
@@ -219,6 +222,7 @@ private struct FlagsTOML: Codable {
     var enable_magic_dns: Bool?
     var private_mode: Bool?
     var enable_private_mode: Bool?
+    var relay_network_whitelist: String?
     var dev_name: String?
     var instance_recv_bps_limit: Int?
 
@@ -248,6 +252,7 @@ private struct FlagsTOML: Codable {
         disable_sym_hole_punching = config.disable_sym_hole_punching
         accept_dns = config.enable_magic_dns
         private_mode = config.enable_private_mode
+        relay_network_whitelist = config.enable_relay_network_whitelist == true ? config.relay_network_whitelist.joined(separator: " ") : nil
         dev_name = config.dev_name.nilIfEmpty
         instance_recv_bps_limit = config.instance_recv_bps_limit
     }
@@ -280,6 +285,10 @@ private struct FlagsTOML: Codable {
         if let enable_magic_dns { config.enable_magic_dns = enable_magic_dns }
         if let private_mode { config.enable_private_mode = private_mode }
         if let enable_private_mode { config.enable_private_mode = enable_private_mode }
+        if let relay_network_whitelist {
+            config.enable_relay_network_whitelist = relay_network_whitelist != "*"
+            config.relay_network_whitelist = relay_network_whitelist == "*" ? [] : relay_network_whitelist.split(separator: " ").map(String.init)
+        }
         if let dev_name { config.dev_name = dev_name }
         if let instance_recv_bps_limit { config.instance_recv_bps_limit = instance_recv_bps_limit }
     }
@@ -331,5 +340,4 @@ private func parseSocketAddress(_ value: String) -> (host: String, port: Int)? {
     }
     return (host, port)
 }
-
 

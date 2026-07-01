@@ -96,7 +96,27 @@ import Testing
     config.proxy_cidrs = ["192.168.1.0/24"]
     config.enable_manual_routes = true
     config.routes = ["10.0.0.0/8"]
+    config.dev_name = "utun9"
+    config.use_smoltcp = true
+    config.enable_kcp_proxy = true
+    config.disable_kcp_input = true
+    config.enable_quic_proxy = true
+    config.disable_quic_input = true
     config.disable_p2p = true
+    config.p2p_only = true
+    config.lazy_p2p = true
+    config.relay_all_peer_rpc = true
+    config.need_p2p = true
+    config.proxy_forward_by_system = true
+    config.disable_tcp_hole_punching = true
+    config.disable_udp_hole_punching = true
+    config.disable_upnp = true
+    config.enable_udp_broadcast_relay = true
+    config.disable_sym_hole_punching = true
+    config.enable_relay_network_whitelist = true
+    config.relay_network_whitelist = ["office", "edge*"]
+    config.mtu = 1_300
+    config.instance_recv_bps_limit = 1024
     config.enable_magic_dns = true
 
     let toml = try NetworkConfigTOMLCodec.encode(config)
@@ -110,7 +130,27 @@ import Testing
     #expect(decoded.peer_urls == ["tcp://example.com:11010"])
     #expect(decoded.proxy_cidrs == ["192.168.1.0/24"])
     #expect(decoded.routes == ["10.0.0.0/8"])
+    #expect(decoded.dev_name == "utun9")
+    #expect(decoded.use_smoltcp == true)
+    #expect(decoded.enable_kcp_proxy == true)
+    #expect(decoded.disable_kcp_input == true)
+    #expect(decoded.enable_quic_proxy == true)
+    #expect(decoded.disable_quic_input == true)
     #expect(decoded.disable_p2p == true)
+    #expect(decoded.p2p_only == true)
+    #expect(decoded.lazy_p2p == true)
+    #expect(decoded.relay_all_peer_rpc == true)
+    #expect(decoded.need_p2p == true)
+    #expect(decoded.proxy_forward_by_system == true)
+    #expect(decoded.disable_tcp_hole_punching == true)
+    #expect(decoded.disable_udp_hole_punching == true)
+    #expect(decoded.disable_upnp == true)
+    #expect(decoded.enable_udp_broadcast_relay == true)
+    #expect(decoded.disable_sym_hole_punching == true)
+    #expect(decoded.enable_relay_network_whitelist == true)
+    #expect(decoded.relay_network_whitelist == ["office", "edge*"])
+    #expect(decoded.mtu == 1_300)
+    #expect(decoded.instance_recv_bps_limit == 1024)
     #expect(decoded.enable_magic_dns == true)
 }
 
@@ -139,17 +179,18 @@ import Testing
 
     #expect(toml.contains("enable_encryption = false"))
     #expect(toml.contains("enable_ipv6 = false"))
+    #expect(toml.contains("ipv6_public_addr_auto = true"))
     #expect(toml.contains("accept_dns = true"))
     #expect(toml.contains("private_mode = true"))
     #expect(!toml.contains("disable_encryption"))
     #expect(!toml.contains("disable_ipv6"))
-    #expect(!toml.contains("ipv6_public_addr_auto"))
     #expect(!toml.contains("enable_magic_dns"))
     #expect(!toml.contains("enable_private_mode"))
 
     let decoded = try NetworkConfigTOMLCodec.decode(toml)
     #expect(decoded.disable_encryption == true)
     #expect(decoded.disable_ipv6 == true)
+    #expect(decoded.ipv6_public_addr_auto == true)
     #expect(decoded.enable_magic_dns == true)
     #expect(decoded.enable_private_mode == true)
 }

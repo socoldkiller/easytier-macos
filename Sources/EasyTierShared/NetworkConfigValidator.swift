@@ -41,6 +41,14 @@ public enum NetworkConfigValidator {
             validatePort(normalized.socks5_port, field: "SOCKS5 port", issues: &issues)
         }
 
+        if let mtu = normalized.mtu {
+            validateRange(mtu, field: "MTU", range: 400...1_380, issues: &issues)
+        }
+
+        if let recvLimit = normalized.instance_recv_bps_limit, recvLimit < 1 {
+            issues.append("Instance receive limit must be greater than 0.")
+        }
+
         for (index, forward) in normalized.port_forwards.enumerated() {
             validatePort(forward.bind_port, field: "Port forward #\(index + 1) bind port", issues: &issues)
             validatePort(forward.dst_port, field: "Port forward #\(index + 1) destination port", issues: &issues)
