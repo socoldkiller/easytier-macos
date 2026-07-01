@@ -34,6 +34,10 @@ public protocol EasyTierCoreClient: Sendable {
     func isConfigServerClientConnected() async throws -> Bool
 }
 
+public protocol EasyTierHelperShutdownClient: Sendable {
+    func shutdownHelper() async throws
+}
+
 public struct UnavailableEasyTierCoreClient: EasyTierCoreClient {
     public let reason: String
 

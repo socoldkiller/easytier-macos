@@ -1,7 +1,7 @@
 import Foundation
 import ServiceManagement
 
-public final class PrivilegedEasyTierClient: EasyTierCoreClient, @unchecked Sendable {
+public final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelperShutdownClient, @unchecked Sendable {
     private let connectionLock = NSLock()
     private var _connection: NSXPCConnection?
 
@@ -156,6 +156,13 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, @unchecked Send
         } catch PrivilegedHelperError.unavailable {
             throw PrivilegedHelperError.unavailable
         }
+    }
+
+    public func shutdownHelper() async throws {
+        try await callHelper { service, reply in
+            service.shutdown(reply: reply)
+        }
+        dropConnection()
     }
 
     private func callHelper(_ body: @escaping (EasyTierPrivilegedServiceProtocol, @escaping (String?, String?) -> Void) -> Void) async throws {

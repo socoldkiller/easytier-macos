@@ -285,7 +285,8 @@ import Testing
     let snapshot = AppSnapshot(
         configs: [StoredNetworkConfig(config: config)],
         mode: .remote(remoteRPCAddress: "tcp://127.0.0.1:15999"),
-        lastSelectedConfigID: "abc"
+        lastSelectedConfigID: "abc",
+        vpnOnDemandEnabled: true
     )
 
     try storage.save(snapshot)
@@ -308,6 +309,58 @@ import Testing
     #expect(loaded.configs.first?.config.network_name == "lab")
     #expect(loaded.mode == .remote(remoteRPCAddress: "tcp://127.0.0.1:15999"))
     #expect(loaded.lastSelectedConfigID == "abc")
+    #expect(loaded.vpnOnDemandEnabled)
+}
+
+@MainActor
+@Test func appQuitStopsNetworkAndShutdownsHelperWhenVpnOnDemandIsOff() async {
+    let client = RecordingToggleClient()
+    let config = NetworkConfig(instance_id: "quit-id", network_name: "office")
+    let store = EasyTierAppStore(client: client)
+
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.selectedConfigID = config.instance_id
+    store.instances = [NetworkInstance(instance_id: config.instance_id, name: config.network_name, running: true)]
+
+    await store.prepareForAppQuit()
+
+    #expect(client.retainedInstanceNames == [[]])
+    #expect(client.shutdownCount == 1)
+}
+
+@MainActor
+@Test func appQuitLeavesNetworkAndHelperRunningWhenVpnOnDemandIsOn() async {
+    let client = RecordingToggleClient()
+    let config = NetworkConfig(instance_id: "quit-ondemand-id", network_name: "office")
+    let store = EasyTierAppStore(client: client)
+
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.selectedConfigID = config.instance_id
+    store.instances = [NetworkInstance(instance_id: config.instance_id, name: config.network_name, running: true)]
+    store.vpnOnDemandEnabled = true
+
+    await store.prepareForAppQuit()
+
+    #expect(client.retainedInstanceNames.isEmpty)
+    #expect(client.shutdownCount == 0)
+}
+
+@MainActor
+@Test func appQuitStopsInProcessNetworkWhenVpnOnDemandIsOn() async {
+    let client = RecordingToggleClient()
+    let config = NetworkConfig(instance_id: "quit-notun-id", network_name: "office", no_tun: true)
+    let store = EasyTierAppStore(client: client)
+
+    store.configs = [StoredNetworkConfig(config: config)]
+    store.selectedConfigID = config.instance_id
+    store.instances = [NetworkInstance(instance_id: config.instance_id, name: config.network_name, running: true)]
+    store.vpnOnDemandEnabled = true
+
+    await store.prepareForAppQuit()
+
+    #expect(client.stoppedInstanceNames == [[config.network_name]])
+    #expect(client.retainedInstanceNames.isEmpty)
+    #expect(client.shutdownCount == 0)
 }
 
 @MainActor
@@ -1701,7 +1754,7 @@ private final class PendingStartClient: EasyTierCoreClient, @unchecked Sendable 
     func isConfigServerClientConnected() async throws -> Bool { false }
 }
 
-private final class RecordingToggleClient: EasyTierCoreClient, @unchecked Sendable {
+private final class RecordingToggleClient: EasyTierCoreClient, EasyTierHelperShutdownClient, @unchecked Sendable {
     var runConfigs: [NetworkConfig] = []
     var stoppedInstanceNames: [[String]] = []
     var retainedInstanceNames: [[String]] = []
@@ -1711,6 +1764,7 @@ private final class RecordingToggleClient: EasyTierCoreClient, @unchecked Sendab
     var configuredRPCPortalWhitelists: [[String]?] = []
     var jsonRPCCalls: [EasyTierRPCRequest] = []
     var connectedRPCClients: [(clientID: String, url: URL)] = []
+    var shutdownCount = 0
     var stopError: Error?
     var jsonRPCError: Error?
 
@@ -1755,6 +1809,10 @@ private final class RecordingToggleClient: EasyTierCoreClient, @unchecked Sendab
 
     func stopConfigServerClient() async throws {}
     func isConfigServerClientConnected() async throws -> Bool { false }
+
+    func shutdownHelper() async throws {
+        shutdownCount += 1
+    }
 }
 
 private final class RecordingSystemSleepPreventer: SystemSleepPreventing, @unchecked Sendable {

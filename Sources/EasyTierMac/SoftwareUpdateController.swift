@@ -51,7 +51,7 @@ final class SoftwareUpdateController {
     }
 
     func quitEasyTier() {
-        EasyTierApplicationDelegate.terminateNow()
+        EasyTierApplicationDelegate.quitEasyTier()
     }
 
     private func runUpdateCheck() async {

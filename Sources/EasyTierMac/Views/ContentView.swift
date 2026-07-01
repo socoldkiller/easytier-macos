@@ -7,6 +7,7 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(EasyTierAppStore.self) private var store
+    @Environment(AppAppearanceSettings.self) private var appearanceSettings
     @State private var showingTOML = false
     @State private var tomlMode: TOMLSheet.Mode = .export
     @State private var tomlText = ""
@@ -240,6 +241,10 @@ struct ContentView: View {
             reconcileSearchSelection(with: ids)
         }
         .background {
+            if !appearanceSettings.glassEffectsEnabled {
+                Color(nsColor: .windowBackgroundColor)
+                    .ignoresSafeArea()
+            }
             SearchKeyboardBridge(
                 isActive: !networkSearchQuery.isEmpty,
                 onUp: { moveSelectedSearchResult(by: -1) },

@@ -13,6 +13,7 @@ public final class EasyTierAppStore {
     public var selectedTab: WorkspaceTab = .status
     public var logLines: [LogEntry] = []
     public var isBusy = false
+    public var isQuitting = false
     public var lastError: String?
     public var isShowingSettings = false
     public var isShowingAbout = false
@@ -21,6 +22,7 @@ public final class EasyTierAppStore {
     public var trafficSamplesByInstance: [String: [TrafficSample]] = [:]
     public var runtimeIntents: [RuntimeIntent] = []
     public var reversedPortForwardFingerprints: [String: Set<String>] = [:]
+    public var vpnOnDemandEnabled = false
 
     public static func portForwardFingerprint(for rule: PortForwardConfig) -> String {
         "\(rule.bind_ip):\(rule.bind_port)-\(rule.dst_ip):\(rule.dst_port)-\(rule.proto)"
@@ -152,6 +154,7 @@ public final class EasyTierAppStore {
             configs = try configsWithSecretsStored(snapshot.configs)
             runtimeIntents = snapshot.runtimeIntents
             reversedPortForwardFingerprints = snapshot.reversedPortForwardFingerprints
+            vpnOnDemandEnabled = snapshot.vpnOnDemandEnabled
             mode = snapshot.mode ?? .default
             if let lastSelectedConfigID = snapshot.lastSelectedConfigID,
                configs.contains(where: { $0.id == lastSelectedConfigID })
@@ -436,6 +439,44 @@ public final class EasyTierAppStore {
             pendingStarts.removeAll()
             log("Stopped all EasyTier instances.")
             try await refreshRuntimeThrowing()
+        }
+    }
+
+    public func prepareForAppQuit() async {
+        guard !isQuitting else { return }
+        isQuitting = true
+
+        if vpnOnDemandEnabled {
+            await stopInProcessInstancesBeforeQuit()
+            log("Quit requested with VPN On Demand enabled; leaving EasyTier network running.")
+            stopPolling()
+            return
+        }
+
+        await stopAll()
+        stopPolling()
+        if let shutdownClient = privilegedClient as? EasyTierHelperShutdownClient {
+            do {
+                try await shutdownClient.shutdownHelper()
+                log("Privileged helper shutdown requested.")
+            } catch {
+                log("Privileged helper shutdown skipped: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func stopInProcessInstancesBeforeQuit() async {
+        let names = instances.compactMap { instance -> String? in
+            guard let config = config(matching: instance), !config.requiresTUN else { return nil }
+            return instance.name
+        }
+        guard !names.isEmpty else { return }
+
+        do {
+            try await inProcessClient.stop(instanceNames: names)
+            log("Stopped \(names.count) in-process EasyTier instance(s); VPN On Demand only keeps helper-backed VPN instances running after quit.")
+        } catch {
+            log("Could not stop in-process EasyTier instance(s) before quit: \(error.localizedDescription)")
         }
     }
 
@@ -1069,6 +1110,7 @@ public final class EasyTierAppStore {
             configs: try configsWithSecretsStored(configs),
             mode: mode,
             lastSelectedConfigID: selectedConfigID,
+            vpnOnDemandEnabled: vpnOnDemandEnabled,
             runtimeIntents: runtimeIntents,
             reversedPortForwardFingerprints: reversedPortForwardFingerprints
         )

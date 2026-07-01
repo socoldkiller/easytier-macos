@@ -26,6 +26,7 @@ struct EasyTierSettingsSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(EasyTierAppStore.self) private var store
     @Environment(AppAppearanceSettings.self) private var appearance
     @AppStorage(EasyTierSettingsTabRequest.key) private var requestedSettingsTab = EasyTierSettingsTab.general.rawValue
     @State private var loginItem = LoginItemController()
@@ -131,15 +132,13 @@ struct EasyTierSettingsSheet: View {
             }
 
             Section {
-                LabeledContent("VPN On Demand") {
-                    StatusText("Not Enabled")
-                    Button("Manage…") {}
-                        .disabled(true)
+                LabeledContent("Keep VPN Running After Quit") {
+                    Toggle("", isOn: vpnOnDemandBinding).labelsHidden()
                 }
             } header: {
-                Text("VPN On Demand")
+                Text("Quit Behavior")
             } footer: {
-                Text("VPN On Demand requires a managed configuration profile.")
+                Text("Only helper-backed VPN networks can keep running after the app quits. no_tun networks stop with the app.")
             }
         }
         .formStyle(.grouped)
@@ -330,6 +329,16 @@ struct EasyTierSettingsSheet: View {
                 } else if rpcListenEnabled {
                     showingDisableRPCListenWarning = true
                 }
+            }
+        )
+    }
+
+    private var vpnOnDemandBinding: Binding<Bool> {
+        Binding(
+            get: { store.vpnOnDemandEnabled },
+            set: { enabled in
+                store.vpnOnDemandEnabled = enabled
+                store.saveInBackground()
             }
         )
     }

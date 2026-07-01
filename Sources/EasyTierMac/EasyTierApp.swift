@@ -43,7 +43,12 @@ struct EasyTierApp: App {
                     .frame(width: 0, height: 0)
                 )
                 .frame(minWidth: 900, minHeight: 620)
-                .task { await store.load() }
+                .task {
+                    EasyTierApplicationDelegate.installQuitPreparation {
+                        await store.prepareForAppQuit()
+                    }
+                    await store.load()
+                }
         }
         .windowToolbarStyle(.unified)
 
@@ -89,8 +94,8 @@ struct EasyTierApp: App {
             }
 
             CommandGroup(replacing: .appTermination) {
-                Button("Hide EasyTier") {
-                    EasyTierApplicationDelegate.hideToMenuBar()
+                Button("Quit EasyTier") {
+                    EasyTierApplicationDelegate.quitEasyTier()
                 }
                 .keyboardShortcut("q")
             }
@@ -99,7 +104,7 @@ struct EasyTierApp: App {
 
     private var menuBarConnectionState: ConnectionGlyphState {
         if store.lastError != nil { return .error }
-        if store.isBusy { return .connecting }
+        if store.isBusy || store.isQuitting { return .connecting }
         guard var instance = store.selectedRunningInstance else { return .idle }
         instance.detail = store.selectedRuntimeDetail
         return store.instanceIsFullyConnected(instance) ? .connected : .connecting
@@ -215,9 +220,24 @@ struct EasyTierApp: App {
 @MainActor
 final class EasyTierApplicationDelegate: NSObject, NSApplicationDelegate {
     private static var allowsTermination = false
+    private static var quitPreparation: (() async -> Void)?
+    private static var quitTask: Task<Void, Never>?
+
+    static func installQuitPreparation(_ preparation: @escaping () async -> Void) {
+        quitPreparation = preparation
+    }
 
     static func hideToMenuBar() {
         NSApp.hide(nil)
+    }
+
+    static func quitEasyTier() {
+        guard quitTask == nil else { return }
+        quitTask = Task {
+            await quitPreparation?()
+            terminateNow()
+            quitTask = nil
+        }
     }
 
     static func terminateNow() {
@@ -230,7 +250,7 @@ final class EasyTierApplicationDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
         guard Self.allowsTermination else {
-            Self.hideToMenuBar()
+            Self.quitEasyTier()
             return .terminateCancel
         }
         return .terminateNow
@@ -644,7 +664,7 @@ private struct MenuBarContent: View {
                         .background(connectionSwitchBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
                 .buttonStyle(QuietPressButtonStyle(pressedScale: 0.94, pressedOpacity: 0.86))
-                .disabled(store.isBusy || store.selectedConfig == nil)
+                .disabled(store.isBusy || store.isQuitting || store.selectedConfig == nil)
                 .onHover { isConnectionSwitchHovering = $0 }
             }
             .padding(.horizontal, 12)
@@ -672,13 +692,18 @@ private struct MenuBarContent: View {
 
             MenuBarDivider()
 
-            MenuBarListButton(title: "About EasyTier") {
+            if store.isQuitting {
+                MenuBarPlainRow(title: "Quitting EasyTier...", isMuted: true)
+                MenuBarDivider()
+            }
+
+            MenuBarListButton(title: "About EasyTier", isDisabled: store.isQuitting) {
                 openMainWindow()
                 store.isShowingAbout = true
                 dismissMenuBar()
             }
 
-            MenuBarListButton(title: "Install on Linux") {
+            MenuBarListButton(title: "Install on Linux", isDisabled: store.isQuitting) {
                 openMainWindow()
                 store.isShowingLinuxInstallGuide = true
                 dismissMenuBar()
@@ -686,11 +711,11 @@ private struct MenuBarContent: View {
 
             MenuBarDivider()
 
-            MenuBarListButton(title: windowEffectTitle) {
+            MenuBarListButton(title: windowEffectTitle, isDisabled: store.isQuitting) {
                 appearanceSettings.glassEffectsEnabled.toggle()
             }
 
-            MenuBarListButton(title: "Settings...", shortcut: "⌘ ,") {
+            MenuBarListButton(title: "Settings...", shortcut: "⌘ ,", isDisabled: store.isQuitting) {
                 openMainWindow()
                 store.isShowingSettings = true
                 dismissMenuBar()
@@ -698,19 +723,19 @@ private struct MenuBarContent: View {
 
             MenuBarDivider()
 
-            MenuBarListButton(title: "Hide EasyTier", shortcut: "⌘ Q") {
-                EasyTierApplicationDelegate.hideToMenuBar()
+            MenuBarListButton(title: store.isQuitting ? "Quitting..." : "Quit EasyTier", shortcut: "⌘ Q", isDisabled: store.isQuitting) {
+                dismissMenuBar()
+                EasyTierApplicationDelegate.quitEasyTier()
             }
         }
         .frame(width: 292)
         .foregroundStyle(MenuBarPalette.primaryText)
         .background(MenuBarPanelBackground())
-        .presentedSurfaceMotion()
     }
 
     private var selectedNetworkState: ConnectionGlyphState {
         if store.lastError != nil { return .error }
-        if store.isBusy { return .connecting }
+        if store.isBusy || store.isQuitting { return .connecting }
         guard var instance = selectedRunningInstance else { return .idle }
         instance.detail = store.selectedRuntimeDetail
         return store.instanceIsFullyConnected(instance) ? .connected : .connecting
@@ -760,6 +785,7 @@ private struct MenuBarContent: View {
     }
 
     private var connectionSubtitle: String {
+        if store.isQuitting { return "Quitting" }
         if store.isBusy { return "Working" }
         if store.lastError != nil { return "Needs Attention" }
         guard store.selectedConfig != nil else { return "No Network" }
@@ -769,6 +795,7 @@ private struct MenuBarContent: View {
     }
 
     private var connectionIndicatorColor: Color {
+        if store.isQuitting { return .yellow.opacity(0.82) }
         if store.lastError != nil { return .orange }
         if store.isBusy { return .yellow.opacity(0.82) }
         guard var instance = selectedRunningInstance else { return MenuBarPalette.mutedText }
@@ -777,7 +804,7 @@ private struct MenuBarContent: View {
     }
 
     private var connectionSwitchBackground: Color {
-        guard isConnectionSwitchHovering, !store.isBusy, store.selectedConfig != nil else { return .clear }
+        guard isConnectionSwitchHovering, !store.isBusy, !store.isQuitting, store.selectedConfig != nil else { return .clear }
         return MenuBarPalette.selectedRow
     }
 
@@ -891,7 +918,22 @@ extension View {
     }
 
     func frostedGlassBackground<S: Shape>(in shape: S) -> some View {
-        background { FrostedGlass().clipShape(shape) }
+        modifier(FrostedGlassBackground(shape: shape))
+    }
+}
+
+private struct FrostedGlassBackground<S: Shape>: ViewModifier {
+    @Environment(AppAppearanceSettings.self) private var appearanceSettings
+
+    var shape: S
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if appearanceSettings.glassEffectsEnabled {
+            content.background { FrostedGlass().clipShape(shape) }
+        } else {
+            content
+        }
     }
 }
 
@@ -1217,6 +1259,7 @@ private struct MenuBarListButton: View {
 
     var title: String
     var shortcut: String?
+    var isDisabled = false
     var action: () -> Void
 
     @State private var isHovering = false
@@ -1242,19 +1285,23 @@ private struct MenuBarListButton: View {
             .padding(.vertical, MenuBarPalette.selectedRowVerticalInset)
         }
         .buttonStyle(QuietPressButtonStyle(pressedScale: 0.985, pressedOpacity: 0.82))
+        .disabled(isDisabled)
         .onHover { isHovering = $0 }
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: isHovering)
     }
 
     private var primaryTextColor: Color {
-        isHovering ? Color.white.opacity(0.96) : MenuBarPalette.primaryText
+        if isDisabled { return MenuBarPalette.mutedText }
+        return isHovering ? Color.white.opacity(0.96) : MenuBarPalette.primaryText
     }
 
     private var shortcutTextColor: Color {
-        isHovering ? Color.white.opacity(0.72) : MenuBarPalette.mutedText
+        if isDisabled { return MenuBarPalette.mutedText.opacity(0.7) }
+        return isHovering ? Color.white.opacity(0.72) : MenuBarPalette.mutedText
     }
 
     private var rowBackground: Color {
-        isHovering ? MenuBarPalette.selectedRow : .clear
+        if isDisabled { return .clear }
+        return isHovering ? MenuBarPalette.selectedRow : .clear
     }
 }
