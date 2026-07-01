@@ -141,6 +141,18 @@ struct ConfigEditorView: View {
                 TextField("Optional hostname", text: Binding($config.hostname, replacingNilWith: ""))
                     .textFieldStyle(.glassField)
             }
+            FieldRow("Device name") {
+                TextField("Auto", text: $config.dev_name)
+                    .textFieldStyle(.glassField)
+            }
+            FieldRow("MTU") {
+                TextField("Default", text: Binding($config.mtu))
+                    .textFieldStyle(.glassField)
+            }
+            FieldRow("Recv limit") {
+                TextField("Unlimited bytes/s", text: Binding($config.instance_recv_bps_limit))
+                    .textFieldStyle(.glassField)
+            }
         }
 
         CardSection("Routing & Portal") {
@@ -163,6 +175,9 @@ struct ConfigEditorView: View {
                         .disabled(!config.enable_manual_routes)
                     StringListEditor(title: "Exit nodes", placeholder: "10.144.144.1", values: $config.exit_nodes)
                     StringListEditor(title: "Mapped listeners", placeholder: "tcp://0.0.0.0:8080", values: $config.mapped_listeners)
+                    Toggle("Relay whitelist", isOn: optionalBool($config.enable_relay_network_whitelist, defaultValue: false))
+                    StringListEditor(title: "Allowed networks", placeholder: "*", values: $config.relay_network_whitelist)
+                        .disabled(config.enable_relay_network_whitelist != true)
                 }
             }
 
@@ -196,33 +211,59 @@ struct ConfigEditorView: View {
         }
 
         CardSection("Flags") {
-            Grid(alignment: .leading, horizontalSpacing: 26, verticalSpacing: 9) {
-                GridRow {
-                    Toggle("Latency first", isOn: $config.latency_first)
-                    Toggle("Disable P2P", isOn: optionalBool($config.disable_p2p, defaultValue: false))
-                }
-                GridRow {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Toggle("No TUN", isOn: optionalBool($config.no_tun, defaultValue: false))
-                        Text("Off uses TUN and needs helper/root permission.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+            VStack(spacing: 8) {
+                FlagGroup("Core", systemImage: "cube") {
+                    FlagList {
+                        FlagToggle("Latency first", isOn: $config.latency_first)
+                        FlagToggle("Multi thread", isOn: optionalBool($config.multi_thread, defaultValue: true))
+                        FlagToggle("No TUN", isOn: optionalBool($config.no_tun, defaultValue: false), help: "Off uses TUN and needs helper/root permission.")
+                        FlagToggle("Bind device", isOn: optionalBool($config.bind_device, defaultValue: true), showsSeparator: false)
                     }
-                    Toggle("Multi thread", isOn: optionalBool($config.multi_thread, defaultValue: true))
                 }
-                GridRow {
-                    Toggle("Magic DNS", isOn: optionalBool($config.enable_magic_dns, defaultValue: false))
-                    Toggle("Private mode", isOn: optionalBool($config.enable_private_mode, defaultValue: false))
+
+                FlagGroup("Transport", systemImage: "network") {
+                    FlagList {
+                        FlagToggle("Use smoltcp", isOn: optionalBool($config.use_smoltcp, defaultValue: false))
+                        FlagToggle("Auto public IPv6", isOn: optionalBool($config.ipv6_public_addr_auto, defaultValue: false))
+                        FlagToggle("KCP proxy", isOn: optionalBool($config.enable_kcp_proxy, defaultValue: false))
+                        FlagToggle("Disable KCP input", isOn: optionalBool($config.disable_kcp_input, defaultValue: false))
+                        FlagToggle("QUIC proxy", isOn: optionalBool($config.enable_quic_proxy, defaultValue: false))
+                        FlagToggle("Disable QUIC input", isOn: optionalBool($config.disable_quic_input, defaultValue: false), showsSeparator: false)
+                    }
                 }
-                GridRow {
-                    Toggle("Disable IPv6", isOn: optionalBool($config.disable_ipv6, defaultValue: false))
-                    Toggle("Bind device", isOn: optionalBool($config.bind_device, defaultValue: true))
+
+                FlagGroup("P2P & NAT", systemImage: "arrow.triangle.merge") {
+                    FlagList {
+                        FlagToggle("Disable P2P", isOn: optionalBool($config.disable_p2p, defaultValue: false))
+                        FlagToggle("P2P only", isOn: optionalBool($config.p2p_only, defaultValue: false))
+                        FlagToggle("Lazy P2P", isOn: optionalBool($config.lazy_p2p, defaultValue: false))
+                        FlagToggle("Need P2P", isOn: optionalBool($config.need_p2p, defaultValue: false))
+                        FlagToggle("Disable TCP punching", isOn: optionalBool($config.disable_tcp_hole_punching, defaultValue: false))
+                        FlagToggle("Disable UDP punching", isOn: optionalBool($config.disable_udp_hole_punching, defaultValue: false))
+                        FlagToggle("Disable sym punching", isOn: optionalBool($config.disable_sym_hole_punching, defaultValue: false))
+                        FlagToggle("Disable UPnP", isOn: optionalBool($config.disable_upnp, defaultValue: false), showsSeparator: false)
+                    }
                 }
-                GridRow {
-                    Toggle("Disable encryption", isOn: optionalBool($config.disable_encryption, defaultValue: false))
-                    Toggle("Enable exit node", isOn: optionalBool($config.enable_exit_node, defaultValue: false))
+
+                FlagGroup("Routing", systemImage: "route") {
+                    FlagList {
+                        FlagToggle("Enable exit node", isOn: optionalBool($config.enable_exit_node, defaultValue: false))
+                        FlagToggle("Relay all peer RPC", isOn: optionalBool($config.relay_all_peer_rpc, defaultValue: false))
+                        FlagToggle("System forward", isOn: optionalBool($config.proxy_forward_by_system, defaultValue: false))
+                        FlagToggle("UDP broadcast relay", isOn: optionalBool($config.enable_udp_broadcast_relay, defaultValue: false), showsSeparator: false)
+                    }
+                }
+
+                FlagGroup("Security & DNS", systemImage: "lock.shield") {
+                    FlagList {
+                        FlagToggle("Magic DNS", isOn: optionalBool($config.enable_magic_dns, defaultValue: false))
+                        FlagToggle("Private mode", isOn: optionalBool($config.enable_private_mode, defaultValue: false))
+                        FlagToggle("Disable IPv6", isOn: optionalBool($config.disable_ipv6, defaultValue: false))
+                        FlagToggle("Disable encryption", isOn: optionalBool($config.disable_encryption, defaultValue: false), showsSeparator: false)
+                    }
                 }
             }
+            .padding(.bottom, 2)
         }
 
         CardSection("Port Forwarding") {
@@ -249,6 +290,7 @@ struct ConfigEditorView: View {
         if !config.virtual_ipv4.isEmpty { return true }
         if config.network_length != 24 { return true }
         if config.listener_urls != Self.defaultListenerURLs { return true }
+        if !config.dev_name.isEmpty { return true }
         if !config.proxy_cidrs.isEmpty { return true }
         if config.enable_manual_routes || !config.routes.isEmpty { return true }
         if !config.exit_nodes.isEmpty { return true }
@@ -256,7 +298,15 @@ struct ConfigEditorView: View {
         if config.enable_vpn_portal { return true }
         if config.enable_socks5 == true { return true }
         if config.latency_first { return true }
+        if config.use_smoltcp == true { return true }
+        if config.ipv6_public_addr_auto == true { return true }
+        if config.enable_kcp_proxy == true { return true }
+        if config.disable_kcp_input == true { return true }
+        if config.enable_quic_proxy == true { return true }
+        if config.disable_quic_input == true { return true }
         if config.disable_p2p == true { return true }
+        if config.p2p_only == true { return true }
+        if config.lazy_p2p == true { return true }
         if config.no_tun == true { return true }
         if config.multi_thread == false { return true }
         if config.enable_magic_dns == true { return true }
@@ -265,6 +315,14 @@ struct ConfigEditorView: View {
         if config.bind_device == false { return true }
         if config.disable_encryption == true { return true }
         if config.enable_exit_node == true { return true }
+        if config.relay_all_peer_rpc == true { return true }
+        if config.need_p2p == true { return true }
+        if config.proxy_forward_by_system == true { return true }
+        if config.disable_tcp_hole_punching == true { return true }
+        if config.disable_udp_hole_punching == true { return true }
+        if config.disable_upnp == true { return true }
+        if config.enable_udp_broadcast_relay == true { return true }
+        if config.disable_sym_hole_punching == true { return true }
         if config.mtu != nil { return true }
         if config.instance_recv_bps_limit != nil { return true }
         if config.enable_relay_network_whitelist == true || !config.relay_network_whitelist.isEmpty { return true }
@@ -560,6 +618,124 @@ private struct FieldRow<Content: View>: View {
                 .frame(width: 152, alignment: .leading)
             content
                 .frame(maxWidth: 520, alignment: .leading)
+        }
+    }
+}
+
+private struct FlagGroup<Content: View>: View {
+    var title: String
+    var systemImage: String
+    @ViewBuilder var content: Content
+
+    init(_ title: String, systemImage: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.systemImage = systemImage
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(Color.accentColor.opacity(0.72))
+                    .frame(width: 14, alignment: .center)
+                Text(title.uppercased())
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .tracking(0.4)
+            }
+            content
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.primary.opacity(0.035))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        }
+    }
+}
+
+private struct FlagList<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(spacing: 0) {
+            content
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct FlagRowSeparator: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.06))
+            .frame(height: 0.5)
+            .padding(.leading, 30)
+    }
+}
+
+private struct FlagToggle: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var title: String
+    @Binding var isOn: Bool
+    var help: String?
+    var showsSeparator: Bool = true
+
+    init(_ title: String, isOn: Binding<Bool>, help: String? = nil, showsSeparator: Bool = true) {
+        self.title = title
+        self._isOn = isOn
+        self.help = help
+        self.showsSeparator = showsSeparator
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Button {
+                withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
+                    isOn.toggle()
+                }
+            } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 13, weight: isOn ? .semibold : .regular))
+                        .foregroundStyle(isOn ? Color.accentColor : Color.secondary.opacity(0.5))
+                        .frame(width: 16, alignment: .center)
+
+                    Text(title)
+                        .font(.system(size: 13, weight: isOn ? .medium : .regular))
+                        .foregroundStyle(isOn ? .primary : .secondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+
+                    Spacer(minLength: 8)
+
+                    Toggle("", isOn: $isOn)
+                        .labelsHidden()
+                        .controlSize(.mini)
+                        .toggleStyle(.switch)
+                }
+                .padding(.horizontal, 8)
+                .frame(height: 28)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(help ?? title)
+            .accessibilityLabel(Text(title))
+            .accessibilityValue(Text(isOn ? "On" : "Off"))
+            .accessibilityAddTraits(isOn ? .isSelected : [])
+
+            if showsSeparator {
+                FlagRowSeparator()
+            }
         }
     }
 }
@@ -909,6 +1085,13 @@ private extension Binding where Value == String {
         self.init(
             get: { source.wrappedValue ?? fallback },
             set: { source.wrappedValue = $0.isEmpty ? nil : $0 }
+        )
+    }
+
+    init(_ source: Binding<Int?>) {
+        self.init(
+            get: { source.wrappedValue.map(String.init) ?? "" },
+            set: { source.wrappedValue = Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
         )
     }
 }
