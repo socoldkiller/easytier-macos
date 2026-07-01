@@ -5,14 +5,27 @@ struct ConfigEditorView: View {
     @Environment(EasyTierAppStore.self) private var store
     @Binding var config: NetworkConfig
     var members: [NetworkMemberStatus] = []
+    var onScrolledPastTopChange: (Bool) -> Void = { _ in }
     @State private var reversePortForwardStatus: [UUID: Bool] = [:]
     @State private var reversePortForwardPending: Set<UUID> = []
 
     @State private var displayAdvanced: Bool = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    private static let scrollSpaceName = "ConfigEditorScroll"
+    private static let toolbarHideThreshold: CGFloat = 18
+
     var body: some View {
         ScrollView {
+            GeometryReader { proxy in
+                Color.clear
+                    .preference(
+                        key: ConfigEditorScrollOffsetKey.self,
+                        value: proxy.frame(in: .named(Self.scrollSpaceName)).minY
+                    )
+            }
+            .frame(height: 0)
+
             VStack(alignment: .leading, spacing: 14) {
                 CardSection("Network") {
                     networkNameRow
@@ -29,6 +42,7 @@ struct ConfigEditorView: View {
             }
             .padding(18)
         }
+        .coordinateSpace(name: Self.scrollSpaceName)
         .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
         .textFieldStyle(.glassField)
         .onAppear {
@@ -37,6 +51,9 @@ struct ConfigEditorView: View {
         }
         .onChange(of: config.instance_id) { _, _ in
             syncDisplayMode()
+        }
+        .onPreferenceChange(ConfigEditorScrollOffsetKey.self) { minY in
+            onScrolledPastTopChange(minY < -Self.toolbarHideThreshold)
         }
         .onChange(of: displayAdvanced) { _, newValue in
             config.advanced_settings = newValue
@@ -185,7 +202,12 @@ struct ConfigEditorView: View {
                     Toggle("Disable P2P", isOn: optionalBool($config.disable_p2p, defaultValue: false))
                 }
                 GridRow {
-                    Toggle("No TUN", isOn: optionalBool($config.no_tun, defaultValue: false))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Toggle("No TUN", isOn: optionalBool($config.no_tun, defaultValue: false))
+                        Text("Off uses TUN and needs helper/root permission.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Toggle("Multi thread", isOn: optionalBool($config.multi_thread, defaultValue: true))
                 }
                 GridRow {
@@ -411,6 +433,14 @@ struct ConfigEditorView: View {
     }
 }
 
+private struct ConfigEditorScrollOffsetKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 private struct ExpandableSettingsGroup<Content: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -508,7 +538,7 @@ private struct CardSection<Content: View>: View {
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+            .frostedGlassBackground(in: RoundedRectangle(cornerRadius: 10))
         }
     }
 }

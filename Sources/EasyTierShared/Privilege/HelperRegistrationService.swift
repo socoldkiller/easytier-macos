@@ -10,7 +10,8 @@ public final class HelperRegistrationService {
     public private(set) var detail: String = ""
     public private(set) var isBusy = false
 
-    private let service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
+    private let service: SMAppService
+    private let backend: Backend
 
     public enum State: Equatable, Sendable {
         case notRegistered
@@ -22,13 +23,24 @@ public final class HelperRegistrationService {
     }
 
     public init() {
+        let service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
+        self.service = service
+        self.backend = Self.liveBackend(service: service)
         Task { await refreshAsync() }
+    }
+
+    init(backend: Backend, refreshOnInit: Bool = true) {
+        self.service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
+        self.backend = backend
+        if refreshOnInit {
+            Task { await refreshAsync() }
+        }
     }
 
     /// Register the privileged helper only when it is about to be used.
     /// Throws `PrivilegedHelperError.needsRegistration` if registration cannot complete.
     public func ensureRegistered() async throws {
-        let useLegacy = await Self.readShouldUseLegacyInstaller()
+        let useLegacy = await backend.useLegacyInstaller()
         await refreshAsync(useLegacy: useLegacy)
         switch state {
         case .enabled:
@@ -37,8 +49,13 @@ public final class HelperRegistrationService {
             await waitForBusy()
             await refreshAsync(useLegacy: useLegacy)
             if state == .enabled { return }
-        case .notRegistered, .requiresApproval, .notFound, .error:
+            if state == .requiresApproval { throw PrivilegedHelperError.needsRegistration }
+        case .requiresApproval:
+            throw PrivilegedHelperError.needsRegistration
+        case .notRegistered, .notFound:
             break
+        case .error:
+            throw PrivilegedHelperError.needsRegistration
         }
 
         guard Self.currentBundleCanInstallHelper else {
@@ -54,11 +71,11 @@ public final class HelperRegistrationService {
 
         do {
             if useLegacy {
-                _ = try? await Self.serviceUnregister(serviceBox)
-                try await Self.installLegacy()
+                _ = try? await backend.unregister()
+                try await backend.installLegacy()
             } else {
-                _ = try? await Self.serviceUnregister(serviceBox)
-                try await Self.serviceRegister(serviceBox)
+                _ = try? await backend.unregister()
+                try await backend.register()
             }
             await refreshAsync(useLegacy: useLegacy)
             if state != .enabled {
@@ -84,13 +101,13 @@ public final class HelperRegistrationService {
     // MARK: - Internals
 
     private func refreshAsync() async {
-        let useLegacy = await Self.readShouldUseLegacyInstaller()
+        let useLegacy = await backend.useLegacyInstaller()
         await refreshAsync(useLegacy: useLegacy)
     }
 
     private func refreshAsync(useLegacy: Bool) async {
         if useLegacy {
-            let installed = await Self.readLegacyIsInstalled()
+            let installed = await backend.legacyIsInstalled()
             if installed {
                 state = .enabled
                 detail = "Privileged helper is enabled."
@@ -101,7 +118,7 @@ public final class HelperRegistrationService {
             return
         }
 
-        let status = await Self.readServiceStatus(serviceBox)
+        let status = await backend.status()
         switch status {
         case .notRegistered:
             state = .notRegistered
@@ -128,7 +145,7 @@ public final class HelperRegistrationService {
             detail = message
             return
         }
-        let status = await Self.readServiceStatus(serviceBox)
+        let status = await backend.status()
         if status == .requiresApproval || message.localizedCaseInsensitiveContains("operation not permitted") {
             state = .requiresApproval
             detail = "Approve EasyTier in System Settings to enable TUN networking."
@@ -138,7 +155,14 @@ public final class HelperRegistrationService {
         detail = message
     }
 
-    private var serviceBox: ServiceBox { ServiceBox(service: service) }
+    struct Backend {
+        var status: @MainActor () async -> SMAppService.Status
+        var register: @MainActor () async throws -> Void
+        var unregister: @MainActor () async throws -> Void
+        var useLegacyInstaller: @MainActor () async -> Bool
+        var legacyIsInstalled: @MainActor () async -> Bool
+        var installLegacy: @MainActor () async throws -> Void
+    }
 
     private func waitForBusy() async {
         while isBusy {
@@ -178,6 +202,18 @@ public final class HelperRegistrationService {
 
     private nonisolated static func readLegacyIsInstalled() async -> Bool {
         await Task.detached { @Sendable in LegacyPrivilegedHelperService.isInstalled }.value
+    }
+
+    private static func liveBackend(service: SMAppService) -> Backend {
+        let box = ServiceBox(service: service)
+        return Backend(
+            status: { await Self.readServiceStatus(box) },
+            register: { try await Self.serviceRegister(box) },
+            unregister: { try await Self.serviceUnregister(box) },
+            useLegacyInstaller: { await Self.readShouldUseLegacyInstaller() },
+            legacyIsInstalled: { await Self.readLegacyIsInstalled() },
+            installLegacy: { try await Self.installLegacy() }
+        )
     }
 
     private nonisolated static func installLegacy() async throws {

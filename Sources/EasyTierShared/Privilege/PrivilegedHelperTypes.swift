@@ -4,7 +4,7 @@ public enum EasyTierPrivilegedHelperConstants {
     public static let bundleIdentifier = "com.kkrainbow.easytier.mac.helper"
     public static let machServiceName = "com.kkrainbow.easytier.mac.helper"
     public static let launchDaemonPlistName = "com.kkrainbow.easytier.mac.helper.plist"
-    public static let protocolVersion = "8"
+    public static let protocolVersion = "9"
     public static let pingPayload = "pong:\(protocolVersion)"
 }
 
@@ -56,6 +56,7 @@ public protocol EasyTierPrivilegedServiceProtocol {
     func connectRPCClient(clientID: String, url: String, reply: @escaping (String?, String?) -> Void)
     func disconnectRPCClient(clientID: String, reply: @escaping (String?, String?) -> Void)
     func callJSONRPC(clientID: String, service: String, method: String, domain: String?, payload: String, reply: @escaping (String?, String?) -> Void)
+    func shutdown(reply: @escaping (String?, String?) -> Void)
 }
 
 public enum PrivilegedHelperError: LocalizedError, Equatable {

@@ -13,6 +13,7 @@ public final class EasyTierAppStore {
     public var selectedTab: WorkspaceTab = .status
     public var logLines: [LogEntry] = []
     public var isBusy = false
+    public var isQuitting = false
     public var lastError: String?
     public var isShowingSettings = false
     public var isShowingAbout = false
@@ -21,6 +22,7 @@ public final class EasyTierAppStore {
     public var trafficSamplesByInstance: [String: [TrafficSample]] = [:]
     public var runtimeIntents: [RuntimeIntent] = []
     public var reversedPortForwardFingerprints: [String: Set<String>] = [:]
+    public var vpnOnDemandEnabled = false
 
     public static func portForwardFingerprint(for rule: PortForwardConfig) -> String {
         "\(rule.bind_ip):\(rule.bind_port)-\(rule.dst_ip):\(rule.dst_port)-\(rule.proto)"
@@ -39,6 +41,7 @@ public final class EasyTierAppStore {
     private var pollingEnabled: Bool = true
     private var instanceClientKind: [String: ClientKind] = [:]
     private var pendingStartAfterApproval: NetworkConfig?
+    private var lastErrorKind: LastErrorKind?
     private var sleepStartedAt: Date?
     private var runningConfigIDsBeforeSleep: [String] = []
     private var sleepWakeNotificationObservers: [NSObjectProtocol] = []
@@ -46,6 +49,7 @@ public final class EasyTierAppStore {
     private var wakeRecoveryTask: Task<Void, Never>?
 
     public enum ClientKind: Sendable { case inProcess, privileged }
+    private enum LastErrorKind { case helperPermission }
 
     public init(
         privilegedClient: any EasyTierCoreClient = PrivilegedEasyTierClient(),
@@ -150,6 +154,7 @@ public final class EasyTierAppStore {
             configs = try configsWithSecretsStored(snapshot.configs)
             runtimeIntents = snapshot.runtimeIntents
             reversedPortForwardFingerprints = snapshot.reversedPortForwardFingerprints
+            vpnOnDemandEnabled = snapshot.vpnOnDemandEnabled
             mode = snapshot.mode ?? .default
             if let lastSelectedConfigID = snapshot.lastSelectedConfigID,
                configs.contains(where: { $0.id == lastSelectedConfigID })
@@ -165,7 +170,7 @@ public final class EasyTierAppStore {
                 configs = [StoredNetworkConfig(config: NetworkConfig())]
                 selectedConfigID = configs.first?.id
             }
-            lastError = error.localizedDescription
+            setLastError(error)
             log("Failed to load state: \(error.localizedDescription)")
         }
         await refreshRuntime()
@@ -180,7 +185,7 @@ public final class EasyTierAppStore {
                 configs = snapshot.configs
             }
         } catch {
-            lastError = error.localizedDescription
+            setLastError(error)
             log("Save failed: \(error.localizedDescription)")
         }
     }
@@ -199,7 +204,7 @@ public final class EasyTierAppStore {
         do {
             snapshot = try snapshotForStorage()
         } catch {
-            lastError = error.localizedDescription
+            setLastError(error)
             log("Save failed: \(error.localizedDescription)")
             return
         }
@@ -219,7 +224,7 @@ public final class EasyTierAppStore {
             do {
                 try await client(for: config).stop(instanceNames: [runningInstance.name])
             } catch {
-                lastError = error.localizedDescription
+                setLastError(error)
                 log("Delete canceled because \(config.network_name) could not be stopped: \(error.localizedDescription)")
                 return
             }
@@ -312,7 +317,7 @@ public final class EasyTierAppStore {
             if var instance = selectedRunningInstance {
                 instance.detail = selectedRuntimeDetail
                 if let error = instance.runtimeErrorMessage ?? instance.listenerErrorFromEvents {
-                    lastError = error
+                    setLastError(error)
                 }
             }
         }
@@ -325,7 +330,7 @@ public final class EasyTierAppStore {
         if let helperRegistration {
             await helperRegistration.refresh()
             guard helperRegistration.state == .enabled else {
-                lastError = "Privileged helper is still not enabled. Approve EasyTier in System Settings > Login Items & Extensions, then try again."
+                setLastError("Privileged helper is still not enabled. Approve EasyTier in System Settings > Login Items & Extensions, then try again.", kind: .helperPermission)
                 return
             }
         }
@@ -437,6 +442,44 @@ public final class EasyTierAppStore {
         }
     }
 
+    public func prepareForAppQuit() async {
+        guard !isQuitting else { return }
+        isQuitting = true
+
+        if vpnOnDemandEnabled {
+            await stopInProcessInstancesBeforeQuit()
+            log("Quit requested with VPN On Demand enabled; leaving EasyTier network running.")
+            stopPolling()
+            return
+        }
+
+        await stopAll()
+        stopPolling()
+        if let shutdownClient = privilegedClient as? EasyTierHelperShutdownClient {
+            do {
+                try await shutdownClient.shutdownHelper()
+                log("Privileged helper shutdown requested.")
+            } catch {
+                log("Privileged helper shutdown skipped: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func stopInProcessInstancesBeforeQuit() async {
+        let names = instances.compactMap { instance -> String? in
+            guard let config = config(matching: instance), !config.requiresTUN else { return nil }
+            return instance.name
+        }
+        guard !names.isEmpty else { return }
+
+        do {
+            try await inProcessClient.stop(instanceNames: names)
+            log("Stopped \(names.count) in-process EasyTier instance(s); VPN On Demand only keeps helper-backed VPN instances running after quit.")
+        } catch {
+            log("Could not stop in-process EasyTier instance(s) before quit: \(error.localizedDescription)")
+        }
+    }
+
     public func clearLogs() {
         logLines.removeAll()
     }
@@ -447,7 +490,7 @@ public final class EasyTierAppStore {
         } catch {
             // Do not silently swallow helper-permission errors here. Surface them
             // via `lastError` so the UI can prompt the user to approve or retry.
-            lastError = error.localizedDescription
+            setLastError(error)
         }
     }
 
@@ -461,6 +504,7 @@ public final class EasyTierAppStore {
 
     public var lastErrorIsHelperPermission: Bool {
         guard let message = lastError else { return false }
+        if lastErrorKind == .helperPermission { return true }
         return message.contains("needs background permission")
             || message.contains("System Settings")
             || message.contains("macOS has not allowed")
@@ -645,7 +689,7 @@ public final class EasyTierAppStore {
             save()
             log("Imported \(stored.config.network_name).")
         } catch {
-            lastError = error.localizedDescription
+            setLastError(error)
             log("Import failed: \(error.localizedDescription)")
         }
     }
@@ -1066,6 +1110,7 @@ public final class EasyTierAppStore {
             configs: try configsWithSecretsStored(configs),
             mode: mode,
             lastSelectedConfigID: selectedConfigID,
+            vpnOnDemandEnabled: vpnOnDemandEnabled,
             runtimeIntents: runtimeIntents,
             reversedPortForwardFingerprints: reversedPortForwardFingerprints
         )
@@ -1225,8 +1270,28 @@ public final class EasyTierAppStore {
             try await operation()
         } catch {
             // Surface the error to the UI instead of suppressing helper-permission messages.
-            lastError = error.localizedDescription
+            setLastError(error)
             log("Error: \(error.localizedDescription)")
+        }
+    }
+
+    private func setLastError(_ error: Error) {
+        setLastError(error.localizedDescription, kind: Self.lastErrorKind(for: error))
+    }
+
+    private func setLastError(_ message: String, kind: LastErrorKind? = nil) {
+        lastErrorKind = kind
+        lastError = message
+    }
+
+    private static func lastErrorKind(for error: Error) -> LastErrorKind? {
+        switch error {
+        case PrivilegedHelperError.needsRegistration:
+            return .helperPermission
+        case let PrivilegedHelperError.helperReported(payload) where payload.code == "helperRequiresApproval":
+            return .helperPermission
+        default:
+            return nil
         }
     }
 

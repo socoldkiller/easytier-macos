@@ -26,6 +26,7 @@ struct EasyTierSettingsSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(EasyTierAppStore.self) private var store
     @Environment(AppAppearanceSettings.self) private var appearance
     @AppStorage(EasyTierSettingsTabRequest.key) private var requestedSettingsTab = EasyTierSettingsTab.general.rawValue
     @State private var loginItem = LoginItemController()
@@ -65,13 +66,10 @@ struct EasyTierSettingsSheet: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
+        NavigationSplitView {
             SettingsSidebar(selection: $selectedTab)
-                .frame(width: Self.sidebarWidth)
-
-            Divider()
-                .ignoresSafeArea()
-
+                .navigationSplitViewColumnWidth(min: 200, ideal: Self.sidebarWidth, max: 280)
+        } detail: {
             MotionSwitch(id: selectedTab, insertionEdge: .trailing, fillsAvailableSpace: false) {
                 detailContent
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -85,8 +83,6 @@ struct EasyTierSettingsSheet: View {
             selectSettingsTab(tab)
         }
         .frame(width: Self.windowSize.width, height: Self.windowSize.height)
-        .presentationBackground(.thinMaterial)
-        .presentedSurfaceMotion()
         .alert("Disable TCP RPC Listen?", isPresented: $showingDisableRPCListenWarning) {
             Button("Keep Enabled", role: .cancel) {}
             Button("Disable", role: .destructive) { rpcListenEnabled = false }
@@ -117,11 +113,14 @@ struct EasyTierSettingsSheet: View {
                 LabeledContent("Frosted Glass") {
                     Toggle("", isOn: appearance.glassEffectsEnabledBinding).labelsHidden()
                 }
-                
+                LabeledContent("Panel Backgrounds") {
+                    Toggle("", isOn: appearance.glassPanelBackgroundsEnabledBinding).labelsHidden()
+                }
+                .disabled(!appearance.glassEffectsEnabled)
             } header: {
                 Text("Appearance")
             } footer: {
-                Text("Translucent window background. Turn off for solid appearance or better performance.")
+                Text("Panel backgrounds apply only while frosted glass is enabled. Traditional mode keeps solid panels for readability.")
             }
 
             Section {
@@ -136,15 +135,13 @@ struct EasyTierSettingsSheet: View {
             }
 
             Section {
-                LabeledContent("VPN On Demand") {
-                    StatusText("Not Enabled")
-                    Button("Manage…") {}
-                        .disabled(true)
+                LabeledContent("Keep VPN Running After Quit") {
+                    Toggle("", isOn: vpnOnDemandBinding).labelsHidden()
                 }
             } header: {
-                Text("VPN On Demand")
+                Text("Quit Behavior")
             } footer: {
-                Text("VPN On Demand requires a managed configuration profile.")
+                Text("Only helper-backed VPN networks can keep running after the app quits. no_tun networks stop with the app.")
             }
         }
         .formStyle(.grouped)
@@ -335,6 +332,16 @@ struct EasyTierSettingsSheet: View {
                 } else if rpcListenEnabled {
                     showingDisableRPCListenWarning = true
                 }
+            }
+        )
+    }
+
+    private var vpnOnDemandBinding: Binding<Bool> {
+        Binding(
+            get: { store.vpnOnDemandEnabled },
+            set: { enabled in
+                store.vpnOnDemandEnabled = enabled
+                store.saveInBackground()
             }
         )
     }
@@ -709,6 +716,13 @@ private extension AppAppearanceSettings {
         Binding(
             get: { self.glassEffectsEnabled },
             set: { self.glassEffectsEnabled = $0 }
+        )
+    }
+
+    var glassPanelBackgroundsEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { self.glassPanelBackgroundsEnabled },
+            set: { self.glassPanelBackgroundsEnabled = $0 }
         )
     }
 }

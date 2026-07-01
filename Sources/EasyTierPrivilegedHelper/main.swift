@@ -110,6 +110,13 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
         }
     }
 
+    func shutdown(reply: @escaping (String?, String?) -> Void) {
+        reply("ok", nil)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
+            Foundation.exit(EXIT_SUCCESS)
+        }
+    }
+
     private func run(reply: @escaping (String?, String?) -> Void, _ operation: () throws -> Void) {
         do {
             try operation()

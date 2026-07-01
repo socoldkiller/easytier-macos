@@ -53,7 +53,7 @@ private struct StatusMetric: View {
         HStack(spacing: 9) {
             Image(systemName: systemImage)
                 .font(.title3)
-                .foregroundStyle(.tint)
+                .foregroundStyle(.secondary)
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
@@ -70,7 +70,7 @@ private struct StatusMetric: View {
         }
         .padding(10)
         .frame(width: width, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .liquidGlassMetricBackground(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: value)
     }
 }
@@ -148,7 +148,7 @@ private struct TrafficLineChart: View, Equatable {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(18)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .frostedGlassBackground(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(panelStroke, lineWidth: 1)

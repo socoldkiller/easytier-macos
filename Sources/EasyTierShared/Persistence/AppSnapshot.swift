@@ -2,6 +2,7 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
     public var configs: [StoredNetworkConfig]
     public var mode: AppMode?
     public var lastSelectedConfigID: String?
+    public var vpnOnDemandEnabled: Bool
     public var runtimeIntents: [RuntimeIntent]
     public var reversedPortForwardFingerprints: [String: Set<String>]
 
@@ -9,12 +10,14 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
         configs: [StoredNetworkConfig],
         mode: AppMode?,
         lastSelectedConfigID: String?,
+        vpnOnDemandEnabled: Bool = false,
         runtimeIntents: [RuntimeIntent] = [],
         reversedPortForwardFingerprints: [String: Set<String>] = [:]
     ) {
         self.configs = configs
         self.mode = mode
         self.lastSelectedConfigID = lastSelectedConfigID
+        self.vpnOnDemandEnabled = vpnOnDemandEnabled
         self.runtimeIntents = runtimeIntents
         self.reversedPortForwardFingerprints = reversedPortForwardFingerprints
     }
@@ -23,6 +26,7 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
         case configs
         case mode
         case lastSelectedConfigID
+        case vpnOnDemandEnabled
         case runtimeIntents
         case reversedPortForwardFingerprints
     }
@@ -32,6 +36,7 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
         configs = try container.decode([StoredNetworkConfig].self, forKey: .configs)
         mode = try container.decodeIfPresent(AppMode.self, forKey: .mode)
         lastSelectedConfigID = try container.decodeIfPresent(String.self, forKey: .lastSelectedConfigID)
+        vpnOnDemandEnabled = try container.decodeIfPresent(Bool.self, forKey: .vpnOnDemandEnabled) ?? false
         runtimeIntents = try container.decodeIfPresent([RuntimeIntent].self, forKey: .runtimeIntents) ?? []
         reversedPortForwardFingerprints = try container.decodeIfPresent([String: Set<String>].self, forKey: .reversedPortForwardFingerprints) ?? [:]
     }

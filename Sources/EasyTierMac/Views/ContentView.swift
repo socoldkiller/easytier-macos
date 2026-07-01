@@ -7,6 +7,7 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(EasyTierAppStore.self) private var store
+    @Environment(AppAppearanceSettings.self) private var appearanceSettings
     @State private var showingTOML = false
     @State private var tomlMode: TOMLSheet.Mode = .export
     @State private var tomlText = ""
@@ -22,6 +23,7 @@ struct ContentView: View {
     @State private var selectedTabLocal: WorkspaceTab = .status
     @State private var selectedConfigIDLocal: String?
     @State private var showingDeleteRunningNetworkConfirmation = false
+    @State private var configEditorScrolledPastTop = false
 
     private static let tabTransitionDistance: CGFloat = 14
     private static let networkTransitionDistance: CGFloat = 7
@@ -68,7 +70,14 @@ struct ContentView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
-                Task { await store.helperRegistration?.refresh() }
+                Task {
+                    if let registration = store.helperRegistration {
+                        await registration.refresh()
+                        if registration.state == .enabled {
+                            await store.retryStartAfterHelperApproval()
+                        }
+                    }
+                }
             }
         }
         .onChange(of: store.isShowingSettings) { _, isShowing in
@@ -112,20 +121,27 @@ struct ContentView: View {
                 get: { store.lastError != nil && store.lastErrorIsHelperPermission },
                 set: { if !$0 { store.lastError = nil } })
         ) {
-            Button("Allow") {
-                Task {
+            if store.helperRegistration?.state == .requiresApproval {
+                Button("Open System Settings") {
                     store.lastError = nil
-                    if let registration = store.helperRegistration {
-                        try? await registration.ensureRegistered()
-                        if registration.state == .enabled {
-                            await store.retryStartAfterHelperApproval()
+                    store.helperRegistration?.openSystemSettings()
+                }
+            } else {
+                Button("Install Helper") {
+                    Task {
+                        store.lastError = nil
+                        if let registration = store.helperRegistration {
+                            do {
+                                try await registration.ensureRegistered()
+                                if registration.state == .enabled {
+                                    await store.retryStartAfterHelperApproval()
+                                }
+                            } catch {
+                                store.lastError = error.localizedDescription
+                            }
                         }
                     }
                 }
-            }
-            Button("Open System Settings") {
-                store.lastError = nil
-                store.helperRegistration?.openSystemSettings()
             }
             Button("Cancel", role: .cancel) { store.lastError = nil }
         } message: {
@@ -171,6 +187,10 @@ struct ContentView: View {
         case .logs:
             LogsView()
         }
+    }
+
+    private var toolbarControlsHidden: Bool {
+        store.selectedTab == .config && configEditorScrolledPastTop
     }
 
     private var sidebar: some View {
@@ -221,6 +241,10 @@ struct ContentView: View {
             reconcileSearchSelection(with: ids)
         }
         .background {
+            if !appearanceSettings.glassEffectsEnabled {
+                Color(nsColor: .windowBackgroundColor)
+                    .ignoresSafeArea()
+            }
             SearchKeyboardBridge(
                 isActive: !networkSearchQuery.isEmpty,
                 onUp: { moveSelectedSearchResult(by: -1) },
@@ -263,6 +287,7 @@ struct ContentView: View {
     private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .principal) {
             WorkspaceTabPicker(selection: $selectedTabLocal)
+                .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
@@ -272,6 +297,7 @@ struct ContentView: View {
                 Label("Settings", systemImage: "gearshape")
             }
             .help("EasyTier Settings")
+            .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
 
             Button {
                 let runningInstanceToRestart = draftIsDirty ? store.selectedRunningInstance : nil
@@ -293,6 +319,7 @@ struct ContentView: View {
             }
             .disabled(store.selectedConfig == nil || store.isBusy)
             .help(connectionActionHelp)
+            .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
 
             Menu {
                 Button("Import TOML") {
@@ -307,6 +334,7 @@ struct ContentView: View {
             } label: {
                 Label("TOML", systemImage: "doc.text")
             }
+            .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
 
             Menu {
                 Button("Install on Linux") {
@@ -317,6 +345,7 @@ struct ContentView: View {
             } label: {
                 Label("Help", systemImage: "questionmark.circle")
             }
+            .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
 
             Button {
                 store.isShowingAbout = true
@@ -324,6 +353,7 @@ struct ContentView: View {
                 Label("About", systemImage: "info.circle")
             }
             .help("About EasyTier")
+            .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
         }
     }
 

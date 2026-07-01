@@ -25,15 +25,7 @@ struct EasyTierApp: App {
                 .environment(store)
                 .environment(updater)
                 .environment(appearanceSettings)
-                .background {
-                    if appearanceSettings.glassEffectsEnabled {
-                        FrostedWindowBackground()
-                            .ignoresSafeArea()
-                    } else {
-                        Color(nsColor: .windowBackgroundColor)
-                            .ignoresSafeArea()
-                    }
-                }
+                .easyTierWindowBackground(glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
                 .background(
                     MenuBarStatusItemBridge(
                         controller: menuBarController,
@@ -45,25 +37,38 @@ struct EasyTierApp: App {
                     .frame(width: 0, height: 0)
                 )
                 .background(
-                    WindowAccessor(glassEffectsEnabled: appearanceSettings.glassEffectsEnabled) { window in
-                        configureMainWindow(window)
+                    WindowAccessor { window in
+                        configureMainWindow(window, glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
                     }
                     .frame(width: 0, height: 0)
                 )
                 .frame(minWidth: 900, minHeight: 620)
-                .task { await store.load() }
+                .task {
+                    EasyTierApplicationDelegate.installQuitPreparation {
+                        await store.prepareForAppQuit()
+                    }
+                    await store.load()
+                }
         }
         .windowToolbarStyle(.unified)
 
-        Window("Settings", id: "settings") {
+        Window("EasyTier", id: "settings") {
             EasyTierSettingsSheet(initialTab: .general, mode: store.mode) { mode in
                 Task { await store.applyMode(mode) }
             }
             .environment(store)
             .environment(updater)
             .environment(appearanceSettings)
+            .easyTierWindowBackground(glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
+            .background(
+                WindowAccessor { window in
+                    configureMainWindow(window, glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
+                }
+                .frame(width: 0, height: 0)
+            )
         }
         .windowToolbarStyle(.unified)
+        .windowResizability(.contentSize)
 
         .commands {
             CommandGroup(replacing: .newItem) {
@@ -89,8 +94,8 @@ struct EasyTierApp: App {
             }
 
             CommandGroup(replacing: .appTermination) {
-                Button("Hide EasyTier") {
-                    EasyTierApplicationDelegate.hideToMenuBar()
+                Button("Quit EasyTier") {
+                    EasyTierApplicationDelegate.quitEasyTier()
                 }
                 .keyboardShortcut("q")
             }
@@ -99,23 +104,18 @@ struct EasyTierApp: App {
 
     private var menuBarConnectionState: ConnectionGlyphState {
         if store.lastError != nil { return .error }
-        if store.isBusy { return .connecting }
+        if store.isBusy || store.isQuitting { return .connecting }
         guard var instance = store.selectedRunningInstance else { return .idle }
         instance.detail = store.selectedRuntimeDetail
         return store.instanceIsFullyConnected(instance) ? .connected : .connecting
     }
 
-    private func configureMainWindow(_ window: NSWindow) {
+    private func configureMainWindow(_ window: NSWindow, glassEffectsEnabled: Bool) {
         let frame = window.frame
         window.styleMask.insert(.fullSizeContentView)
         window.titlebarAppearsTransparent = true
-        if appearanceSettings.glassEffectsEnabled {
-            window.isOpaque = false
-            window.backgroundColor = .clear
-        } else {
-            window.isOpaque = true
-            window.backgroundColor = .windowBackgroundColor
-        }
+        window.isOpaque = !glassEffectsEnabled
+        window.backgroundColor = glassEffectsEnabled ? .clear : .windowBackgroundColor
         if window.frame != frame {
             window.setFrame(frame, display: true)
         }
@@ -220,9 +220,24 @@ struct EasyTierApp: App {
 @MainActor
 final class EasyTierApplicationDelegate: NSObject, NSApplicationDelegate {
     private static var allowsTermination = false
+    private static var quitPreparation: (() async -> Void)?
+    private static var quitTask: Task<Void, Never>?
+
+    static func installQuitPreparation(_ preparation: @escaping () async -> Void) {
+        quitPreparation = preparation
+    }
 
     static func hideToMenuBar() {
         NSApp.hide(nil)
+    }
+
+    static func quitEasyTier() {
+        guard quitTask == nil else { return }
+        quitTask = Task {
+            await quitPreparation?()
+            terminateNow()
+            quitTask = nil
+        }
     }
 
     static func terminateNow() {
@@ -235,7 +250,7 @@ final class EasyTierApplicationDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
         guard Self.allowsTermination else {
-            Self.hideToMenuBar()
+            Self.quitEasyTier()
             return .terminateCancel
         }
         return .terminateNow
@@ -649,7 +664,7 @@ private struct MenuBarContent: View {
                         .background(connectionSwitchBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
                 .buttonStyle(QuietPressButtonStyle(pressedScale: 0.94, pressedOpacity: 0.86))
-                .disabled(store.isBusy || store.selectedConfig == nil)
+                .disabled(store.isBusy || store.isQuitting || store.selectedConfig == nil)
                 .onHover { isConnectionSwitchHovering = $0 }
             }
             .padding(.horizontal, 12)
@@ -677,13 +692,18 @@ private struct MenuBarContent: View {
 
             MenuBarDivider()
 
-            MenuBarListButton(title: "About EasyTier") {
+            if store.isQuitting {
+                MenuBarPlainRow(title: "Quitting EasyTier...", isMuted: true)
+                MenuBarDivider()
+            }
+
+            MenuBarListButton(title: "About EasyTier", isDisabled: store.isQuitting) {
                 openMainWindow()
                 store.isShowingAbout = true
                 dismissMenuBar()
             }
 
-            MenuBarListButton(title: "Install on Linux") {
+            MenuBarListButton(title: "Install on Linux", isDisabled: store.isQuitting) {
                 openMainWindow()
                 store.isShowingLinuxInstallGuide = true
                 dismissMenuBar()
@@ -691,11 +711,11 @@ private struct MenuBarContent: View {
 
             MenuBarDivider()
 
-            MenuBarListButton(title: windowEffectTitle) {
+            MenuBarListButton(title: windowEffectTitle, isDisabled: store.isQuitting) {
                 appearanceSettings.glassEffectsEnabled.toggle()
             }
 
-            MenuBarListButton(title: "Settings...", shortcut: "⌘ ,") {
+            MenuBarListButton(title: "Settings...", shortcut: "⌘ ,", isDisabled: store.isQuitting) {
                 openMainWindow()
                 store.isShowingSettings = true
                 dismissMenuBar()
@@ -703,19 +723,19 @@ private struct MenuBarContent: View {
 
             MenuBarDivider()
 
-            MenuBarListButton(title: "Hide EasyTier", shortcut: "⌘ Q") {
-                EasyTierApplicationDelegate.hideToMenuBar()
+            MenuBarListButton(title: store.isQuitting ? "Quitting..." : "Quit EasyTier", shortcut: "⌘ Q", isDisabled: store.isQuitting) {
+                dismissMenuBar()
+                EasyTierApplicationDelegate.quitEasyTier()
             }
         }
         .frame(width: 292)
         .foregroundStyle(MenuBarPalette.primaryText)
         .background(MenuBarPanelBackground())
-        .presentedSurfaceMotion()
     }
 
     private var selectedNetworkState: ConnectionGlyphState {
         if store.lastError != nil { return .error }
-        if store.isBusy { return .connecting }
+        if store.isBusy || store.isQuitting { return .connecting }
         guard var instance = selectedRunningInstance else { return .idle }
         instance.detail = store.selectedRuntimeDetail
         return store.instanceIsFullyConnected(instance) ? .connected : .connecting
@@ -765,6 +785,7 @@ private struct MenuBarContent: View {
     }
 
     private var connectionSubtitle: String {
+        if store.isQuitting { return "Quitting" }
         if store.isBusy { return "Working" }
         if store.lastError != nil { return "Needs Attention" }
         guard store.selectedConfig != nil else { return "No Network" }
@@ -774,6 +795,7 @@ private struct MenuBarContent: View {
     }
 
     private var connectionIndicatorColor: Color {
+        if store.isQuitting { return .yellow.opacity(0.82) }
         if store.lastError != nil { return .orange }
         if store.isBusy { return .yellow.opacity(0.82) }
         guard var instance = selectedRunningInstance else { return MenuBarPalette.mutedText }
@@ -782,7 +804,7 @@ private struct MenuBarContent: View {
     }
 
     private var connectionSwitchBackground: Color {
-        guard isConnectionSwitchHovering, !store.isBusy, store.selectedConfig != nil else { return .clear }
+        guard isConnectionSwitchHovering, !store.isBusy, !store.isQuitting, store.selectedConfig != nil else { return .clear }
         return MenuBarPalette.selectedRow
     }
 
@@ -885,7 +907,84 @@ private struct MenuBarPanelBackground: NSViewRepresentable {
     }
 }
 
-struct FrostedWindowBackground: NSViewRepresentable {
+extension View {
+    @ViewBuilder
+    func easyTierWindowBackground(glassEffectsEnabled: Bool) -> some View {
+        if glassEffectsEnabled {
+            containerBackground(for: .window) { FrostedGlass() }
+        } else {
+            containerBackground(Color(nsColor: .windowBackgroundColor), for: .window)
+        }
+    }
+
+    func frostedGlassBackground<S: Shape>(in shape: S) -> some View {
+        modifier(FrostedGlassBackground(shape: shape))
+    }
+
+    func liquidGlassMetricBackground<S: Shape>(in shape: S) -> some View {
+        modifier(LiquidGlassMetricBackground(shape: shape))
+    }
+}
+
+private struct FrostedGlassBackground<S: Shape>: ViewModifier {
+    @Environment(AppAppearanceSettings.self) private var appearanceSettings
+
+    var shape: S
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if appearanceSettings.glassEffectsEnabled && !appearanceSettings.glassPanelBackgroundsEnabled {
+            content
+        } else {
+            content.background {
+                if appearanceSettings.glassEffectsEnabled {
+                    FrostedGlass(blendingMode: .withinWindow)
+                        .clipShape(shape)
+                } else {
+                    shape.fill(Color.primary.opacity(0.045))
+                }
+            }
+        }
+    }
+}
+
+private struct LiquidGlassMetricBackground<S: Shape>: ViewModifier {
+    @Environment(AppAppearanceSettings.self) private var appearanceSettings
+    @Environment(\.colorScheme) private var colorScheme
+
+    var shape: S
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        content
+            .background {
+                shape.fill(backgroundColor)
+            }
+            .overlay {
+                shape.stroke(strokeColor, lineWidth: 0.5)
+            }
+    }
+
+    private var backgroundColor: Color {
+        if appearanceSettings.glassEffectsEnabled {
+            return Color.primary.opacity(colorScheme == .dark ? 0.038 : 0.052)
+        }
+        return Color.primary.opacity(colorScheme == .dark ? 0.052 : 0.075)
+    }
+
+    private var strokeColor: Color {
+        if appearanceSettings.glassEffectsEnabled {
+            return Color.primary.opacity(colorScheme == .dark ? 0.045 : 0.065)
+        }
+        return Color.primary.opacity(0.075)
+    }
+}
+
+struct FrostedGlass: NSViewRepresentable {
+    var material: NSVisualEffectView.Material = .sidebar
+    var blendingMode: NSVisualEffectView.BlendingMode = .behindWindow
+    var state: NSVisualEffectView.State = .active
+
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
         configure(view)
@@ -897,9 +996,10 @@ struct FrostedWindowBackground: NSViewRepresentable {
     }
 
     private func configure(_ view: NSVisualEffectView) {
-        view.material = .sidebar
-        view.blendingMode = .behindWindow
-        view.state = .active
+        view.material = material
+        view.blendingMode = blendingMode
+        view.state = state
+        view.autoresizingMask = [.width, .height]
     }
 }
 
@@ -925,31 +1025,21 @@ extension TextFieldStyle where Self == GlassFieldStyle {
 }
 
 private struct WindowAccessor: NSViewRepresentable {
-    var glassEffectsEnabled: Bool
     var configure: (NSWindow) -> Void
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         DispatchQueue.main.async {
             if let window = view.window {
                 configure(window)
-                context.coordinator.lastAppliedGlass = glassEffectsEnabled
             }
         }
         return view
     }
 
     func updateNSView(_ view: NSView, context: Context) {
-        guard context.coordinator.lastAppliedGlass != glassEffectsEnabled else { return }
         guard let window = view.window else { return }
         configure(window)
-        context.coordinator.lastAppliedGlass = glassEffectsEnabled
-    }
-
-    final class Coordinator {
-        var lastAppliedGlass: Bool?
     }
 }
 
@@ -1216,6 +1306,7 @@ private struct MenuBarListButton: View {
 
     var title: String
     var shortcut: String?
+    var isDisabled = false
     var action: () -> Void
 
     @State private var isHovering = false
@@ -1241,19 +1332,23 @@ private struct MenuBarListButton: View {
             .padding(.vertical, MenuBarPalette.selectedRowVerticalInset)
         }
         .buttonStyle(QuietPressButtonStyle(pressedScale: 0.985, pressedOpacity: 0.82))
+        .disabled(isDisabled)
         .onHover { isHovering = $0 }
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: isHovering)
     }
 
     private var primaryTextColor: Color {
-        isHovering ? Color.white.opacity(0.96) : MenuBarPalette.primaryText
+        if isDisabled { return MenuBarPalette.mutedText }
+        return isHovering ? Color.white.opacity(0.96) : MenuBarPalette.primaryText
     }
 
     private var shortcutTextColor: Color {
-        isHovering ? Color.white.opacity(0.72) : MenuBarPalette.mutedText
+        if isDisabled { return MenuBarPalette.mutedText.opacity(0.7) }
+        return isHovering ? Color.white.opacity(0.72) : MenuBarPalette.mutedText
     }
 
     private var rowBackground: Color {
-        isHovering ? MenuBarPalette.selectedRow : .clear
+        if isDisabled { return .clear }
+        return isHovering ? MenuBarPalette.selectedRow : .clear
     }
 }
