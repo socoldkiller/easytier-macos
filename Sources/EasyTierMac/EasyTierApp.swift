@@ -956,40 +956,27 @@ private struct LiquidGlassMetricBackground<S: Shape>: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if appearanceSettings.glassEffectsEnabled {
-            liquidGlassContent(content)
-        } else {
-            content
-                .background { shape.fill(Color.primary.opacity(colorScheme == .dark ? 0.052 : 0.075)) }
-                .overlay { shape.stroke(Color.primary.opacity(0.075), lineWidth: 0.6) }
-        }
+        content
+            .background {
+                shape.fill(backgroundColor)
+            }
+            .overlay {
+                shape.stroke(strokeColor, lineWidth: 0.5)
+            }
     }
 
-    @ViewBuilder
-    private func liquidGlassContent(_ content: Content) -> some View {
-        if #available(macOS 26.0, *) {
-            content
-                .glassEffect(.clear.interactive(false), in: shape)
-                .overlay {
-                    shape
-                        .stroke(
-                            LinearGradient(
-                                colors: [
-                                    Color.white.opacity(colorScheme == .dark ? 0.10 : 0.22),
-                                    Color.white.opacity(0.035),
-                                    Color.primary.opacity(colorScheme == .dark ? 0.045 : 0.035),
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 0.45
-                        )
-                        .blendMode(colorScheme == .dark ? .screen : .normal)
-                }
-        } else {
-            content
-                .overlay { shape.stroke(Color.white.opacity(0.055), lineWidth: 0.45) }
+    private var backgroundColor: Color {
+        if appearanceSettings.glassEffectsEnabled {
+            return Color.primary.opacity(colorScheme == .dark ? 0.038 : 0.052)
         }
+        return Color.primary.opacity(colorScheme == .dark ? 0.052 : 0.075)
+    }
+
+    private var strokeColor: Color {
+        if appearanceSettings.glassEffectsEnabled {
+            return Color.primary.opacity(colorScheme == .dark ? 0.045 : 0.065)
+        }
+        return Color.primary.opacity(0.075)
     }
 }
 
