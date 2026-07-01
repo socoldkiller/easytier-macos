@@ -313,6 +313,7 @@ private struct MemberGridTable: View {
                     }
                 }
                 .frame(width: tableWidth, alignment: .topLeading)
+                .frame(minHeight: proxy.size.height, alignment: .topLeading)
             }
             .scrollIndicators(.never, axes: [.vertical, .horizontal])
             .defaultScrollAnchor(.topLeading)
