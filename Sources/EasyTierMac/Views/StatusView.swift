@@ -296,12 +296,13 @@ private struct MemberGridTable: View {
             ScrollView([.horizontal, .vertical]) {
                 LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
                     Section {
-                        ForEach(flattenedRows) { item in
+                        ForEach(Array(flattenedRows.enumerated()), id: \.element.id) { indexedItem in
                             MemberGridRowView(
-                                item: item,
+                                item: indexedItem.element,
                                 columnWidths: widths,
                                 highlightedMemberPeerID: highlightedMemberPeerID,
                                 animationsPaused: isScrolling,
+                                isStripedRow: !indexedItem.offset.isMultiple(of: 2),
                                 publicServerGroupExpanded: $publicServerGroupExpanded,
                                 onRenameHostname: onRenameHostname,
                                 onConfigureLocalMember: onConfigureLocalMember
@@ -437,6 +438,7 @@ private struct MemberGridRowView: View {
     var columnWidths: [MemberGridColumn: CGFloat]
     var highlightedMemberPeerID: String?
     var animationsPaused: Bool
+    var isStripedRow: Bool
     @Binding var publicServerGroupExpanded: Bool
     var onRenameHostname: (NetworkMemberStatus) -> Void
     var onConfigureLocalMember: () -> Void
@@ -468,6 +470,13 @@ private struct MemberGridRowView: View {
             cell(.version) { Text(row.version).lineLimit(1) }
         }
         .frame(minHeight: 44)
+        .background {
+            if isStripedRow {
+                Color.primary.opacity(0.025)
+            } else {
+                Color.clear
+            }
+        }
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(Color.primary.opacity(0.07))
