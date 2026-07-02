@@ -849,6 +849,8 @@ private struct MemberIdentityCell: View {
 }
 
 private struct MemberStatusIdentity: View {
+    @Environment(EasyTierAppStore.self) private var store
+
     var member: NetworkMemberStatus
     var isHighlighted: Bool
     var renameAction: (() -> Void)? = nil
@@ -905,6 +907,22 @@ private struct MemberStatusIdentity: View {
 
     @ViewBuilder
     private var memberContextMenu: some View {
+        if let ip = member.copyableIPv4Address, !ip.isEmpty {
+            Button("Copy IP") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(ip, forType: .string)
+            }
+        }
+        if let domain = magicDNSDomain, !domain.isEmpty {
+            Button("Copy Domain") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(domain, forType: .string)
+            }
+        }
+        if (!member.peerID.isEmpty && member.peerID != "-")
+            || (member.copyableIPv4Address != nil) || magicDNSDomain != nil {
+            Divider()
+        }
         if !member.peerID.isEmpty, member.peerID != "-" {
             Button("Copy Peer ID") {
                 NSPasteboard.general.clearContents()
@@ -921,6 +939,14 @@ private struct MemberStatusIdentity: View {
                 configureAction()
             }
         }
+    }
+
+    private var magicDNSDomain: String? {
+        let hostname = member.hostname.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !hostname.isEmpty, hostname != "-" else { return nil }
+        let suffix = store.magicDNSSettings.dnsSuffix
+        let stripped = suffix.hasSuffix(".") ? String(suffix.dropLast()) : suffix
+        return "\(hostname).\(stripped)"
     }
 
     private var memberSubtitle: String {
@@ -1297,6 +1323,8 @@ private extension NetworkMemberStatus {
 }
 
 private struct CopyableIPv4Cell: View {
+    @Environment(EasyTierAppStore.self) private var store
+
     var member: NetworkMemberStatus
     @State private var isHovering = false
     @State private var didCopy = false
@@ -1341,6 +1369,12 @@ private struct CopyableIPv4Cell: View {
                 Button("Copy IP") {
                     copy(ip)
                 }
+                if let domain = magicDNSDomain {
+                    Button("Copy Domain") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(domain, forType: .string)
+                    }
+                }
             }
             .accessibilityLabel(Text(didCopy ? "Copied IP \(ip)" : "Copy IP \(ip)"))
             .accessibilityHint(Text("Copies the IPv4 address to the clipboard."))
@@ -1379,6 +1413,14 @@ private struct CopyableIPv4Cell: View {
         if didCopy { return Color.green.opacity(0.72) }
         if isHovering { return Color.accentColor.opacity(0.5) }
         return Color.clear
+    }
+
+    private var magicDNSDomain: String? {
+        let hostname = member.hostname.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !hostname.isEmpty, hostname != "-" else { return nil }
+        let suffix = store.magicDNSSettings.dnsSuffix
+        let stripped = suffix.hasSuffix(".") ? String(suffix.dropLast()) : suffix
+        return "\(hostname).\(stripped)"
     }
 
     private func copy(_ ip: String) {

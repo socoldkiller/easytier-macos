@@ -139,7 +139,7 @@ struct ConfigEditorView: View {
                 }
             }
             FieldRow("Hostname") {
-                TextField("Optional hostname", text: Binding($config.hostname, replacingNilWith: ""))
+                TextField(NetworkConfig.defaultHostname, text: Binding($config.hostname, replacingNilWith: ""))
                     .textFieldStyle(.glassField)
             }
             magicDNSRow
@@ -148,7 +148,7 @@ struct ConfigEditorView: View {
                     .textFieldStyle(.glassField)
             }
             FieldRow("MTU") {
-                TextField("Default", text: Binding($config.mtu))
+                TextField(String(NetworkConfig.defaultMTU), text: Binding($config.mtu))
                     .textFieldStyle(.glassField)
             }
             FieldRow("Recv limit") {
@@ -362,7 +362,7 @@ struct ConfigEditorView: View {
         if config.disable_upnp == true { return true }
         if config.enable_udp_broadcast_relay == true { return true }
         if config.disable_sym_hole_punching == true { return true }
-        if config.mtu != nil { return true }
+        if let mtu = config.mtu, mtu != NetworkConfig.defaultMTU { return true }
         if config.instance_recv_bps_limit != nil { return true }
         if config.enable_relay_network_whitelist == true || !config.relay_network_whitelist.isEmpty { return true }
         if !config.port_forwards.isEmpty { return true }

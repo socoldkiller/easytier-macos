@@ -56,6 +56,22 @@ public enum ListenerURLDefaults {
 }
 
 public struct NetworkConfig: Codable, Equatable, Identifiable, Sendable {
+    public static let defaultMTU = 1_380
+    public static var defaultHostname: String {
+        if let localHostname = SCDynamicStoreCopyLocalHostName(nil) as String?,
+           !localHostname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            return localHostname
+        }
+
+        let systemHostname = ProcessInfo.processInfo.hostName
+            .split(separator: ".", maxSplits: 1)
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return systemHostname?.nilIfEmpty ?? "localhost"
+    }
+
     public var id: String { instance_id }
 
     public var instance_id: String
@@ -124,7 +140,7 @@ public struct NetworkConfig: Codable, Equatable, Identifiable, Sendable {
         dhcp: Bool = true,
         virtual_ipv4: String = "",
         network_length: Int = 24,
-        hostname: String? = nil,
+        hostname: String? = Self.defaultHostname,
         network_name: String = "easytier",
         network_secret: String? = "",
         credential_file: String? = "",
@@ -170,7 +186,7 @@ public struct NetworkConfig: Codable, Equatable, Identifiable, Sendable {
         exit_nodes: [String] = [],
         enable_socks5: Bool? = false,
         socks5_port: Int = 1_080,
-        mtu: Int? = nil,
+        mtu: Int? = Self.defaultMTU,
         instance_recv_bps_limit: Int? = nil,
         mapped_listeners: [String] = [],
         enable_magic_dns: Bool? = false,

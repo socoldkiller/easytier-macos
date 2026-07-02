@@ -32,6 +32,9 @@ import Testing
     #expect(config.socks5_port == 1_080)
     #expect(config.bind_device == true)
     #expect(config.multi_thread == true)
+    #expect(config.hostname == NetworkConfig.defaultHostname)
+    #expect(config.mtu == NetworkConfig.defaultMTU)
+    #expect(!NetworkConfig.defaultHostname.isEmpty)
 }
 
 @Test func defaultConfigUsesBasicMode() {
