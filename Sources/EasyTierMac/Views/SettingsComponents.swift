@@ -1,0 +1,363 @@
+import SwiftUI
+
+enum SettingsTint {
+    static let mode = Color.secondary
+    static let magicDNS = Color.secondary
+    static let rpcServer = Color.secondary
+    static let listeners = Color.secondary
+    static let advanced = Color.secondary
+    static let remoteConfig = Color.secondary
+    static let appearance = Color.secondary
+    static let launch = Color.secondary
+    static let quit = Color.secondary
+}
+
+struct SectionIcon: View {
+    var systemImage: String
+    var tint: Color
+    var size: CGFloat = 22
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .font(.system(size: size * 0.72, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .frame(width: size, height: size)
+    }
+}
+
+struct SettingsCard<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            content
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frostedGlassBackground(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+struct CardSection<Content: View>: View {
+    var title: String
+    var systemImage: String?
+    var tint: Color?
+    var footer: String?
+    @ViewBuilder var content: Content
+
+    init(
+        _ title: String,
+        systemImage: String? = nil,
+        tint: Color? = nil,
+        footer: String? = nil,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.title = title
+        self.systemImage = systemImage
+        self.tint = tint
+        self.footer = footer
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .center, spacing: 9) {
+                if let systemImage, let tint {
+                    SectionIcon(systemImage: systemImage, tint: tint)
+                } else if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18, alignment: .center)
+                }
+                Text(title)
+                    .font(.system(size: 15, weight: .semibold))
+            }
+
+            SettingsCard { content }
+
+            if let footer {
+                Text(footer)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 2)
+            }
+        }
+    }
+}
+
+struct SectionHeader: View {
+    var title: String
+    var subtitle: String
+    var systemImage: String
+    var tint: Color
+
+    var body: some View {
+        HStack(spacing: 12) {
+            SectionIcon(systemImage: systemImage, tint: tint, size: 32)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 19, weight: .semibold))
+                Text(subtitle)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+struct FieldRow<Content: View>: View {
+    var label: String
+    var description: String?
+    var help: String?
+    @ViewBuilder var content: Content
+
+    init(
+        _ label: String,
+        description: String? = nil,
+        help: String? = nil,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.label = label
+        self.description = description
+        self.help = help
+        self.content = content()
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label)
+                    .font(.system(size: 13.5, weight: .regular))
+                    .foregroundStyle(.secondary)
+                if let description {
+                    Text(description)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(width: 152, alignment: .leading)
+            content
+                .frame(maxWidth: 520, alignment: .leading)
+        }
+        .help(help ?? label)
+    }
+}
+
+struct StatusPill: View {
+    enum Tone {
+        case neutral, positive, warning, danger
+        var color: Color {
+            switch self {
+            case .neutral: .secondary
+            case .positive: .green
+            case .warning: .orange
+            case .danger: .red
+            }
+        }
+    }
+
+    var text: String
+    var tone: Tone = .neutral
+
+    init(_ text: String, tone: Tone = .neutral) {
+        self.text = text
+        self.tone = tone
+    }
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(tone.color)
+                .frame(width: 6, height: 6)
+            Text(text)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(tone.color == .secondary ? .secondary : .primary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(Capsule().fill(tone.color.opacity(0.12)))
+        .overlay(Capsule().stroke(tone.color.opacity(0.25), lineWidth: 0.5))
+    }
+}
+
+struct StatusDot: View {
+    var tone: StatusPill.Tone = .neutral
+    var accessibilityLabel: String
+
+    var body: some View {
+        Circle()
+            .fill(tone.color)
+            .frame(width: 8, height: 8)
+            .accessibilityLabel(Text(accessibilityLabel))
+    }
+}
+
+struct ModeOptionTile: View {
+    var title: String
+    var description: String
+    var systemImage: String
+    var tint: Color
+    var isSelected: Bool
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                SectionIcon(systemImage: systemImage, tint: tint, size: 30)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 14, weight: .semibold))
+                    Text(description)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 18))
+                    .foregroundStyle(isSelected ? Color.secondary : Color.secondary.opacity(0.25))
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.primary.opacity(0.035))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(isSelected ? Color.secondary.opacity(0.55) : Color.primary.opacity(0.06), lineWidth: isSelected ? 1.5 : 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct StatusBadge: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var title: String
+    var value: String
+    var systemImage: String
+    var width: CGFloat? = nil
+
+    init(title: String, value: String, systemImage: String, width: CGFloat? = nil) {
+        self.title = title
+        self.value = value
+        self.systemImage = systemImage
+        self.width = width
+    }
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: systemImage)
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(value.isEmpty ? "-" : value)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .contentTransition(.opacity)
+                    .monospacedDigit()
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(10)
+        .frame(width: width, alignment: .leading)
+        .liquidGlassMetricBackground(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: value)
+    }
+}
+
+struct ExpandableSettingsGroup<Content: View>: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var title: String
+    @ViewBuilder var content: Content
+    @State private var isExpanded = false
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            DisclosureHeader(
+                isExpanded: isExpanded,
+                title: title,
+                onToggle: {
+                    withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
+                        isExpanded.toggle()
+                    }
+                }
+            )
+
+            if isExpanded {
+                content
+                    .padding(.top, 8)
+                    .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 8))
+            }
+        }
+    }
+}
+
+struct DisclosureHeader<Trailing: View>: View {
+    var isExpanded: Bool
+    var title: String
+    var onToggle: () -> Void
+    @ViewBuilder var trailing: Trailing
+
+    init(
+        isExpanded: Bool,
+        title: String,
+        onToggle: @escaping () -> Void,
+        @ViewBuilder trailing: () -> Trailing
+    ) {
+        self.isExpanded = isExpanded
+        self.title = title
+        self.onToggle = onToggle
+        self.trailing = trailing()
+    }
+
+    var body: some View {
+        Button {
+            onToggle()
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .medium))
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .frame(width: 12)
+                Text(title)
+                    .font(.system(size: 14, weight: .medium))
+                Spacer(minLength: 12)
+                trailing
+            }
+            .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+    }
+}
+
+extension DisclosureHeader where Trailing == EmptyView {
+    init(isExpanded: Bool, title: String, onToggle: @escaping () -> Void) {
+        self.init(isExpanded: isExpanded, title: title, onToggle: onToggle, trailing: { EmptyView() })
+    }
+}

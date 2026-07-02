@@ -1484,48 +1484,6 @@ private struct RouteCostBadge: View {
     }
 }
 
-private struct StatusBadge: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var title: String
-    var value: String
-    var systemImage: String
-    var width: CGFloat? = nil
-
-    init(title: String, value: String, systemImage: String, width: CGFloat? = nil) {
-        self.title = title
-        self.value = value
-        self.systemImage = systemImage
-        self.width = width
-    }
-
-    var body: some View {
-        HStack(spacing: 9) {
-            Image(systemName: systemImage)
-                .font(.title3)
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(.secondary)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(value.isEmpty ? "-" : value)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                    .contentTransition(.opacity)
-                    .monospacedDigit()
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(10)
-        .frame(width: width, alignment: .leading)
-        .liquidGlassMetricBackground(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: value)
-    }
-}
-
 private struct ErrorBanner: View {
     var message: String
 
