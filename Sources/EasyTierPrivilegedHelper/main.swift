@@ -5,6 +5,7 @@ import Foundation
 final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unchecked Sendable {
     private let client = StaticEasyTierFFIClient()
     private let encoder = JSONEncoder()
+    private let magicDNSResolverConfigurator = MagicDNSSystemResolverConfigurator()
 
     func ping(reply: @escaping (String?, String?) -> Void) {
         reply(EasyTierPrivilegedHelperConstants.pingPayload, nil)
@@ -23,6 +24,7 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
         do {
             try StaticEasyTierFFIClient.validateDirect(toml: configTOML)
             try client.runSync(toml: configTOML)
+            try magicDNSResolverConfigurator.apply(from: configTOML)
             reply("ok", nil)
         } catch {
             fputs("helper run error: \(error.localizedDescription)\n", stderr)
@@ -31,11 +33,17 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
     }
 
     func stop(instanceNames: [String], reply: @escaping (String?, String?) -> Void) {
-        run(reply: reply) { try client.stopSync(instanceNames: instanceNames) }
+        run(reply: reply) {
+            try client.stopSync(instanceNames: instanceNames)
+            try removeMagicDNSResolverFilesIfNoInstancesRemain()
+        }
     }
 
     func retain(instanceNames: [String], reply: @escaping (String?, String?) -> Void) {
-        run(reply: reply) { try client.retainSync(instanceNames: instanceNames) }
+        run(reply: reply) {
+            try client.retainSync(instanceNames: instanceNames)
+            try removeMagicDNSResolverFilesIfNoInstancesRemain()
+        }
     }
 
     func listInstances(reply: @escaping (String?, String?) -> Void) {
@@ -111,9 +119,16 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
     }
 
     func shutdown(reply: @escaping (String?, String?) -> Void) {
+        try? magicDNSResolverConfigurator.removeManagedResolverFiles()
         reply("ok", nil)
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
             Foundation.exit(EXIT_SUCCESS)
+        }
+    }
+
+    private func removeMagicDNSResolverFilesIfNoInstancesRemain() throws {
+        if try client.listInstancesSync().isEmpty {
+            try magicDNSResolverConfigurator.removeManagedResolverFiles()
         }
     }
 

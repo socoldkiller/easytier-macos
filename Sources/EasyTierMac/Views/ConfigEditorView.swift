@@ -287,32 +287,18 @@ struct ConfigEditorView: View {
                 Toggle("", isOn: optionalBool($config.enable_magic_dns, defaultValue: false))
                     .labelsHidden()
                 if config.enable_magic_dns == true {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 8) {
-                            Text(magicDNSPreview)
-                                .font(.callout.monospaced())
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            Button("Change in Settings") {
-                                EasyTierSettingsTabRequest.set(.easyTier)
-                                openWindow(id: "settings")
-                            }
-                            .buttonStyle(.link)
-                            .font(.system(size: 12.5))
+                    HStack(spacing: 8) {
+                        Text(magicDNSPreview)
+                            .font(.callout.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Button("Change in Settings") {
+                            EasyTierSettingsTabRequest.set(.easyTier)
+                            openWindow(id: "settings")
                         }
-                        Text("Suffix: \(store.magicDNSSettings.dnsSuffix)")
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(.tertiary)
-                        Text("Only \(magicDNSDisplaySuffix) names use EasyTier DNS. Other domains stay unchanged.")
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(.tertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if store.selectedConfigIsRunning {
-                            Text("Restart this network to apply Magic DNS changes.")
-                                .font(.system(size: 11.5))
-                                .foregroundStyle(.orange)
-                        }
+                        .buttonStyle(.link)
+                        .font(.system(size: 12.5))
                     }
                 }
             }

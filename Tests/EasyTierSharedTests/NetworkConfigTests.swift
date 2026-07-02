@@ -45,6 +45,7 @@ import Testing
 @Test func magicDNSSettingsNormalizeAndValidateSuffix() throws {
     #expect(MagicDNSSettings.default.dnsSuffix == "et.net.")
     #expect(try MagicDNSSettings(dnsSuffix: "example.internal").dnsSuffix == "example.internal.")
+    #expect(try MagicDNSSettings(dnsSuffix: "et.local").dnsSuffix == "et.local.")
     #expect(try MagicDNSSettings(dnsSuffix: "  LAB.Example  ").dnsSuffix == "lab.example.")
     #expect(try MagicDNSSettings(dnsSuffix: "").dnsSuffix == "et.net.")
 
@@ -234,6 +235,76 @@ import Testing
         magicDNSSettings: try MagicDNSSettings(dnsSuffix: "lab.internal")
     )
     #expect(!disabledTOML.contains("tld_dns_zone"))
+}
+
+@Test func magicDNSSystemResolverConfigurationUsesConfiguredTLD() throws {
+    var config = NetworkConfig()
+    config.enable_magic_dns = true
+    let toml = try NetworkConfigTOMLCodec.encode(
+        config,
+        magicDNSSettings: try MagicDNSSettings(dnsSuffix: "et.local")
+    )
+
+    let parsedResolverConfig = try MagicDNSSystemResolverConfigurator.configuration(from: toml)
+    let resolverConfig = try #require(parsedResolverConfig)
+
+    #expect(resolverConfig.dnsSuffix == "et.local.")
+    #expect(resolverConfig.resolverFileName == "et.local")
+}
+
+@Test func magicDNSSystemResolverWritesConfiguredTLDResolver() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try "# Added by easytier\nnameserver 100.100.100.101\n".write(
+        to: directory.appendingPathComponent("old.internal"),
+        atomically: true,
+        encoding: .utf8
+    )
+    try "nameserver 8.8.8.8\n".write(
+        to: directory.appendingPathComponent("example.com"),
+        atomically: true,
+        encoding: .utf8
+    )
+
+    let configurator = MagicDNSSystemResolverConfigurator(resolverDirectory: directory)
+    try configurator.apply(try MagicDNSSystemResolverConfiguration(dnsSuffix: "et.local"))
+
+    let resolver = try String(contentsOf: directory.appendingPathComponent("et.local"), encoding: .utf8)
+    let search = try String(contentsOf: directory.appendingPathComponent("search.easytier"), encoding: .utf8)
+
+    #expect(resolver == "# Added by easytier\ndomain et.local\nnameserver 100.100.100.101\n")
+    #expect(search == "# Added by easytier\nsearch et.local\n")
+    #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("old.internal").path))
+    #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("example.com").path))
+}
+
+@Test func magicDNSSystemResolverRemovesOnlyManagedResolverFiles() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try "# Added by easytier\ndomain et.net\nnameserver 100.100.100.101\n".write(
+        to: directory.appendingPathComponent("et.net"),
+        atomically: true,
+        encoding: .utf8
+    )
+    try "# Added by easytier\nsearch et.net\n".write(
+        to: directory.appendingPathComponent("search.easytier"),
+        atomically: true,
+        encoding: .utf8
+    )
+    try "nameserver 8.8.8.8\n".write(
+        to: directory.appendingPathComponent("example.com"),
+        atomically: true,
+        encoding: .utf8
+    )
+
+    let configurator = MagicDNSSystemResolverConfigurator(resolverDirectory: directory)
+    try configurator.removeManagedResolverFiles()
+
+    #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("et.net").path))
+    #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("search.easytier").path))
+    #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("example.com").path))
 }
 
 @Test func tomlRoundTripsPortalProxyAndPortForwardFields() throws {
