@@ -56,6 +56,9 @@ struct ContentView: View {
         }
         .onChange(of: store.selectedTab) { _, newTab in
             selectedTabLocal = newTab
+            if newTab != .config, store.remoteConfigSession != nil {
+                store.clearRemoteConfigSession()
+            }
         }
         .onChange(of: store.selectedConfigID) { _, newID in
             if selectedConfigIDLocal != newID {
@@ -164,14 +167,16 @@ struct ContentView: View {
             StatusView(
                 highlightedMemberPeerID: highlightedSearchPeerID,
                 onRenameLocalHostname: renameSelectedHostname,
-                onRenameRemoteHostname: renameRemoteHostname
-            ) {
-                selectWorkspaceTab(.config)
-            }
+                onRenameRemoteHostname: renameRemoteHostname,
+                onConfigureLocalMember: { selectWorkspaceTab(.config) },
+                onConfigureRemoteMember: configureRemoteMember
+            )
         case .view:
             TrafficView()
         case .config:
-            if let config = draftConfigBinding() {
+            if let session = store.remoteConfigSession {
+                remoteConfigContent(session: session)
+            } else if let config = draftConfigBinding() {
                 ConfigEditorView(config: config, members: store.selectedMemberStatuses)
             } else if store.selectedConfigID != nil {
                 ProgressView()
@@ -389,7 +394,10 @@ struct ContentView: View {
     }
 
     private var workspaceMotionID: String {
-        "\(store.selectedTab.id)-\(store.selectedConfigID ?? "none")"
+        if let session = store.remoteConfigSession {
+            return "\(store.selectedTab.id)-remote-\(session.member.id)"
+        }
+        return "\(store.selectedTab.id)-\(store.selectedConfigID ?? "none")"
     }
 
     private var connectionActionTitle: String {
@@ -663,6 +671,9 @@ struct ContentView: View {
         let previousValue = store.selectedConfigID
         guard newValue != previousValue else { return }
 
+        if store.remoteConfigSession != nil {
+            store.clearRemoteConfigSession()
+        }
         commitDraft(saveImmediately: false)
         workspaceTransitionEdge = networkTransitionEdge(from: previousValue, to: newValue)
         workspaceTransitionDistance = Self.networkTransitionDistance
@@ -693,6 +704,48 @@ struct ContentView: View {
     private func deleteSelectedConfig() {
         draftIsDirty = false
         Task { await store.deleteSelectedConfig() }
+    }
+
+    private func configureRemoteMember(_ member: NetworkMemberStatus) {
+        store.clearRemoteConfigSession()
+        selectWorkspaceTab(.config)
+        Task {
+            await store.startRemoteConfigSession(member: member)
+        }
+    }
+
+    private func remoteConfigBinding() -> Binding<NetworkConfig>? {
+        guard store.remoteConfigSession != nil else { return nil }
+        return Binding(
+            get: { store.remoteConfigSession?.config ?? NetworkConfig() },
+            set: { newValue in
+                store.remoteConfigSession?.config = newValue
+            }
+        )
+    }
+
+    @ViewBuilder
+    private func remoteConfigContent(session: RemoteConfigSession) -> some View {
+        if session.isLoading {
+            ProgressView("Loading \(session.member.hostname) configuration...")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let error = session.loadError {
+            VStack(spacing: 16) {
+                ContentUnavailableView(
+                    "RPC Unavailable",
+                    systemImage: "wifi.exclamationmark",
+                    description: Text("\(error)\n\nMake sure RPC is enabled on \(session.member.hostname) (port \(AppMode.defaultRPCListenPort)) and that your IP is allowed.")
+                )
+                Button("Back to Status") {
+                    store.clearRemoteConfigSession()
+                    selectWorkspaceTab(.status)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let config = remoteConfigBinding() {
+            ConfigEditorView(config: config, members: store.selectedMemberStatuses, remoteSession: session)
+        }
     }
 
     private func renameSelectedHostname(_ hostname: String) {

@@ -2,6 +2,38 @@ import AppKit
 import Foundation
 import Observation
 
+public struct RemoteConfigSession: Sendable {
+    public let rpcURL: URL
+    public let instanceID: String
+    public let member: NetworkMemberStatus
+    public var config: NetworkConfig
+    public var originalConfig: NetworkConfig
+    public var isLoading: Bool
+    public var loadError: String?
+
+    public var hasUnsavedChanges: Bool {
+        config != originalConfig
+    }
+
+    public init(
+        rpcURL: URL,
+        instanceID: String,
+        member: NetworkMemberStatus,
+        config: NetworkConfig,
+        originalConfig: NetworkConfig,
+        isLoading: Bool,
+        loadError: String?
+    ) {
+        self.rpcURL = rpcURL
+        self.instanceID = instanceID
+        self.member = member
+        self.config = config
+        self.originalConfig = originalConfig
+        self.isLoading = isLoading
+        self.loadError = loadError
+    }
+}
+
 @MainActor
 @Observable
 public final class EasyTierAppStore {
@@ -24,6 +56,7 @@ public final class EasyTierAppStore {
     public var reversedPortForwardFingerprints: [String: Set<String>] = [:]
     public var vpnOnDemandEnabled = false
     public var magicDNSSettings: MagicDNSSettings = .default
+    public var remoteConfigSession: RemoteConfigSession?
 
     /// Mirrors any in-app scroll phase. Polling briefly skips refresh while
     /// this is true so the main-thread SwiftUI transaction pass does not
@@ -617,6 +650,72 @@ public final class EasyTierAppStore {
         } catch {
             markRuntimeIntent(intent.id, status: .unreachable)
             recordNotice("Saved hostname for \(runningInstance.name), but runtime patch failed: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Remote config editing session
+
+    public func startRemoteConfigSession(member: NetworkMemberStatus) async {
+        guard let instanceID = member.instanceID,
+              let ip = member.copyableIPv4Address,
+              let rpcURL = URL(string: "tcp://\(ip):\(AppMode.defaultRPCListenPort)")
+        else {
+            remoteConfigSession = RemoteConfigSession(
+                rpcURL: URL(string: "tcp://0.0.0.0:0")!,
+                instanceID: member.instanceID ?? "",
+                member: member,
+                config: NetworkConfig(),
+                originalConfig: NetworkConfig(),
+                isLoading: false,
+                loadError: "Remote instance ID or virtual IP is unavailable for \(member.hostname)."
+            )
+            return
+        }
+
+        remoteConfigSession = RemoteConfigSession(
+            rpcURL: rpcURL,
+            instanceID: instanceID,
+            member: member,
+            config: NetworkConfig(),
+            originalConfig: NetworkConfig(),
+            isLoading: true,
+            loadError: nil
+        )
+
+        do {
+            let config = try await EasyTierRemoteRPCClient.getConfigParsed(rpcURL: rpcURL, instanceID: instanceID)
+            remoteConfigSession?.config = config
+            remoteConfigSession?.originalConfig = config
+            remoteConfigSession?.isLoading = false
+        } catch {
+            remoteConfigSession?.isLoading = false
+            remoteConfigSession?.loadError = error.localizedDescription
+        }
+    }
+
+    public func clearRemoteConfigSession() {
+        remoteConfigSession = nil
+    }
+
+    @discardableResult
+    public func applyRemoteConfigPatch() async -> Bool {
+        guard var session = remoteConfigSession, !session.isLoading, session.loadError == nil else {
+            return false
+        }
+        guard session.hasUnsavedChanges else { return true }
+        do {
+            _ = try await EasyTierRemoteRPCClient.applyConfigPatch(
+                rpcURL: session.rpcURL,
+                instanceID: session.instanceID,
+                config: session.config,
+                original: session.originalConfig
+            )
+            session.originalConfig = session.config
+            remoteConfigSession = session
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
         }
     }
 

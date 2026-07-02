@@ -115,6 +115,42 @@ private actor ThrowingRPCTransport: EasyTierRPCTransport {
     #expect(id?["part4"] as? Int == 0xeeeeeeee)
 }
 
+@Test func getConfigParsedTreatsNullableRemoteConfigFieldsAsDefaults() async throws {
+    let instanceID = "11111111-2222-3333-4444-555555555555"
+    var encodedConfig = try jsonObject(from: JSONEncoder().encode(NetworkConfig(
+        instance_id: instanceID,
+        hostname: "windy",
+        network_name: "office",
+        public_server_url: "tcp://public.easytier.top:11010",
+        peer_urls: ["tcp://10.0.0.1:11010"],
+        enable_vpn_portal: true,
+        vpn_portal_listen_port: 44_444
+    )))
+    encodedConfig["public_server_url"] = NSNull()
+    encodedConfig["peer_urls"] = NSNull()
+    encodedConfig["proxy_cidrs"] = NSNull()
+    encodedConfig["enable_vpn_portal"] = NSNull()
+    encodedConfig["vpn_portal_listen_port"] = NSNull()
+    encodedConfig["enable_manual_routes"] = NSNull()
+    encodedConfig["routes"] = NSNull()
+
+    let response = try jsonString(["config": encodedConfig])
+    let transport = SpyRPCTransport(response: response)
+    let client = EasyTierRemoteRPCClient(transport: transport)
+
+    let config = try await client.getConfigParsed(instanceID: instanceID)
+
+    #expect(config.instance_id == instanceID)
+    #expect(config.hostname == "windy")
+    #expect(config.public_server_url == "")
+    #expect(config.peer_urls == [])
+    #expect(config.proxy_cidrs == [])
+    #expect(config.enable_vpn_portal == false)
+    #expect(config.vpn_portal_listen_port == 22_022)
+    #expect(config.enable_manual_routes == false)
+    #expect(config.routes == [])
+}
+
 @Test func listPortForwardsUsesPortForwardService() async throws {
     let transport = SpyRPCTransport(response: #"{"cfgs":[]}"#)
     let client = EasyTierRemoteRPCClient(transport: transport)
@@ -267,6 +303,21 @@ private func rpcPayloadObject(_ payload: String) throws -> [String: Any] {
         throw EasyTierCoreError.invalidResponse("RPC payload is not a JSON object")
     }
     return object
+}
+
+private func jsonObject(from data: Data) throws -> [String: Any] {
+    guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw EasyTierCoreError.invalidResponse("JSON value is not an object")
+    }
+    return object
+}
+
+private func jsonString(_ object: [String: Any]) throws -> String {
+    let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    guard let string = String(data: data, encoding: .utf8) else {
+        throw EasyTierCoreError.invalidResponse("JSON data is not UTF-8")
+    }
+    return string
 }
 
 private func rpcInstanceID(in object: [String: Any]) -> [String: Any]? {

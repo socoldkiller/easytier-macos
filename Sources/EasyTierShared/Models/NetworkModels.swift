@@ -1,12 +1,42 @@
 import Foundation
 import SystemConfiguration
 
-public enum NetworkingMethod: Int, Codable, CaseIterable, Identifiable, Sendable {
+public enum NetworkingMethod: Int, CaseIterable, Identifiable, Sendable {
     case publicServer = 0
     case manual = 1
     case standalone = 2
 
     public var id: Int { rawValue }
+
+    private static func fromProtoName(_ name: String) -> NetworkingMethod? {
+        switch name.lowercased() {
+        case "publicserver", "public_server", "public-server": return .publicServer
+        case "manual": return .manual
+        case "standalone": return .standalone
+        default: return nil
+        }
+    }
+}
+
+extension NetworkingMethod: Codable {
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let intValue = try? container.decode(Int.self) {
+            guard let value = NetworkingMethod(rawValue: intValue) else {
+                throw DecodingError.dataCorruptedError(in: container, debugDescription: "invalid NetworkingMethod raw value \(intValue)")
+            }
+            self = value
+        } else if let string = try? container.decode(String.self), let value = NetworkingMethod.fromProtoName(string) {
+            self = value
+        } else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "NetworkingMethod must be an Int or a known string")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 public struct PortForwardConfig: Codable, Equatable, Identifiable, Sendable {

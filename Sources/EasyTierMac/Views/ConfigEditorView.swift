@@ -6,12 +6,15 @@ struct ConfigEditorView: View {
     @Environment(\.openWindow) private var openWindow
     @Binding var config: NetworkConfig
     var members: [NetworkMemberStatus] = []
+    var remoteSession: RemoteConfigSession? = nil
     var onScrolledPastTopChange: (Bool) -> Void = { _ in }
     @State private var reversePortForwardStatus: [UUID: Bool] = [:]
     @State private var reversePortForwardPending: Set<UUID> = []
 
     @State private var displayAdvanced: Bool = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var isRemote: Bool { remoteSession != nil }
 
     private static let scrollSpaceName = "ConfigEditorScroll"
     private static let toolbarHideThreshold: CGFloat = 18
@@ -28,16 +31,22 @@ struct ConfigEditorView: View {
             .frame(height: 0)
 
             VStack(alignment: .leading, spacing: 14) {
+                if isRemote {
+                    remoteSessionBanner
+                }
+
                 CardSection("Network") {
                     networkNameRow
                     FieldRow("Network secret") {
                         NetworkSecretField(config: $config)
                     }
                 }
+                .disabled(isRemote)
 
                 CardSection("Peers") {
                     StringListEditor(title: "Initial nodes", placeholder: "tcp://host:11010", values: $config.peer_urls)
                 }
+                .disabled(isRemote)
 
                 advancedDisclosure
             }
@@ -51,7 +60,9 @@ struct ConfigEditorView: View {
         }
         .onAppear {
             syncDisplayMode()
-            Task { await refreshReverseStatus() }
+            if !isRemote {
+                Task { await refreshReverseStatus() }
+            }
         }
         .onChange(of: config.instance_id) { _, _ in
             syncDisplayMode()
@@ -74,6 +85,41 @@ struct ConfigEditorView: View {
                     }
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var remoteSessionBanner: some View {
+        if let session = remoteSession {
+            HStack(spacing: 12) {
+                Label(session.member.hostname, systemImage: "wifi")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("Remote · patch_config")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if session.hasUnsavedChanges {
+                    Button("Apply Changes") {
+                        Task { await applyRemoteChanges() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                } else {
+                    Label("No pending changes", systemImage: "checkmark.circle")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.thinMaterial, in: .rect(cornerRadius: 8))
+        }
+    }
+
+    private func applyRemoteChanges() async {
+        let success = await store.applyRemoteConfigPatch()
+        if success {
+            store.recordNotice("Applied configuration changes to \(remoteSession?.member.hostname ?? "remote device").")
         }
     }
 
@@ -131,6 +177,7 @@ struct ConfigEditorView: View {
                 Toggle("", isOn: $config.dhcp)
                     .labelsHidden()
             }
+            .disabled(isRemote)
             FieldRow("Virtual IPv4") {
                 HStack(spacing: 10) {
                     TextField("10.144.144.10", text: $config.virtual_ipv4)
@@ -146,18 +193,22 @@ struct ConfigEditorView: View {
                     .textFieldStyle(.glassField)
             }
             magicDNSRow
+                .disabled(isRemote)
             FieldRow("Device name") {
                 TextField("Auto", text: $config.dev_name)
                     .textFieldStyle(.glassField)
             }
+            .disabled(isRemote)
             FieldRow("MTU") {
                 TextField(String(NetworkConfig.defaultMTU), text: Binding($config.mtu))
                     .textFieldStyle(.glassField)
             }
+            .disabled(isRemote)
             FieldRow("Recv limit") {
                 TextField("Unlimited bytes/s", text: Binding($config.instance_recv_bps_limit))
                     .textFieldStyle(.glassField)
             }
+            .disabled(isRemote)
         }
 
         CardSection("Routing & Portal") {
@@ -169,20 +220,24 @@ struct ConfigEditorView: View {
                         values: $config.listener_urls,
                         defaultNewValue: ListenerURLDefaults.next
                     )
+                    .disabled(isRemote)
                     StringListEditor(
                         title: "Proxy CIDRs",
                         placeholder: "10.0.0.0/24",
                         values: $config.proxy_cidrs,
                         defaultNewValue: { HostProxyCIDR.first(excluding: $0) }
                     )
+                    .disabled(isRemote)
                     Toggle("Manual routes", isOn: $config.enable_manual_routes)
+                        .disabled(isRemote)
                     StringListEditor(title: "Routes", placeholder: "192.168.0.0/16", values: $config.routes)
                         .disabled(!config.enable_manual_routes)
                     StringListEditor(title: "Exit nodes", placeholder: "10.144.144.1", values: $config.exit_nodes)
                     StringListEditor(title: "Mapped listeners", placeholder: "tcp://0.0.0.0:8080", values: $config.mapped_listeners)
                     Toggle("Relay whitelist", isOn: optionalBool($config.enable_relay_network_whitelist, defaultValue: false))
+                        .disabled(isRemote)
                     StringListEditor(title: "Allowed networks", placeholder: "*", values: $config.relay_network_whitelist)
-                        .disabled(config.enable_relay_network_whitelist != true)
+                        .disabled(config.enable_relay_network_whitelist != true || isRemote)
                 }
             }
 
@@ -191,28 +246,31 @@ struct ConfigEditorView: View {
             ExpandableSettingsGroup("SOCKS5 and VPN portal") {
                 VStack(alignment: .leading, spacing: 12) {
                     Toggle("Enable SOCKS5", isOn: optionalBool($config.enable_socks5, defaultValue: false))
+                        .disabled(isRemote)
                     FieldRow("SOCKS5 port") {
                         TextField("1080", value: $config.socks5_port, format: .number)
                             .textFieldStyle(.glassField)
-                            .disabled(config.enable_socks5 != true)
+                            .disabled(config.enable_socks5 != true || isRemote)
                     }
                     Toggle("VPN portal", isOn: $config.enable_vpn_portal)
+                        .disabled(isRemote)
                     FieldRow("VPN portal port") {
                         TextField("22022", value: $config.vpn_portal_listen_port, format: .number)
                             .textFieldStyle(.glassField)
-                            .disabled(!config.enable_vpn_portal)
+                            .disabled(!config.enable_vpn_portal || isRemote)
                     }
                     FieldRow("VPN client network") {
                         TextField("10.0.0.0", text: $config.vpn_portal_client_network_addr)
                             .textFieldStyle(.glassField)
-                            .disabled(!config.enable_vpn_portal)
+                            .disabled(!config.enable_vpn_portal || isRemote)
                     }
                     FieldRow("VPN client prefix") {
                         Stepper("/\(config.vpn_portal_client_network_len)", value: $config.vpn_portal_client_network_len, in: 1...32)
-                            .disabled(!config.enable_vpn_portal)
+                            .disabled(!config.enable_vpn_portal || isRemote)
                     }
                 }
             }
+            .disabled(isRemote)
         }
 
         CardSection("Flags") {
@@ -225,15 +283,21 @@ struct ConfigEditorView: View {
                         FlagToggle("Bind device", isOn: optionalBool($config.bind_device, defaultValue: true), showsSeparator: false)
                     }
                 }
+                .disabled(isRemote)
 
                 FlagGroup("Transport", systemImage: "network") {
                     FlagList {
                         FlagToggle("Use smoltcp", isOn: optionalBool($config.use_smoltcp, defaultValue: false))
+                            .disabled(isRemote)
                         FlagToggle("Auto public IPv6", isOn: optionalBool($config.ipv6_public_addr_auto, defaultValue: false))
                         FlagToggle("KCP proxy", isOn: optionalBool($config.enable_kcp_proxy, defaultValue: false))
+                            .disabled(isRemote)
                         FlagToggle("Disable KCP input", isOn: optionalBool($config.disable_kcp_input, defaultValue: false))
+                            .disabled(isRemote)
                         FlagToggle("QUIC proxy", isOn: optionalBool($config.enable_quic_proxy, defaultValue: false))
+                            .disabled(isRemote)
                         FlagToggle("Disable QUIC input", isOn: optionalBool($config.disable_quic_input, defaultValue: false), showsSeparator: false)
+                            .disabled(isRemote)
                     }
                 }
 
@@ -249,6 +313,7 @@ struct ConfigEditorView: View {
                         FlagToggle("Disable UPnP", isOn: optionalBool($config.disable_upnp, defaultValue: false), showsSeparator: false)
                     }
                 }
+                .disabled(isRemote)
 
                 FlagGroup("Routing", systemImage: "route") {
                     FlagList {
@@ -258,6 +323,7 @@ struct ConfigEditorView: View {
                         FlagToggle("UDP broadcast relay", isOn: optionalBool($config.enable_udp_broadcast_relay, defaultValue: false), showsSeparator: false)
                     }
                 }
+                .disabled(isRemote)
 
                 FlagGroup("Security & DNS", systemImage: "lock.shield") {
                     FlagList {
@@ -266,6 +332,7 @@ struct ConfigEditorView: View {
                         FlagToggle("Disable encryption", isOn: optionalBool($config.disable_encryption, defaultValue: false), showsSeparator: false)
                     }
                 }
+                .disabled(isRemote)
             }
             .padding(.bottom, 2)
         }
@@ -276,6 +343,7 @@ struct ConfigEditorView: View {
                 members: members,
                 reverseStatus: reversePortForwardStatus,
                 reversePending: reversePortForwardPending,
+                allowsReverse: !isRemote,
                 onToggleReverse: { rule in
                     Task { await toggleReverse(for: rule) }
                 }
@@ -375,6 +443,7 @@ struct ConfigEditorView: View {
     private static let defaultListenerURLs = NetworkConfig().listener_urls
 
     private var networkNameHasDuplicate: Bool {
+        guard !isRemote else { return false }
         let name = config.network_name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return false }
         return store.configs.contains { other in
@@ -781,6 +850,7 @@ private struct PortForwardEditor: View {
     var members: [NetworkMemberStatus]
     var reverseStatus: [UUID: Bool] = [:]
     var reversePending: Set<UUID> = []
+    var allowsReverse: Bool = true
     var onToggleReverse: (PortForwardConfig) -> Void = { _ in }
 
     private var reversedRules: [PortForwardConfig] {
@@ -854,7 +924,7 @@ private struct PortForwardEditor: View {
                 PortForwardDestinationField(address: ruleBinding.dst_ip, options: destinationOptions)
                 TextField("Port", value: ruleBinding.dst_port, format: .number)
                     .frame(width: 90)
-                reverseButton(for: rule)
+                if allowsReverse { reverseButton(for: rule) }
                 Button(role: .destructive) {
                     portForwards.removeAll { $0.id == rule.id }
                 } label: {
@@ -875,7 +945,7 @@ private struct PortForwardEditor: View {
                 Text("->").foregroundStyle(.secondary)
                 Text(rule.dst_ip).font(.system(size: 13.5)).foregroundStyle(.secondary)
                 Text("\(rule.dst_port)").font(.system(size: 13.5)).foregroundStyle(.secondary)
-                reverseButton(for: rule)
+                if allowsReverse { reverseButton(for: rule) }
                 Button(role: .destructive) {
                     portForwards.removeAll { $0.id == rule.id }
                 } label: {

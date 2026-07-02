@@ -16,6 +16,7 @@ struct StatusView: View {
     var onRenameLocalHostname: (String) -> Void = { _ in }
     var onRenameRemoteHostname: (NetworkMemberStatus, String) async -> Bool = { _, _ in false }
     var onConfigureLocalMember: () -> Void = {}
+    var onConfigureRemoteMember: (NetworkMemberStatus) -> Void = { _ in }
 
     private var instance: NetworkInstance? { store.selectedRunningInstance }
     private var members: [NetworkMemberStatus] { store.selectedMemberStatuses }
@@ -161,7 +162,8 @@ struct StatusView: View {
             isScrolling: $memberTableIsScrolling,
             globalScrolling: $store.isAnyViewScrolling,
             onRenameHostname: beginRenamingHostname,
-            onConfigureLocalMember: onConfigureLocalMember
+            onConfigureLocalMember: onConfigureLocalMember,
+            onConfigureRemoteMember: onConfigureRemoteMember
         )
     }
 
@@ -291,6 +293,7 @@ private struct MemberGridTable: View {
     @Binding var globalScrolling: Bool
     var onRenameHostname: (NetworkMemberStatus) -> Void
     var onConfigureLocalMember: () -> Void
+    var onConfigureRemoteMember: (NetworkMemberStatus) -> Void
 
     var body: some View {
         GeometryReader { proxy in
@@ -309,7 +312,8 @@ private struct MemberGridTable: View {
                                 isStripedRow: !indexedItem.offset.isMultiple(of: 2),
                                 publicServerGroupExpanded: $publicServerGroupExpanded,
                                 onRenameHostname: onRenameHostname,
-                                onConfigureLocalMember: onConfigureLocalMember
+                                onConfigureLocalMember: onConfigureLocalMember,
+                                onConfigureRemoteMember: onConfigureRemoteMember
                             )
                         }
                     } header: {
@@ -448,6 +452,7 @@ private struct MemberGridRowView: View {
     @Binding var publicServerGroupExpanded: Bool
     var onRenameHostname: (NetworkMemberStatus) -> Void
     var onConfigureLocalMember: () -> Void
+    var onConfigureRemoteMember: (NetworkMemberStatus) -> Void
 
     private var row: MemberTableRow { item.row }
 
@@ -460,7 +465,8 @@ private struct MemberGridRowView: View {
                         row: row,
                         isHighlighted: row.contains(peerID: highlightedMemberPeerID),
                         onRenameHostname: onRenameHostname,
-                        onConfigureLocalMember: onConfigureLocalMember
+                        onConfigureLocalMember: onConfigureLocalMember,
+                        onConfigureRemoteMember: onConfigureRemoteMember
                     )
                     .padding(.leading, CGFloat(item.depth) * 18)
                 }
@@ -837,6 +843,7 @@ private struct MemberIdentityCell: View {
     var isHighlighted: Bool
     var onRenameHostname: (NetworkMemberStatus) -> Void
     var onConfigureLocalMember: () -> Void
+    var onConfigureRemoteMember: (NetworkMemberStatus) -> Void
 
     var body: some View {
         switch row.kind {
@@ -845,7 +852,9 @@ private struct MemberIdentityCell: View {
                 member: member,
                 isHighlighted: isHighlighted,
                 renameAction: { onRenameHostname(member) },
-                configureAction: member.isLocal ? onConfigureLocalMember : nil
+                configureAction: member.isLocal
+                    ? onConfigureLocalMember
+                    : { onConfigureRemoteMember(member) }
             )
         case .publicServerGroup(let group):
             PublicServerGroupIdentity(group: group, isHighlighted: isHighlighted)

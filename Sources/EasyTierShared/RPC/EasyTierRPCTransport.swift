@@ -74,6 +74,11 @@ public struct EasyTierRemoteRPCClient: Sendable {
         ))
     }
 
+    public func getConfigParsed(instanceID: String) async throws -> NetworkConfig {
+        let response = try await getConfig(instanceID: instanceID)
+        return try Self.parseGetConfigResponse(response)
+    }
+
     public func listPeers(instanceID: String) async throws -> String {
         try await call(EasyTierRPCRequest(
             service: Self.peerManageService,
@@ -119,7 +124,7 @@ public struct EasyTierRemoteRPCClient: Sendable {
     }
 
     @discardableResult
-    private func patchConfig(instanceID: String, runtimePatch: [String: Any]) async throws -> String {
+    public func patchConfig(instanceID: String, runtimePatch: [String: Any]) async throws -> String {
         let runtimePayload = try Self.patchConfigPayload(instanceID: instanceID, patch: runtimePatch)
         return try await call(EasyTierRPCRequest(
             service: Self.configService,
@@ -128,8 +133,19 @@ public struct EasyTierRemoteRPCClient: Sendable {
         ))
     }
 
+    @discardableResult
+    public func applyConfigPatch(instanceID: String, config: NetworkConfig, original: NetworkConfig) async throws -> String {
+        let patch = try Self.configPatch(config: config, original: original)
+        guard !patch.isEmpty else { return "" }
+        return try await patchConfig(instanceID: instanceID, runtimePatch: patch)
+    }
+
     public static func getConfig(rpcURL: URL, instanceID: String, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
         try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).getConfig(instanceID: instanceID)
+    }
+
+    public static func getConfigParsed(rpcURL: URL, instanceID: String, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> NetworkConfig {
+        try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).getConfigParsed(instanceID: instanceID)
     }
 
     public static func listPeers(rpcURL: URL, instanceID: String, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
@@ -162,6 +178,11 @@ public struct EasyTierRemoteRPCClient: Sendable {
 
     public static func listPortForwardsParsed(rpcURL: URL, instanceID: String, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> [PortForwardConfig] {
         try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).listPortForwardsParsed(instanceID: instanceID)
+    }
+
+    @discardableResult
+    public static func applyConfigPatch(rpcURL: URL, instanceID: String, config: NetworkConfig, original: NetworkConfig, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
+        try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).applyConfigPatch(instanceID: instanceID, config: config, original: original)
     }
 }
 
@@ -386,6 +407,163 @@ extension EasyTierRemoteRPCClient {
             result = (result << 8) | Int(byte)
         }
         return result
+    }
+
+    // MARK: - get_config response parsing
+
+    static func parseGetConfigResponse(_ response: String) throws -> NetworkConfig {
+        guard let data = response.data(using: .utf8) else {
+            throw EasyTierCoreError.invalidResponse("get_config response is not valid UTF-8")
+        }
+        let root: Any
+        do {
+            root = try JSONSerialization.jsonObject(with: data)
+        } catch {
+            throw EasyTierCoreError.invalidResponse("get_config response is not valid JSON: \(error)")
+        }
+        guard let object = root as? [String: Any] else {
+            throw EasyTierCoreError.invalidResponse("get_config response root is not a JSON object")
+        }
+        guard let configObj = object["config"] else {
+            throw EasyTierCoreError.invalidResponse("get_config response did not include a config object")
+        }
+        let configData = try JSONSerialization.data(withJSONObject: normalizedGetConfigObject(configObj), options: [])
+        do {
+            return try JSONDecoder().decode(NetworkConfig.self, from: configData)
+        } catch {
+            throw EasyTierCoreError.invalidResponse("failed to decode remote config: \(error)")
+        }
+    }
+
+    static func normalizedGetConfigObject(_ configObj: Any) -> Any {
+        guard var config = configObj as? [String: Any] else {
+            return configObj
+        }
+
+        for key in config.keys where config[key] is NSNull {
+            if let value = remoteConfigNullDefault(for: key) {
+                config[key] = value
+            }
+        }
+
+        return config
+    }
+
+    static func remoteConfigNullDefault(for key: String) -> Any? {
+        switch key {
+        case "dhcp": true
+        case "virtual_ipv4": ""
+        case "network_length": 24
+        case "network_name": "easytier"
+        case "networking_method": NetworkingMethod.manual.rawValue
+        case "public_server_url": ""
+        case "peer_urls": []
+        case "proxy_cidrs": []
+        case "enable_vpn_portal": false
+        case "vpn_portal_listen_port": 22_022
+        case "vpn_portal_client_network_addr": ""
+        case "vpn_portal_client_network_len": 24
+        case "advanced_settings": false
+        case "listener_urls": ListenerURLDefaults.addSuggestions
+        case "latency_first": false
+        case "dev_name": ""
+        case "relay_network_whitelist": []
+        case "enable_manual_routes": false
+        case "routes": []
+        case "exit_nodes": []
+        case "socks5_port": 1_080
+        case "mapped_listeners": []
+        case "port_forwards": []
+        default: nil
+        }
+    }
+
+    // MARK: - patch_config delta builder
+
+    static func configPatch(config: NetworkConfig, original: NetworkConfig) throws -> [String: Any] {
+        var patch: [String: Any] = [:]
+
+        if config.hostname != original.hostname {
+            patch["hostname"] = config.hostname ?? ""
+        }
+
+        if config.virtual_ipv4 != original.virtual_ipv4 || config.network_length != original.network_length {
+            if !config.virtual_ipv4.isEmpty {
+                patch["ipv4"] = try ipv4InetPayload(ip: config.virtual_ipv4, networkLength: config.network_length)
+            }
+        }
+
+        if config.ipv6_public_addr_auto != original.ipv6_public_addr_auto {
+            patch["ipv6_public_addr_auto"] = config.ipv6_public_addr_auto ?? false
+        }
+
+        if config.port_forwards != original.port_forwards {
+            patch["port_forwards"] = try portForwardsListPatch(config.port_forwards)
+        }
+
+        if config.routes != original.routes {
+            patch["routes"] = try routeListPatch(config.routes)
+        }
+
+        if config.exit_nodes != original.exit_nodes {
+            patch["exit_nodes"] = try exitNodeListPatch(config.exit_nodes)
+        }
+
+        if config.mapped_listeners != original.mapped_listeners {
+            patch["mapped_listeners"] = try mappedListenerListPatch(config.mapped_listeners)
+        }
+
+        return patch
+    }
+
+    static func portForwardsListPatch(_ portForwards: [PortForwardConfig]) throws -> [[String: Any]] {
+        var patches: [[String: Any]] = [["action": 2]]
+        for portForward in portForwards {
+            patches.append(["action": 0, "cfg": try portForwardPatchConfig(portForward)])
+        }
+        return patches
+    }
+
+    static func routeListPatch(_ routes: [String]) throws -> [[String: Any]] {
+        var patches: [[String: Any]] = [["action": 2]]
+        for route in routes {
+            let trimmed = route.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let (ip, prefix) = try parseCIDR(trimmed)
+            patches.append(["action": 0, "cidr": try ipv4InetPayload(ip: ip, networkLength: prefix)])
+        }
+        return patches
+    }
+
+    static func exitNodeListPatch(_ exitNodes: [String]) throws -> [[String: Any]] {
+        var patches: [[String: Any]] = [["action": 2]]
+        for node in exitNodes {
+            let trimmed = node.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            patches.append(["action": 0, "node": ["ip": ["Ipv4": ["addr": try ipv4Address(trimmed)]]]])
+        }
+        return patches
+    }
+
+    static func mappedListenerListPatch(_ listeners: [String]) throws -> [[String: Any]] {
+        var patches: [[String: Any]] = [["action": 2]]
+        for listener in listeners {
+            let trimmed = listener.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            patches.append(["action": 0, "url": ["url": trimmed]])
+        }
+        return patches
+    }
+
+    static func ipv4InetPayload(ip: String, networkLength: Int) throws -> [String: Any] {
+        ["address": ["addr": try ipv4Address(ip)], "network_length": networkLength]
+    }
+
+    static func parseCIDR(_ cidr: String) throws -> (String, Int) {
+        let parts = cidr.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+        let ip = String(parts.first ?? "")
+        let prefix = parts.count > 1 ? Int(String(parts[1])) ?? 24 : 24
+        return (ip, prefix)
     }
 
 }
