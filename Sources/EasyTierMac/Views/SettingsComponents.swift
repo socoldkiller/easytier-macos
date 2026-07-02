@@ -33,10 +33,10 @@ struct SettingsCard<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 11) {
+        VStack(alignment: .leading, spacing: 8) {
             content
         }
-        .padding(14)
+        .padding(11)
         .frame(maxWidth: .infinity, alignment: .leading)
         .frostedGlassBackground(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
@@ -64,8 +64,8 @@ struct CardSection<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .center, spacing: 9) {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .center, spacing: 7) {
                 if let systemImage, let tint {
                     SectionIcon(systemImage: systemImage, tint: tint)
                 } else if let systemImage {
@@ -98,13 +98,13 @@ struct SectionHeader: View {
     var tint: Color
 
     var body: some View {
-        HStack(spacing: 12) {
-            SectionIcon(systemImage: systemImage, tint: tint, size: 32)
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 7) {
+            SectionIcon(systemImage: systemImage, tint: tint, size: 22)
+            VStack(alignment: .leading, spacing: 0.5) {
                 Text(title)
-                    .font(.system(size: 19, weight: .semibold))
+                    .font(.system(size: 15, weight: .semibold))
                 Text(subtitle)
-                    .font(.system(size: 12.5))
+                    .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -132,8 +132,8 @@ struct FieldRow<Content: View>: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(alignment: .top, spacing: 11) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text(label)
                     .font(.system(size: 13.5, weight: .regular))
                     .foregroundStyle(.secondary)
@@ -144,7 +144,7 @@ struct FieldRow<Content: View>: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .frame(width: 152, alignment: .leading)
+            .frame(width: 140, alignment: .leading)
             content
                 .frame(maxWidth: 520, alignment: .leading)
         }
@@ -212,22 +212,22 @@ struct ModeOptionTile: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 12) {
-                SectionIcon(systemImage: systemImage, tint: tint, size: 30)
-                VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 10) {
+                SectionIcon(systemImage: systemImage, tint: tint, size: 26)
+                VStack(alignment: .leading, spacing: 2) {
                     Text(title)
                         .font(.system(size: 14, weight: .semibold))
                     Text(description)
-                        .font(.system(size: 12))
+                        .font(.system(size: 11.5))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                Spacer(minLength: 8)
+                Spacer(minLength: 6)
                 Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 18))
+                    .font(.system(size: 16))
                     .foregroundStyle(isSelected ? Color.secondary : Color.secondary.opacity(0.25))
             }
-            .padding(12)
+            .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -258,17 +258,17 @@ struct StatusBadge: View {
     }
 
     var body: some View {
-        HStack(spacing: 9) {
+        HStack(spacing: 7) {
             Image(systemName: systemImage)
-                .font(.title3)
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 2) {
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
                 Text(title)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text(value.isEmpty ? "-" : value)
-                    .font(.headline)
+                    .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
                     .contentTransition(.opacity)
@@ -276,7 +276,7 @@ struct StatusBadge: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(10)
+        .padding(8)
         .frame(width: width, alignment: .leading)
         .liquidGlassMetricBackground(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: value)
@@ -309,8 +309,8 @@ struct ExpandableSettingsGroup<Content: View>: View {
 
             if isExpanded {
                 content
-                    .padding(.top, 8)
-                    .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 8))
+                    .padding(.top, 6)
+                    .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 6))
             }
         }
     }
@@ -338,17 +338,17 @@ struct DisclosureHeader<Trailing: View>: View {
         Button {
             onToggle()
         } label: {
-            HStack(spacing: 9) {
+            HStack(spacing: 8) {
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 10.5, weight: .medium))
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    .frame(width: 12)
+                    .frame(width: 11)
                 Text(title)
-                    .font(.system(size: 14, weight: .medium))
-                Spacer(minLength: 12)
+                    .font(.system(size: 13.5, weight: .medium))
+                Spacer(minLength: 10)
                 trailing
             }
-            .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

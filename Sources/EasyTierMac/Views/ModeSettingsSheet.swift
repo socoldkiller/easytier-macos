@@ -105,7 +105,9 @@ struct EasyTierSettingsSheet: View {
         onSave: @escaping (AppMode, MagicDNSSettings) -> Void
     ) {
         self.onSave = onSave
-        switch initialTab {
+        let requestedRaw = UserDefaults.standard.string(forKey: EasyTierSettingsTabRequest.key)
+        let requestedTab = requestedRaw.flatMap(EasyTierSettingsTab.init(rawValue:)) ?? initialTab
+        switch requestedTab {
         case .general: _selection = State(initialValue: .general)
         case .easyTier: _selection = State(initialValue: .easyTier(.magicDNS))
         case .about: _selection = State(initialValue: .about)
@@ -133,7 +135,7 @@ struct EasyTierSettingsSheet: View {
     var body: some View {
         NavigationSplitView {
             SettingsSidebar(selection: $selection, visibleEasyTierSections: visibleEasyTierSections)
-                .navigationSplitViewColumnWidth(min: 200, ideal: Self.sidebarWidth, max: 280)
+                .navigationSplitViewColumnWidth(min: 180, ideal: Self.sidebarWidth, max: 220)
         } detail: {
             MotionSwitch(id: selection, insertionEdge: .trailing, fillsAvailableSpace: false) {
                 detailContent
@@ -141,11 +143,17 @@ struct EasyTierSettingsSheet: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .onAppear {
-            selectSettingsTab(requestedSettingsTab)
-        }
         .onChange(of: requestedSettingsTab) { _, tab in
             selectSettingsTab(tab)
+        }
+        .onChange(of: selection) { _, newSelection in
+            let tab: EasyTierSettingsTab
+            switch newSelection {
+            case .general: tab = .general
+            case .easyTier: tab = .easyTier
+            case .about: tab = .about
+            }
+            EasyTierSettingsTabRequest.set(tab)
         }
         .onChange(of: kind) { _, newKind in
             if case .easyTier(let section) = selection,
@@ -187,7 +195,7 @@ struct EasyTierSettingsSheet: View {
 
     private var generalSettings: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 9) {
                 SectionHeader(
                     title: "General",
                     subtitle: "Appearance, launch, and quit behavior for the EasyTier GUI.",
@@ -233,7 +241,8 @@ struct EasyTierSettingsSheet: View {
                     }
                 }
             }
-            .padding(18)
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
         .safeAreaInset(edge: .bottom) { footer }
@@ -245,7 +254,7 @@ struct EasyTierSettingsSheet: View {
     @ViewBuilder
     private func easyTierSectionView(_ section: EasyTierSection) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 9) {
                 SectionHeader(
                     title: section.rawValue,
                     subtitle: section.subtitle,
@@ -262,7 +271,7 @@ struct EasyTierSettingsSheet: View {
                 case .remoteConfig: remoteConfigSection
                 }
             }
-            .padding(20)
+            .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
@@ -270,7 +279,7 @@ struct EasyTierSettingsSheet: View {
     }
 
     private var modeSection: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 7) {
             ModeOptionTile(
                 title: "Normal",
                 description: "Run a local EasyTier node with its own listeners and RPC server.",
@@ -291,7 +300,7 @@ struct EasyTierSettingsSheet: View {
     }
 
     private var magicDNSSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             SettingsCard {
                 FieldRow("DNS Suffix", description: "Resolves *.suffix through EasyTier.") {
                     TextField("", text: $magicDNSSuffix)
@@ -318,8 +327,8 @@ struct EasyTierSettingsSheet: View {
     }
 
     private var rpcServerSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
                 StatusBadge(
                     title: "Status",
                     value: rpcListenEnabled ? "Listening" : "Off",
@@ -375,12 +384,12 @@ struct EasyTierSettingsSheet: View {
     }
 
     private var advancedSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             SettingsCard {
-                VStack(spacing: 12) {
-                    SectionIcon(systemImage: "doc.text.fill", tint: SettingsTint.advanced, size: 40)
+                VStack(spacing: 8) {
+                    SectionIcon(systemImage: "doc.text.fill", tint: SettingsTint.advanced, size: 34)
                     Text("Configured via TOML profile")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 13.5, weight: .semibold))
                     Text("VPN Portal and SOCKS5 proxy are managed through your TOML network profile. They appear here once a profile enabling them is loaded.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -388,7 +397,7 @@ struct EasyTierSettingsSheet: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
+                .padding(.vertical, 4)
             }
             Text("Requires a config file. Configured via TOML profile.")
                 .font(.caption)
@@ -453,8 +462,8 @@ struct EasyTierSettingsSheet: View {
                 .keyboardShortcut(isEasyTierActive ? .cancelAction : .defaultAction)
         }
         .controlSize(.small)
-        .padding(.horizontal, 18)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 7)
     }
 
     // MARK: Bindings
@@ -580,8 +589,8 @@ struct EasyTierSettingsSheet: View {
         "wg://0.0.0.0:11011",
     ]
 
-    private static let sidebarWidth: CGFloat = 220
-    private static let windowSize = CGSize(width: 720, height: 560)
+    private static let sidebarWidth: CGFloat = 190
+    private static let windowSize = CGSize(width: 640, height: 640)
 }
 
 // MARK: - About
@@ -847,7 +856,6 @@ private struct RPCPortalWhitelistEditor: View {
                     ))
                     .textFieldStyle(.glassField)
                     .font(.system(size: 13, design: .monospaced))
-                    .frame(width: 220)
 
                     Button(role: .destructive) {
                         guard values.indices.contains(index) else { return }
