@@ -25,7 +25,6 @@ enum EasyTierSection: String, CaseIterable, Identifiable, Hashable {
     case mode = "Mode"
     case magicDNS = "Magic DNS"
     case rpcServer = "RPC Server"
-    case listeners = "Listeners"
     case advanced = "Advanced"
     case remoteConfig = "Remote Config"
 
@@ -36,7 +35,6 @@ enum EasyTierSection: String, CaseIterable, Identifiable, Hashable {
         case .mode: "slider.horizontal.3"
         case .magicDNS: "globe"
         case .rpcServer: "server.rack"
-        case .listeners: "antenna.radiowaves.left.and.right"
         case .advanced: "doc.text"
         case .remoteConfig: "cloud"
         }
@@ -47,7 +45,6 @@ enum EasyTierSection: String, CaseIterable, Identifiable, Hashable {
         case .mode: SettingsTint.mode
         case .magicDNS: SettingsTint.magicDNS
         case .rpcServer: SettingsTint.rpcServer
-        case .listeners: SettingsTint.listeners
         case .advanced: SettingsTint.advanced
         case .remoteConfig: SettingsTint.remoteConfig
         }
@@ -58,7 +55,6 @@ enum EasyTierSection: String, CaseIterable, Identifiable, Hashable {
         case .mode: "Choose how this EasyTier instance is configured."
         case .magicDNS: "Resolve EasyTier network names through the built-in DNS."
         case .rpcServer: "Local control plane exposing EasyTier state to the GUI and peers."
-        case .listeners: "Schemes and addresses this node listens on for peer connections."
         case .advanced: "Features managed through your TOML network profile."
         case .remoteConfig: "Pull the network profile from a remote server on launch."
         }
@@ -93,7 +89,6 @@ struct EasyTierSettingsSheet: View {
     @State private var remoteRPCAddress: String
     @State private var magicDNSSuffix: String
     @State private var settingsError: String?
-    @State private var listenerURLs = Self.defaultListeners
     @State private var showingDisableRPCListenWarning = false
 
     var onSave: (AppMode, MagicDNSSettings) -> Void
@@ -266,7 +261,6 @@ struct EasyTierSettingsSheet: View {
                 case .mode: modeSection
                 case .magicDNS: magicDNSSection
                 case .rpcServer: rpcServerSection
-                case .listeners: listenersEditor
                 case .advanced: advancedSection
                 case .remoteConfig: remoteConfigSection
                 }
@@ -415,40 +409,6 @@ struct EasyTierSettingsSheet: View {
         }
     }
 
-    private var listenersEditor: some View {
-        SettingsCard {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(listenerURLs.indices, id: \.self) { index in
-                    HStack(spacing: 6) {
-                        TextField("scheme://host:port", text: $listenerURLs[index])
-                            .textFieldStyle(.glassField)
-                            .font(.system(size: 13, design: .monospaced))
-                            .frame(width: 220)
-                        Button {
-                            listenerURLs.remove(at: index)
-                        } label: {
-                            Image(systemName: "minus.circle")
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                    }
-                }
-
-                Button {
-                    listenerURLs.append(ListenerURLDefaults.next(excluding: listenerURLs))
-                } label: {
-                    Label("Add URL", systemImage: "plus.circle")
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 13.5))
-
-                FieldRow("Mapped") {
-                    StatusText("None")
-                }
-            }
-        }
-    }
-
     // MARK: Footer
 
     private var footer: some View {
@@ -571,7 +531,7 @@ struct EasyTierSettingsSheet: View {
 
     private static func visibleEasyTierSections(for kind: ModeKind) -> [EasyTierSection] {
         switch kind {
-        case .normal: [.mode, .magicDNS, .rpcServer, .listeners, .advanced]
+        case .normal: [.mode, .magicDNS, .rpcServer, .advanced]
         case .remote: [.mode, .magicDNS, .remoteConfig]
         }
     }
@@ -582,12 +542,6 @@ struct EasyTierSettingsSheet: View {
     }
 
     private static let defaultRemoteRPCAddress = "tcp://127.0.0.1:\(AppMode.defaultRPCListenPort)"
-
-    private static let defaultListeners = [
-        "tcp://0.0.0.0:11010",
-        "udp://0.0.0.0:11010",
-        "wg://0.0.0.0:11011",
-    ]
 
     private static let sidebarWidth: CGFloat = 190
     private static let windowSize = CGSize(width: 640, height: 640)
