@@ -65,7 +65,14 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
     }
 
     public func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] {
-        try collectNetworkInfosSync()
+        // The FFI call (`collect_network_infos` -> `RPC_RUNTIME.block_on`) and the
+        // per-instance JSON decode are CPU/IO-bound and have no main-actor
+        // dependencies (DashMap-backed manager, Sendable client). Move them off
+        // the incumbent actor so they don't contend with scroll layout passes
+        // during 1 Hz polling. Callers always hop to `@MainActor` after awaiting.
+        try await Task.detached(priority: .userInitiated) { [self] in
+            try self.collectNetworkInfosSync()
+        }.value
     }
 
     public func collectNetworkInfosSync() throws -> [String: NetworkInstanceRunningInfo] {

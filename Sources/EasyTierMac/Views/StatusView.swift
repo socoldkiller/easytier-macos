@@ -40,6 +40,7 @@ struct StatusView: View {
     }
 
     var body: some View {
+        @Bindable var store = self.store
         VStack(alignment: .leading, spacing: 14) {
             header
 
@@ -152,11 +153,13 @@ struct StatusView: View {
     }
 
     private var memberTable: some View {
-        MemberGridTable(
+        @Bindable var store = self.store
+        return MemberGridTable(
             rows: memberTableRows,
             highlightedMemberPeerID: highlightedMemberPeerID,
             publicServerGroupExpanded: $publicServerGroupExpanded,
             isScrolling: $memberTableIsScrolling,
+            globalScrolling: $store.isAnyViewScrolling,
             onRenameHostname: beginRenamingHostname,
             onConfigureLocalMember: onConfigureLocalMember
         )
@@ -285,6 +288,7 @@ private struct MemberGridTable: View {
     var highlightedMemberPeerID: String?
     @Binding var publicServerGroupExpanded: Bool
     @Binding var isScrolling: Bool
+    @Binding var globalScrolling: Bool
     var onRenameHostname: (NetworkMemberStatus) -> Void
     var onConfigureLocalMember: () -> Void
 
@@ -318,6 +322,7 @@ private struct MemberGridTable: View {
             .scrollIndicators(.never, axes: [.vertical, .horizontal])
             .defaultScrollAnchor(.topLeading)
             .trackScrollPhase(isScrolling: $isScrolling)
+            .reflectScrollPhase(to: $globalScrolling)
         }
     }
 
@@ -963,6 +968,12 @@ private extension View {
         }
     }
 
+    func reflectScrollPhase(to globalScrolling: Binding<Bool>) -> some View {
+        onScrollPhaseChange { _, phase in
+            globalScrolling.wrappedValue = phase.isScrolling
+        }
+    }
+
     func pointingHandOnHover() -> some View {
         onHover { hovering in
             if hovering {
@@ -1302,11 +1313,25 @@ private enum IPv4CellMetrics {
     static let verticalPadding: CGFloat = 6
     static let trailingReservation: CGFloat = 28
 
-    static func width(for value: String) -> CGFloat {
+    /// NSFont.systemFontSize is fixed at the time the process links against
+    /// AppKit; clear the cache only if it ever changes between calls (e.g. a
+    /// future accessibility text-size feature flips it on the fly).
+    @MainActor private static var widthCache: [String: CGFloat] = [:]
+    @MainActor private static var widthCacheSize: CGFloat = -1
+
+    @MainActor static func width(for value: String) -> CGFloat {
+        let pointSize = NSFont.systemFontSize
+        if widthCacheSize != pointSize {
+            widthCacheSize = pointSize
+            widthCache = [:]
+        }
+        if let cached = widthCache[value] { return cached }
         let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let measuredTextWidth = textWidth(for: text.isEmpty ? "255.255.255.255" : text)
         let targetWidth = measuredTextWidth + horizontalPadding * 2 + trailingReservation
-        return max(ceil(targetWidth), 120)
+        let result = max(ceil(targetWidth), 120)
+        widthCache[value] = result
+        return result
     }
 
     private static func textWidth(for value: String) -> CGFloat {

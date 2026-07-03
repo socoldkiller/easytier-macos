@@ -25,6 +25,11 @@ public final class EasyTierAppStore {
     public var vpnOnDemandEnabled = false
     public var magicDNSSettings: MagicDNSSettings = .default
 
+    /// Mirrors any in-app scroll phase. Polling briefly skips refresh while
+    /// this is true so the main-thread SwiftUI transaction pass does not
+    /// compete with scroll-driven layout work.
+    public var isAnyViewScrolling = false
+
     public static func portForwardFingerprint(for rule: PortForwardConfig) -> String {
         "\(rule.bind_ip):\(rule.bind_port)-\(rule.dst_ip):\(rule.dst_port)-\(rule.proto)"
     }
@@ -740,6 +745,7 @@ public final class EasyTierAppStore {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
                 guard let self, self.pollingEnabled else { continue }
+                if self.isAnyViewScrolling { continue }
                 await self.refreshRuntime()
             }
         }
@@ -986,7 +992,7 @@ public final class EasyTierAppStore {
 
         if runtimeIntents.count > maxIntents {
             runtimeIntents = Array(runtimeIntents.suffix(maxIntents))
-            save()
+            saveInBackground()
         }
     }
 
@@ -1102,7 +1108,7 @@ public final class EasyTierAppStore {
         mutate(&updated)
         guard runtimeIntents[index] != updated else { return }
         runtimeIntents[index] = updated
-        save()
+        saveInBackground()
     }
 
     private func setRuntimeIntentStatus(_ id: String, _ status: RuntimeIntentStatus) {

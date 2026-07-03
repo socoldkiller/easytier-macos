@@ -46,6 +46,9 @@ struct ConfigEditorView: View {
         .coordinateSpace(name: Self.scrollSpaceName)
         .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
         .textFieldStyle(.glassField)
+        .onScrollPhaseChange { _, phase in
+            store.isAnyViewScrolling = phase.isScrolling
+        }
         .onAppear {
             syncDisplayMode()
             Task { await refreshReverseStatus() }
