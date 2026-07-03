@@ -53,6 +53,20 @@ public enum ListenerURLDefaults {
         let existing = Set(existing.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
         return addSuggestions.first { !existing.contains($0) } ?? ""
     }
+
+    /// Same schemes as `defaultListeners` but with port `0`, letting the OS
+    /// assign a free port. Used when adding a *second* (or later) network
+    /// config so its listeners don't collide with the first network's
+    /// fixed-port defaults (`11010`/`11011`/...).
+    public static let autoPortListeners = [
+        "tcp://0.0.0.0:0",
+        "udp://0.0.0.0:0",
+        "wg://0.0.0.0:0",
+        "ws://0.0.0.0:0",
+        "wss://0.0.0.0:0",
+        "quic://0.0.0.0:0",
+        "faketcp://0.0.0.0:0",
+    ]
 }
 
 public struct NetworkConfig: Codable, Equatable, Identifiable, Sendable {

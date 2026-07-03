@@ -198,7 +198,17 @@ public final class EasyTierAppStore {
     }
 
     public func addConfig() {
-        let config = StoredNetworkConfig(config: NetworkConfig(network_name: uniqueNetworkName()))
+        // The first network takes the fixed-port listener defaults
+        // (tcp/udp 11010, wg/ws 11011, ...). Any later network reuses the
+        // same schemes with port 0 so the OS picks non-conflicting ports
+        // instead of clashing with the first network's bound listeners.
+        let listeners = configs.isEmpty
+            ? NetworkConfig().listener_urls
+            : ListenerURLDefaults.autoPortListeners
+        let config = StoredNetworkConfig(config: NetworkConfig(
+            network_name: uniqueNetworkName(),
+            listener_urls: listeners
+        ))
         configs.append(config)
         selectedConfigID = config.id
         selectedTab = .config
