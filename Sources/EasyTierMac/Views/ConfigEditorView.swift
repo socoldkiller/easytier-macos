@@ -31,10 +31,6 @@ struct ConfigEditorView: View {
             .frame(height: 0)
 
             VStack(alignment: .leading, spacing: 14) {
-                if isRemote {
-                    remoteSessionBanner
-                }
-
                 CardSection("Network") {
                     networkNameRow
                     FieldRow("Network secret") {
@@ -85,41 +81,6 @@ struct ConfigEditorView: View {
                     }
                 }
             }
-        }
-    }
-
-    @ViewBuilder
-    private var remoteSessionBanner: some View {
-        if let session = remoteSession {
-            HStack(spacing: 12) {
-                Label(session.member.hostname, systemImage: "wifi")
-                    .font(.system(size: 13, weight: .semibold))
-                Text("Remote · patch_config")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if session.hasUnsavedChanges {
-                    Button("Apply Changes") {
-                        Task { await applyRemoteChanges() }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                } else {
-                    Label("No pending changes", systemImage: "checkmark.circle")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(.thinMaterial, in: .rect(cornerRadius: 8))
-        }
-    }
-
-    private func applyRemoteChanges() async {
-        let success = await store.applyRemoteConfigPatch()
-        if success {
-            store.recordNotice("Applied configuration changes to \(remoteSession?.member.hostname ?? "remote device").")
         }
     }
 

@@ -198,6 +198,11 @@ struct ContentView: View {
         store.selectedTab == .config && configEditorScrolledPastTop
     }
 
+    private var remoteToolbarSession: RemoteConfigSession? {
+        guard store.selectedTab == .config else { return nil }
+        return store.remoteConfigSession
+    }
+
     private var sidebar: some View {
 
         return Group {
@@ -296,35 +301,55 @@ struct ContentView: View {
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
-            Button {
-                store.isShowingSettings = true
-            } label: {
-                Label("Settings", systemImage: "gearshape")
-            }
-            .help("EasyTier Settings")
-            .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
-
-            Button {
-                let runningInstanceToRestart = draftIsDirty ? store.selectedRunningInstance : nil
-                commitDraft(saveImmediately: true)
-                Task {
-                    if let runningInstanceToRestart {
-                        await store.restartSelectedConfig(replacing: runningInstanceToRestart)
-                    } else if selectedConfigIsRunning {
-                        await store.stopSelectedConfig()
-                    } else {
-                        await store.runSelectedConfig()
-                    }
+            if let remoteSession = remoteToolbarSession {
+                Button {
+                    Task { await applyRemoteToolbarPatch() }
+                } label: {
+                    Label("Apply Changes", systemImage: "gearshape")
                 }
-            } label: {
-                Label(
-                    connectionActionTitle,
-                    systemImage: connectionActionSystemImage
-                )
+                .disabled(!remoteSession.hasUnsavedChanges || remoteSession.isLoading || remoteSession.loadError != nil || store.isBusy)
+                .help(remoteSession.hasUnsavedChanges ? "Apply remote changes with patch_config" : "No pending remote changes")
+                .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
+
+                Button {
+                    Task { await restartLocalToolbarNetwork() }
+                } label: {
+                    Label("Restart Network", systemImage: store.isBusy ? "hourglass" : "arrow.clockwise")
+                }
+                .disabled(remoteSession.isLoading || remoteSession.loadError != nil || store.selectedRunningInstance == nil || store.isBusy)
+                .help(remoteSession.hasUnsavedChanges ? "Apply remote changes and restart selected local network" : "Restart selected local network")
+                .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
+            } else {
+                Button {
+                    store.isShowingSettings = true
+                } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
+                .help("EasyTier Settings")
+                .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
+
+                Button {
+                    let runningInstanceToRestart = draftIsDirty ? store.selectedRunningInstance : nil
+                    commitDraft(saveImmediately: true)
+                    Task {
+                        if let runningInstanceToRestart {
+                            await store.restartSelectedConfig(replacing: runningInstanceToRestart)
+                        } else if selectedConfigIsRunning {
+                            await store.stopSelectedConfig()
+                        } else {
+                            await store.runSelectedConfig()
+                        }
+                    }
+                } label: {
+                    Label(
+                        connectionActionTitle,
+                        systemImage: connectionActionSystemImage
+                    )
+                }
+                .disabled(store.selectedConfig == nil || store.isBusy)
+                .help(connectionActionHelp)
+                .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
             }
-            .disabled(store.selectedConfig == nil || store.isBusy)
-            .help(connectionActionHelp)
-            .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
 
             Menu {
                 Button("Import TOML") {
@@ -419,6 +444,31 @@ struct ContentView: View {
         if selectedConfigNeedsRestart { return "Restart selected network" }
         if selectedConfigHasRuntimeError { return "Stop selected network" }
         return selectedConfigIsRunning ? "Pause selected network" : "Run selected network"
+    }
+
+    private func applyRemoteToolbarPatch() async {
+        let hostname = store.remoteConfigSession?.member.hostname ?? "remote device"
+        let success = await store.applyRemoteConfigPatch()
+        if success {
+            store.recordNotice("Applied configuration changes to \(hostname).")
+        }
+    }
+
+    private func restartLocalToolbarNetwork() async {
+        let appliedRemoteChanges = store.remoteConfigSession?.hasUnsavedChanges == true
+        if store.remoteConfigSession?.hasUnsavedChanges == true {
+            guard await store.applyRemoteConfigPatch() else { return }
+        }
+        guard let runningInstance = store.selectedRunningInstance else { return }
+        await store.restartSelectedConfig(replacing: runningInstance)
+        if store.lastError == nil {
+            let networkName = store.selectedConfig?.network_name ?? "selected network"
+            if appliedRemoteChanges {
+                store.recordNotice("Applied remote changes and restarted \(networkName).")
+            } else {
+                store.recordNotice("Restarted \(networkName).")
+            }
+        }
     }
 
     private func connectionState(for stored: StoredNetworkConfig) -> ConnectionGlyphState {

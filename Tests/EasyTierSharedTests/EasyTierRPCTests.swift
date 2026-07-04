@@ -237,6 +237,76 @@ private actor ThrowingRPCTransport: EasyTierRPCTransport {
     #expect(dstIPv4Addr?["addr"] as? Int == 0x0a7e7e02)
 }
 
+@Test func applyConfigPatchIncludesRequiredRepeatedPatchFields() async throws {
+    let transport = SpyRPCTransport()
+    let client = EasyTierRemoteRPCClient(transport: transport)
+    let original = NetworkConfig(
+        instance_id: "11111111-2222-3333-4444-555555555555",
+        network_name: "office"
+    )
+    var config = original
+    config.port_forwards = [
+        PortForwardConfig(bind_ip: "0.0.0.0", bind_port: 80, dst_ip: "10.0.64.16", dst_port: 80, proto: "tcp"),
+    ]
+
+    try await client.applyConfigPatch(instanceID: original.instance_id, config: config, original: original)
+    let calls = await transport.allCalls()
+
+    #expect(calls.map(\.method) == ["patch_config"])
+    let object = try rpcPayloadObject(calls[0].payload)
+    let patch = object["patch"] as? [String: Any]
+    #expect((patch?["proxy_networks"] as? [Any])?.isEmpty == true)
+    #expect((patch?["routes"] as? [Any])?.isEmpty == true)
+    #expect((patch?["exit_nodes"] as? [Any])?.isEmpty == true)
+    #expect((patch?["mapped_listeners"] as? [Any])?.isEmpty == true)
+    #expect((patch?["connectors"] as? [Any])?.isEmpty == true)
+    let portForwards = patch?["port_forwards"] as? [[String: Any]]
+    #expect(portForwards?.count == 2)
+    #expect(portForwards?.first?["action"] as? Int == 2)
+}
+
+@Test func applyConfigPatchEncodesListPatchSchemas() async throws {
+    let transport = SpyRPCTransport()
+    let client = EasyTierRemoteRPCClient(transport: transport)
+    let original = NetworkConfig(
+        instance_id: "11111111-2222-3333-4444-555555555555",
+        network_name: "office"
+    )
+    var config = original
+    config.routes = ["10.0.64.0/24"]
+    config.exit_nodes = ["10.0.64.1"]
+    config.mapped_listeners = ["tcp://0.0.0.0:11010"]
+
+    try await client.applyConfigPatch(instanceID: original.instance_id, config: config, original: original)
+    let calls = await transport.allCalls()
+
+    #expect(calls.map(\.method) == ["patch_config"])
+    let object = try rpcPayloadObject(calls[0].payload)
+    let patch = object["patch"] as? [String: Any]
+
+    let routes = patch?["routes"] as? [[String: Any]]
+    #expect(routes?.count == 2)
+    #expect(routes?.first?["action"] as? Int == 2)
+    let routeCIDR = routes?.last?["cidr"] as? [String: Any]
+    let routeAddress = routeCIDR?["address"] as? [String: Any]
+    #expect(routeAddress?["addr"] as? Int == 0x0a004000)
+    #expect(routeCIDR?["network_length"] as? Int == 24)
+
+    let exitNodes = patch?["exit_nodes"] as? [[String: Any]]
+    #expect(exitNodes?.count == 2)
+    #expect(exitNodes?.first?["action"] as? Int == 2)
+    let node = exitNodes?.last?["node"] as? [String: Any]
+    let nodeIP = node?["ip"] as? [String: Any]
+    let nodeIPv4 = nodeIP?["Ipv4"] as? [String: Any]
+    #expect(nodeIPv4?["addr"] as? Int == 0x0a004001)
+
+    let mappedListeners = patch?["mapped_listeners"] as? [[String: Any]]
+    #expect(mappedListeners?.count == 2)
+    #expect(mappedListeners?.first?["action"] as? Int == 2)
+    let listenerURL = mappedListeners?.last?["url"] as? [String: Any]
+    #expect(listenerURL?["url"] as? String == "tcp://0.0.0.0:11010")
+}
+
 @Test func patchPortForwardsRuntimePatchEncodesUdpAndUnspecifiedBind() async throws {
     let transport = SpyRPCTransport()
     let client = EasyTierRemoteRPCClient(transport: transport)

@@ -97,25 +97,25 @@ public struct EasyTierRemoteRPCClient: Sendable {
 
     @discardableResult
     public func patchHostname(instanceID: String, hostname: String) async throws -> String {
-        try await patchConfig(instanceID: instanceID, runtimePatch: Self.hostnamePatch(hostname))
+        try await patchConfig(instanceID: instanceID, patch: .hostname(hostname))
     }
 
     @discardableResult
     public func patchPortForwards(instanceID: String, portForwards: [PortForwardConfig]) async throws -> String {
         let runtimePatch = try Self.portForwardsPatch(portForwards)
-        return try await patchConfig(instanceID: instanceID, runtimePatch: runtimePatch)
+        return try await patchConfig(instanceID: instanceID, patch: runtimePatch)
     }
 
     @discardableResult
     public func patchPortForwardAdd(instanceID: String, portForward: PortForwardConfig) async throws -> String {
         let runtimePatch = try Self.portForwardAddPatch(portForward)
-        return try await patchConfig(instanceID: instanceID, runtimePatch: runtimePatch)
+        return try await patchConfig(instanceID: instanceID, patch: runtimePatch)
     }
 
     @discardableResult
     public func patchPortForwardRemove(instanceID: String, portForward: PortForwardConfig) async throws -> String {
         let runtimePatch = try Self.portForwardRemovePatch(portForward)
-        return try await patchConfig(instanceID: instanceID, runtimePatch: runtimePatch)
+        return try await patchConfig(instanceID: instanceID, patch: runtimePatch)
     }
 
     public func listPortForwardsParsed(instanceID: String) async throws -> [PortForwardConfig] {
@@ -124,8 +124,8 @@ public struct EasyTierRemoteRPCClient: Sendable {
     }
 
     @discardableResult
-    public func patchConfig(instanceID: String, runtimePatch: [String: Any]) async throws -> String {
-        let runtimePayload = try Self.patchConfigPayload(instanceID: instanceID, patch: runtimePatch)
+    private func patchConfig(instanceID: String, patch: InstanceConfigPatchPayload) async throws -> String {
+        let runtimePayload = try Self.patchConfigPayload(instanceID: instanceID, patch: patch)
         return try await call(EasyTierRPCRequest(
             service: Self.configService,
             method: "patch_config",
@@ -136,8 +136,8 @@ public struct EasyTierRemoteRPCClient: Sendable {
     @discardableResult
     public func applyConfigPatch(instanceID: String, config: NetworkConfig, original: NetworkConfig) async throws -> String {
         let patch = try Self.configPatch(config: config, original: original)
-        guard !patch.isEmpty else { return "" }
-        return try await patchConfig(instanceID: instanceID, runtimePatch: patch)
+        guard patch.hasChanges else { return "" }
+        return try await patchConfig(instanceID: instanceID, patch: patch)
     }
 
     public static func getConfig(rpcURL: URL, instanceID: String, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
@@ -196,12 +196,11 @@ extension EasyTierRemoteRPCClient {
         try encodePayload(InstanceRequestPayload(instance: instanceIdentifier(instanceID: instanceID)))
     }
 
-    static func patchConfigPayload(instanceID: String, patch: [String: Any]) throws -> String {
-        let payload: [String: Any] = [
-            "patch": patch,
-            "instance": try jsonObject(instanceIdentifier(instanceID: instanceID)),
-        ]
-        return try jsonString(payload)
+    private static func patchConfigPayload(instanceID: String, patch: InstanceConfigPatchPayload) throws -> String {
+        try encodePayload(PatchConfigRequestPayload(
+            patch: patch,
+            instance: instanceIdentifier(instanceID: instanceID)
+        ))
     }
 
     static func runNetworkInstancePayload(instanceID: String, getConfigResponse: String, mutate: (inout [String: Any]) throws -> Void) throws -> String {
@@ -260,75 +259,34 @@ extension EasyTierRemoteRPCClient {
         return json
     }
 
-    private static func jsonObject(_ value: some Encodable) throws -> Any {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let data = try encoder.encode(value)
-        return try JSONSerialization.jsonObject(with: data)
-    }
-
-    private static func jsonString(_ value: Any) throws -> String {
-        let data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
-        guard let json = String(data: data, encoding: .utf8) else {
-            throw EasyTierCoreError.invalidResponse("failed to encode RPC payload as UTF-8")
-        }
-        return json
-    }
-
-    private static func hostnamePatch(_ hostname: String) -> [String: Any] {
-        [
-            "hostname": hostname,
-            "port_forwards": [],
-            "proxy_networks": [],
-            "routes": [],
-            "exit_nodes": [],
-            "mapped_listeners": [],
-            "connectors": [],
-        ]
-    }
-
-    private static func portForwardsPatch(_ portForwards: [PortForwardConfig]) throws -> [String: Any] {
-        var patches: [[String: Any]] = [["action": 2]]
+    private static func portForwardsPatch(_ portForwards: [PortForwardConfig]) throws -> InstanceConfigPatchPayload {
+        var patches: [PortForwardPatchPayload] = [.clear()]
         for portForward in portForwards {
-            patches.append(["action": 0, "cfg": try portForwardPatchConfig(portForward)])
+            patches.append(.add(try portForwardPatchConfig(portForward)))
         }
-        return basePatchFields().merging(["port_forwards": patches]) { $1 }
+        return InstanceConfigPatchPayload(portForwards: patches)
     }
 
-    private static func portForwardAddPatch(_ portForward: PortForwardConfig) throws -> [String: Any] {
-        return basePatchFields().merging(
-            ["port_forwards": [["action": 0, "cfg": try portForwardPatchConfig(portForward)]]]
-        ) { $1 }
+    private static func portForwardAddPatch(_ portForward: PortForwardConfig) throws -> InstanceConfigPatchPayload {
+        InstanceConfigPatchPayload(portForwards: [.add(try portForwardPatchConfig(portForward))])
     }
 
-    private static func portForwardRemovePatch(_ portForward: PortForwardConfig) throws -> [String: Any] {
-        return basePatchFields().merging(
-            ["port_forwards": [["action": 1, "cfg": try portForwardPatchConfig(portForward)]]]
-        ) { $1 }
+    private static func portForwardRemovePatch(_ portForward: PortForwardConfig) throws -> InstanceConfigPatchPayload {
+        InstanceConfigPatchPayload(portForwards: [.remove(try portForwardPatchConfig(portForward))])
     }
 
-    private static func basePatchFields() -> [String: Any] {
-        [
-            "proxy_networks": [],
-            "routes": [],
-            "exit_nodes": [],
-            "mapped_listeners": [],
-            "connectors": [],
-        ]
-    }
-
-    private static func portForwardPatchConfig(_ portForward: PortForwardConfig) throws -> [String: Any] {
+    private static func portForwardPatchConfig(_ portForward: PortForwardConfig) throws -> PortForwardConfigPayload {
         let socketType: Int
         switch portForward.proto.lowercased() {
         case "tcp": socketType = 0
         case "udp": socketType = 1
         default: throw EasyTierCoreError.invalidResponse("port forward protocol must be tcp or udp")
         }
-        return [
-            "bind_addr": try socketAddress(ip: portForward.bind_ip, port: portForward.bind_port),
-            "dst_addr": try socketAddress(ip: portForward.dst_ip, port: portForward.dst_port),
-            "socket_type": socketType,
-        ]
+        return PortForwardConfigPayload(
+            bindAddr: try socketAddress(ip: portForward.bind_ip, port: portForward.bind_port),
+            dstAddr: try socketAddress(ip: portForward.dst_ip, port: portForward.dst_port),
+            socketType: socketType
+        )
     }
 
     public static func parseListPortForwardsResponse(_ response: String) throws -> [PortForwardConfig] {
@@ -387,11 +345,15 @@ extension EasyTierRemoteRPCClient {
         return octets.map(String.init).joined(separator: ".")
     }
 
-    private static func socketAddress(ip: String, port: Int) throws -> [String: Any] {
+    private static func socketAddress(ip: String, port: Int) throws -> SocketAddressPayload {
         guard (1...65_535).contains(port) else {
             throw EasyTierCoreError.invalidResponse("port forward port is out of range")
         }
-        return ["ip": ["Ipv4": ["addr": try ipv4Address(ip)]], "port": port]
+        return SocketAddressPayload(ipv4: try ipv4AddressPayload(ip), port: port)
+    }
+
+    private static func ipv4AddressPayload(_ value: String) throws -> IPv4AddressPayload {
+        IPv4AddressPayload(addr: try ipv4Address(value))
     }
 
     private static func ipv4Address(_ value: String) throws -> Int {
@@ -480,86 +442,94 @@ extension EasyTierRemoteRPCClient {
 
     // MARK: - patch_config delta builder
 
-    static func configPatch(config: NetworkConfig, original: NetworkConfig) throws -> [String: Any] {
-        var patch: [String: Any] = [:]
+    private static func configPatch(config: NetworkConfig, original: NetworkConfig) throws -> InstanceConfigPatchPayload {
+        var patch = InstanceConfigPatchPayload()
+        var hasChanges = false
 
         if config.hostname != original.hostname {
-            patch["hostname"] = config.hostname ?? ""
+            patch.hostname = config.hostname ?? ""
+            hasChanges = true
         }
 
         if config.virtual_ipv4 != original.virtual_ipv4 || config.network_length != original.network_length {
             if !config.virtual_ipv4.isEmpty {
-                patch["ipv4"] = try ipv4InetPayload(ip: config.virtual_ipv4, networkLength: config.network_length)
+                patch.ipv4 = try ipv4InetPayload(ip: config.virtual_ipv4, networkLength: config.network_length)
+                hasChanges = true
             }
         }
 
         if config.ipv6_public_addr_auto != original.ipv6_public_addr_auto {
-            patch["ipv6_public_addr_auto"] = config.ipv6_public_addr_auto ?? false
+            patch.ipv6PublicAddrAuto = config.ipv6_public_addr_auto ?? false
+            hasChanges = true
         }
 
         if config.port_forwards != original.port_forwards {
-            patch["port_forwards"] = try portForwardsListPatch(config.port_forwards)
+            patch.portForwards = try portForwardsListPatch(config.port_forwards)
+            hasChanges = true
         }
 
         if config.routes != original.routes {
-            patch["routes"] = try routeListPatch(config.routes)
+            patch.routes = try routeListPatch(config.routes)
+            hasChanges = true
         }
 
         if config.exit_nodes != original.exit_nodes {
-            patch["exit_nodes"] = try exitNodeListPatch(config.exit_nodes)
+            patch.exitNodes = try exitNodeListPatch(config.exit_nodes)
+            hasChanges = true
         }
 
         if config.mapped_listeners != original.mapped_listeners {
-            patch["mapped_listeners"] = try mappedListenerListPatch(config.mapped_listeners)
+            patch.mappedListeners = mappedListenerListPatch(config.mapped_listeners)
+            hasChanges = true
         }
 
-        return patch
+        return hasChanges ? patch : .empty
     }
 
-    static func portForwardsListPatch(_ portForwards: [PortForwardConfig]) throws -> [[String: Any]] {
-        var patches: [[String: Any]] = [["action": 2]]
+    private static func portForwardsListPatch(_ portForwards: [PortForwardConfig]) throws -> [PortForwardPatchPayload] {
+        var patches: [PortForwardPatchPayload] = [.clear()]
         for portForward in portForwards {
-            patches.append(["action": 0, "cfg": try portForwardPatchConfig(portForward)])
+            patches.append(.add(try portForwardPatchConfig(portForward)))
         }
         return patches
     }
 
-    static func routeListPatch(_ routes: [String]) throws -> [[String: Any]] {
-        var patches: [[String: Any]] = [["action": 2]]
+    private static func routeListPatch(_ routes: [String]) throws -> [RoutePatchPayload] {
+        var patches: [RoutePatchPayload] = [.clear()]
         for route in routes {
             let trimmed = route.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
             let (ip, prefix) = try parseCIDR(trimmed)
-            patches.append(["action": 0, "cidr": try ipv4InetPayload(ip: ip, networkLength: prefix)])
+            patches.append(.add(try ipv4InetPayload(ip: ip, networkLength: prefix)))
         }
         return patches
     }
 
-    static func exitNodeListPatch(_ exitNodes: [String]) throws -> [[String: Any]] {
-        var patches: [[String: Any]] = [["action": 2]]
+    private static func exitNodeListPatch(_ exitNodes: [String]) throws -> [ExitNodePatchPayload] {
+        var patches: [ExitNodePatchPayload] = [.clear()]
         for node in exitNodes {
             let trimmed = node.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
-            patches.append(["action": 0, "node": ["ip": ["Ipv4": ["addr": try ipv4Address(trimmed)]]]])
+            patches.append(.add(IPAddressPayload(ipv4: try ipv4AddressPayload(trimmed))))
         }
         return patches
     }
 
-    static func mappedListenerListPatch(_ listeners: [String]) throws -> [[String: Any]] {
-        var patches: [[String: Any]] = [["action": 2]]
+    private static func mappedListenerListPatch(_ listeners: [String]) -> [URLPatchPayload] {
+        var patches: [URLPatchPayload] = [.clear()]
         for listener in listeners {
             let trimmed = listener.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
-            patches.append(["action": 0, "url": ["url": trimmed]])
+            patches.append(.add(trimmed))
         }
         return patches
     }
 
-    static func ipv4InetPayload(ip: String, networkLength: Int) throws -> [String: Any] {
-        ["address": ["addr": try ipv4Address(ip)], "network_length": networkLength]
+    private static func ipv4InetPayload(ip: String, networkLength: Int) throws -> IPv4InetPayload {
+        IPv4InetPayload(address: try ipv4AddressPayload(ip), networkLength: networkLength)
     }
 
-    static func parseCIDR(_ cidr: String) throws -> (String, Int) {
+    private static func parseCIDR(_ cidr: String) throws -> (String, Int) {
         let parts = cidr.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
         let ip = String(parts.first ?? "")
         let prefix = parts.count > 1 ? Int(String(parts[1])) ?? 24 : 24
@@ -576,44 +546,5 @@ public enum EasyTierRPCError: LocalizedError, Equatable, Sendable {
         case let .invalidInstanceID(instanceID):
             "Invalid EasyTier instance id: \(instanceID)"
         }
-    }
-}
-
-private struct InstanceRequestPayload: Encodable {
-    var instance: InstanceIdentifierPayload
-}
-
-private struct InstanceIdentifierPayload: Encodable {
-    var selector: InstanceIdentifierSelectorPayload
-
-    init(id: RPCUUID) {
-        self.selector = InstanceIdentifierSelectorPayload(id: id)
-    }
-}
-
-private struct InstanceIdentifierSelectorPayload: Encodable {
-    var id: RPCUUID
-
-    enum CodingKeys: String, CodingKey {
-        case id = "Id"
-    }
-}
-
-private struct RPCUUID: Encodable {
-    var part1: UInt32
-    var part2: UInt32
-    var part3: UInt32
-    var part4: UInt32
-
-    init(uuid: UUID) {
-        let bytes = uuid.uuid
-        self.part1 = Self.part(bytes.0, bytes.1, bytes.2, bytes.3)
-        self.part2 = Self.part(bytes.4, bytes.5, bytes.6, bytes.7)
-        self.part3 = Self.part(bytes.8, bytes.9, bytes.10, bytes.11)
-        self.part4 = Self.part(bytes.12, bytes.13, bytes.14, bytes.15)
-    }
-
-    private static func part(_ b0: UInt8, _ b1: UInt8, _ b2: UInt8, _ b3: UInt8) -> UInt32 {
-        UInt32(b0) << 24 | UInt32(b1) << 16 | UInt32(b2) << 8 | UInt32(b3)
     }
 }
