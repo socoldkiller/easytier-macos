@@ -1,14 +1,14 @@
 import SwiftUI
 
 enum SettingsTint {
-    static let mode = Color.secondary
-    static let magicDNS = Color.secondary
-    static let rpcServer = Color.secondary
-    static let advanced = Color.secondary
-    static let remoteConfig = Color.secondary
-    static let appearance = Color.secondary
-    static let launch = Color.secondary
-    static let quit = Color.secondary
+    static let mode = Color.blue
+    static let magicDNS = Color.indigo
+    static let rpcServer = Color.teal
+    static let advanced = Color.gray
+    static let remoteConfig = Color.purple
+    static let appearance = Color.pink
+    static let launch = Color.green
+    static let quit = Color.orange
 }
 
 struct SectionIcon: View {
@@ -19,7 +19,7 @@ struct SectionIcon: View {
     var body: some View {
         Image(systemName: systemImage)
             .font(.headline)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(tint)
             .frame(width: size, height: size)
     }
 }
