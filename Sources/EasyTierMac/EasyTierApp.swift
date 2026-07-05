@@ -62,7 +62,7 @@ struct EasyTierApp: App {
             .easyTierWindowBackground(glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
             .background(
                 WindowAccessor { window in
-                    configureMainWindow(window, glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
+                    configureSettingsWindow(window, glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
                 }
                 .frame(width: 0, height: 0)
             )
@@ -113,6 +113,12 @@ struct EasyTierApp: App {
         if window.frame != frame {
             window.setFrame(frame, display: true)
         }
+    }
+
+    private func configureSettingsWindow(_ window: NSWindow, glassEffectsEnabled: Bool) {
+        let effectiveGlass = glassEffectsEnabled && !NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+        window.isOpaque = !effectiveGlass
+        window.backgroundColor = effectiveGlass ? .clear : .windowBackgroundColor
     }
 
     private static func runHelperCommandIfRequested() {
