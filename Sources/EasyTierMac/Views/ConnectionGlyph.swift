@@ -158,7 +158,7 @@ struct ConnectionGlyph: View {
                     .frame(width: diameter, height: diameter)
             }
             Circle()
-                .stroke(Color.black.opacity(0.82), lineWidth: ringStroke)
+                .stroke(Color.primary.opacity(0.82), lineWidth: ringStroke)
                 .frame(width: diameter, height: diameter)
         }
         .position(position)

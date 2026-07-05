@@ -8,7 +8,7 @@ struct EasyTierMark: View {
             .resizable()
             .interpolation(.high)
             .aspectRatio(contentMode: .fit)
-            .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.24 : 0.12), radius: 10, x: 0, y: 5)
+            .shadow(color: Color.primary.opacity(colorScheme == .dark ? 0.24 : 0.12), radius: 10, x: 0, y: 5)
             .accessibilityLabel(Text("EasyTier app icon"))
     }
 }

@@ -81,8 +81,8 @@ private struct TrafficLineChart: View, Equatable {
     @Environment(\.colorScheme) private var colorScheme
     @State private var selectedSample: TrafficSample?
 
-    private let uploadColor = Color(red: 0.24, green: 0.74, blue: 0.50)
-    private let downloadColor = Color(red: 0.35, green: 0.57, blue: 0.96)
+    private let uploadColor = EasyTierColors.metricUpload
+    private let downloadColor = EasyTierColors.metricDownload
 
     nonisolated static func == (lhs: TrafficLineChart, rhs: TrafficLineChart) -> Bool {
         lhs.samples == rhs.samples
@@ -341,19 +341,19 @@ private struct TrafficLineChart: View, Equatable {
     }
 
     private var panelStroke: Color {
-        colorScheme == .dark ? Color.white.opacity(0.055) : Color.black.opacity(0.06)
+        Color.primary.opacity(colorScheme == .dark ? 0.055 : 0.06)
     }
 
     private var shadowColor: Color {
-        Color.black.opacity(colorScheme == .dark ? 0.08 : 0.07)
+        Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.07)
     }
 
     private var axisGridColor: Color {
-        colorScheme == .dark ? Color.white.opacity(0.085) : Color.black.opacity(0.085)
+        Color.primary.opacity(0.085)
     }
 
     private var selectionColor: Color {
-        colorScheme == .dark ? Color.white.opacity(0.38) : Color.black.opacity(0.28)
+        Color.primary.opacity(colorScheme == .dark ? 0.38 : 0.28)
     }
 
     private var uploadAreaGradient: LinearGradient {
@@ -456,11 +456,11 @@ private struct TrafficTooltip: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .strokeBorder(tooltipStroke, lineWidth: 1)
         }
-        .shadow(color: .black.opacity(colorScheme == .dark ? 0.20 : 0.10), radius: 9, y: 4)
+        .shadow(color: Color.primary.opacity(colorScheme == .dark ? 0.20 : 0.10), radius: 9, y: 4)
     }
 
     private var tooltipStroke: Color {
-        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.07)
+        Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.07)
     }
 }
 

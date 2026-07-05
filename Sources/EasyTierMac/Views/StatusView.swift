@@ -475,8 +475,8 @@ private struct MemberGridRowView: View {
             cell(.route) { MemberRouteCell(row: row) }
             cell(.tunnel) { Text(row.tunnelProto).lineLimit(1) }
             cell(.latency) { LatencyMetricText(value: row.latency, animates: false) }
-            cell(.upload) { TrafficMetricText(value: row.uploadTotal, accent: .cyan, animationsPaused: animationsPaused) }
-            cell(.download) { TrafficMetricText(value: row.downloadTotal, accent: .green, animationsPaused: animationsPaused) }
+            cell(.upload) { TrafficMetricText(value: row.uploadTotal, accent: EasyTierColors.metricUpload, animationsPaused: animationsPaused) }
+            cell(.download) { TrafficMetricText(value: row.downloadTotal, accent: EasyTierColors.metricDownload, animationsPaused: animationsPaused) }
             cell(.loss) { AnimatedMetricText(value: row.lossRate, animates: false) }
             cell(.nat) { Text(row.natType).lineLimit(1) }
             cell(.version) { Text(row.version).lineLimit(1) }
@@ -731,8 +731,8 @@ private struct PublicServerGroupSummary: Equatable {
     }
 
     var routeSummaryColor: Color {
-        if members.allSatisfy({ $0.routeCost == "P2P" }) { return Color.green }
-        if members.contains(where: { $0.routeCost.hasPrefix("Relay") }) { return Color.orange }
+        if members.allSatisfy({ $0.routeCost == "P2P" }) { return EasyTierColors.statusConnected }
+        if members.contains(where: { $0.routeCost.hasPrefix("Relay") }) { return EasyTierColors.statusConnecting }
         return Color.secondary
     }
 
@@ -1001,7 +1001,7 @@ private struct PublicServerGroupIdentity: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "server.rack")
-                .foregroundStyle(Color.green)
+                .foregroundStyle(EasyTierColors.statusConnected)
                 .frame(width: 20)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Public Servers")
@@ -1249,11 +1249,11 @@ private enum LatencyQuality: Equatable {
         case .unknown:
             return .secondary
         case .good:
-            return .green
+            return EasyTierColors.statusConnected
         case .warning:
-            return .orange
+            return EasyTierColors.statusConnecting
         case .poor:
-            return .red
+            return EasyTierColors.statusError
         }
     }
 
@@ -1438,13 +1438,13 @@ private struct CopyableIPv4Cell: View {
     }
 
     private var cellBackground: Color {
-        if didCopy { return Color.green.opacity(0.16) }
+        if didCopy { return EasyTierColors.statusConnected.opacity(0.16) }
         if isHovering { return Color.accentColor.opacity(0.12) }
         return Color.secondary.opacity(0.06)
     }
 
     private var cellBorder: Color {
-        if didCopy { return Color.green.opacity(0.72) }
+        if didCopy { return EasyTierColors.statusConnected.opacity(0.72) }
         if isHovering { return Color.accentColor.opacity(0.5) }
         return Color.clear
     }
@@ -1536,13 +1536,13 @@ private extension NetworkMemberStatus {
     }
 
     var memberStateColor: Color {
-        isLocal ? Color.accentColor : Color.green
+        isLocal ? Color.accentColor : EasyTierColors.statusConnected
     }
 
     var routeCostColor: Color {
         if routeCost == "Local" { return Color.accentColor }
-        if routeCost == "P2P" { return Color.green }
-        if routeCost.hasPrefix("Relay") { return Color.orange }
+        if routeCost == "P2P" { return EasyTierColors.statusConnected }
+        if routeCost.hasPrefix("Relay") { return EasyTierColors.statusConnecting }
         return Color.secondary
     }
 }

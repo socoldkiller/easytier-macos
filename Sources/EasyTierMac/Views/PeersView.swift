@@ -485,7 +485,7 @@ private struct PeerCardView: View {
         case .added:
             Image(systemName: "checkmark.circle.fill")
                 .font(.body.weight(.semibold))
-                .foregroundStyle(.green)
+                .foregroundStyle(EasyTierColors.statusConnected)
                 .symbolEffect(.bounce, value: appliedState)
                 .transition(.scale.combined(with: .opacity))
         case .alreadyPresent:
@@ -496,7 +496,7 @@ private struct PeerCardView: View {
         case .noSelectedConfig:
             Image(systemName: "exclamationmark.circle")
                 .font(.body.weight(.semibold))
-                .foregroundStyle(.orange)
+                .foregroundStyle(EasyTierColors.statusConnecting)
                 .transition(.scale.combined(with: .opacity))
         }
     }
@@ -506,20 +506,20 @@ private struct PeerCardView: View {
         case .none:
             return isHovering ? Color.accentColor.opacity(0.35) : Color.clear
         case .added:
-            return Color.green.opacity(0.6)
+            return EasyTierColors.statusConnected.opacity(0.6)
         case .alreadyPresent:
             return Color.secondary.opacity(0.4)
         case .noSelectedConfig:
-            return Color.orange.opacity(0.5)
+            return EasyTierColors.statusConnecting.opacity(0.5)
         }
     }
 
     private var feedbackFillColor: Color {
         switch appliedState {
         case .added:
-            return Color.green.opacity(0.06)
+            return EasyTierColors.statusConnected.opacity(0.06)
         case .noSelectedConfig:
-            return Color.orange.opacity(0.06)
+            return EasyTierColors.statusConnecting.opacity(0.06)
         default:
             return Color.clear
         }
@@ -527,9 +527,9 @@ private struct PeerCardView: View {
 
     private var latencyColor: Color {
         guard let latencyMs else { return .secondary }
-        if latencyMs < 50 { return .green }
-        if latencyMs < 150 { return .orange }
-        return .red
+        if latencyMs < 50 { return EasyTierColors.statusConnected }
+        if latencyMs < 150 { return EasyTierColors.statusConnecting }
+        return EasyTierColors.statusError
     }
 
     private var latencyText: String {

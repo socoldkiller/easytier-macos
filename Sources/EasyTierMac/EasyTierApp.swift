@@ -882,11 +882,12 @@ private enum MenuBarPalette {
     static let mutedText = Color.secondary.opacity(0.6)
     static let divider = Color.primary.opacity(0.14)
     static let rowHighlight = Color.primary.opacity(0.08)
-    static let selectedRow = Color(red: 0.10, green: 0.37, blue: 0.78)
+    static let selectedRow = EasyTierColors.menuBarSelectedRow
     static let selectedRowHorizontalInset: CGFloat = 12
     static let selectedRowVerticalInset: CGFloat = 5
     static let selectedRowContentVerticalPadding: CGFloat = 4
-    static let connected = Color(red: 0.35, green: 0.78, blue: 0.42)
+    static let connected = EasyTierColors.menuBarConnected
+    static let selectedRowText = Color(nsColor: .selectedMenuItemTextColor)
 }
 
 private struct MenuBarPanelBackground: NSViewRepresentable {
@@ -1071,9 +1072,9 @@ private struct MenuBarConnectionSwitch: View {
                 .fill(knobColor)
                 .overlay {
                     Circle()
-                        .stroke(Color.black.opacity(0.16), lineWidth: 0.5)
+                        .stroke(Color.primary.opacity(0.16), lineWidth: 0.5)
                 }
-                .shadow(color: .black.opacity(0.16), radius: 1, x: 0, y: 1)
+                .shadow(color: Color.primary.opacity(0.16), radius: 1, x: 0, y: 1)
                 .padding(2.5)
         }
         .frame(width: 40, height: 24)
@@ -1207,11 +1208,11 @@ private struct MenuBarNetworkRow: View {
     }
 
     private var primaryTextColor: Color {
-        isRowActive ? Color.white.opacity(0.96) : MenuBarPalette.primaryText
+        isRowActive ? MenuBarPalette.selectedRowText : MenuBarPalette.primaryText
     }
 
     private var secondaryTextColor: Color {
-        isRowActive ? Color.white.opacity(0.78) : MenuBarPalette.secondaryText
+        isRowActive ? MenuBarPalette.selectedRowText.opacity(0.82) : MenuBarPalette.secondaryText
     }
 
     private var rowBackground: Color {
@@ -1223,7 +1224,7 @@ private struct MenuBarNetworkRow: View {
     }
 
     private func inlineChevronColor(isHovering: Bool) -> Color {
-        isRowActive ? Color.white.opacity(isHovering ? 1.0 : 0.92) : MenuBarPalette.primaryText
+        isRowActive ? MenuBarPalette.selectedRowText.opacity(isHovering ? 1.0 : 0.92) : MenuBarPalette.primaryText
     }
 }
 
@@ -1285,12 +1286,12 @@ private struct MenuBarCopyRow: View {
     }
 
     private var titleColor: Color {
-        if isHovering, !isDisabled { return Color.white.opacity(0.96) }
+        if isHovering, !isDisabled { return MenuBarPalette.selectedRowText }
         return isDisabled ? MenuBarPalette.mutedText : MenuBarPalette.primaryText
     }
 
     private var iconColor: Color {
-        if isHovering, !isDisabled { return Color.white.opacity(isCopied ? 0.98 : 0.82) }
+        if isHovering, !isDisabled { return MenuBarPalette.selectedRowText.opacity(isCopied ? 0.98 : 0.82) }
         return isCopied ? MenuBarPalette.connected : MenuBarPalette.secondaryText
     }
 
@@ -1339,12 +1340,12 @@ private struct MenuBarListButton: View {
 
     private var primaryTextColor: Color {
         if isDisabled { return MenuBarPalette.mutedText }
-        return isHovering ? Color.white.opacity(0.96) : MenuBarPalette.primaryText
+        return isHovering ? MenuBarPalette.selectedRowText : MenuBarPalette.primaryText
     }
 
     private var shortcutTextColor: Color {
         if isDisabled { return MenuBarPalette.mutedText.opacity(0.7) }
-        return isHovering ? Color.white.opacity(0.72) : MenuBarPalette.mutedText
+        return isHovering ? MenuBarPalette.selectedRowText.opacity(0.72) : MenuBarPalette.mutedText
     }
 
     private var rowBackground: Color {
