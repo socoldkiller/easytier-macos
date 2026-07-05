@@ -785,6 +785,7 @@ private struct StringListEditor: View {
                     }
                 } label: { Image(systemName: "plus") }
                     .buttonStyle(.borderless)
+                    .accessibilityLabel(Text("Add \(title)"))
             }
             ForEach(values.indices, id: \.self) { index in
                 HStack(spacing: 8) {
@@ -804,6 +805,7 @@ private struct StringListEditor: View {
                         Image(systemName: "minus.circle")
                     }
                     .buttonStyle(.borderless)
+                    .accessibilityLabel(Text("Remove entry \(index + 1)"))
                 }
                 .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 6))
             }
@@ -853,6 +855,7 @@ private struct PortForwardEditor: View {
                     portForwards.append(PortForwardConfig())
                 } label: { Image(systemName: "plus") }
                     .buttonStyle(.borderless)
+                    .accessibilityLabel(Text("Add port forwarding rule"))
             }
 
             ForEach($portForwards) { $rule in
@@ -899,6 +902,7 @@ private struct PortForwardEditor: View {
                     Image(systemName: "minus.circle")
                 }
                 .buttonStyle(.borderless)
+                .accessibilityLabel(Text("Remove port forwarding rule"))
             }
         }
     }
@@ -920,6 +924,7 @@ private struct PortForwardEditor: View {
                     Image(systemName: "minus.circle")
                 }
                 .buttonStyle(.borderless)
+                .accessibilityLabel(Text("Remove port forwarding rule"))
             }
         }
     }
@@ -941,6 +946,8 @@ private struct PortForwardEditor: View {
         .buttonStyle(.borderless)
         .disabled(isPending || !availability.available)
         .help(reverseHelpText(isActive: isActive, isPending: isPending, availability: availability, dstIP: rule.dst_ip))
+        .accessibilityLabel(Text("Reverse port forward"))
+        .accessibilityValue(Text(isActive ? "Active" : "Inactive"))
     }
 
     private func reverseHelpText(isActive: Bool, isPending: Bool, availability: (available: Bool, reason: String?), dstIP: String) -> String {

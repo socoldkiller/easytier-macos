@@ -694,6 +694,7 @@ private struct MemberSearchField: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Clear search")
+                .accessibilityLabel(Text("Clear search"))
             }
         }
         .padding(.horizontal, 10)

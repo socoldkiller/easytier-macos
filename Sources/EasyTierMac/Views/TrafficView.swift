@@ -280,6 +280,9 @@ private struct TrafficLineChart: View, Equatable {
             plotArea
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
+        .accessibilityLabel(Text("Traffic trend chart"))
+        .accessibilityValue(Text(chartAccessibilitySummary))
+        .accessibilityHint(Text("Shows upload and download rates over time"))
         .chartOverlay { chartProxy in
             GeometryReader { geometryProxy in
                 if let plotFrame = chartProxy.plotFrame {
@@ -338,6 +341,13 @@ private struct TrafficLineChart: View, Equatable {
             return "Last \(Int(seconds.rounded())) sec"
         }
         return "Last \(String(format: "%.1f", seconds / 60)) min"
+    }
+
+    private var chartAccessibilitySummary: String {
+        guard let latest else { return "No data yet" }
+        let upload = ByteFormatter.formatRate(latest.txBytesPerSecond)
+        let download = ByteFormatter.formatRate(latest.rxBytesPerSecond)
+        return "Upload \(upload), Download \(download)"
     }
 
     private var panelStroke: Color {

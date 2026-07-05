@@ -282,12 +282,14 @@ struct ContentView: View {
                     Image(systemName: "plus")
                 }
                 .help("Add network")
+                .accessibilityLabel(Text("Add network"))
                 Button(role: .destructive) {
                     requestDeleteSelectedConfig()
                 } label: {
                     Image(systemName: "trash")
                 }
                 .help("Delete selected network")
+                .accessibilityLabel(Text("Delete selected network"))
                 .disabled(store.selectedConfigID == nil)
                 Spacer()
                 Button {
@@ -296,6 +298,7 @@ struct ContentView: View {
                     Image(systemName: "arrow.clockwise")
                 }
                 .help("Refresh runtime state")
+                .accessibilityLabel(Text("Refresh runtime state"))
             }
             .buttonStyle(.borderless)
             .padding(8)

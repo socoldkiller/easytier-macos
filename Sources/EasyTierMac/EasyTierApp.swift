@@ -699,24 +699,28 @@ private struct MenuBarContent: View {
                 store.isShowingAbout = true
                 dismissMenuBar()
             }
+            .accessibilityHint(Text("Opens the About window"))
 
             MenuBarListButton(title: "Install on Linux", isDisabled: store.isQuitting) {
                 openMainWindow()
                 store.isShowingLinuxInstallGuide = true
                 dismissMenuBar()
             }
+            .accessibilityHint(Text("Shows instructions for installing EasyTier on a Linux server"))
 
             MenuBarDivider()
 
             MenuBarListButton(title: windowEffectTitle, isDisabled: store.isQuitting) {
                 appearanceSettings.glassEffectsEnabled.toggle()
             }
+            .accessibilityHint(Text("Toggles frosted glass window effect"))
 
             MenuBarListButton(title: "Settings...", shortcut: "⌘ ,", isDisabled: store.isQuitting) {
                 openMainWindow()
                 store.isShowingSettings = true
                 dismissMenuBar()
             }
+            .accessibilityHint(Text("Opens EasyTier settings"))
 
             MenuBarDivider()
 
@@ -1285,6 +1289,8 @@ private struct MenuBarCopyRow: View {
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: isCopied)
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: isHovering)
         .help("Copy IP address")
+        .accessibilityHint(Text("Copies the device IP address to the clipboard"))
+        .accessibilityValue(Text(isCopied ? "Copied" : ""))
     }
 
     private var titleColor: Color {
