@@ -105,10 +105,11 @@ struct EasyTierApp: App {
 
     private func configureMainWindow(_ window: NSWindow, glassEffectsEnabled: Bool) {
         let frame = window.frame
+        let effectiveGlass = glassEffectsEnabled && !NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
         window.styleMask.insert(.fullSizeContentView)
         window.titlebarAppearsTransparent = true
-        window.isOpaque = !glassEffectsEnabled
-        window.backgroundColor = glassEffectsEnabled ? .clear : .windowBackgroundColor
+        window.isOpaque = !effectiveGlass
+        window.backgroundColor = effectiveGlass ? .clear : .windowBackgroundColor
         if window.frame != frame {
             window.setFrame(frame, display: true)
         }
@@ -903,7 +904,8 @@ private struct MenuBarPanelBackground: NSViewRepresentable {
     }
 
     private func configure(_ view: NSVisualEffectView) {
-        view.material = .sidebar
+        let reduceTransparency = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+        view.material = reduceTransparency ? .windowBackground : .sidebar
         view.blendingMode = .behindWindow
         view.state = .active
     }
@@ -912,11 +914,7 @@ private struct MenuBarPanelBackground: NSViewRepresentable {
 extension View {
     @ViewBuilder
     func easyTierWindowBackground(glassEffectsEnabled: Bool) -> some View {
-        if glassEffectsEnabled {
-            containerBackground(for: .window) { FrostedGlass() }
-        } else {
-            containerBackground(Color(nsColor: .windowBackgroundColor), for: .window)
-        }
+        modifier(EasyTierWindowBackgroundModifier(glassEffectsEnabled: glassEffectsEnabled))
     }
 
     func frostedGlassBackground<S: Shape>(in shape: S) -> some View {
@@ -926,20 +924,62 @@ extension View {
     func liquidGlassMetricBackground<S: Shape>(in shape: S) -> some View {
         modifier(LiquidGlassMetricBackground(shape: shape))
     }
+
+    /// Uses a frosted glass presentation background unless the user has enabled
+    /// "Reduce transparency" in system accessibility settings.
+    func conditionalFrostedGlassPresentationBackground() -> some View {
+        modifier(ConditionalFrostedGlassPresentationBackground())
+    }
+}
+
+private struct ConditionalFrostedGlassPresentationBackground: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    func body(content: Content) -> some View {
+        if reduceTransparency {
+            content
+        } else {
+            content.presentationBackground { FrostedGlass() }
+        }
+    }
+}
+
+private struct EasyTierWindowBackgroundModifier: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    let glassEffectsEnabled: Bool
+
+    private var effectiveGlass: Bool {
+        glassEffectsEnabled && !reduceTransparency
+    }
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if effectiveGlass {
+            content.containerBackground(for: .window) { FrostedGlass() }
+        } else {
+            content.containerBackground(Color(nsColor: .windowBackgroundColor), for: .window)
+        }
+    }
 }
 
 private struct FrostedGlassBackground<S: Shape>: ViewModifier {
     @Environment(AppAppearanceSettings.self) private var appearanceSettings
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var shape: S
 
+    private var glassEnabled: Bool {
+        appearanceSettings.glassEffectsEnabled && !reduceTransparency
+    }
+
     @ViewBuilder
     func body(content: Content) -> some View {
-        if appearanceSettings.glassEffectsEnabled && !appearanceSettings.glassPanelBackgroundsEnabled {
+        if glassEnabled && !appearanceSettings.glassPanelBackgroundsEnabled {
             content
         } else {
             content.background {
-                if appearanceSettings.glassEffectsEnabled {
+                if glassEnabled {
                     FrostedGlass(blendingMode: .withinWindow)
                         .clipShape(shape)
                 } else {
@@ -953,8 +993,13 @@ private struct FrostedGlassBackground<S: Shape>: ViewModifier {
 private struct LiquidGlassMetricBackground<S: Shape>: ViewModifier {
     @Environment(AppAppearanceSettings.self) private var appearanceSettings
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var shape: S
+
+    private var glassEnabled: Bool {
+        appearanceSettings.glassEffectsEnabled && !reduceTransparency
+    }
 
     @ViewBuilder
     func body(content: Content) -> some View {
@@ -968,14 +1013,14 @@ private struct LiquidGlassMetricBackground<S: Shape>: ViewModifier {
     }
 
     private var backgroundColor: Color {
-        if appearanceSettings.glassEffectsEnabled {
+        if glassEnabled {
             return Color.primary.opacity(colorScheme == .dark ? 0.038 : 0.052)
         }
         return Color.primary.opacity(colorScheme == .dark ? 0.052 : 0.075)
     }
 
     private var strokeColor: Color {
-        if appearanceSettings.glassEffectsEnabled {
+        if glassEnabled {
             return Color.primary.opacity(colorScheme == .dark ? 0.045 : 0.065)
         }
         return Color.primary.opacity(0.075)
@@ -998,7 +1043,8 @@ struct FrostedGlass: NSViewRepresentable {
     }
 
     private func configure(_ view: NSVisualEffectView) {
-        view.material = material
+        let reduceTransparency = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+        view.material = reduceTransparency ? .windowBackground : material
         view.blendingMode = blendingMode
         view.state = state
         view.autoresizingMask = [.width, .height]
