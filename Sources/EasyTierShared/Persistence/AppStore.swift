@@ -57,6 +57,9 @@ public final class EasyTierAppStore {
     public var vpnOnDemandEnabled = false
     public var magicDNSSettings: MagicDNSSettings = .default
     public var remoteConfigSession: RemoteConfigSession?
+    public var peerSubscriptions: [PeerSubscription] = []
+    public var isRefreshingPeerSubscriptions = false
+    public var pendingPeerCardMerge: PeerCard?
 
     /// Mirrors any in-app scroll phase. Polling briefly skips refresh while
     /// this is true so the main-thread SwiftUI transaction pass does not
@@ -196,6 +199,7 @@ public final class EasyTierAppStore {
             vpnOnDemandEnabled = snapshot.vpnOnDemandEnabled
             magicDNSSettings = snapshot.magicDNSSettings
             mode = snapshot.mode ?? .default
+            peerSubscriptions = snapshot.peerSubscriptions
             if let lastSelectedConfigID = snapshot.lastSelectedConfigID,
                configs.contains(where: { $0.id == lastSelectedConfigID })
             {
@@ -1248,7 +1252,8 @@ public final class EasyTierAppStore {
             vpnOnDemandEnabled: vpnOnDemandEnabled,
             runtimeIntents: runtimeIntents,
             reversedPortForwardFingerprints: reversedPortForwardFingerprints,
-            magicDNSSettings: magicDNSSettings
+            magicDNSSettings: magicDNSSettings,
+            peerSubscriptions: peerSubscriptions
         )
     }
 
@@ -1447,6 +1452,142 @@ public final class EasyTierAppStore {
         let timestamp = Self.timestampFormatter.string(from: Date())
         logLines.insert(LogEntry(text: "[\(timestamp)] \(message)"), at: 0)
         if logLines.count > 300 { logLines.removeLast(logLines.count - 300) }
+    }
+
+    // MARK: - Peer Subscriptions
+
+    public func addPeerSubscription(url: URL) async {
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            let fetched = try PeerSubscriptionCodec.decode(data)
+            var merged: [PeerSubscription] = []
+            for var sub in fetched {
+                sub.subscriptionURL = url
+                sub.lastFetchedAt = Date()
+                merged.append(sub)
+            }
+            peerSubscriptions.append(contentsOf: merged)
+            saveInBackground()
+            log("Added \(merged.count) peer subscription(s) from \(url.absoluteString).")
+        } catch {
+            setLastError(error)
+            log("Failed to fetch peer subscription from \(url.absoluteString): \(error.localizedDescription)")
+        }
+    }
+
+    public func addPeerSubscription(json: String) throws {
+        let decoded = try PeerSubscriptionCodec.decode(json)
+        peerSubscriptions.append(contentsOf: decoded)
+        saveInBackground()
+        log("Added \(decoded.count) peer subscription(s) from pasted JSON.")
+    }
+
+    public func deletePeerSubscription(id: String) {
+        guard let index = peerSubscriptions.firstIndex(where: { $0.id == id }) else { return }
+        let removed = peerSubscriptions.remove(at: index)
+        saveInBackground()
+        log("Removed peer subscription \(removed.name).")
+    }
+
+    public func refreshPeerSubscriptions() async {
+        let urls = peerSubscriptions.compactMap { $0.subscriptionURL }
+        guard !urls.isEmpty else { return }
+        isRefreshingPeerSubscriptions = true
+        defer { isRefreshingPeerSubscriptions = false }
+
+        for url in urls {
+            do {
+                let (data, _) = try await URLSession.shared.data(from: url)
+                let fetched = try PeerSubscriptionCodec.decode(data)
+                for var sub in fetched {
+                    sub.subscriptionURL = url
+                    sub.lastFetchedAt = Date()
+                    if let index = peerSubscriptions.firstIndex(where: { $0.id == sub.id }) {
+                        peerSubscriptions[index] = sub
+                    } else if let index = peerSubscriptions.firstIndex(where: { $0.subscriptionURL == url }) {
+                        var existing = peerSubscriptions[index]
+                        existing.cards = sub.cards
+                        existing.lastFetchedAt = sub.lastFetchedAt
+                        if !sub.name.isEmpty { existing.name = sub.name }
+                        peerSubscriptions[index] = existing
+                    }
+                }
+            } catch {
+                log("Failed to refresh peer subscription from \(url.absoluteString): \(error.localizedDescription)")
+            }
+        }
+        saveInBackground()
+        log("Peer subscriptions refresh complete.")
+    }
+
+    public func peerCardLatency(for card: PeerCard) -> Int? {
+        guard !card.urls.isEmpty else { return nil }
+        for (_, detail) in runtimeDetails {
+            guard let pairs = detail.peer_route_pairs else { continue }
+            for pair in pairs {
+                guard let peer = pair.peer, let conns = peer.conns else { continue }
+                for conn in conns {
+                    if let tunnel = conn.tunnel,
+                       let local = tunnel.local_addr?.url,
+                       card.matchesRuntimePeerURL(local) {
+                        if let latencyUs = conn.stats?.latency_us {
+                            return max(1, Int((Double(latencyUs) / 1000.0).rounded()))
+                        }
+                    }
+                    if let tunnel = conn.tunnel,
+                       let remote = tunnel.remote_addr?.url,
+                       card.matchesRuntimePeerURL(remote) {
+                        if let latencyUs = conn.stats?.latency_us {
+                            return max(1, Int((Double(latencyUs) / 1000.0).rounded()))
+                        }
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    public enum PeerCardMergeResult: Equatable {
+        case added(count: Int)
+        case alreadyPresent
+        case noSelectedConfig
+    }
+
+    /// Checks how a card would merge against the currently selected config's peer_urls.
+    /// Does NOT mutate state — the actual merge is performed by the view layer against its draft.
+    public func previewPeerCardMerge(_ card: PeerCard) -> PeerCardMergeResult {
+        guard let selectedID = selectedConfigID,
+              let config = configs.first(where: { $0.id == selectedID })?.config
+        else {
+            return .noSelectedConfig
+        }
+        let existing = Set(config.peer_urls.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+        let toAdd = card.urls.filter { !existing.contains($0) }
+        guard !toAdd.isEmpty else {
+            return .alreadyPresent
+        }
+        return .added(count: toAdd.count)
+    }
+
+    @discardableResult
+    public func mergePeerCardIntoSelectedConfig(_ card: PeerCard) -> PeerCardMergeResult {
+        guard let selectedID = selectedConfigID,
+              let index = configs.firstIndex(where: { $0.id == selectedID })
+        else {
+            recordNotice("Select or create a network config before adding peers.")
+            return .noSelectedConfig
+        }
+        var config = configs[index].config
+        let existing = Set(config.peer_urls.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+        let toAdd = card.urls.filter { !existing.contains($0) }
+        guard !toAdd.isEmpty else {
+            recordNotice("All peer URLs from \(card.name) are already in \(config.network_name).")
+            return .alreadyPresent
+        }
+        config.peer_urls.append(contentsOf: toAdd)
+        updateConfig(id: selectedID, with: config, saveImmediately: true)
+        recordNotice("Added \(toAdd.count) peer URL(s) from \(card.name) to \(config.network_name).")
+        return .added(count: toAdd.count)
     }
 
     private func uniqueNetworkName() -> String {

@@ -1897,7 +1897,7 @@ import Testing
 }
 
 @Test func workspaceTabsExposeTrafficView() {
-    #expect(WorkspaceTab.allCases.map(\.rawValue) == ["Status", "View", "Config", "Logs"])
+    #expect(WorkspaceTab.allCases.map(\.rawValue) == ["Status", "View", "Config", "Logs", "Peers"])
 }
 
 private func hostnameIntent(instanceID: String, networkName: String, base: String, desired: String) -> RuntimeIntent {

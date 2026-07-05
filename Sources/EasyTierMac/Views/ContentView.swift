@@ -71,6 +71,13 @@ struct ContentView: View {
         .onChange(of: selectedTabLocal) { _, newTab in
             selectWorkspaceTab(newTab)
         }
+        .onChange(of: store.selectedConfig?.peer_urls) { _, _ in
+            // No-op: peer_urls sync is handled via pendingMergeRequest below
+            // to avoid race between commitDraft and loadDraft.
+        }
+        .onChange(of: store.pendingPeerCardMerge) { _, card in
+            handlePendingPeerCardMerge(card)
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 Task {
@@ -191,6 +198,8 @@ struct ContentView: View {
             }
         case .logs:
             LogsView()
+        case .peers:
+            PeersView()
         }
     }
 
@@ -735,12 +744,35 @@ struct ContentView: View {
 
     private func selectWorkspaceTab(_ tab: WorkspaceTab) {
         guard tab != store.selectedTab else { return }
+        commitDraft(saveImmediately: false)
         workspaceTransitionEdge =
             tab.motionIndex > store.selectedTab.motionIndex ? .trailing : .leading
         workspaceTransitionDistance = Self.tabTransitionDistance
         withAnimation(EasyTierMotion.selection(reduceMotion: reduceMotion)) {
             store.selectedTab = tab
         }
+    }
+
+    private func handlePendingPeerCardMerge(_ card: PeerCard?) {
+        guard let card else { return }
+        defer { store.pendingPeerCardMerge = nil }
+
+        guard let selectedID = store.selectedConfigID,
+              draftConfigID == selectedID
+        else { return }
+
+        let existing = Set(draftConfig.peer_urls.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+        let toAdd = card.urls.filter { !existing.contains($0) }
+        guard !toAdd.isEmpty else { return }
+
+        draftConfig.peer_urls.append(contentsOf: toAdd)
+        draftIsDirty = true
+
+        let config = draftConfig
+        store.updateConfig(id: selectedID, with: config, saveImmediately: true)
+        draftIsDirty = false
+
+        selectWorkspaceTab(.config)
     }
 
     private func requestDeleteSelectedConfig() {
@@ -1223,6 +1255,8 @@ extension WorkspaceTab {
             return "slider.horizontal.3"
         case .logs:
             return "doc.text.magnifyingglass"
+        case .peers:
+            return "rectangle.stack.badge.plus"
         }
     }
 }

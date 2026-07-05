@@ -6,6 +6,7 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
     public var runtimeIntents: [RuntimeIntent]
     public var reversedPortForwardFingerprints: [String: Set<String>]
     public var magicDNSSettings: MagicDNSSettings
+    public var peerSubscriptions: [PeerSubscription]
 
     public init(
         configs: [StoredNetworkConfig],
@@ -14,7 +15,8 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
         vpnOnDemandEnabled: Bool = false,
         runtimeIntents: [RuntimeIntent] = [],
         reversedPortForwardFingerprints: [String: Set<String>] = [:],
-        magicDNSSettings: MagicDNSSettings = .default
+        magicDNSSettings: MagicDNSSettings = .default,
+        peerSubscriptions: [PeerSubscription] = []
     ) {
         self.configs = configs
         self.mode = mode
@@ -23,6 +25,7 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
         self.runtimeIntents = runtimeIntents
         self.reversedPortForwardFingerprints = reversedPortForwardFingerprints
         self.magicDNSSettings = magicDNSSettings
+        self.peerSubscriptions = peerSubscriptions
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -33,6 +36,7 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
         case runtimeIntents
         case reversedPortForwardFingerprints
         case magicDNSSettings
+        case peerSubscriptions
     }
 
     public init(from decoder: Decoder) throws {
@@ -44,5 +48,6 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
         runtimeIntents = try container.decodeIfPresent([RuntimeIntent].self, forKey: .runtimeIntents) ?? []
         reversedPortForwardFingerprints = try container.decodeIfPresent([String: Set<String>].self, forKey: .reversedPortForwardFingerprints) ?? [:]
         magicDNSSettings = try container.decodeIfPresent(MagicDNSSettings.self, forKey: .magicDNSSettings) ?? .default
+        peerSubscriptions = try container.decodeIfPresent([PeerSubscription].self, forKey: .peerSubscriptions) ?? []
     }
 }

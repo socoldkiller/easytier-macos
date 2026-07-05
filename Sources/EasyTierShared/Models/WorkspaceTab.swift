@@ -3,6 +3,7 @@ public enum WorkspaceTab: String, CaseIterable, Identifiable, Sendable {
     case view = "View"
     case config = "Config"
     case logs = "Logs"
+    case peers = "Peers"
 
     public var id: String { rawValue }
 }
