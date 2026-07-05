@@ -66,12 +66,12 @@ struct LinuxInstallGuideView: View {
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.defaultAction)
             }
-            .font(.system(size: 12))
+            .font(.caption)
             .controlSize(.small)
             .padding(.horizontal, 22)
             .padding(.vertical, 13)
         }
-        .frame(width: 640, height: 520)
+        .frame(minWidth: 560, idealWidth: 640, minHeight: 440, idealHeight: 520)
         .presentationBackground { FrostedGlass() }
     }
 }
@@ -80,16 +80,16 @@ private struct HeaderRow: View {
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
             Image(systemName: "terminal")
-                .font(.system(size: 19, weight: .regular))
+                .font(.title3)
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(.secondary)
                 .frame(width: 32, height: 32)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text("Install EasyTier on Linux")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.headline)
                 Text("Add a VPS, NAS, or server to the current EasyTier network.")
-                    .font(.system(size: 12))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
@@ -108,15 +108,15 @@ private struct StepRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("\(number).")
-                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
                     .frame(width: 22, alignment: .trailing)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.body.weight(.medium))
                     Text(detail)
-                        .font(.system(size: 12))
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -126,7 +126,7 @@ private struct StepRow: View {
 
             if let footnote {
                 Text(footnote)
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.caption.monospaced())
                     .foregroundStyle(.tertiary)
                     .padding(.leading, 30)
             }
@@ -145,7 +145,7 @@ private struct CommandField: View {
         HStack(spacing: 6) {
             ScrollView(.horizontal) {
                 Text(command)
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.caption.monospaced())
                     .textSelection(.enabled)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
@@ -157,7 +157,7 @@ private struct CommandField: View {
                 copy(command)
             } label: {
                 Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                    .font(.system(size: 11))
+                    .font(.caption)
                     .foregroundStyle(copied ? .green : .secondary)
                     .frame(width: 22, height: 22)
             }
@@ -201,9 +201,10 @@ private struct NoteRow: View {
             Image(systemName: "circle.fill")
                 .font(.system(size: 4))
                 .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
                 .frame(width: 10)
             Text(text)
-                .font(.system(size: 12))
+                .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
