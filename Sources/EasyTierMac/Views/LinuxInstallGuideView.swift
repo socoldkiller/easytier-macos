@@ -71,7 +71,7 @@ struct LinuxInstallGuideView: View {
             .padding(.horizontal, 22)
             .padding(.vertical, 13)
         }
-        .frame(width: 640, height: 520)
+        .frame(minWidth: 560, idealWidth: 640, minHeight: 440, idealHeight: 520)
         .presentationBackground { FrostedGlass() }
     }
 }

@@ -634,7 +634,7 @@ private struct RenameHostnameSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 360)
+        .frame(minWidth: 320, idealWidth: 360)
         .onAppear {
             isHostnameFieldFocused = true
         }

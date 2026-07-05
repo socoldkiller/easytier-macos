@@ -331,7 +331,7 @@ private struct AddPeerSubscriptionSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 460)
+        .frame(minWidth: 380, idealWidth: 460)
     }
 }
 

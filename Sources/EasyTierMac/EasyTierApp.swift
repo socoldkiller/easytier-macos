@@ -42,7 +42,7 @@ struct EasyTierApp: App {
                     }
                     .frame(width: 0, height: 0)
                 )
-                .frame(minWidth: 900, minHeight: 620)
+                .frame(minWidth: 900, idealWidth: 1100, minHeight: 620, idealHeight: 720)
                 .task {
                     EasyTierApplicationDelegate.installQuitPreparation {
                         await store.prepareForAppQuit()
