@@ -1,14 +1,14 @@
 import SwiftUI
 
 enum SettingsTint {
-    static let mode = Color.blue
-    static let magicDNS = Color.indigo
-    static let rpcServer = Color.teal
-    static let advanced = Color.gray
-    static let remoteConfig = Color.purple
-    static let appearance = Color.pink
-    static let launch = Color.green
-    static let quit = Color.orange
+    static let mode = Color.secondary
+    static let magicDNS = Color.secondary
+    static let rpcServer = Color.secondary
+    static let advanced = Color.secondary
+    static let remoteConfig = Color.secondary
+    static let appearance = Color.secondary
+    static let launch = Color.secondary
+    static let quit = Color.secondary
 }
 
 struct SectionIcon: View {
@@ -18,8 +18,8 @@ struct SectionIcon: View {
 
     var body: some View {
         Image(systemName: systemImage)
-            .font(.headline)
-            .foregroundStyle(tint)
+            .font(.system(size: size * 0.72, weight: .semibold))
+            .foregroundStyle(.secondary)
             .frame(width: size, height: size)
     }
 }
@@ -69,12 +69,12 @@ struct CardSection<Content: View>: View {
                     SectionIcon(systemImage: systemImage, tint: tint)
                 } else if let systemImage {
                     Image(systemName: systemImage)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.secondary)
                         .frame(width: 18, alignment: .center)
                 }
                 Text(title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.system(size: 15, weight: .semibold))
             }
 
             SettingsCard { content }
@@ -101,9 +101,9 @@ struct SectionHeader: View {
             SectionIcon(systemImage: systemImage, tint: tint, size: 22)
             VStack(alignment: .leading, spacing: 0.5) {
                 Text(title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.system(size: 15, weight: .semibold))
                 Text(subtitle)
-                    .font(.caption)
+                    .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -134,11 +134,11 @@ struct FieldRow<Content: View>: View {
         HStack(alignment: .top, spacing: 11) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(label)
-                    .font(.body)
+                    .font(.system(size: 13.5, weight: .regular))
                     .foregroundStyle(.secondary)
                 if let description {
                     Text(description)
-                        .font(.caption)
+                        .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -178,7 +178,7 @@ struct StatusPill: View {
                 .fill(tone.color)
                 .frame(width: 6, height: 6)
             Text(text)
-                .font(.caption.weight(.medium))
+                .font(.system(size: 11.5, weight: .medium))
                 .foregroundStyle(tone.color == .secondary ? .secondary : .primary)
                 .lineLimit(1)
         }
@@ -215,15 +215,15 @@ struct ModeOptionTile: View {
                 SectionIcon(systemImage: systemImage, tint: tint, size: 26)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.body.weight(.semibold))
+                        .font(.system(size: 14, weight: .semibold))
                     Text(description)
-                        .font(.caption)
+                        .font(.system(size: 11.5))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 6)
                 Image(systemName: "checkmark.circle.fill")
-                    .font(.body)
+                    .font(.system(size: 16))
                     .foregroundStyle(isSelected ? Color.secondary : Color.secondary.opacity(0.25))
             }
             .padding(10)
@@ -259,7 +259,7 @@ struct StatusBadge: View {
     var body: some View {
         HStack(spacing: 7) {
             Image(systemName: systemImage)
-                .font(.subheadline.weight(.semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
@@ -339,11 +339,11 @@ struct DisclosureHeader<Trailing: View>: View {
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "chevron.right")
-                    .font(.caption2.weight(.medium))
+                    .font(.system(size: 10.5, weight: .medium))
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
                     .frame(width: 11)
                 Text(title)
-                    .font(.body.weight(.medium))
+                    .font(.system(size: 13.5, weight: .medium))
                 Spacer(minLength: 10)
                 trailing
             }

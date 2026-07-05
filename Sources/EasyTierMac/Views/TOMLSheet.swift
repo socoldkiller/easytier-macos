@@ -47,8 +47,8 @@ struct TOMLSheet: View {
             }
         }
         .padding(24)
-        .frame(minWidth: 560, idealWidth: 720, minHeight: 400, idealHeight: 560)
-        .conditionalFrostedGlassPresentationBackground()
+        .frame(width: 720, height: 560)
+        .presentationBackground { FrostedGlass() }
         .presentedSurfaceMotion()
     }
 

@@ -158,7 +158,7 @@ struct EasyTierSettingsSheet: View {
                 }
             }
         }
-        .frame(minWidth: 560, idealWidth: 640, minHeight: 520, idealHeight: 640)
+        .frame(width: Self.windowSize.width, height: Self.windowSize.height)
         .alert("Disable TCP RPC Listen?", isPresented: $showingDisableRPCListenWarning) {
             Button("Keep Enabled", role: .cancel) {}
             Button("Disable", role: .destructive) { rpcListenEnabled = false }
@@ -299,7 +299,7 @@ struct EasyTierSettingsSheet: View {
                 FieldRow("DNS Suffix", description: "Resolves *.suffix through EasyTier.") {
                     TextField("", text: $magicDNSSuffix)
                         .textFieldStyle(.glassField)
-                        .font(.body.monospaced())
+                        .font(.system(size: 13.5, design: .monospaced))
                         .frame(width: 160)
                 }
                 FieldRow("DNS Routing") {
@@ -383,7 +383,7 @@ struct EasyTierSettingsSheet: View {
                 VStack(spacing: 8) {
                     SectionIcon(systemImage: "doc.text.fill", tint: SettingsTint.advanced, size: 34)
                     Text("Configured via TOML profile")
-                        .font(.body.weight(.semibold))
+                        .font(.system(size: 13.5, weight: .semibold))
                     Text("VPN Portal and SOCKS5 proxy are managed through your TOML network profile. They appear here once a profile enabling them is loaded.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -544,6 +544,7 @@ struct EasyTierSettingsSheet: View {
     private static let defaultRemoteRPCAddress = "tcp://127.0.0.1:\(AppMode.defaultRPCListenPort)"
 
     private static let sidebarWidth: CGFloat = 190
+    private static let windowSize = CGSize(width: 640, height: 640)
 }
 
 // MARK: - About
@@ -808,7 +809,7 @@ private struct RPCPortalWhitelistEditor: View {
                         }
                     ))
                     .textFieldStyle(.glassField)
-                    .font(.body.monospaced())
+                    .font(.system(size: 13, design: .monospaced))
 
                     Button(role: .destructive) {
                         guard values.indices.contains(index) else { return }
@@ -832,7 +833,7 @@ private struct RPCPortalWhitelistEditor: View {
                 Label("Add CIDR", systemImage: "plus.circle")
             }
             .buttonStyle(.plain)
-            .font(.body)
+            .font(.system(size: 13.5))
         }
         .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: values.count)
     }

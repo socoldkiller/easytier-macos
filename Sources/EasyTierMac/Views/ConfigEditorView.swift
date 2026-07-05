@@ -4,7 +4,6 @@ import SwiftUI
 struct ConfigEditorView: View {
     @Environment(EasyTierAppStore.self) private var store
     @Environment(\.openWindow) private var openWindow
-    @Environment(\.openSettings) private var openSettings
     @Binding var config: NetworkConfig
     var members: [NetworkMemberStatus] = []
     var remoteSession: RemoteConfigSession? = nil
@@ -328,7 +327,7 @@ struct ConfigEditorView: View {
                             .truncationMode(.middle)
                         Button("Change in Settings") {
                             EasyTierSettingsTabRequest.set(.easyTier)
-                            openSettings()
+                            openWindow(id: "settings")
                         }
                         .buttonStyle(.link)
                         .font(.caption)

@@ -4,7 +4,6 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(\.openWindow) private var openWindow
-    @Environment(\.openSettings) private var openSettings
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(EasyTierAppStore.self) private var store
@@ -29,6 +28,7 @@ struct ContentView: View {
     private static let tabTransitionDistance: CGFloat = 14
     private static let networkTransitionDistance: CGFloat = 7
     private static let remoteRenameConfirmationAttempts = 12
+    private static let sidebarTopClearance: CGFloat = 8
 
     var body: some View {
         @Bindable var store = store
@@ -94,14 +94,14 @@ struct ContentView: View {
         .onChange(of: store.isShowingSettings) { _, isShowing in
             if isShowing {
                 EasyTierSettingsTabRequest.set(.general)
-                openSettings()
+                openWindow(id: "settings")
                 store.isShowingSettings = false
             }
         }
         .onChange(of: store.isShowingAbout) { _, isShowing in
             if isShowing {
                 EasyTierSettingsTabRequest.set(.about)
-                openSettings()
+                openWindow(id: "settings")
                 store.isShowingAbout = false
             }
         }
@@ -218,11 +218,17 @@ struct ContentView: View {
         return Group {
             if networkSearchQuery.isEmpty {
                 List(selection: $selectedConfigIDLocal) {
-                    Section("Networks") {
+                    Section {
                         ForEach(store.configs) { stored in
                             NetworkRow(stored: stored, state: connectionState(for: stored))
                                 .tag(stored.id as String?)
                         }
+                    } header: {
+                        Color.clear
+                            .frame(height: Self.sidebarTopClearance)
+                            .listRowInsets(EdgeInsets())
+                            .listRowSeparator(.hidden)
+                            .accessibilityHidden(true)
                     }
                 }
                 .scrollContentBackground(.hidden)

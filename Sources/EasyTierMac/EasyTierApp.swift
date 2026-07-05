@@ -42,7 +42,7 @@ struct EasyTierApp: App {
                     }
                     .frame(width: 0, height: 0)
                 )
-                .frame(minWidth: 900, idealWidth: 1100, minHeight: 620, idealHeight: 720)
+                .frame(minWidth: 900, minHeight: 620)
                 .task {
                     EasyTierApplicationDelegate.installQuitPreparation {
                         await store.prepareForAppQuit()
@@ -52,7 +52,7 @@ struct EasyTierApp: App {
         }
         .windowToolbarStyle(.unified)
 
-        Settings {
+        Window("EasyTier", id: "settings") {
             EasyTierSettingsSheet(initialTab: .general, mode: store.mode, magicDNSSettings: store.magicDNSSettings) { mode, magicDNSSettings in
                 Task { await store.applyMode(mode, magicDNSSettings: magicDNSSettings) }
             }
@@ -62,11 +62,13 @@ struct EasyTierApp: App {
             .easyTierWindowBackground(glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
             .background(
                 WindowAccessor { window in
-                    configureSettingsWindow(window, glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
+                    configureMainWindow(window, glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
                 }
                 .frame(width: 0, height: 0)
             )
         }
+        .windowToolbarStyle(.unified)
+        .windowResizability(.contentSize)
 
         .commands {
             CommandGroup(replacing: .newItem) {
@@ -77,6 +79,11 @@ struct EasyTierApp: App {
             CommandGroup(replacing: .saveItem) {
                 Button("Save") { store.save() }
                     .keyboardShortcut("s")
+            }
+
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings...") { store.isShowingSettings = true }
+                    .keyboardShortcut(",", modifiers: .command)
             }
 
             CommandGroup(after: .appInfo) {
@@ -105,20 +112,13 @@ struct EasyTierApp: App {
 
     private func configureMainWindow(_ window: NSWindow, glassEffectsEnabled: Bool) {
         let frame = window.frame
-        let effectiveGlass = glassEffectsEnabled && !NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
         window.styleMask.insert(.fullSizeContentView)
         window.titlebarAppearsTransparent = true
-        window.isOpaque = !effectiveGlass
-        window.backgroundColor = effectiveGlass ? .clear : .windowBackgroundColor
+        window.isOpaque = !glassEffectsEnabled
+        window.backgroundColor = glassEffectsEnabled ? .clear : .windowBackgroundColor
         if window.frame != frame {
             window.setFrame(frame, display: true)
         }
-    }
-
-    private func configureSettingsWindow(_ window: NSWindow, glassEffectsEnabled: Bool) {
-        let effectiveGlass = glassEffectsEnabled && !NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
-        window.isOpaque = !effectiveGlass
-        window.backgroundColor = effectiveGlass ? .clear : .windowBackgroundColor
     }
 
     private static func runHelperCommandIfRequested() {
@@ -645,13 +645,13 @@ private struct MenuBarContent: View {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("EasyTier")
-                        .font(.body.weight(.medium))
+                        .font(.system(size: 14, weight: .medium))
                     HStack(spacing: 6) {
                         Circle()
                             .fill(connectionIndicatorColor)
                             .frame(width: 6, height: 6)
                         Text(connectionSubtitle)
-                            .font(.body)
+                            .font(.system(size: 13, weight: .regular))
                             .foregroundStyle(MenuBarPalette.secondaryText)
                     }
                 }
@@ -666,10 +666,6 @@ private struct MenuBarContent: View {
                 .buttonStyle(QuietPressButtonStyle(pressedScale: 0.94, pressedOpacity: 0.86))
                 .disabled(store.isBusy || store.isQuitting || store.selectedConfig == nil)
                 .onHover { isConnectionSwitchHovering = $0 }
-                .accessibilityLabel(Text("Connection"))
-                .accessibilityValue(Text(store.selectedConfigIsRunning ? "On" : "Off"))
-                .accessibilityHint(Text("Toggles the selected network connection"))
-                .accessibilityAddTraits(.isButton)
             }
             .padding(.horizontal, 12)
             .padding(.top, 8)
@@ -706,28 +702,24 @@ private struct MenuBarContent: View {
                 store.isShowingAbout = true
                 dismissMenuBar()
             }
-            .accessibilityHint(Text("Opens the About window"))
 
             MenuBarListButton(title: "Install on Linux", isDisabled: store.isQuitting) {
                 openMainWindow()
                 store.isShowingLinuxInstallGuide = true
                 dismissMenuBar()
             }
-            .accessibilityHint(Text("Shows instructions for installing EasyTier on a Linux server"))
 
             MenuBarDivider()
 
             MenuBarListButton(title: windowEffectTitle, isDisabled: store.isQuitting) {
                 appearanceSettings.glassEffectsEnabled.toggle()
             }
-            .accessibilityHint(Text("Toggles frosted glass window effect"))
 
             MenuBarListButton(title: "Settings...", shortcut: "⌘ ,", isDisabled: store.isQuitting) {
                 openMainWindow()
                 store.isShowingSettings = true
                 dismissMenuBar()
             }
-            .accessibilityHint(Text("Opens EasyTier settings"))
 
             MenuBarDivider()
 
@@ -890,12 +882,11 @@ private enum MenuBarPalette {
     static let mutedText = Color.secondary.opacity(0.6)
     static let divider = Color.primary.opacity(0.14)
     static let rowHighlight = Color.primary.opacity(0.08)
-    static let selectedRow = EasyTierColors.menuBarSelectedRow
+    static let selectedRow = Color(red: 0.10, green: 0.37, blue: 0.78)
     static let selectedRowHorizontalInset: CGFloat = 12
     static let selectedRowVerticalInset: CGFloat = 5
     static let selectedRowContentVerticalPadding: CGFloat = 4
-    static let connected = EasyTierColors.menuBarConnected
-    static let selectedRowText = Color(nsColor: .selectedMenuItemTextColor)
+    static let connected = Color(red: 0.35, green: 0.78, blue: 0.42)
 }
 
 private struct MenuBarPanelBackground: NSViewRepresentable {
@@ -910,8 +901,7 @@ private struct MenuBarPanelBackground: NSViewRepresentable {
     }
 
     private func configure(_ view: NSVisualEffectView) {
-        let reduceTransparency = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
-        view.material = reduceTransparency ? .windowBackground : .sidebar
+        view.material = .sidebar
         view.blendingMode = .behindWindow
         view.state = .active
     }
@@ -920,7 +910,11 @@ private struct MenuBarPanelBackground: NSViewRepresentable {
 extension View {
     @ViewBuilder
     func easyTierWindowBackground(glassEffectsEnabled: Bool) -> some View {
-        modifier(EasyTierWindowBackgroundModifier(glassEffectsEnabled: glassEffectsEnabled))
+        if glassEffectsEnabled {
+            containerBackground(for: .window) { FrostedGlass() }
+        } else {
+            containerBackground(Color(nsColor: .windowBackgroundColor), for: .window)
+        }
     }
 
     func frostedGlassBackground<S: Shape>(in shape: S) -> some View {
@@ -930,62 +924,20 @@ extension View {
     func liquidGlassMetricBackground<S: Shape>(in shape: S) -> some View {
         modifier(LiquidGlassMetricBackground(shape: shape))
     }
-
-    /// Uses a frosted glass presentation background unless the user has enabled
-    /// "Reduce transparency" in system accessibility settings.
-    func conditionalFrostedGlassPresentationBackground() -> some View {
-        modifier(ConditionalFrostedGlassPresentationBackground())
-    }
-}
-
-private struct ConditionalFrostedGlassPresentationBackground: ViewModifier {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
-    func body(content: Content) -> some View {
-        if reduceTransparency {
-            content
-        } else {
-            content.presentationBackground { FrostedGlass() }
-        }
-    }
-}
-
-private struct EasyTierWindowBackgroundModifier: ViewModifier {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
-    let glassEffectsEnabled: Bool
-
-    private var effectiveGlass: Bool {
-        glassEffectsEnabled && !reduceTransparency
-    }
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if effectiveGlass {
-            content.containerBackground(for: .window) { FrostedGlass() }
-        } else {
-            content.containerBackground(Color(nsColor: .windowBackgroundColor), for: .window)
-        }
-    }
 }
 
 private struct FrostedGlassBackground<S: Shape>: ViewModifier {
     @Environment(AppAppearanceSettings.self) private var appearanceSettings
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var shape: S
 
-    private var glassEnabled: Bool {
-        appearanceSettings.glassEffectsEnabled && !reduceTransparency
-    }
-
     @ViewBuilder
     func body(content: Content) -> some View {
-        if glassEnabled && !appearanceSettings.glassPanelBackgroundsEnabled {
+        if appearanceSettings.glassEffectsEnabled && !appearanceSettings.glassPanelBackgroundsEnabled {
             content
         } else {
             content.background {
-                if glassEnabled {
+                if appearanceSettings.glassEffectsEnabled {
                     FrostedGlass(blendingMode: .withinWindow)
                         .clipShape(shape)
                 } else {
@@ -999,13 +951,8 @@ private struct FrostedGlassBackground<S: Shape>: ViewModifier {
 private struct LiquidGlassMetricBackground<S: Shape>: ViewModifier {
     @Environment(AppAppearanceSettings.self) private var appearanceSettings
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var shape: S
-
-    private var glassEnabled: Bool {
-        appearanceSettings.glassEffectsEnabled && !reduceTransparency
-    }
 
     @ViewBuilder
     func body(content: Content) -> some View {
@@ -1019,14 +966,14 @@ private struct LiquidGlassMetricBackground<S: Shape>: ViewModifier {
     }
 
     private var backgroundColor: Color {
-        if glassEnabled {
+        if appearanceSettings.glassEffectsEnabled {
             return Color.primary.opacity(colorScheme == .dark ? 0.038 : 0.052)
         }
         return Color.primary.opacity(colorScheme == .dark ? 0.052 : 0.075)
     }
 
     private var strokeColor: Color {
-        if glassEnabled {
+        if appearanceSettings.glassEffectsEnabled {
             return Color.primary.opacity(colorScheme == .dark ? 0.045 : 0.065)
         }
         return Color.primary.opacity(0.075)
@@ -1049,8 +996,7 @@ struct FrostedGlass: NSViewRepresentable {
     }
 
     private func configure(_ view: NSVisualEffectView) {
-        let reduceTransparency = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
-        view.material = reduceTransparency ? .windowBackground : material
+        view.material = material
         view.blendingMode = blendingMode
         view.state = state
         view.autoresizingMask = [.width, .height]
@@ -1058,8 +1004,6 @@ struct FrostedGlass: NSViewRepresentable {
 }
 
 struct GlassFieldStyle: TextFieldStyle {
-    @Environment(\.accessibilityShowButtonShapes) private var showButtonShapes
-
     func _body(configuration: TextField<Self._Label>) -> some View {
         configuration
             .textFieldStyle(.plain)
@@ -1071,10 +1015,7 @@ struct GlassFieldStyle: TextFieldStyle {
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .strokeBorder(
-                        .primary.opacity(showButtonShapes ? 0.35 : 0.1),
-                        lineWidth: showButtonShapes ? 1 : 0.5
-                    )
+                    .strokeBorder(.primary.opacity(0.1), lineWidth: 0.5)
             }
     }
 }
@@ -1130,9 +1071,9 @@ private struct MenuBarConnectionSwitch: View {
                 .fill(knobColor)
                 .overlay {
                     Circle()
-                        .stroke(Color.primary.opacity(0.16), lineWidth: 0.5)
+                        .stroke(Color.black.opacity(0.16), lineWidth: 0.5)
                 }
-                .shadow(color: Color.primary.opacity(0.16), radius: 1, x: 0, y: 1)
+                .shadow(color: .black.opacity(0.16), radius: 1, x: 0, y: 1)
                 .padding(2.5)
         }
         .frame(width: 40, height: 24)
@@ -1195,11 +1136,11 @@ private struct MenuBarNetworkRow: View {
                     MenuBarNetworkAvatar(state: state)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(name)
-                            .font(.body.weight(.medium))
+                            .font(.system(size: 13.5, weight: .medium))
                             .foregroundStyle(primaryTextColor)
                             .lineLimit(1)
                         Text(subtitle)
-                            .font(.body)
+                            .font(.system(size: 13.5, weight: .regular))
                             .foregroundStyle(secondaryTextColor)
                             .lineLimit(1)
                     }
@@ -1207,7 +1148,7 @@ private struct MenuBarNetworkRow: View {
 
                     if !canSwitch {
                         Image(systemName: "chevron.right")
-                            .font(.body.weight(.medium))
+                            .font(.system(size: 16, weight: .medium))
                             .foregroundStyle(primaryTextColor)
                     }
                 }
@@ -1255,7 +1196,7 @@ private struct MenuBarNetworkRow: View {
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.body.weight(.semibold))
+                .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(inlineChevronColor(isHovering: isHovering.wrappedValue))
                 .frame(width: 24, height: 32)
                 .contentShape(Rectangle())
@@ -1266,11 +1207,11 @@ private struct MenuBarNetworkRow: View {
     }
 
     private var primaryTextColor: Color {
-        isRowActive ? MenuBarPalette.selectedRowText : MenuBarPalette.primaryText
+        isRowActive ? Color.white.opacity(0.96) : MenuBarPalette.primaryText
     }
 
     private var secondaryTextColor: Color {
-        isRowActive ? MenuBarPalette.selectedRowText.opacity(0.82) : MenuBarPalette.secondaryText
+        isRowActive ? Color.white.opacity(0.78) : MenuBarPalette.secondaryText
     }
 
     private var rowBackground: Color {
@@ -1282,7 +1223,7 @@ private struct MenuBarNetworkRow: View {
     }
 
     private func inlineChevronColor(isHovering: Bool) -> Color {
-        isRowActive ? MenuBarPalette.selectedRowText.opacity(isHovering ? 1.0 : 0.92) : MenuBarPalette.primaryText
+        isRowActive ? Color.white.opacity(isHovering ? 1.0 : 0.92) : MenuBarPalette.primaryText
     }
 }
 
@@ -1293,7 +1234,7 @@ private struct MenuBarPlainRow: View {
     var body: some View {
         HStack(spacing: 0) {
             Text(title)
-                .font(.body.weight(.medium))
+                .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(isMuted ? MenuBarPalette.mutedText : MenuBarPalette.primaryText)
                 .lineLimit(1)
             Spacer(minLength: 0)
@@ -1317,12 +1258,12 @@ private struct MenuBarCopyRow: View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Text(title)
-                    .font(.body.weight(.medium))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(titleColor)
                     .lineLimit(1)
                 Spacer(minLength: 0)
                 Image(systemName: isCopied ? "checkmark.circle.fill" : "doc.on.doc")
-                    .font(.caption.weight(.semibold))
+                    .font(.system(size: 12.5, weight: .semibold))
                     .foregroundStyle(iconColor)
                     .frame(width: 18, height: 18)
                     .opacity(isDisabled ? 0 : 1)
@@ -1341,17 +1282,15 @@ private struct MenuBarCopyRow: View {
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: isCopied)
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: isHovering)
         .help("Copy IP address")
-        .accessibilityHint(Text("Copies the device IP address to the clipboard"))
-        .accessibilityValue(Text(isCopied ? "Copied" : ""))
     }
 
     private var titleColor: Color {
-        if isHovering, !isDisabled { return MenuBarPalette.selectedRowText }
+        if isHovering, !isDisabled { return Color.white.opacity(0.96) }
         return isDisabled ? MenuBarPalette.mutedText : MenuBarPalette.primaryText
     }
 
     private var iconColor: Color {
-        if isHovering, !isDisabled { return MenuBarPalette.selectedRowText.opacity(isCopied ? 0.98 : 0.82) }
+        if isHovering, !isDisabled { return Color.white.opacity(isCopied ? 0.98 : 0.82) }
         return isCopied ? MenuBarPalette.connected : MenuBarPalette.secondaryText
     }
 
@@ -1376,12 +1315,12 @@ private struct MenuBarListButton: View {
         Button(action: action) {
             HStack(spacing: 12) {
                 Text(title)
-                    .font(.body)
+                    .font(.system(size: 13, weight: .regular))
                     .foregroundStyle(primaryTextColor)
                 Spacer(minLength: 0)
                 if let shortcut {
                     Text(shortcut)
-                        .font(.body)
+                        .font(.system(size: 13, weight: .regular))
                         .foregroundStyle(shortcutTextColor)
                 }
             }
@@ -1400,12 +1339,12 @@ private struct MenuBarListButton: View {
 
     private var primaryTextColor: Color {
         if isDisabled { return MenuBarPalette.mutedText }
-        return isHovering ? MenuBarPalette.selectedRowText : MenuBarPalette.primaryText
+        return isHovering ? Color.white.opacity(0.96) : MenuBarPalette.primaryText
     }
 
     private var shortcutTextColor: Color {
         if isDisabled { return MenuBarPalette.mutedText.opacity(0.7) }
-        return isHovering ? MenuBarPalette.selectedRowText.opacity(0.72) : MenuBarPalette.mutedText
+        return isHovering ? Color.white.opacity(0.72) : MenuBarPalette.mutedText
     }
 
     private var rowBackground: Color {
