@@ -659,6 +659,10 @@ private struct MenuBarContent: View {
                 .buttonStyle(QuietPressButtonStyle(pressedScale: 0.94, pressedOpacity: 0.86))
                 .disabled(store.isBusy || store.isQuitting || store.selectedConfig == nil)
                 .onHover { isConnectionSwitchHovering = $0 }
+                .accessibilityLabel(Text("Connection"))
+                .accessibilityValue(Text(store.selectedConfigIsRunning ? "On" : "Off"))
+                .accessibilityHint(Text("Toggles the selected network connection"))
+                .accessibilityAddTraits(.isButton)
             }
             .padding(.horizontal, 12)
             .padding(.top, 8)
@@ -998,6 +1002,8 @@ struct FrostedGlass: NSViewRepresentable {
 }
 
 struct GlassFieldStyle: TextFieldStyle {
+    @Environment(\.accessibilityShowButtonShapes) private var showButtonShapes
+
     func _body(configuration: TextField<Self._Label>) -> some View {
         configuration
             .textFieldStyle(.plain)
@@ -1009,7 +1015,10 @@ struct GlassFieldStyle: TextFieldStyle {
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .strokeBorder(.primary.opacity(0.1), lineWidth: 0.5)
+                    .strokeBorder(
+                        .primary.opacity(showButtonShapes ? 0.35 : 0.1),
+                        lineWidth: showButtonShapes ? 1 : 0.5
+                    )
             }
     }
 }

@@ -648,40 +648,46 @@ private struct FlagToggle: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Button {
+            HStack(spacing: 9) {
+                Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
+                    .font(.body.weight(isOn ? .semibold : .regular))
+                    .foregroundStyle(isOn ? Color.accentColor : Color.secondary.opacity(0.5))
+                    .frame(width: 16, alignment: .center)
+                    .accessibilityHidden(true)
+
+                Text(title)
+                    .font(.body.weight(isOn ? .medium : .regular))
+                    .foregroundStyle(isOn ? .primary : .secondary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+
+                Spacer(minLength: 8)
+
+                Toggle("", isOn: $isOn)
+                    .labelsHidden()
+                    .controlSize(.mini)
+                    .toggleStyle(.switch)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture {
                 withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
                     isOn.toggle()
                 }
-            } label: {
-                HStack(spacing: 9) {
-                    Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
-                        .font(.body.weight(isOn ? .semibold : .regular))
-                        .foregroundStyle(isOn ? Color.accentColor : Color.secondary.opacity(0.5))
-                        .frame(width: 16, alignment: .center)
-
-                    Text(title)
-                        .font(.body.weight(isOn ? .medium : .regular))
-                        .foregroundStyle(isOn ? .primary : .secondary)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-
-                    Spacer(minLength: 8)
-
-                    Toggle("", isOn: $isOn)
-                        .labelsHidden()
-                        .controlSize(.mini)
-                        .toggleStyle(.switch)
-                }
-                .padding(.horizontal, 8)
-                .frame(height: 28)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
             .help(help ?? title)
+            .accessibilityElement(children: .ignore)
             .accessibilityLabel(Text(title))
             .accessibilityValue(Text(isOn ? "On" : "Off"))
-            .accessibilityAddTraits(isOn ? .isSelected : [])
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction {
+                withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
+                    isOn.toggle()
+                }
+            }
 
             if showsSeparator {
                 FlagRowSeparator()
