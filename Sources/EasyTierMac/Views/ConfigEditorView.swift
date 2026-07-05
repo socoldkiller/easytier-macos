@@ -95,7 +95,7 @@ struct ConfigEditorView: View {
                         "Another network already uses this name. Letting it persist will reuse that network's saved secret.",
                         systemImage: "exclamationmark.triangle.fill"
                     )
-                    .font(.system(size: 11.5))
+                    .font(.caption)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
                 }
@@ -117,7 +117,7 @@ struct ConfigEditorView: View {
                 trailing: {
                     if !displayAdvanced && hasActiveAdvancedSettings {
                         Text("Some advanced settings are active")
-                            .font(.system(size: 12))
+                            .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -330,7 +330,7 @@ struct ConfigEditorView: View {
                             openWindow(id: "settings")
                         }
                         .buttonStyle(.link)
-                        .font(.system(size: 12.5))
+                        .font(.caption)
                     }
                 }
             }
@@ -586,11 +586,11 @@ private struct FlagGroup<Content: View>: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: systemImage)
-                    .font(.system(size: 11.5, weight: .semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(Color.accentColor.opacity(0.72))
                     .frame(width: 14, alignment: .center)
                 Text(title.uppercased())
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .tracking(0.4)
             }
@@ -654,12 +654,12 @@ private struct FlagToggle: View {
             } label: {
                 HStack(spacing: 9) {
                     Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 13, weight: isOn ? .semibold : .regular))
+                        .font(.body.weight(isOn ? .semibold : .regular))
                         .foregroundStyle(isOn ? Color.accentColor : Color.secondary.opacity(0.5))
                         .frame(width: 16, alignment: .center)
 
                     Text(title)
-                        .font(.system(size: 13, weight: isOn ? .medium : .regular))
+                        .font(.body.weight(isOn ? .medium : .regular))
                         .foregroundStyle(isOn ? .primary : .secondary)
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
@@ -770,7 +770,7 @@ private struct StringListEditor: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(title)
-                    .font(.system(size: 13.5, weight: .medium))
+                    .font(.body.weight(.medium))
                 Spacer()
                 Button {
                     withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
@@ -839,8 +839,8 @@ private struct PortForwardEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Rules")
-                    .font(.system(size: 13.5, weight: .medium))
+            Text("Rules")
+                .font(.body.weight(.medium))
                 Spacer()
                 Button {
                     portForwards.append(PortForwardConfig())
@@ -857,7 +857,7 @@ private struct PortForwardEditor: View {
 
             if !reversedRules.isEmpty {
                 Text("Reversed")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.caption.weight(.medium))
                     .foregroundStyle(.green)
                     .padding(.top, 4)
                 ForEach(reversedRules) { rule in
@@ -900,12 +900,12 @@ private struct PortForwardEditor: View {
     private func readonlyRow(for rule: PortForwardConfig) -> some View {
         Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
             GridRow {
-                Text(rule.proto).font(.system(size: 13.5)).foregroundStyle(.secondary)
-                Text(rule.bind_ip).font(.system(size: 13.5)).foregroundStyle(.secondary)
-                Text("\(rule.bind_port)").font(.system(size: 13.5)).foregroundStyle(.secondary)
+                Text(rule.proto).font(.body).foregroundStyle(.secondary)
+                Text(rule.bind_ip).font(.body).foregroundStyle(.secondary)
+                Text("\(rule.bind_port)").font(.body).foregroundStyle(.secondary)
                 Text("->").foregroundStyle(.secondary)
-                Text(rule.dst_ip).font(.system(size: 13.5)).foregroundStyle(.secondary)
-                Text("\(rule.dst_port)").font(.system(size: 13.5)).foregroundStyle(.secondary)
+                Text(rule.dst_ip).font(.body).foregroundStyle(.secondary)
+                Text("\(rule.dst_port)").font(.body).foregroundStyle(.secondary)
                 if allowsReverse { reverseButton(for: rule) }
                 Button(role: .destructive) {
                     portForwards.removeAll { $0.id == rule.id }
@@ -927,7 +927,7 @@ private struct PortForwardEditor: View {
             onToggleReverse(rule)
         } label: {
             Image(systemName: "arrow.left.arrow.right")
-                .font(.system(size: 11, weight: isActive ? .semibold : .medium))
+                .font(.caption.weight(isActive ? .semibold : .medium))
                 .foregroundStyle(isActive ? .green : .secondary)
                 .opacity(isPending ? 0.4 : (availability.available ? 1.0 : 0.28))
         }

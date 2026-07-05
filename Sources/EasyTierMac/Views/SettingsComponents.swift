@@ -18,7 +18,7 @@ struct SectionIcon: View {
 
     var body: some View {
         Image(systemName: systemImage)
-            .font(.system(size: size * 0.72, weight: .semibold))
+            .font(.headline)
             .foregroundStyle(.secondary)
             .frame(width: size, height: size)
     }
@@ -69,12 +69,12 @@ struct CardSection<Content: View>: View {
                     SectionIcon(systemImage: systemImage, tint: tint)
                 } else if let systemImage {
                     Image(systemName: systemImage)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .frame(width: 18, alignment: .center)
                 }
                 Text(title)
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.subheadline.weight(.semibold))
             }
 
             SettingsCard { content }
@@ -101,9 +101,9 @@ struct SectionHeader: View {
             SectionIcon(systemImage: systemImage, tint: tint, size: 22)
             VStack(alignment: .leading, spacing: 0.5) {
                 Text(title)
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.subheadline.weight(.semibold))
                 Text(subtitle)
-                    .font(.system(size: 11.5))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -134,11 +134,11 @@ struct FieldRow<Content: View>: View {
         HStack(alignment: .top, spacing: 11) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(label)
-                    .font(.system(size: 13.5, weight: .regular))
+                    .font(.body)
                     .foregroundStyle(.secondary)
                 if let description {
                     Text(description)
-                        .font(.system(size: 11))
+                        .font(.caption)
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -178,7 +178,7 @@ struct StatusPill: View {
                 .fill(tone.color)
                 .frame(width: 6, height: 6)
             Text(text)
-                .font(.system(size: 11.5, weight: .medium))
+                .font(.caption.weight(.medium))
                 .foregroundStyle(tone.color == .secondary ? .secondary : .primary)
                 .lineLimit(1)
         }
@@ -215,15 +215,15 @@ struct ModeOptionTile: View {
                 SectionIcon(systemImage: systemImage, tint: tint, size: 26)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.body.weight(.semibold))
                     Text(description)
-                        .font(.system(size: 11.5))
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 6)
                 Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 16))
+                    .font(.body)
                     .foregroundStyle(isSelected ? Color.secondary : Color.secondary.opacity(0.25))
             }
             .padding(10)
@@ -259,7 +259,7 @@ struct StatusBadge: View {
     var body: some View {
         HStack(spacing: 7) {
             Image(systemName: systemImage)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
@@ -339,11 +339,11 @@ struct DisclosureHeader<Trailing: View>: View {
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 10.5, weight: .medium))
+                    .font(.caption2.weight(.medium))
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
                     .frame(width: 11)
                 Text(title)
-                    .font(.system(size: 13.5, weight: .medium))
+                    .font(.body.weight(.medium))
                 Spacer(minLength: 10)
                 trailing
             }

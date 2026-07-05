@@ -398,7 +398,7 @@ private struct PeerCardView: View {
             HStack(alignment: .center, spacing: 8) {
                 HStack(spacing: 3) {
                     Image(systemName: "link")
-                        .font(.system(size: 9))
+                        .font(.caption2)
                         .foregroundStyle(.tertiary)
                     Text("\(card.urls.count) peer\(card.urls.count == 1 ? "" : "s")")
                         .font(.caption.weight(.medium))
@@ -484,18 +484,18 @@ private struct PeerCardView: View {
             EmptyView()
         case .added:
             Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 14, weight: .semibold))
+                .font(.body.weight(.semibold))
                 .foregroundStyle(.green)
                 .symbolEffect(.bounce, value: appliedState)
                 .transition(.scale.combined(with: .opacity))
         case .alreadyPresent:
             Image(systemName: "checkmark.circle")
-                .font(.system(size: 14, weight: .semibold))
+                .font(.body.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .transition(.scale.combined(with: .opacity))
         case .noSelectedConfig:
             Image(systemName: "exclamationmark.circle")
-                .font(.system(size: 14, weight: .semibold))
+                .font(.body.weight(.semibold))
                 .foregroundStyle(.orange)
                 .transition(.scale.combined(with: .opacity))
         }
@@ -580,7 +580,7 @@ private struct PeerNoticeBanner: View {
         HStack(spacing: 7) {
             Image(systemName: iconName)
                 .foregroundStyle(iconColor)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.caption.weight(.semibold))
             Text(text)
                 .font(.callout)
                 .foregroundStyle(.primary)

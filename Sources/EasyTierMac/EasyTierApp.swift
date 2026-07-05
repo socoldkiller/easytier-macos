@@ -645,13 +645,13 @@ private struct MenuBarContent: View {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("EasyTier")
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.body.weight(.medium))
                     HStack(spacing: 6) {
                         Circle()
                             .fill(connectionIndicatorColor)
                             .frame(width: 6, height: 6)
                         Text(connectionSubtitle)
-                            .font(.system(size: 13, weight: .regular))
+                            .font(.body)
                             .foregroundStyle(MenuBarPalette.secondaryText)
                     }
                 }
@@ -1136,11 +1136,11 @@ private struct MenuBarNetworkRow: View {
                     MenuBarNetworkAvatar(state: state)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(name)
-                            .font(.system(size: 13.5, weight: .medium))
+                            .font(.body.weight(.medium))
                             .foregroundStyle(primaryTextColor)
                             .lineLimit(1)
                         Text(subtitle)
-                            .font(.system(size: 13.5, weight: .regular))
+                            .font(.body)
                             .foregroundStyle(secondaryTextColor)
                             .lineLimit(1)
                     }
@@ -1148,7 +1148,7 @@ private struct MenuBarNetworkRow: View {
 
                     if !canSwitch {
                         Image(systemName: "chevron.right")
-                            .font(.system(size: 16, weight: .medium))
+                            .font(.body.weight(.medium))
                             .foregroundStyle(primaryTextColor)
                     }
                 }
@@ -1196,7 +1196,7 @@ private struct MenuBarNetworkRow: View {
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 15, weight: .semibold))
+                .font(.body.weight(.semibold))
                 .foregroundStyle(inlineChevronColor(isHovering: isHovering.wrappedValue))
                 .frame(width: 24, height: 32)
                 .contentShape(Rectangle())
@@ -1234,7 +1234,7 @@ private struct MenuBarPlainRow: View {
     var body: some View {
         HStack(spacing: 0) {
             Text(title)
-                .font(.system(size: 13, weight: .medium))
+                .font(.body.weight(.medium))
                 .foregroundStyle(isMuted ? MenuBarPalette.mutedText : MenuBarPalette.primaryText)
                 .lineLimit(1)
             Spacer(minLength: 0)
@@ -1258,12 +1258,12 @@ private struct MenuBarCopyRow: View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Text(title)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.body.weight(.medium))
                     .foregroundStyle(titleColor)
                     .lineLimit(1)
                 Spacer(minLength: 0)
                 Image(systemName: isCopied ? "checkmark.circle.fill" : "doc.on.doc")
-                    .font(.system(size: 12.5, weight: .semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(iconColor)
                     .frame(width: 18, height: 18)
                     .opacity(isDisabled ? 0 : 1)
@@ -1315,12 +1315,12 @@ private struct MenuBarListButton: View {
         Button(action: action) {
             HStack(spacing: 12) {
                 Text(title)
-                    .font(.system(size: 13, weight: .regular))
+                    .font(.body)
                     .foregroundStyle(primaryTextColor)
                 Spacer(minLength: 0)
                 if let shortcut {
                     Text(shortcut)
-                        .font(.system(size: 13, weight: .regular))
+                        .font(.body)
                         .foregroundStyle(shortcutTextColor)
                 }
             }

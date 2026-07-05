@@ -299,7 +299,7 @@ struct EasyTierSettingsSheet: View {
                 FieldRow("DNS Suffix", description: "Resolves *.suffix through EasyTier.") {
                     TextField("", text: $magicDNSSuffix)
                         .textFieldStyle(.glassField)
-                        .font(.system(size: 13.5, design: .monospaced))
+                        .font(.body.monospaced())
                         .frame(width: 160)
                 }
                 FieldRow("DNS Routing") {
@@ -383,7 +383,7 @@ struct EasyTierSettingsSheet: View {
                 VStack(spacing: 8) {
                     SectionIcon(systemImage: "doc.text.fill", tint: SettingsTint.advanced, size: 34)
                     Text("Configured via TOML profile")
-                        .font(.system(size: 13.5, weight: .semibold))
+                        .font(.body.weight(.semibold))
                     Text("VPN Portal and SOCKS5 proxy are managed through your TOML network profile. They appear here once a profile enabling them is loaded.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -809,7 +809,7 @@ private struct RPCPortalWhitelistEditor: View {
                         }
                     ))
                     .textFieldStyle(.glassField)
-                    .font(.system(size: 13, design: .monospaced))
+                    .font(.body.monospaced())
 
                     Button(role: .destructive) {
                         guard values.indices.contains(index) else { return }
@@ -833,7 +833,7 @@ private struct RPCPortalWhitelistEditor: View {
                 Label("Add CIDR", systemImage: "plus.circle")
             }
             .buttonStyle(.plain)
-            .font(.system(size: 13.5))
+            .font(.body)
         }
         .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: values.count)
     }

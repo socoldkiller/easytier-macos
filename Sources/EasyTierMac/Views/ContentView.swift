@@ -1093,7 +1093,7 @@ private struct NetworkSearchResultRow: View {
                 NetworkStatusGlyph(state: state)
             } else {
                 Image(systemName: result.systemImage)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.headline)
                     .foregroundStyle(.tint)
                     .frame(width: 22, height: 22)
             }
@@ -1291,7 +1291,7 @@ private struct NetworkStatusGlyph: View {
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             Image(systemName: "network")
-                .font(.system(size: 16, weight: .semibold))
+                .font(.headline)
                 .foregroundStyle(iconColor)
                 .frame(width: 18, height: 18)
 
