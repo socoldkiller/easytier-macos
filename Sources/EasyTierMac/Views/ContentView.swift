@@ -4,6 +4,7 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(EasyTierAppStore.self) private var store
@@ -93,14 +94,14 @@ struct ContentView: View {
         .onChange(of: store.isShowingSettings) { _, isShowing in
             if isShowing {
                 EasyTierSettingsTabRequest.set(.general)
-                openWindow(id: "settings")
+                openSettings()
                 store.isShowingSettings = false
             }
         }
         .onChange(of: store.isShowingAbout) { _, isShowing in
             if isShowing {
                 EasyTierSettingsTabRequest.set(.about)
-                openWindow(id: "settings")
+                openSettings()
                 store.isShowingAbout = false
             }
         }

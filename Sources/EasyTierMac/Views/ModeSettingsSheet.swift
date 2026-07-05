@@ -158,7 +158,7 @@ struct EasyTierSettingsSheet: View {
                 }
             }
         }
-        .frame(width: Self.windowSize.width, height: Self.windowSize.height)
+        .frame(minWidth: 560, idealWidth: 640, minHeight: 520, idealHeight: 640)
         .alert("Disable TCP RPC Listen?", isPresented: $showingDisableRPCListenWarning) {
             Button("Keep Enabled", role: .cancel) {}
             Button("Disable", role: .destructive) { rpcListenEnabled = false }
@@ -544,7 +544,6 @@ struct EasyTierSettingsSheet: View {
     private static let defaultRemoteRPCAddress = "tcp://127.0.0.1:\(AppMode.defaultRPCListenPort)"
 
     private static let sidebarWidth: CGFloat = 190
-    private static let windowSize = CGSize(width: 640, height: 640)
 }
 
 // MARK: - About

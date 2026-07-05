@@ -52,7 +52,7 @@ struct EasyTierApp: App {
         }
         .windowToolbarStyle(.unified)
 
-        Window("EasyTier", id: "settings") {
+        Settings {
             EasyTierSettingsSheet(initialTab: .general, mode: store.mode, magicDNSSettings: store.magicDNSSettings) { mode, magicDNSSettings in
                 Task { await store.applyMode(mode, magicDNSSettings: magicDNSSettings) }
             }
@@ -67,8 +67,6 @@ struct EasyTierApp: App {
                 .frame(width: 0, height: 0)
             )
         }
-        .windowToolbarStyle(.unified)
-        .windowResizability(.contentSize)
 
         .commands {
             CommandGroup(replacing: .newItem) {
@@ -79,11 +77,6 @@ struct EasyTierApp: App {
             CommandGroup(replacing: .saveItem) {
                 Button("Save") { store.save() }
                     .keyboardShortcut("s")
-            }
-
-            CommandGroup(replacing: .appSettings) {
-                Button("Settings...") { store.isShowingSettings = true }
-                    .keyboardShortcut(",", modifiers: .command)
             }
 
             CommandGroup(after: .appInfo) {
