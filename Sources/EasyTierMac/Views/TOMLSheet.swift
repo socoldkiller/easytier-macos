@@ -22,11 +22,14 @@ struct TOMLSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             Text(mode == .import ? "Import TOML" : "Export TOML")
                 .font(.title2.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
 
             editor
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(8)
                 .frostedGlassBackground(in: RoundedRectangle(cornerRadius: 8))
+                .accessibilityLabel(mode == .import ? "Import TOML editor" : "Export TOML viewer")
+                .accessibilityHint(mode == .import ? "Paste or edit a TOML network config here." : "Read-only preview of the exported TOML.")
 
             HStack {
                 if mode == .export {
@@ -34,15 +37,19 @@ struct TOMLSheet: View {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(text, forType: .string)
                     }
+                    .accessibilityHint("Copies the TOML to the clipboard.")
                 }
                 Spacer()
                 Button("Close") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityHint("Dismisses the TOML sheet without saving.")
                 if mode == .import {
                     Button("Import") {
                         onImport(text)
                         dismiss()
                     }
                     .keyboardShortcut(.defaultAction)
+                    .accessibilityHint("Imports the edited TOML into the selected network.")
                 }
             }
         }

@@ -59,13 +59,17 @@ struct LinuxInstallGuideView: View {
 
             HStack(spacing: 14) {
                 Link("Documentation", destination: URL(string: "https://easytier.cn/guide/installation.html")!)
+                    .accessibilityHint("Opens the EasyTier installation guide in your browser.")
                 Link("Releases", destination: URL(string: "https://github.com/EasyTier/EasyTier/releases")!)
+                    .accessibilityHint("Opens the EasyTier Core releases page in your browser.")
                 Link("Service guide", destination: URL(string: "https://easytier.cn/guide/network/oneclick-install-as-service.html")!)
+                    .accessibilityHint("Opens the EasyTier service install guide in your browser.")
 
                 Spacer()
 
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.defaultAction)
+                    .accessibilityHint("Closes the Linux install guide.")
             }
             .font(.caption)
             .controlSize(.small)
@@ -113,18 +117,24 @@ private struct StepRow: View {
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
                     .frame(width: 22, alignment: .trailing)
+                    .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
                         .font(.body.weight(.medium))
+                        .accessibilityAddTraits(.isHeader)
                     Text(detail)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Step \(number). \(title). \(detail)")
 
             CommandField(command: command)
                 .padding(.leading, 30)
+                .accessibilityLabel("Step \(number) command")
+                .accessibilityValue(command)
 
             if let footnote {
                 Text(footnote)
@@ -211,6 +221,8 @@ private struct NoteRow: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(text)
     }
 }
 
