@@ -190,93 +190,84 @@ struct EasyTierSettingsSheet: View {
     // MARK: General
 
     private var generalSettings: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 9) {
-                SectionHeader(
-                    title: "General",
-                    subtitle: "Appearance, launch, and quit behavior for the EasyTier GUI.",
-                    systemImage: "gearshape",
-                    tint: SettingsTint.launch
-                )
+        VStack(alignment: .leading, spacing: 18) {
+            paneHeader(title: "General", subtitle: "Appearance, launch, and quit behavior for the EasyTier GUI.")
 
-                CardSection(
-                    "Appearance",
-                    systemImage: "paintbrush",
-                    tint: SettingsTint.appearance,
-                    footer: "Panel backgrounds apply only while frosted glass is enabled. Traditional mode keeps solid panels for readability."
-                ) {
-                    FieldRow("Frosted Glass") {
-                        Toggle("Frosted Glass", isOn: appearance.glassEffectsEnabledBinding).labelsHidden()
-                    }
-                    FieldRow("Panel Backgrounds", description: "Requires frosted glass.", help: "Requires frosted glass") {
-                        Toggle("Panel Backgrounds", isOn: appearance.glassPanelBackgroundsEnabledBinding).labelsHidden()
-                    }
-                    .disabled(!appearance.glassEffectsEnabled)
+            Form {
+                Section {
+                    Toggle("Frosted Glass", isOn: appearance.glassEffectsEnabledBinding)
+                    Toggle("Panel Backgrounds", isOn: appearance.glassPanelBackgroundsEnabledBinding)
+                        .disabled(!appearance.glassEffectsEnabled)
+                } header: {
+                    Text("Appearance")
+                } footer: {
+                    Text("Panel backgrounds apply only while frosted glass is enabled. Traditional mode keeps solid panels for readability.")
                 }
 
-                CardSection(
-                    "General",
-                    systemImage: "power",
-                    tint: SettingsTint.launch,
-                    footer: "Open EasyTier automatically when you sign in."
-                ) {
-                    FieldRow("Launch at Login") {
-                        Toggle("Launch at Login", isOn: $loginItem.isEnabled).labelsHidden()
-                    }
-                    .onChange(of: loginItem.isEnabled) { _, _ in loginItem.apply() }
+                Section {
+                    Toggle("Launch at Login", isOn: $loginItem.isEnabled)
+                        .onChange(of: loginItem.isEnabled) { _, _ in loginItem.apply() }
+                } header: {
+                    Text("General")
+                } footer: {
+                    Text("Open EasyTier automatically when you sign in.")
                 }
 
-                CardSection(
-                    "Quit Behavior",
-                    systemImage: "arrow.right.circle",
-                    tint: SettingsTint.quit,
-                    footer: "Only helper-backed VPN networks can keep running after the app quits. no_tun networks stop with the app."
-                ) {
-                    FieldRow("Keep VPN Running After Quit") {
-                        Toggle("Keep VPN Running After Quit", isOn: vpnOnDemandBinding).labelsHidden()
-                    }
+                Section {
+                    Toggle("Keep VPN Running After Quit", isOn: vpnOnDemandBinding)
+                } header: {
+                    Text("Quit Behavior")
+                } footer: {
+                    Text("Only helper-backed VPN networks can keep running after the app quits. no_tun networks stop with the app.")
                 }
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .hideEnclosingScrollViewScrollers()
+            .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
         }
-        .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
+        .padding(.horizontal, 20)
+        .padding(.vertical, 18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .safeAreaInset(edge: .bottom) { footer }
         .task { loginItem.refresh() }
+    }
+
+    @ViewBuilder
+    private func paneHeader(title: String, subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.title2.weight(.semibold))
+            if !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     // MARK: EasyTier
 
     @ViewBuilder
     private func easyTierSectionView(_ section: EasyTierSection) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 9) {
-                SectionHeader(
-                    title: section.rawValue,
-                    subtitle: section.subtitle,
-                    systemImage: section.systemImage,
-                    tint: section.tint
-                )
+        VStack(alignment: .leading, spacing: 18) {
+            paneHeader(title: section.rawValue, subtitle: section.subtitle)
 
-                switch section {
-                case .mode: modeSection
-                case .magicDNS: magicDNSSection
-                case .rpcServer: rpcServerSection
-                case .advanced: advancedSection
-                case .remoteConfig: remoteConfigSection
-                }
+            switch section {
+            case .mode: modeSection
+            case .magicDNS: magicDNSSection
+            case .rpcServer: rpcServerSection
+            case .advanced: advancedSection
+            case .remoteConfig: remoteConfigSection
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .hideEnclosingScrollViewScrollers()
         }
-        .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
+        .padding(.horizontal, 20)
+        .padding(.vertical, 18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .safeAreaInset(edge: .bottom) { footer }
     }
 
     private var modeSection: some View {
-        VStack(spacing: 7) {
+        VStack(spacing: 8) {
             ModeOptionTile(
                 title: "Normal",
                 description: "Run a local EasyTier node with its own listeners and RPC server.",
@@ -297,92 +288,84 @@ struct EasyTierSettingsSheet: View {
     }
 
     private var magicDNSSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            SettingsCard {
-                FieldRow("DNS Suffix", description: "Resolves *.suffix through EasyTier.") {
+        Form {
+            Section {
+                LabeledContent("DNS Suffix") {
                     TextField("", text: $magicDNSSuffix)
-                        .textFieldStyle(.glassField)
+                        .textFieldStyle(.roundedBorder)
                         .font(.body.monospaced())
                         .frame(width: 160)
                 }
-                FieldRow("DNS Routing") {
-                    StatusText("Split DNS")
+                LabeledContent("DNS Routing") {
+                    Text("Split DNS")
+                        .foregroundStyle(.secondary)
                 }
-                FieldRow("Resolver", description: "Built-in resolver address.") {
+                LabeledContent("Resolver") {
                     HStack(spacing: 8) {
-                        CodeText(MagicDNSDisplay.resolverIP)
+                        Text(MagicDNSDisplay.resolverIP)
+                            .font(.callout.monospaced())
+                            .foregroundStyle(.secondary)
                         StatusDot(tone: .positive, accessibilityLabel: "Active")
                     }
                 }
+            } footer: {
+                Text("Only names under this suffix are resolved by EasyTier. Other domains keep using system DNS. Running networks need a restart after it changes.")
             }
-            Text("Only names under this suffix are resolved by EasyTier. Other domains keep using system DNS. Running networks need a restart after it changes.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.leading, 2)
         }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
     }
 
     private var rpcServerSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                StatusBadge(
-                    title: "Status",
-                    value: rpcListenEnabled ? "Listening" : "Off",
-                    systemImage: "dot.radiowaves.left.and.right"
-                )
-                StatusBadge(
-                    title: "Port",
-                    value: rpcListenEnabled ? "\(rpcListenPort)" : "-",
-                    systemImage: "number"
-                )
-                StatusBadge(
-                    title: "Whitelist",
-                    value: "\(rpcPortalWhitelist.count)",
-                    systemImage: "shield"
-                )
-                Spacer(minLength: 0)
+        Form {
+            Section("Status") {
+                LabeledContent("Status", value: rpcListenEnabled ? "Listening" : "Off")
+                LabeledContent("Port", value: rpcListenEnabled ? "\(rpcListenPort)" : "-")
+                LabeledContent("Whitelist", value: "\(rpcPortalWhitelist.count)")
             }
 
-            SettingsCard {
-                FieldRow("TCP Listen") {
-                    Toggle("TCP Listen", isOn: rpcListenBinding).labelsHidden()
-                }
-                FieldRow("Portal") {
-                    HStack(spacing: 8) {
-                        if rpcListenEnabled {
-                            CodeText("tcp://0.0.0.0:\(rpcListenPort)")
-                            StatusDot(tone: .positive, accessibilityLabel: "On")
-                        } else {
-                            StatusPill("Off", tone: .neutral)
-                        }
+            Section {
+                Toggle("TCP Listen", isOn: rpcListenBinding)
+                LabeledContent("Portal") {
+                    if rpcListenEnabled {
+                        Text("tcp://0.0.0.0:\(rpcListenPort)")
+                            .font(.callout.monospaced())
+                            .foregroundStyle(.secondary)
+                    } else {
+                        StatusPill("Off", tone: .neutral)
                     }
                 }
-                FieldRow("Listen Port", description: "TCP port for the RPC portal.") {
+                LabeledContent("Listen Port") {
                     HStack(spacing: 8) {
                         TextField("15888", value: $rpcListenPort, format: .number)
-                            .textFieldStyle(.glassField)
+                            .textFieldStyle(.roundedBorder)
                             .frame(width: 96)
                         Stepper("Listen Port", value: $rpcListenPort, in: 1...65_535)
                             .labelsHidden()
                     }
                     .disabled(!rpcListenEnabled)
                 }
-                FieldRow("Whitelist", description: "CIDRs allowed to reach the portal.") {
+                LabeledContent("Whitelist") {
                     RPCPortalWhitelistEditor(values: $rpcPortalWhitelist)
                         .disabled(!rpcListenEnabled)
                 }
-                FieldRow("Remote RPC", description: "Address the GUI uses to reach EasyTier.") {
+                LabeledContent("Remote RPC") {
                     TextField(Self.defaultRemoteRPCAddress, text: $remoteRPCAddress)
-                        .textFieldStyle(.glassField)
+                        .textFieldStyle(.roundedBorder)
                 }
+            } header: {
+                Text("Server")
+            } footer: {
+                Text("Address the GUI uses to reach EasyTier.")
             }
         }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
     }
 
     private var advancedSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            SettingsCard {
+        Form {
+            Section {
                 VStack(spacing: 8) {
                     SectionIcon(systemImage: "doc.text.fill", tint: SettingsTint.advanced, size: 34)
                     Text("Configured via TOML profile")
@@ -395,21 +378,27 @@ struct EasyTierSettingsSheet: View {
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 4)
+            } footer: {
+                Text("Requires a config file. Configured via TOML profile.")
             }
-            Text("Requires a config file. Configured via TOML profile.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .padding(.leading, 2)
         }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
     }
 
     private var remoteConfigSection: some View {
-        SettingsCard {
-            FieldRow("Config Server", description: "EasyTier fetches the network profile from this URL on launch.") {
-                TextField("https://example.com/config", text: $configServerURL)
-                    .textFieldStyle(.glassField)
+        Form {
+            Section {
+                LabeledContent("Config Server") {
+                    TextField("https://example.com/config", text: $configServerURL)
+                        .textFieldStyle(.roundedBorder)
+                }
+            } footer: {
+                Text("EasyTier fetches the network profile from this URL on launch.")
             }
         }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
     }
 
     // MARK: Footer
@@ -794,30 +783,6 @@ private struct RPCPortalWhitelistEditor: View {
             .font(.body)
         }
         .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: values.count)
-    }
-}
-
-private struct StatusText: View {
-    var value: String
-
-    init(_ value: String) { self.value = value }
-
-    var body: some View {
-        Text(value)
-            .font(.body)
-            .foregroundStyle(.secondary)
-    }
-}
-
-private struct CodeText: View {
-    var value: String
-
-    init(_ value: String) { self.value = value }
-
-    var body: some View {
-        Text(value)
-            .font(.callout.monospaced())
-            .foregroundStyle(.secondary)
     }
 }
 
