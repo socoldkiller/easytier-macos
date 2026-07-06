@@ -172,7 +172,7 @@ struct EasyTierSettingsSheet: View {
                     .help("Close settings (⎋)")
             }
         }
-        .frame(width: Self.windowSize.width, height: Self.windowSize.height)
+        .frame(minWidth: Self.windowSize.width, idealWidth: Self.windowSize.width, minHeight: Self.windowSize.height, idealHeight: 620)
         .hideScrollViewScrollers()
         .alert("Disable TCP RPC Listen?", isPresented: $showingDisableRPCListenWarning) {
             Button("Keep Enabled", role: .cancel) {}
@@ -533,7 +533,7 @@ struct EasyTierSettingsSheet: View {
     private static let defaultRemoteRPCAddress = "tcp://127.0.0.1:\(AppMode.defaultRPCListenPort)"
 
     private static let sidebarWidth: CGFloat = 220
-    private static let windowSize = CGSize(width: 640, height: 640)
+    private static let windowSize = CGSize(width: 720, height: 560)
 }
 
 // MARK: - About
@@ -578,80 +578,78 @@ private struct SettingsSidebar: View {
 private struct SettingsAboutView: View {
     @Environment(SoftwareUpdateController.self) private var updater
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.dismissWindow) private var dismissWindow
 
     private let appInfo = AppVersionInfo.current
     private let revisions = SettingsSourceRevisionInfo.current
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 14) {
-                VStack(spacing: 10) {
-                    EasyTierMark()
-                        .frame(width: 96, height: 96)
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(spacing: 10) {
+                EasyTierMark()
+                    .frame(width: 96, height: 96)
 
-                    Text("EasyTier for macOS")
-                        .font(.largeTitle.weight(.semibold))
+                Text("EasyTier for macOS")
+                    .font(.largeTitle.weight(.semibold))
 
-                    Text("Version \(appInfo.version)")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
+                Text("Version \(appInfo.version)")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
 
-                    Text("Native GUI for managing EasyTier networks.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                Text("Native GUI for managing EasyTier networks.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 18)
+            .padding(.bottom, 4)
+
+            Form {
+                Section("Version") {
+                    SettingsMetadataRow(label: "GUI", value: "\(appInfo.version) · \(revisions.guiCommit)")
+                    SettingsMetadataRow(label: "Core", value: revisions.coreVersion)
+                    SettingsMetadataRow(label: "Build", value: appInfo.build)
                 }
-                .padding(.top, 18)
-                .padding(.bottom, 4)
 
-                VStack(alignment: .leading, spacing: 14) {
-                    CardSection("Version", systemImage: "info.circle", tint: SettingsTint.advanced) {
-                        SettingsMetadataRow(label: "GUI", value: "\(appInfo.version) · \(revisions.guiCommit)")
-                        SettingsMetadataRow(label: "Core", value: revisions.coreVersion)
-                        SettingsMetadataRow(label: "Build", value: appInfo.build)
+                Section("Resources") {
+                    HStack(spacing: 14) {
+                        Link("Docs", destination: URL(string: "https://easytier.cn")!)
+                        Link("Releases", destination: URL(string: "https://github.com/socoldkiller/easytier-macos/releases")!)
+                        Link("GitHub", destination: URL(string: "https://github.com/socoldkiller/easytier-macos")!)
+                        Link("License", destination: URL(string: "https://github.com/socoldkiller/easytier-macos/blob/main/LICENSE")!)
                     }
+                    .controlSize(.small)
+                    SettingsMetadataRow(label: "License", value: "LGPL-3.0 © 2026 contributors")
+                }
 
-                    CardSection("Resources", systemImage: "link", tint: SettingsTint.launch) {
-                        HStack(spacing: 14) {
-                            Link("Docs", destination: URL(string: "https://easytier.cn")!)
-                            Link("Releases", destination: URL(string: "https://github.com/socoldkiller/easytier-macos/releases")!)
-                            Link("GitHub", destination: URL(string: "https://github.com/socoldkiller/easytier-macos")!)
-                            Link("License", destination: URL(string: "https://github.com/socoldkiller/easytier-macos/blob/main/LICENSE")!)
-                        }
-                        .controlSize(.small)
-                        SettingsMetadataRow(label: "License", value: "LGPL-3.0 © 2026 contributors")
-                    }
-
-                    CardSection("Software Update", systemImage: "arrow.down.circle", tint: SettingsTint.rpcServer) {
-                        HStack(alignment: .center, spacing: 10) {
+                Section("Software Update") {
+                    LabeledContent {
+                        HStack(spacing: 10) {
                             if case .available = updater.state {
                                 StatusPill("Update available", tone: .warning)
                             }
-                            Text(updateSummaryText)
-                                .font(.body)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-
                             Spacer(minLength: 0)
-
                             Button("Check for Updates…") { updater.checkForUpdatesAndPresent() }
                                 .controlSize(.small)
                         }
-
-                        if let lastCheck = updater.lastCheckFormatted {
-                            Text("Last check: \(lastCheck)")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
+                    } label: {
+                        Text(updateSummaryText)
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let lastCheck = updater.lastCheckFormatted {
+                        LabeledContent("Last check", value: lastCheck)
                     }
                 }
-                .padding(.horizontal, 18)
-                .padding(.bottom, 18)
-                .hideEnclosingScrollViewScrollers()
             }
+            .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
         }
-        .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
+        .padding(.horizontal, 20)
+        .padding(.vertical, 18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: updateSummaryText)
     }
 
@@ -734,7 +732,7 @@ private struct RPCPortalWhitelistEditor: View {
                             values[index] = newValue
                         }
                     ))
-                    .textFieldStyle(.glassField)
+                    .textFieldStyle(.roundedBorder)
                     .font(.body.monospaced())
 
                     Button(role: .destructive) {
