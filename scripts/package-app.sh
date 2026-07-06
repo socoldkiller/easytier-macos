@@ -655,7 +655,7 @@ cat > "$LAUNCH_DAEMONS_DIR/com.kkrainbow.easytier.mac.helper.plist" <<PLIST
     <key>BundleProgram</key>
     <string>Contents/MacOS/EasyTierPrivilegedHelper</string>
     <key>RunAtLoad</key>
-    <true/>
+    <false/>
     <key>StandardOutPath</key>
     <string>/var/log/easytier-helper.log</string>
     <key>StandardErrorPath</key>
