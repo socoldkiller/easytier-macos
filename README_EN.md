@@ -14,8 +14,8 @@
   <p>
     <img alt="macOS" src="https://img.shields.io/badge/macOS-14%2B-111111?style=for-the-badge&logo=apple&logoColor=white" />
     <img alt="Swift" src="https://img.shields.io/badge/Swift-Native-F05138?style=for-the-badge&logo=swift&logoColor=white" />
-    <a href="https://github.com/socoldkiller/easytier-swift/stargazers">
-      <img alt="Stars" src="https://img.shields.io/github/stars/socoldkiller/easytier-swift?style=for-the-badge&logo=github&label=Stars" />
+    <a href="https://github.com/socoldkiller/easytier-macos/stargazers">
+      <img alt="Stars" src="https://img.shields.io/github/stars/socoldkiller/easytier-macos?style=for-the-badge&logo=github&label=Stars" />
     </a>
     <a href="LICENSE">
       <img alt="License" src="https://img.shields.io/badge/License-MIT-34D399?style=for-the-badge" />
@@ -110,7 +110,7 @@ TUN interfaces need root. The app walks you through installing a privileged help
 
 macOS 15 or later.
 
-Grab the latest DMG from [Releases](https://github.com/socoldkiller/easytier-swift/releases) and drag it into Applications.
+Grab the latest DMG from [Releases](https://github.com/socoldkiller/easytier-macos/releases) and drag it into Applications.
 
 First launch:
 1. macOS may block it as "unidentified developer" — go to System Settings → Privacy & Security → Open Anyway
@@ -122,8 +122,8 @@ First launch:
 Requires Xcode 16+ (Swift 6) and the Rust nightly toolchain.
 
 ```bash
-git clone --recurse-submodules https://github.com/socoldkiller/easytier-swift.git
-cd easytier-swift
+git clone --recurse-submodules https://github.com/socoldkiller/easytier-macos.git
+cd easytier-macos
 
 # Build the Rust FFI static library
 make build-ffi
@@ -172,11 +172,11 @@ Remote RPC also goes through FFI: Swift builds JSON-RPC payloads → C shim → 
 ## Star History
 
 <div align="center">
-  <a href="https://www.star-history.com/#socoldkiller/easytier-swift&Date">
+  <a href="https://www.star-history.com/#socoldkiller/easytier-macos&Date">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=socoldkiller/easytier-swift&type=Date&theme=dark" />
-      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=socoldkiller/easytier-swift&type=Date" />
-      <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=socoldkiller/easytier-swift&type=Date" />
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=socoldkiller/easytier-macos&type=Date&theme=dark" />
+      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=socoldkiller/easytier-macos&type=Date" />
+      <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=socoldkiller/easytier-macos&type=Date" />
     </picture>
   </a>
 </div>
