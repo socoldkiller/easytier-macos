@@ -4,7 +4,6 @@ enum SettingsTint {
     static let mode = Color.blue
     static let magicDNS = Color.indigo
     static let rpcServer = Color.teal
-    static let advanced = Color.gray
     static let remoteConfig = Color.purple
     static let appearance = Color.pink
     static let launch = Color.green

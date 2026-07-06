@@ -1,4 +1,5 @@
 import EasyTierShared
+@preconcurrency import AppKit
 import SwiftUI
 
 enum MagicDNSDisplay {
@@ -25,7 +26,6 @@ enum EasyTierSection: String, CaseIterable, Identifiable, Hashable {
     case mode = "Mode"
     case magicDNS = "Magic DNS"
     case rpcServer = "RPC Server"
-    case advanced = "Advanced"
     case remoteConfig = "Remote Config"
 
     var id: String { rawValue }
@@ -35,7 +35,6 @@ enum EasyTierSection: String, CaseIterable, Identifiable, Hashable {
         case .mode: "slider.horizontal.3"
         case .magicDNS: "globe"
         case .rpcServer: "server.rack"
-        case .advanced: "doc.text"
         case .remoteConfig: "cloud"
         }
     }
@@ -45,7 +44,6 @@ enum EasyTierSection: String, CaseIterable, Identifiable, Hashable {
         case .mode: SettingsTint.mode
         case .magicDNS: SettingsTint.magicDNS
         case .rpcServer: SettingsTint.rpcServer
-        case .advanced: SettingsTint.advanced
         case .remoteConfig: SettingsTint.remoteConfig
         }
     }
@@ -55,7 +53,6 @@ enum EasyTierSection: String, CaseIterable, Identifiable, Hashable {
         case .mode: "Choose how this EasyTier instance is configured."
         case .magicDNS: "Resolve EasyTier network names through the built-in DNS."
         case .rpcServer: "Local control plane exposing EasyTier state to the GUI and peers."
-        case .advanced: "Features managed through your TOML network profile."
         case .remoteConfig: "Pull the network profile from a remote server on launch."
         }
     }
@@ -114,29 +111,26 @@ struct EasyTierSettingsSheet: View {
             _kind = State(initialValue: configServerURL == nil ? .normal : .remote)
             _rpcListenEnabled = State(initialValue: rpcListenEnabled)
             _rpcListenPort = State(initialValue: rpcListenPort)
-            _rpcPortalWhitelist = State(initialValue: rpcPortalWhitelist ?? AppMode.defaultRPCPortalWhitelist)
+            _rpcPortalWhitelist = State(initialValue: Self.initialRPCPortalWhitelist(from: rpcPortalWhitelist))
             _configServerURL = State(initialValue: configServerURL?.absoluteString ?? "")
-            _remoteRPCAddress = State(initialValue: Self.defaultRemoteRPCAddress)
+            _remoteRPCAddress = State(initialValue: Self.normalizedSingleValue(Self.defaultRemoteRPCAddress, fallback: Self.defaultRemoteRPCAddress))
         case let .remote(remoteRPCAddress):
             _kind = State(initialValue: .normal)
             _rpcListenEnabled = State(initialValue: true)
             _rpcListenPort = State(initialValue: AppMode.defaultRPCListenPort)
             _rpcPortalWhitelist = State(initialValue: AppMode.defaultRPCPortalWhitelist)
             _configServerURL = State(initialValue: "")
-            _remoteRPCAddress = State(initialValue: remoteRPCAddress)
+            _remoteRPCAddress = State(initialValue: Self.normalizedSingleValue(remoteRPCAddress, fallback: Self.defaultRemoteRPCAddress))
         }
     }
 
     var body: some View {
         NavigationSplitView {
-            SettingsSidebar(selection: $selection, visibleEasyTierSections: visibleEasyTierSections)
+            SettingsSidebar(selection: effectiveSelectionBinding, visibleEasyTierSections: visibleEasyTierSections)
                 .navigationSplitViewColumnWidth(min: 200, ideal: Self.sidebarWidth, max: 240)
         } detail: {
-            MotionSwitch(id: selection, insertionEdge: .trailing, fillsAvailableSpace: false) {
-                detailContent
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            detailContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .onChange(of: requestedSettingsTab) { _, tab in
             selectSettingsTab(tab)
@@ -172,8 +166,20 @@ struct EasyTierSettingsSheet: View {
                     .help("Close settings (⎋)")
             }
         }
-        .frame(minWidth: Self.windowSize.width, idealWidth: Self.windowSize.width, minHeight: Self.windowSize.height, idealHeight: 620)
+        .frame(
+            minWidth: Self.windowSize.width,
+            idealWidth: Self.windowSize.width,
+            minHeight: Self.windowSize.height,
+            idealHeight: 620,
+            alignment: .topLeading
+        )
         .hideScrollViewScrollers()
+        .background(
+            SettingsEscapeKeyBridge(isEnabled: settingsEscapeKeyHandlingEnabled) {
+                dismissSettingsWithoutSaving()
+            }
+            .frame(width: 0, height: 0)
+        )
         .alert("Disable TCP RPC Listen?", isPresented: $showingDisableRPCListenWarning) {
             Button("Keep Enabled", role: .cancel) {}
             Button("Disable", role: .destructive) { rpcListenEnabled = false }
@@ -191,7 +197,7 @@ struct EasyTierSettingsSheet: View {
 
     @ViewBuilder
     private var detailContent: some View {
-        switch selection {
+        switch effectiveSelection {
         case .general:
             generalSettings
         case .easyTier(let section):
@@ -240,7 +246,7 @@ struct EasyTierSettingsSheet: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 18)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task { loginItem.refresh() }
     }
 
@@ -269,13 +275,12 @@ struct EasyTierSettingsSheet: View {
             case .mode: modeSection
             case .magicDNS: magicDNSSection
             case .rpcServer: rpcServerSection
-            case .advanced: advancedSection
             case .remoteConfig: remoteConfigSection
             }
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 18)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var modeSection: some View {
@@ -304,7 +309,7 @@ struct EasyTierSettingsSheet: View {
             Section {
                 LabeledContent("DNS Suffix") {
                     TextField("", text: $magicDNSSuffix)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.glassField)
                         .font(.body.monospaced())
                         .frame(width: 160)
                 }
@@ -340,7 +345,7 @@ struct EasyTierSettingsSheet: View {
                 Toggle("TCP Listen", isOn: rpcListenBinding)
                 LabeledContent("Portal") {
                     if rpcListenEnabled {
-                        Text("tcp://0.0.0.0:\(rpcListenPort)")
+                        Text(verbatim: "tcp://0.0.0.0:\(rpcListenPort)")
                             .font(.callout.monospaced())
                             .foregroundStyle(.secondary)
                     } else {
@@ -349,8 +354,9 @@ struct EasyTierSettingsSheet: View {
                 }
                 LabeledContent("Listen Port") {
                     HStack(spacing: 8) {
-                        TextField("15888", value: $rpcListenPort, format: .number)
-                            .textFieldStyle(.roundedBorder)
+                        TextField("", text: integerText($rpcListenPort))
+                            .textFieldStyle(.glassField)
+                            .font(.body.monospacedDigit())
                             .frame(width: 96)
                         Stepper("Listen Port", value: $rpcListenPort, in: 1...65_535)
                             .labelsHidden()
@@ -362,8 +368,8 @@ struct EasyTierSettingsSheet: View {
                         .disabled(!rpcListenEnabled)
                 }
                 LabeledContent("Remote RPC") {
-                    TextField(Self.defaultRemoteRPCAddress, text: $remoteRPCAddress)
-                        .textFieldStyle(.roundedBorder)
+                    TextField("", text: $remoteRPCAddress)
+                        .textFieldStyle(.glassField)
                 }
             } header: {
                 Text("Server")
@@ -375,35 +381,12 @@ struct EasyTierSettingsSheet: View {
         .scrollContentBackground(.hidden)
     }
 
-    private var advancedSection: some View {
-        Form {
-            Section {
-                VStack(spacing: 8) {
-                    SectionIcon(systemImage: "doc.text.fill", tint: SettingsTint.advanced, size: 34)
-                    Text("Configured via TOML profile")
-                        .font(.body.weight(.semibold))
-                    Text("VPN Portal and SOCKS5 proxy are managed through your TOML network profile. They appear here once a profile enabling them is loaded.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 4)
-            } footer: {
-                Text("Requires a config file. Configured via TOML profile.")
-            }
-        }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
-    }
-
     private var remoteConfigSection: some View {
         Form {
             Section {
                 LabeledContent("Config Server") {
                     TextField("https://example.com/config", text: $configServerURL)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.glassField)
                 }
             } footer: {
                 Text("EasyTier fetches the network profile from this URL on launch.")
@@ -467,6 +450,14 @@ struct EasyTierSettingsSheet: View {
         }
     }
 
+    private var settingsEscapeKeyHandlingEnabled: Bool {
+        settingsError == nil && !showingDisableRPCListenWarning
+    }
+
+    private func dismissSettingsWithoutSaving() {
+        dismissWindow()
+    }
+
     private func buildMode() -> AppMode {
         switch kind {
         case .normal:
@@ -496,9 +487,9 @@ struct EasyTierSettingsSheet: View {
             target = .general
         case .easyTier:
             if case .easyTier(let current) = selection {
-                target = .easyTier(current)
+                target = sanitizedSelection(.easyTier(current))
             } else {
-                target = .easyTier(.magicDNS)
+                target = .easyTier(.mode)
             }
         case .about:
             target = .about
@@ -510,8 +501,28 @@ struct EasyTierSettingsSheet: View {
     }
 
     private var isEasyTierActive: Bool {
-        if case .easyTier = selection { return true }
+        if case .easyTier = effectiveSelection { return true }
         return false
+    }
+
+    private var effectiveSelection: SettingsSelection {
+        sanitizedSelection(selection)
+    }
+
+    private var effectiveSelectionBinding: Binding<SettingsSelection> {
+        Binding(
+            get: { effectiveSelection },
+            set: { selection = sanitizedSelection($0) }
+        )
+    }
+
+    private func sanitizedSelection(_ candidate: SettingsSelection) -> SettingsSelection {
+        switch candidate {
+        case .easyTier(let section) where !visibleEasyTierSections.contains(section):
+            .easyTier(.mode)
+        default:
+            candidate
+        }
     }
 
     private var visibleEasyTierSections: [EasyTierSection] {
@@ -520,7 +531,7 @@ struct EasyTierSettingsSheet: View {
 
     private static func visibleEasyTierSections(for kind: ModeKind) -> [EasyTierSection] {
         switch kind {
-        case .normal: [.mode, .magicDNS, .rpcServer, .advanced]
+        case .normal: [.mode, .magicDNS, .rpcServer]
         case .remote: [.mode, .magicDNS, .remoteConfig]
         }
     }
@@ -530,10 +541,93 @@ struct EasyTierSettingsSheet: View {
         return values.isEmpty ? nil : values
     }
 
+    private static func initialRPCPortalWhitelist(from whitelist: [String]?) -> [String] {
+        let values = (whitelist ?? AppMode.defaultRPCPortalWhitelist)
+            .flatMap { $0.split(whereSeparator: \.isWhitespace).map(String.init) }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let legacyDefaults = Set(["127.0.0.0/8", "::1/128", "10.126.126.0/24"])
+        return values.isEmpty || Set(values).isSubset(of: legacyDefaults) ? AppMode.defaultRPCPortalWhitelist : values
+    }
+
+    private static func normalizedSingleValue(_ value: String, fallback: String) -> String {
+        let parts = value.split(whereSeparator: \.isWhitespace).map(String.init)
+        if parts.isEmpty { return fallback }
+        if Set(parts).count == 1 { return parts[0] }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private static let defaultRemoteRPCAddress = "tcp://127.0.0.1:\(AppMode.defaultRPCListenPort)"
 
     private static let sidebarWidth: CGFloat = 220
-    private static let windowSize = CGSize(width: 720, height: 560)
+    fileprivate static let sidebarTopClearance: CGFloat = 8
+    private static let windowSize = CGSize(width: 600, height: 500)
+}
+
+private struct SettingsEscapeKeyBridge: NSViewRepresentable {
+    nonisolated(unsafe) var isEnabled: Bool
+    nonisolated(unsafe) var onEscape: () -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = SettingsEscapeMonitorView(frame: .zero)
+        view.onWindowChange = { [weak coordinator = context.coordinator] window in
+            coordinator?.window = window
+        }
+        context.coordinator.installMonitor()
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.window = nsView.window
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    final class Coordinator {
+        nonisolated(unsafe) var parent: SettingsEscapeKeyBridge
+        nonisolated(unsafe) weak var window: NSWindow?
+        private var monitor: Any?
+
+        init(parent: SettingsEscapeKeyBridge) {
+            self.parent = parent
+        }
+
+        deinit {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+        }
+
+        func installMonitor() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                self?.handle(event) ?? event
+            }
+        }
+
+        private func handle(_ event: NSEvent) -> NSEvent? {
+            guard parent.isEnabled, event.keyCode == Self.escapeKeyCode else { return event }
+            guard event.modifierFlags.intersection([.command, .option, .control]).isEmpty else { return event }
+            guard let window, event.window == window else { return event }
+
+            parent.onEscape()
+            return nil
+        }
+
+        private static let escapeKeyCode: UInt16 = 53
+    }
+}
+
+private final class SettingsEscapeMonitorView: NSView {
+    var onWindowChange: ((NSWindow?) -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onWindowChange?(window)
+    }
 }
 
 // MARK: - About
@@ -555,6 +649,12 @@ private struct SettingsSidebar: View {
             Section {
                 Label("General", systemImage: "gearshape")
                     .tag(SettingsSelection.general)
+            } header: {
+                Color.clear
+                    .frame(height: EasyTierSettingsSheet.sidebarTopClearance)
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .accessibilityHidden(true)
             }
 
             Section("EasyTier") {
@@ -649,7 +749,7 @@ private struct SettingsAboutView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 18)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: updateSummaryText)
     }
 
@@ -725,14 +825,14 @@ private struct RPCPortalWhitelistEditor: View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(values.indices, id: \.self) { index in
                 HStack(spacing: 6) {
-                    TextField("10.126.126.0/24", text: Binding(
+                    TextField("", text: Binding(
                         get: { values.indices.contains(index) ? values[index] : "" },
                         set: { newValue in
                             guard values.indices.contains(index) else { return }
                             values[index] = newValue
                         }
                     ))
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.glassField)
                     .font(.body.monospaced())
 
                     Button(role: .destructive) {
@@ -761,6 +861,19 @@ private struct RPCPortalWhitelistEditor: View {
         }
         .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: values.count)
     }
+}
+
+private func integerText(_ value: Binding<Int>) -> Binding<String> {
+    Binding(
+        get: { String(value.wrappedValue) },
+        set: { newValue in
+            let parts = newValue.split(whereSeparator: \.isWhitespace).map(String.init)
+            let normalizedValue = Set(parts).count == 1 ? (parts.first ?? newValue) : newValue
+            let digits = normalizedValue.filter(\.isNumber)
+            guard let intValue = Int(digits) else { return }
+            value.wrappedValue = min(max(intValue, 1), 65_535)
+        }
+    )
 }
 
 // MARK: - Appearance binding helper

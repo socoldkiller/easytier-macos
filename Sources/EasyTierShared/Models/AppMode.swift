@@ -4,8 +4,9 @@ public enum AppMode: Codable, Equatable, Sendable {
     case normal(rpcPortal: String?, rpcListenEnabled: Bool, rpcListenPort: Int, rpcPortalWhitelist: [String]?, configServerURL: URL?)
     case remote(remoteRPCAddress: String)
 
+    /// EasyTier core's rpc_portal default starts by trying TCP 15888.
     public static let defaultRPCListenPort = 15_888
-    public static let defaultRPCPortalWhitelist = ["127.0.0.0/8", "::1/128"]
+    public static let defaultRPCPortalWhitelist = ["127.0.0.0/8"]
 
     public static let `default`: AppMode = .normal(
         rpcPortal: nil,

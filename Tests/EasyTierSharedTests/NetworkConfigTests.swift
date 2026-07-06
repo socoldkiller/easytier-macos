@@ -1754,6 +1754,74 @@ import Testing
     #expect(mixedWithPublicServer.isFullyConnected(expectRemotePeers: true))
 }
 
+@Test func runtimeInfoTreatsAnyReachablePublicServerAsFullyConnected() throws {
+    let json = """
+    {
+      "my_node_info": {
+        "hostname": "macbook",
+        "peer_id": 100
+      },
+      "peer_route_pairs": [
+        {
+          "route": { "peer_id": 200, "hostname": "PublicServer_down", "cost": 1 },
+          "peer": { "peer_id": 200, "conns": [] }
+        },
+        {
+          "route": {
+            "peer_id": 201,
+            "hostname": "relay-online",
+            "cost": 1,
+            "feature_flag": { "is_public_server": true }
+          },
+          "peer": { "peer_id": 201, "conns": [ { "conn_id": "relay-online" } ] }
+        },
+        {
+          "route": { "peer_id": 202, "hostname": "office-mini", "cost": 2 },
+          "peer": { "peer_id": 202, "conns": [] }
+        }
+      ],
+      "running": true
+    }
+    """
+
+    let info = try JSONDecoder().decode(NetworkInstanceRunningInfo.self, from: Data(json.utf8))
+
+    #expect(info.isFullyConnected)
+    #expect(info.isFullyConnected(expectRemotePeers: true))
+}
+
+@Test func runtimeInfoRequiresReachablePublicServerWhenPublicServersAreKnown() throws {
+    let json = """
+    {
+      "my_node_info": {
+        "hostname": "macbook",
+        "peer_id": 100
+      },
+      "peer_route_pairs": [
+        {
+          "route": { "peer_id": 200, "hostname": "PublicServer_one", "cost": 1 },
+          "peer": { "peer_id": 200, "conns": [] }
+        },
+        {
+          "route": {
+            "peer_id": 201,
+            "hostname": "relay-two",
+            "cost": 1,
+            "feature_flag": { "is_public_server": true }
+          },
+          "peer": { "peer_id": 201, "conns": [] }
+        }
+      ],
+      "running": true
+    }
+    """
+
+    let info = try JSONDecoder().decode(NetworkInstanceRunningInfo.self, from: Data(json.utf8))
+
+    #expect(!info.isFullyConnected)
+    #expect(!info.isFullyConnected(expectRemotePeers: true))
+}
+
 @Test func runtimeInfoReadsCurrentApiMemberFields() throws {
     let json = """
     {

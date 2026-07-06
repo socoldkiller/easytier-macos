@@ -899,7 +899,8 @@ struct ContentView: View {
             store.lastError = "Remote instance ID is unavailable for \(member.hostname)."
             return false
         }
-        guard let ip = member.copyableIPv4Address, let rpcURL = URL(string: "tcp://\(ip):15888") else {
+        guard let ip = member.copyableIPv4Address,
+              let rpcURL = URL(string: "tcp://\(ip):\(AppMode.defaultRPCListenPort)") else {
             store.lastError = "Remote RPC URL is unavailable for \(member.hostname)."
             return false
         }

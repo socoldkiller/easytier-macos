@@ -877,6 +877,10 @@ public extension NetworkInstanceRunningInfo {
 
         let remotePairs = (peer_route_pairs ?? []).filter { !$0.representsLocalRoute }
         if !remotePairs.isEmpty {
+            let publicServerPairs = remotePairs.filter(\.isPublicServer)
+            if !publicServerPairs.isEmpty {
+                return publicServerPairs.contains(where: \.hasActiveConnection)
+            }
             return remotePairs.allSatisfy(\.hasUsableRoute)
         }
 
@@ -944,6 +948,10 @@ public extension NetworkInstanceRunningInfo {
 public extension PeerRoutePair {
     var representsLocalRoute: Bool {
         route?.representsLocalRoute == true
+    }
+
+    var isPublicServer: Bool {
+        route?.isPublicServer == true
     }
 
     var hasUsableRoute: Bool {
