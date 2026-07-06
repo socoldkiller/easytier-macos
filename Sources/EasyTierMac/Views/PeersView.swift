@@ -46,9 +46,11 @@ struct PeersView: View {
                     }
                 }
                 .padding(8)
+                .hideEnclosingScrollViewScrollers()
             }
         }
         .scrollContentBackground(.hidden)
+        .hideScrollViewScrollers()
         .overlay(alignment: .top) {
             if let notice = transientNotice {
                 PeerNoticeBanner(text: notice.text, severity: notice.severity)
@@ -304,6 +306,8 @@ private struct AddPeerSubscriptionSheet: View {
                             .foregroundStyle(.secondary)
                         TextEditor(text: $jsonText)
                             .font(.system(.body, design: .monospaced))
+                            .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
+                            .hideScrollViewScrollers()
                             .frame(minHeight: 160)
                             .padding(6)
                             .background(
@@ -340,6 +344,7 @@ private struct AddPeerSubscriptionSheet: View {
         }
         .padding(20)
         .frame(minWidth: 380, idealWidth: 460)
+        .hideScrollViewScrollers()
     }
 }
 

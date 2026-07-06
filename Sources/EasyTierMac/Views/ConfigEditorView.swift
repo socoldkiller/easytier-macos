@@ -47,6 +47,7 @@ struct ConfigEditorView: View {
                 advancedDisclosure
             }
             .padding(18)
+            .hideEnclosingScrollViewScrollers()
         }
         .coordinateSpace(name: Self.scrollSpaceName)
         .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
@@ -135,7 +136,7 @@ struct ConfigEditorView: View {
     private var advancedSections: some View {
         CardSection("IP & Hostname") {
             FieldRow("DHCP virtual IPv4") {
-                Toggle("", isOn: $config.dhcp)
+                Toggle("DHCP virtual IPv4", isOn: $config.dhcp)
                     .labelsHidden()
             }
             .disabled(isRemote)
@@ -316,7 +317,7 @@ struct ConfigEditorView: View {
     private var magicDNSRow: some View {
         FieldRow("Magic DNS") {
             VStack(alignment: .leading, spacing: 8) {
-                Toggle("", isOn: optionalBool($config.enable_magic_dns, defaultValue: false))
+                Toggle("Magic DNS", isOn: optionalBool($config.enable_magic_dns, defaultValue: false))
                     .labelsHidden()
                 if config.enable_magic_dns == true {
                     HStack(spacing: 8) {
@@ -647,51 +648,48 @@ private struct FlagToggle: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 9) {
-                Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
-                    .font(.body.weight(isOn ? .semibold : .regular))
-                    .foregroundStyle(isOn ? Color.accentColor : Color.secondary.opacity(0.5))
-                    .frame(width: 16, alignment: .center)
-                    .accessibilityHidden(true)
+            Toggle(isOn: animatedBinding) {
+                HStack(spacing: 9) {
+                    Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
+                        .font(.body.weight(isOn ? .semibold : .regular))
+                        .foregroundStyle(isOn ? Color.accentColor : Color.secondary.opacity(0.5))
+                        .frame(width: 16, alignment: .center)
+                        .accessibilityHidden(true)
 
-                Text(title)
-                    .font(.body.weight(isOn ? .medium : .regular))
-                    .foregroundStyle(isOn ? .primary : .secondary)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
+                    Text(title)
+                        .font(.body.weight(isOn ? .medium : .regular))
+                        .foregroundStyle(isOn ? .primary : .secondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: false, vertical: true)
 
-                Spacer(minLength: 8)
-
-                Toggle("", isOn: $isOn)
-                    .labelsHidden()
-                    .controlSize(.mini)
-                    .toggleStyle(.switch)
-                    .accessibilityHidden(true)
+                    Spacer(minLength: 8)
+                }
             }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
             .padding(.horizontal, 8)
-            .frame(height: 28)
+            .frame(minHeight: 28)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .onTapGesture {
-                withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
-                    isOn.toggle()
-                }
-            }
             .help(help ?? title)
-            .accessibilityElement(children: .ignore)
             .accessibilityLabel(Text(title))
             .accessibilityValue(Text(isOn ? "On" : "Off"))
-            .accessibilityAddTraits(.isButton)
-            .accessibilityAction {
-                withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
-                    isOn.toggle()
-                }
-            }
 
             if showsSeparator {
                 FlagRowSeparator()
             }
         }
+    }
+
+    private var animatedBinding: Binding<Bool> {
+        Binding(
+            get: { isOn },
+            set: { newValue in
+                withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
+                    isOn = newValue
+                }
+            }
+        )
     }
 }
 
@@ -881,7 +879,7 @@ private struct PortForwardEditor: View {
         let rule = ruleBinding.wrappedValue
         Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
             GridRow {
-                Picker("Proto", selection: ruleBinding.proto) {
+                Picker("Protocol", selection: ruleBinding.proto) {
                     Text("tcp").tag("tcp")
                     Text("udp").tag("udp")
                 }
@@ -947,6 +945,7 @@ private struct PortForwardEditor: View {
         .help(reverseHelpText(isActive: isActive, isPending: isPending, availability: availability, dstIP: rule.dst_ip))
         .accessibilityLabel(Text("Reverse port forward"))
         .accessibilityValue(Text(isActive ? "Active" : "Inactive"))
+        .accessibilityHint(Text(reverseAccessibilityHint(isActive: isActive, isPending: isPending, availability: availability, dstIP: rule.dst_ip)))
     }
 
     private func reverseHelpText(isActive: Bool, isPending: Bool, availability: (available: Bool, reason: String?), dstIP: String) -> String {
@@ -954,6 +953,13 @@ private struct PortForwardEditor: View {
         if isActive { return "Reverse is active on remote peer — click to remove" }
         if !availability.available, let reason = availability.reason { return "Reverse unavailable: \(reason)" }
         return "Send reverse port forward to peer at \(dstIP)"
+    }
+
+    private func reverseAccessibilityHint(isActive: Bool, isPending: Bool, availability: (available: Bool, reason: String?), dstIP: String) -> String {
+        if isPending { return "Sending reverse port forward." }
+        if isActive { return "Removes the reverse rule from the remote peer." }
+        if !availability.available, let reason = availability.reason { return "Unavailable: \(reason)." }
+        return "Sends a reverse port forward rule to \(dstIP)."
     }
 }
 
@@ -984,6 +990,7 @@ private struct PortForwardBindField: View {
             .menuIndicator(.hidden)
             .fixedSize()
             .help("Choose a common bind address")
+            .accessibilityLabel(Text("Choose bind address"))
         }
     }
 }
@@ -1021,6 +1028,7 @@ private struct PortForwardDestinationField: View {
                 .menuIndicator(.hidden)
                 .fixedSize()
                 .help("Choose from current network members")
+                .accessibilityLabel(Text("Choose destination member"))
             }
         }
     }

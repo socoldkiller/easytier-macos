@@ -279,6 +279,7 @@ struct ContentView: View {
             )
         }
         .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
+        .hideScrollViewScrollers()
         .safeAreaInset(edge: .bottom) {
             HStack {
                 Button {
@@ -1015,22 +1016,22 @@ struct ContentView: View {
 private struct WorkspaceTabPicker: View {
     @Binding var selection: WorkspaceTab
 
-    private static let preferredWidth: CGFloat = 184
+    private static let preferredWidth: CGFloat = 300
     private let tabs = WorkspaceTab.displayOrder
 
     var body: some View {
-        Picker("View", selection: $selection) {
+        Picker("Workspace", selection: $selection) {
             ForEach(tabs) { tab in
-                Label(tab.rawValue, systemImage: tab.systemImage)
+                Label(tab.displayTitle, systemImage: tab.systemImage)
                     .tag(tab)
             }
         }
         .pickerStyle(.segmented)
         .controlSize(.regular)
-        .labelStyle(.iconOnly)
         .labelsHidden()
         .frame(width: Self.preferredWidth)
         .help("Switch workspace view")
+        .accessibilityLabel(Text("Workspace"))
     }
 }
 

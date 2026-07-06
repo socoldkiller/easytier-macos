@@ -131,23 +131,42 @@ struct FieldRow<Content: View>: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 11) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(label)
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                if let description {
-                    Text(description)
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+        ViewThatFits(in: .horizontal) {
+            horizontalLayout
+            verticalLayout
+        }
+        .help(help ?? label)
+    }
+
+    private var labelContent: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label)
+                .font(.body)
+                .foregroundStyle(.secondary)
+            if let description {
+                Text(description)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+
+    private var horizontalLayout: some View {
+        HStack(alignment: .top, spacing: 11) {
+            labelContent
             .frame(width: 140, alignment: .leading)
             content
                 .frame(maxWidth: 520, alignment: .leading)
         }
-        .help(help ?? label)
+    }
+
+    private var verticalLayout: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            labelContent
+            content
+                .frame(maxWidth: 520, alignment: .leading)
+        }
     }
 }
 

@@ -51,6 +51,7 @@ struct LinuxInstallGuideView: View {
             }
             .formStyle(.grouped)
             .scrollContentBackground(.hidden)
+            .hideScrollViewScrollers()
             .padding(.top, 10)
             .padding(.horizontal, 10)
 
@@ -73,6 +74,7 @@ struct LinuxInstallGuideView: View {
         }
         .frame(minWidth: 560, idealWidth: 640, minHeight: 440, idealHeight: 520)
         .presentationBackground { FrostedGlass() }
+        .hideScrollViewScrollers()
     }
 }
 
@@ -150,6 +152,7 @@ private struct CommandField: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
                     .fixedSize(horizontal: true, vertical: false)
+                    .hideEnclosingScrollViewScrollers()
             }
             .scrollIndicators(.hidden)
 

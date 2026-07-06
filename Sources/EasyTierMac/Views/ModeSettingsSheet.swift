@@ -159,6 +159,7 @@ struct EasyTierSettingsSheet: View {
             }
         }
         .frame(width: Self.windowSize.width, height: Self.windowSize.height)
+        .hideScrollViewScrollers()
         .alert("Disable TCP RPC Listen?", isPresented: $showingDisableRPCListenWarning) {
             Button("Keep Enabled", role: .cancel) {}
             Button("Disable", role: .destructive) { rpcListenEnabled = false }
@@ -205,10 +206,10 @@ struct EasyTierSettingsSheet: View {
                     footer: "Panel backgrounds apply only while frosted glass is enabled. Traditional mode keeps solid panels for readability."
                 ) {
                     FieldRow("Frosted Glass") {
-                        Toggle("", isOn: appearance.glassEffectsEnabledBinding).labelsHidden()
+                        Toggle("Frosted Glass", isOn: appearance.glassEffectsEnabledBinding).labelsHidden()
                     }
                     FieldRow("Panel Backgrounds", description: "Requires frosted glass.", help: "Requires frosted glass") {
-                        Toggle("", isOn: appearance.glassPanelBackgroundsEnabledBinding).labelsHidden()
+                        Toggle("Panel Backgrounds", isOn: appearance.glassPanelBackgroundsEnabledBinding).labelsHidden()
                     }
                     .disabled(!appearance.glassEffectsEnabled)
                 }
@@ -220,7 +221,7 @@ struct EasyTierSettingsSheet: View {
                     footer: "Open EasyTier automatically when you sign in."
                 ) {
                     FieldRow("Launch at Login") {
-                        Toggle("", isOn: $loginItem.isEnabled).labelsHidden()
+                        Toggle("Launch at Login", isOn: $loginItem.isEnabled).labelsHidden()
                     }
                     .onChange(of: loginItem.isEnabled) { _, _ in loginItem.apply() }
                 }
@@ -232,12 +233,13 @@ struct EasyTierSettingsSheet: View {
                     footer: "Only helper-backed VPN networks can keep running after the app quits. no_tun networks stop with the app."
                 ) {
                     FieldRow("Keep VPN Running After Quit") {
-                        Toggle("", isOn: vpnOnDemandBinding).labelsHidden()
+                        Toggle("Keep VPN Running After Quit", isOn: vpnOnDemandBinding).labelsHidden()
                     }
                 }
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .hideEnclosingScrollViewScrollers()
         }
         .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
         .safeAreaInset(edge: .bottom) { footer }
@@ -267,6 +269,7 @@ struct EasyTierSettingsSheet: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .hideEnclosingScrollViewScrollers()
         }
         .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
         .safeAreaInset(edge: .bottom) { footer }
@@ -343,7 +346,7 @@ struct EasyTierSettingsSheet: View {
 
             SettingsCard {
                 FieldRow("TCP Listen") {
-                    Toggle("", isOn: rpcListenBinding).labelsHidden()
+                    Toggle("TCP Listen", isOn: rpcListenBinding).labelsHidden()
                 }
                 FieldRow("Portal") {
                     HStack(spacing: 8) {
@@ -360,7 +363,7 @@ struct EasyTierSettingsSheet: View {
                         TextField("15888", value: $rpcListenPort, format: .number)
                             .textFieldStyle(.glassField)
                             .frame(width: 96)
-                        Stepper("", value: $rpcListenPort, in: 1...65_535)
+                        Stepper("Listen Port", value: $rpcListenPort, in: 1...65_535)
                             .labelsHidden()
                     }
                     .disabled(!rpcListenEnabled)
@@ -582,6 +585,7 @@ private struct SettingsSidebar: View {
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
+        .hideScrollViewScrollers()
         .onAppear {
             if case .easyTier = selection { easyTierExpanded = true }
         }
@@ -659,6 +663,7 @@ private struct SettingsAboutView: View {
                 }
                 .padding(.horizontal, 18)
                 .padding(.bottom, 18)
+                .hideEnclosingScrollViewScrollers()
             }
         }
         .scrollIndicators(.hidden, axes: [.vertical, .horizontal])

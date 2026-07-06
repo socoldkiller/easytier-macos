@@ -50,6 +50,7 @@ struct TOMLSheet: View {
         .frame(minWidth: 560, idealWidth: 720, minHeight: 400, idealHeight: 560)
         .presentationBackground { FrostedGlass() }
         .presentedSurfaceMotion()
+        .hideScrollViewScrollers()
     }
 
     @ViewBuilder private var editor: some View {
@@ -60,6 +61,7 @@ struct TOMLSheet: View {
                 .font(.system(.body, design: .monospaced))
                 .textEditorStyle(.plain)
                 .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
+                .hideScrollViewScrollers()
         }
     }
 }
@@ -70,8 +72,8 @@ private struct TOMLPreview: NSViewRepresentable {
     func makeNSView(context _: Context) -> NSScrollView {
         let scrollView = NSScrollView()
         scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = true
+        scrollView.hasVerticalScroller = false
+        scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
 
         let textView = NSTextView()
@@ -94,6 +96,10 @@ private struct TOMLPreview: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context _: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
+        scrollView.hasVerticalScroller = false
+        scrollView.hasHorizontalScroller = false
+        scrollView.verticalScroller?.isHidden = true
+        scrollView.horizontalScroller?.isHidden = true
         textView.textStorage?.setAttributedString(TOMLHighlighter.highlighted(text))
     }
 }

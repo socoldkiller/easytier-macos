@@ -322,8 +322,9 @@ private struct MemberGridTable: View {
                 }
                 .frame(width: tableWidth, alignment: .topLeading)
                 .frame(minHeight: proxy.size.height, alignment: .topLeading)
+                .hideEnclosingScrollViewScrollers()
             }
-            .scrollIndicators(.never, axes: [.vertical, .horizontal])
+            .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
             .defaultScrollAnchor(.topLeading)
             .trackScrollPhase(isScrolling: $isScrolling)
             .reflectScrollPhase(to: $globalScrolling)
@@ -494,6 +495,8 @@ private struct MemberGridRowView: View {
                 .fill(Color.primary.opacity(0.07))
                 .frame(height: 0.6)
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(Text(accessibilitySummary))
     }
 
     @ViewBuilder
@@ -508,8 +511,11 @@ private struct MemberGridRowView: View {
                     .frame(width: 12)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(Text(publicServerGroupExpanded ? "Collapse public servers" : "Show public servers"))
+            .accessibilityValue(Text(publicServerGroupExpanded ? "Expanded" : "Collapsed"))
         } else {
             Color.clear.frame(width: 12)
+                .accessibilityHidden(true)
         }
     }
 
@@ -519,6 +525,21 @@ private struct MemberGridRowView: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
             .frame(width: columnWidths[column, default: column.minWidth], alignment: .leading)
+    }
+
+    private var accessibilitySummary: String {
+        [
+            "Member: \(row.accessibilityMemberTitle)",
+            "IPv4: \(row.accessibilityIPv4)",
+            "Route: \(row.accessibilityRoute)",
+            "Tunnel: \(row.tunnelProto)",
+            "Latency: \(row.latency)",
+            "Upload: \(row.uploadTotal)",
+            "Download: \(row.downloadTotal)",
+            "Loss: \(row.lossRate)",
+            "NAT: \(row.natType)",
+            "Version: \(row.version)",
+        ].joined(separator: ", ")
     }
 }
 
@@ -789,6 +810,27 @@ private struct PublicServerGroupSummary: Equatable {
 }
 
 private extension MemberTableRow {
+    var accessibilityMemberTitle: String {
+        switch kind {
+        case .member(let member): member.hostname
+        case .publicServerGroup(let group): "Public servers, \(group.count) online"
+        }
+    }
+
+    var accessibilityIPv4: String {
+        switch kind {
+        case .member(let member): member.displayedIPv4Address
+        case .publicServerGroup: "-"
+        }
+    }
+
+    var accessibilityRoute: String {
+        switch kind {
+        case .member(let member): member.routeCost
+        case .publicServerGroup(let group): group.routeSummary
+        }
+    }
+
     var tunnelProto: String {
         switch kind {
         case .member(let member): member.tunnelProto

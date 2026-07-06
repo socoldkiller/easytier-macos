@@ -26,6 +26,7 @@ struct EasyTierApp: App {
                 .environment(updater)
                 .environment(appearanceSettings)
                 .easyTierWindowBackground(glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
+                .hideScrollViewScrollers()
                 .background(
                     MenuBarStatusItemBridge(
                         controller: menuBarController,
@@ -60,6 +61,7 @@ struct EasyTierApp: App {
             .environment(updater)
             .environment(appearanceSettings)
             .easyTierWindowBackground(glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
+            .hideScrollViewScrollers()
             .background(
                 WindowAccessor { window in
                     configureMainWindow(window, glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)

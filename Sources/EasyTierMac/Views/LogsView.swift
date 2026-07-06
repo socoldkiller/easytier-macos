@@ -29,8 +29,10 @@ struct LogsView: View {
                     }
                 }
                 .padding(12)
+                .hideEnclosingScrollViewScrollers()
             }
             .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
+            .hideScrollViewScrollers()
             .frostedGlassBackground(in: RoundedRectangle(cornerRadius: 8))
         }
         .padding()
