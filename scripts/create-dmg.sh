@@ -6,6 +6,7 @@ APP_PATH="${1:-${EASYTIER_EXPORT_APP_DIR:-$HOME/Applications/EasyTier.app}}"
 OUTPUT_DMG="${2:-$ROOT_DIR/.build/artifacts/EasyTier-macOS.dmg}"
 VOLUME_NAME="${EASYTIER_DMG_VOLUME_NAME:-EasyTier}"
 APP_NAME="EasyTier.app"
+APPLICATIONS_ALIAS_TEMPLATE="$ROOT_DIR/Packaging/Applications.alias"
 DMG_DS_STORE_TEMPLATE="$ROOT_DIR/Packaging/DMG.DS_Store"
 
 if [[ ! -d "$APP_PATH" ]]; then
@@ -20,6 +21,16 @@ fi
 
 if ! command -v hdiutil >/dev/null 2>&1; then
   echo "hdiutil is required to create a macOS DMG." >&2
+  exit 1
+fi
+
+if ! command -v SetFile >/dev/null 2>&1; then
+  echo "SetFile is required to create a macOS Finder alias in the DMG." >&2
+  exit 1
+fi
+
+if [[ ! -f "$APPLICATIONS_ALIAS_TEMPLATE" ]]; then
+  echo "Applications alias template not found: $APPLICATIONS_ALIAS_TEMPLATE" >&2
   exit 1
 fi
 
@@ -40,7 +51,8 @@ mkdir -p "$DMG_ROOT" "$(dirname "$OUTPUT_DMG")"
 
 ditto --noextattr --norsrc "$APP_PATH" "$DMG_ROOT/$APP_NAME"
 xattr -cr "$DMG_ROOT/$APP_NAME" 2>/dev/null || true
-ln -s /Applications "$DMG_ROOT/Applications"
+cp "$APPLICATIONS_ALIAS_TEMPLATE" "$DMG_ROOT/Applications"
+SetFile -a A -t fdrp -c MACS "$DMG_ROOT/Applications"
 cp "$DMG_DS_STORE_TEMPLATE" "$DMG_ROOT/.DS_Store"
 
 codesign --verify --deep --strict "$DMG_ROOT/$APP_NAME"
