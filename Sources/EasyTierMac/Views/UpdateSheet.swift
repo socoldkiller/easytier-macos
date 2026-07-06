@@ -1,3 +1,4 @@
+import AppKit
 import EasyTierShared
 import SwiftUI
 
@@ -6,59 +7,81 @@ struct UpdateSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private let appInfo = AppVersionInfo.current
+    @State private var iconBounce = false
+    @State private var breathe = false
+
+    private var needsPulse: Bool {
+        switch updater.state {
+        case .checking, .downloading: true
+        default: false
+        }
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            header
+        HStack(alignment: .top, spacing: 12) {
+            UpdateSheetAppIcon()
+                .frame(width: 48, height: 48)
+                .scaleEffect(iconBounce ? 1.1 : 1.0)
+                .opacity(breathe ? 0.7 : 1.0)
+                .accessibilityHidden(true)
+                .onChange(of: statusKey) { _, _ in
+                    triggerBounce()
+                    updatePulse()
+                }
+                .onAppear {
+                    triggerBounce()
+                    updatePulse()
+                }
 
-            content
-                .frame(maxWidth: .infinity)
-                .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: statusKey)
-
-            Divider()
-                .opacity(0.5)
-
-            actions
+            rightColumn
         }
-        .padding(24)
-        .frame(minWidth: 480, idealWidth: 520, minHeight: 360, idealHeight: 460)
+        .padding(.top, 16)
+        .padding(.horizontal, 20)
+        .padding(.bottom, 16)
+        .frame(width: 440, alignment: .topLeading)
+        .fixedSize(horizontal: false, vertical: true)
         .presentationBackground { FrostedGlass() }
         .presentedSurfaceMotion()
         .hideScrollViewScrollers()
     }
 
-    private var header: some View {
-        VStack(spacing: 12) {
-            EasyTierMark()
-                .frame(width: 72, height: 72)
+    private var rightColumn: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(headerTitle)
+                    .font(.title3.weight(.semibold))
+                    .fixedSize(horizontal: false, vertical: true)
 
-            Text(headerTitle)
-                .font(.title2.weight(.semibold))
-                .multilineTextAlignment(.center)
+                if !headerSubtitle.isEmpty {
+                    Text(headerSubtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.85)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
 
-            Text(headerSubtitle)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
+            content
+                .frame(maxWidth: .infinity)
+                .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: statusKey)
+
+            actions
         }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
     private var content: some View {
         switch updater.state {
         case .checking:
-            VStack(spacing: 10) {
+            HStack(spacing: 8) {
                 ProgressView()
-                    .controlSize(.regular)
+                    .controlSize(.small)
                 Text("Checking stable releases…")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
-            .padding(.vertical, 8)
 
         case .noUpdate(let currentVersion):
             Label {
@@ -68,18 +91,24 @@ struct UpdateSheet: View {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             }
-            .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.vertical, 8)
 
-        case .available(let update, let currentVersion):
-            updateDetail(update: update, currentVersion: currentVersion)
-            releaseNotesSection
+        case .available(let update, _):
+            HStack(spacing: 8) {
+                Text("\(ByteCountFormatter.string(fromByteCount: update.asset.size, countStyle: .file)) · \(update.architecture)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Button("View Release Notes") { updater.openReleaseNotes() }
+                    .buttonStyle(.link)
+                    .font(.caption)
+            }
 
         case .downloading(let update, let progress):
             downloadProgress(update: update, progress: progress)
 
-        case .readyToInstall(let update, _):
-            readyToInstallGuidance(update: update)
+        case .readyToInstall:
+            EmptyView()
 
         case .failed(let message):
             errorGuidance(message: message, kind: .checkFailed)
@@ -95,88 +124,51 @@ struct UpdateSheet: View {
         }
     }
 
-    private func updateDetail(update: EasyTierAvailableUpdate, currentVersion: String) -> some View {
-        VStack(spacing: 6) {
-            UpdateMetadataRow(label: "Available", value: update.version)
-            UpdateMetadataRow(label: "Current", value: currentVersion)
-            UpdateMetadataRow(label: "Size", value: byteFormatted(update.asset.size))
-        }
-    }
-
     private func downloadProgress(update: EasyTierAvailableUpdate, progress: Double?) -> some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
                 if let progress {
                     ProgressView(value: progress)
-                    Text("\(Int((progress * 100).rounded()))%")
-                        .font(.callout.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 44, alignment: .trailing)
                 } else {
                     ProgressView()
                         .controlSize(.small)
-                    Text("Downloading…")
+                    Text("Preparing download…")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
-            }
-            Text("EasyTier \(update.version) · \(byteFormatted(update.asset.size))")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-        }
-        .padding(.vertical, 6)
-    }
-
-    private func readyToInstallGuidance(update: EasyTierAvailableUpdate) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label {
-                Text("EasyTier \(update.version) is ready to install.")
-                    .font(.callout.weight(.medium))
-            } icon: {
-                Image(systemName: "arrow.down.circle.fill")
-                    .foregroundStyle(.blue)
+                Button("Cancel") { updater.cancelDownload() }
+                    .controlSize(.small)
+                    .keyboardShortcut(.cancelAction)
             }
 
-            Text("The update has been downloaded and opened in Finder. Drag EasyTier to your Applications folder to replace the current version, then relaunch the app.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if let progress {
+                Text("\(downloadedSizeText(update: update, progress: progress)) · \(Int((progress * 100).rounded()))%")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .lineLimit(1)
+            }
         }
-        .padding(.vertical, 4)
     }
 
     private func errorGuidance(message: String, kind: ErrorKind) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 4) {
             Label {
-                Text(kind.title)
-                    .font(.callout.weight(.medium))
+                Text(message)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(3)
             } icon: {
-                Image(systemName: "exclamationmark.triangle.fill")
+                Image(systemName: kind.systemImage)
                     .foregroundStyle(.orange)
             }
-
-            Text(message)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .lineLimit(4)
 
             if let recovery = kind.recoveryHint {
                 Text(recovery)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
+                    .padding(.leading, 22)
             }
-        }
-        .padding(.vertical, 4)
-    }
-
-    @ViewBuilder
-    private var releaseNotesSection: some View {
-        if let update = updater.state.visibleUpdate {
-            ReleaseNotesView(url: update.releaseNotesURL)
-                .frame(maxWidth: .infinity, minHeight: 80, idealHeight: 160)
-                .padding(8)
-                .frostedGlassBackground(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
     }
 
@@ -192,32 +184,39 @@ struct UpdateSheet: View {
 
         case .noUpdate:
             HStack {
+                if let lastCheck = updater.lastCheckFormatted {
+                    Text("Last check: \(lastCheck)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
                 Spacer()
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.defaultAction)
             }
 
         case .available:
-            HStack {
+            HStack(spacing: 4) {
                 Button("Skip This Version") { updater.skipAvailableUpdate() }
-                Button("Remind Me Later") { updater.remindLater() }
-                Spacer()
-                Button("Release Notes") { updater.openReleaseNotes() }
                     .buttonStyle(.link)
+                    .font(.caption)
+                Button("Remind Me Later") { updater.remindLater() }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
                 Button("Download") { updater.downloadAvailableUpdate() }
                     .keyboardShortcut(.defaultAction)
             }
 
         case .downloading:
-            HStack {
-                Button("Cancel Download") { updater.cancelDownload() }
-                    .keyboardShortcut(.cancelAction)
-                Spacer()
-            }
+            EmptyView()
 
         case .readyToInstall:
             HStack {
-                Button("Reveal in Finder") { updater.revealDownloadedInFinder() }
+                Button("Close") { dismiss() }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                    .keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Quit EasyTier") { updater.quitEasyTier() }
                     .keyboardShortcut(.defaultAction)
@@ -226,7 +225,6 @@ struct UpdateSheet: View {
         case .failed:
             HStack {
                 Spacer()
-                Button("Close") { dismiss() }
                 Button("Retry") { updater.checkForUpdates() }
                     .keyboardShortcut(.defaultAction)
             }
@@ -234,7 +232,6 @@ struct UpdateSheet: View {
         case .downloadFailed:
             HStack {
                 Spacer()
-                Button("Close") { dismiss() }
                 Button("Try Again") { updater.downloadAvailableUpdate() }
                     .keyboardShortcut(.defaultAction)
             }
@@ -246,8 +243,9 @@ struct UpdateSheet: View {
                         NSWorkspace.shared.open(url)
                     }
                 }
+                .buttonStyle(.link)
+                .font(.caption)
                 Spacer()
-                Button("Close") { dismiss() }
                 Button("Try Again") { updater.downloadAvailableUpdate() }
                     .keyboardShortcut(.defaultAction)
             }
@@ -264,8 +262,8 @@ struct UpdateSheet: View {
         switch updater.state {
         case .checking: "Checking for Updates…"
         case .noUpdate: "You're Up to Date"
-        case .available(let update, _): "EasyTier \(update.version) is Available"
-        case .downloading(let update, _): "Downloading EasyTier \(update.version)"
+        case .available: "Update Available"
+        case .downloading: "Downloading Update"
         case .readyToInstall: "Ready to Install"
         case .failed: "Check Failed"
         case .downloadFailed: "Download Failed"
@@ -278,9 +276,9 @@ struct UpdateSheet: View {
         switch updater.state {
         case .checking: "Contacting the update feed…"
         case .noUpdate(let currentVersion): "Version \(currentVersion)"
-        case .available(_, let currentVersion): "You have \(currentVersion)"
-        case .downloading(let update, _): "\(byteFormatted(update.asset.size))"
-        case .readyToInstall: "Download complete"
+        case .available(let update, let currentVersion): "Version \(currentVersion) → \(update.version)"
+        case .downloading(let update, _): "Version \(update.version)"
+        case .readyToInstall(let update, _): "Version \(update.version) has been downloaded."
         case .failed: "We couldn't check for updates right now."
         case .downloadFailed: "The update couldn't be downloaded."
         case .verificationFailed: "The downloaded file didn't match the published checksum."
@@ -302,8 +300,34 @@ struct UpdateSheet: View {
         }
     }
 
+    private func triggerBounce() {
+        guard !reduceMotion else { return }
+        iconBounce = true
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.5)) {
+            iconBounce = false
+        }
+    }
+
+    private func updatePulse() {
+        if needsPulse, !reduceMotion {
+            breathe = false
+            withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
+                breathe = true
+            }
+        } else {
+            withAnimation(.easeInOut(duration: 0.3)) {
+                breathe = false
+            }
+        }
+    }
+
     private func byteFormatted(_ bytes: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    private func downloadedSizeText(update: EasyTierAvailableUpdate, progress: Double) -> String {
+        let downloadedBytes = Int64((Double(update.asset.size) * min(max(progress, 0), 1)).rounded())
+        return "\(byteFormatted(downloadedBytes)) of \(byteFormatted(update.asset.size))"
     }
 
     private enum ErrorKind {
@@ -311,11 +335,11 @@ struct UpdateSheet: View {
         case downloadFailed(update: EasyTierAvailableUpdate)
         case verificationFailed(update: EasyTierAvailableUpdate)
 
-        var title: String {
+        var systemImage: String {
             switch self {
-            case .checkFailed: "Check Failed"
-            case .downloadFailed: "Download Failed"
-            case .verificationFailed: "Verification Failed"
+            case .checkFailed: "wifi.exclamationmark"
+            case .downloadFailed: "arrow.down.circle"
+            case .verificationFailed: "shield.lefthalf.filled"
             }
         }
 
@@ -332,86 +356,36 @@ struct UpdateSheet: View {
     }
 }
 
-private struct UpdateMetadataRow: View {
-    var label: String
-    var value: String
+private struct UpdateSheetAppIcon: View {
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        LabeledContent {
-            Text(value)
-                .font(.body.monospaced())
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        } label: {
-            Text(label)
-                .font(.body.weight(.medium))
-                .foregroundStyle(.secondary)
-        }
-    }
-}
-
-private struct ReleaseNotesView: View {
-    let url: URL
-
-    @State private var content: String?
-    @State private var isLoading = false
-    @State private var loadFailed = false
-
-    var body: some View {
-        ScrollView {
-            if isLoading {
-                VStack {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Loading release notes…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(iconBackground)
+            .overlay {
+                if let image = EasyTierIconResource.image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .interpolation(.high)
+                        .aspectRatio(contentMode: .fit)
+                        .padding(5)
                 }
-                .frame(maxWidth: .infinity, minHeight: 60)
-            } else if let content, !content.isEmpty {
-                Text(content)
-                    .font(.subheadline)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else if loadFailed {
-                VStack(spacing: 6) {
-                    Text("Couldn't load release notes.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Link("Open in browser", destination: url)
-                        .font(.caption)
-                }
-                .frame(maxWidth: .infinity, minHeight: 60)
-            } else {
-                EmptyView()
             }
-        }
-        .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
-        .hideScrollViewScrollers()
-        .task(id: url) {
-            await load()
-        }
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.16 : 0.08), lineWidth: 1)
+            }
+            .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.28 : 0.14), radius: 6, x: 0, y: 3)
+            .accessibilityLabel(Text("EasyTier app icon"))
     }
 
-    private func load() async {
-        isLoading = true
-        loadFailed = false
-        defer { isLoading = false }
-
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            let raw = String(data: data, encoding: .utf8) ?? ""
-            content = Self.truncated(raw, maxCharacters: 4_000)
-        } catch {
-            loadFailed = true
-        }
-    }
-
-    private static func truncated(_ text: String, maxCharacters: Int) -> String {
-        guard text.count > maxCharacters else { return text }
-        let prefix = text.prefix(maxCharacters)
-        return "\(prefix)\n\n…"
+    private var iconBackground: LinearGradient {
+        LinearGradient(
+            colors: colorScheme == .dark
+                ? [Color(nsColor: .controlBackgroundColor).opacity(0.86), Color(nsColor: .underPageBackgroundColor).opacity(0.72)]
+                : [Color.white.opacity(0.96), Color(nsColor: .controlBackgroundColor).opacity(0.88)],
+            startPoint: .top,
+            endPoint: .bottom
+        )
     }
 }

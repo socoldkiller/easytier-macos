@@ -74,7 +74,7 @@ struct EasyTierSettingsSheet: View {
         var id: String { rawValue }
     }
 
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(EasyTierAppStore.self) private var store
     @Environment(AppAppearanceSettings.self) private var appearance
@@ -421,7 +421,7 @@ struct EasyTierSettingsSheet: View {
                 Button("Save") { saveSettings() }
                     .keyboardShortcut(.defaultAction)
             }
-            Button("Done") { dismiss() }
+            Button("Done") { dismissWindow() }
                 .keyboardShortcut(isEasyTierActive ? .cancelAction : .defaultAction)
         }
         .controlSize(.small)
@@ -475,7 +475,7 @@ struct EasyTierSettingsSheet: View {
             let settings = try MagicDNSSettings(dnsSuffix: magicDNSSuffix)
             magicDNSSuffix = settings.dnsSuffix
             onSave(buildMode(), settings)
-            dismiss()
+            dismissWindow()
         } catch {
             settingsError = error.localizedDescription
         }
@@ -600,7 +600,7 @@ private struct SettingsSidebar: View {
 private struct SettingsAboutView: View {
     @Environment(SoftwareUpdateController.self) private var updater
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.dismissWindow) private var dismissWindow
 
     private let appInfo = AppVersionInfo.current
     private let revisions = SettingsSourceRevisionInfo.current
@@ -647,6 +647,9 @@ private struct SettingsAboutView: View {
 
                     CardSection("Software Update", systemImage: "arrow.down.circle", tint: SettingsTint.rpcServer) {
                         HStack(alignment: .center, spacing: 10) {
+                            if case .available = updater.state {
+                                StatusPill("Update available", tone: .warning)
+                            }
                             Text(updateSummaryText)
                                 .font(.body)
                                 .foregroundStyle(.secondary)
@@ -656,6 +659,12 @@ private struct SettingsAboutView: View {
 
                             Button("Check for Updates…") { updater.checkForUpdatesAndPresent() }
                                 .controlSize(.small)
+                        }
+
+                        if let lastCheck = updater.lastCheckFormatted {
+                            Text("Last check: \(lastCheck)")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
                         }
                     }
                 }
@@ -668,7 +677,7 @@ private struct SettingsAboutView: View {
         .safeAreaInset(edge: .bottom) {
             HStack {
                 Spacer()
-                Button("Done") { dismiss() }
+                Button("Done") { dismissWindow() }
                     .keyboardShortcut(.defaultAction)
                     .controlSize(.small)
             }

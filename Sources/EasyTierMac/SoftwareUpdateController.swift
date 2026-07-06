@@ -16,6 +16,24 @@ final class SoftwareUpdateController {
         set { userDefaults.set(newValue, forKey: Self.autoCheckKey) }
     }
 
+    var lastCheckDate: Date? {
+        userDefaults.object(forKey: Self.lastCheckDateKey) as? Date
+    }
+
+    var lastCheckFormatted: String? {
+        guard let date = lastCheckDate else { return nil }
+        let calendar = Calendar.current
+        let timeText = date.formatted(date: .omitted, time: .shortened)
+        if calendar.isDateInToday(date) {
+            return "Today, \(timeText)"
+        } else if calendar.isDateInYesterday(date) {
+            return "Yesterday, \(timeText)"
+        } else {
+            let dateText = date.formatted(date: .abbreviated, time: .omitted)
+            return "\(dateText), \(timeText)"
+        }
+    }
+
     private(set) var hasUnacknowledgedUpdate = false
 
     @ObservationIgnored private var activeTask: Task<Void, Never>?
