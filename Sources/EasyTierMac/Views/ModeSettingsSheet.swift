@@ -130,7 +130,7 @@ struct EasyTierSettingsSheet: View {
     var body: some View {
         NavigationSplitView {
             SettingsSidebar(selection: $selection, visibleEasyTierSections: visibleEasyTierSections)
-                .navigationSplitViewColumnWidth(min: 180, ideal: Self.sidebarWidth, max: 220)
+                .navigationSplitViewColumnWidth(min: 200, ideal: Self.sidebarWidth, max: 240)
         } detail: {
             MotionSwitch(id: selection, insertionEdge: .trailing, fillsAvailableSpace: false) {
                 detailContent
@@ -532,7 +532,7 @@ struct EasyTierSettingsSheet: View {
 
     private static let defaultRemoteRPCAddress = "tcp://127.0.0.1:\(AppMode.defaultRPCListenPort)"
 
-    private static let sidebarWidth: CGFloat = 190
+    private static let sidebarWidth: CGFloat = 220
     private static let windowSize = CGSize(width: 640, height: 640)
 }
 
@@ -549,37 +549,29 @@ enum EasyTierSettingsTabRequest {
 private struct SettingsSidebar: View {
     @Binding var selection: SettingsSelection
     var visibleEasyTierSections: [EasyTierSection]
-    @State private var easyTierExpanded = false
 
     var body: some View {
         List(selection: $selection) {
-            Label("General", systemImage: "gearshape")
-                .tag(SettingsSelection.general)
-
-            DisclosureGroup(isExpanded: $easyTierExpanded) {
-                ForEach(visibleEasyTierSections) { section in
-                    Label(section.rawValue, systemImage: section.systemImage)
-                        .foregroundStyle(.secondary)
-                        .tag(SettingsSelection.easyTier(section))
-                }
-            } label: {
-                Label("EasyTier", systemImage: "network")
+            Section {
+                Label("General", systemImage: "gearshape")
+                    .tag(SettingsSelection.general)
             }
 
-            Label("About", systemImage: "info.circle")
-                .tag(SettingsSelection.about)
+            Section("EasyTier") {
+                ForEach(visibleEasyTierSections) { section in
+                    Label(section.rawValue, systemImage: section.systemImage)
+                        .tag(SettingsSelection.easyTier(section))
+                }
+            }
+
+            Section {
+                Label("About", systemImage: "info.circle")
+                    .tag(SettingsSelection.about)
+            }
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
         .hideScrollViewScrollers()
-        .onAppear {
-            if case .easyTier = selection { easyTierExpanded = true }
-        }
-        .onChange(of: selection) { _, newSelection in
-            if case .easyTier = newSelection, !easyTierExpanded {
-                easyTierExpanded = true
-            }
-        }
     }
 }
 
