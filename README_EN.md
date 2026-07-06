@@ -5,10 +5,7 @@
   <h1>EasyTier for macOS</h1>
 
   <p>
-    A native macOS desktop client for EasyTier. SwiftUI frontend, Rust FFI calling EasyTier Core under the hood.
-  </p>
-  <p>
-    Put your home NAS, office machines, and cloud servers on one virtual LAN. No CLI memorization — open the app, see who's online, check the speeds.
+    Put your home NAS, office machines, and cloud servers on a single virtual LAN. Devices talk to each other like they're plugged into the same switch, wherever they are.
   </p>
 
   <p>
@@ -31,8 +28,6 @@
     ·
     <a href="#build">Build</a>
     ·
-    <a href="#architecture">Architecture</a>
-    ·
     <a href="#star-history">Star History</a>
     ·
     <a href="#credits">Credits</a>
@@ -44,8 +39,6 @@
 ---
 
 ## Screenshots
-
-Main window — sidebar for switching networks, content area for status, devices, traffic, and logs.
 
 <div align="center">
   <img src="pictures/status-overview.png" width="920" alt="Status overview" />
@@ -71,104 +64,90 @@ Main window — sidebar for switching networks, content area for status, devices
 
 ### Menu bar
 
-The menu bar icon shows connection state at a glance — gray means stopped, pulsing means connecting, green means all good, red means something's wrong. Click it for a quick panel with current network and device info, no need to open the full window.
+The menu bar icon shows connection state — gray stopped, green connected, red error. Click it for a panel with network name, local IP, and online device count.
 
 ### Device table
 
-A table listing every node on the current network. Each row shows:
-- Device name and IP (click to copy)
-- Route type (P2P, Relay, Local)
-- Tunnel protocol (TCP, UDP, QUIC, etc.)
+Every node on the current network in one table:
+
+- Hostname, role (Self / Peer / Public Server), and Peer ID
+- Virtual IPv4 — click to copy
+- Route type: Local, P2P, Relay
+- Tunnel protocol: TCP, UDP, QUIC, etc.
 - Latency, upload, download, packet loss
 - NAT type and EasyTier version
 
-Double-click a device name to rename it — changes propagate to the remote node over RPC in real time.
+Double-click a device name to rename it. The change propagates to the remote node over RPC.
 
 ### Traffic chart
 
-Upload and download trends as an area chart. Hover for exact values, refreshes every second. The Y axis auto-scales so a brief spike doesn't flatten the curve.
+Upload and download trends as a per-second area chart. Hover for exact values. Top bar shows current rate and sample count.
 
 ### Multi-network configs
 
-Each network saved as a separate TOML file, start/stop independently. Switch between configs with Cmd+[ / Cmd+]. Import/export TOML — fully compatible with the CLI config format.
+Each network gets its own configuration. Start and stop them independently.
+- Network name and secret
+- Initial node list — add or remove as needed
+- Magic DNS, tunnel protocol, and other advanced options
+- TOML format, compatible with the EasyTier CLI
+
+### Peer subscriptions
+
+Paste a subscription URL or JSON to import peer addresses. Each source shows as a card — refresh on demand.
+
+### Magic DNS
+
+Configure DNS suffix, split DNS routing, and local resolver. Only names under the suffix go through EasyTier; everything else stays on system DNS.
 
 ### Runtime logs
 
-EasyTier Core output and app-level actions all land in one log panel. Copyable, searchable. At least you know where to look when something breaks.
-
-### App modes
-
-- **Normal** — run EasyTier locally, own the network
-- **Config Server** — pull the network profile from a remote config server, for fleet-style config distribution
-
-> Additionally, double-click any remote peer in the device table to rename it; the change propagates to that peer over RPC in real time. This per-peer remote management is not a standalone app mode.
+App actions and EasyTier Core output go to a single panel. Search, clear, copy, export.
 
 ### Privileged helper
 
-TUN interfaces need root. The app walks you through installing a privileged helper (LaunchDaemon) that only gets invoked when starting a TUN network. Non-TUN mode (`no_tun`) doesn't need it.
+TUN interfaces need root. Starting a TUN network shows an inline prompt to install a privileged helper (LaunchDaemon) that communicates over XPC. Non-TUN mode doesn't need it.
 
 ## Install
 
 macOS 15 or later.
 
-Grab the latest DMG from [Releases](https://github.com/socoldkiller/easytier-macos/releases) and drag it into Applications.
+Grab the DMG from [Releases](https://github.com/socoldkiller/easytier-macos/releases) and drop it into Applications.
 
 First launch:
-1. macOS may block it as "unidentified developer" — go to System Settings → Privacy & Security → Open Anyway
-2. The helper install prompt will appear — follow the macOS dialogs
-3. If you have the firewall on, allow EasyTier's incoming connections
+1. macOS may flag it as unidentified → System Settings → Privacy & Security → Open Anyway
+2. TUN mode prompts for the privileged helper → follow the dialogs
+3. If your firewall is on → allow incoming connections for EasyTier
 
 ## Build
 
-Requires Xcode 16+ (Swift 6) and the Rust nightly toolchain.
+### Prerequisites
+
+Xcode 16+, Swift 6, Rust nightly.
 
 ```bash
 git clone --recurse-submodules https://github.com/socoldkiller/easytier-macos.git
 cd easytier-macos
-
-# Build the Rust FFI static library
-make build-ffi
-
-# Build the Swift app
-make build
-
-# Package as DMG
-make dmg
-
-# Run tests
-swift test
-cd Rust/EasyTierGuiFFI && cargo test
+make bootstrap   # verify toolchain
+make ffi         # build Rust FFI static lib
+make app-debug   # build debug app
+make dmg-local   # package locally-signed DMG
+make test        # run tests
 ```
 
 Output paths:
-- App bundle: `.build/debug/EasyTierMac.app`
-- FFI library: `Rust/EasyTierGuiFFI/target/`
-- DMG: `easytier-mac.dmg`
+- App bundle: `.build/artifacts/EasyTier.app`
+- DMG: `.build/artifacts/EasyTier-macOS-$(uname -m).dmg`
+- FFI lib: `Vendor/Frameworks/static/`
 
-## Architecture
+Developer ID signing:
 
-```
-┌────────────────────────────────┐
-│  SwiftUI App (EasyTierMac)     │
-│  Views / Menu Bar / Settings   │
-├────────────────────────────────┤
-│  EasyTierShared (Models / RPC) │
-├──────────────┬─────────────────┤
-│  Privileged  │  Static FFI     │
-│  Helper (XPC)│  Client (C ABI) │
-├──────────────┴─────────────────┤
-│  CEasyTierFFI (C shim)         │
-├────────────────────────────────┤
-│  Rust FFI (EasyTierGuiFFI)     │
-│  → easytier Core               │
-└────────────────────────────────┘
+```bash
+make dmg-signed CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)"
 ```
 
-Two paths to EasyTier Core:
-1. **Direct** — Swift → C shim → Rust FFI → Core (StaticEasyTierFFIClient)
-2. **Privileged** — Swift → XPC → helper daemon → Rust FFI → Core (for TUN)
+### Call path
 
-Remote RPC also goes through FFI: Swift builds JSON-RPC payloads → C shim → Rust opens TCP to the remote RPC Portal.
+The SwiftUI app talks to EasyTier Core through a C shim (CEasyTierFFI) backed by a Rust FFI library. In TUN mode, the app communicates with a privileged helper over XPC, and the helper calls into the same FFI layer. Remote RPC builds JSON-RPC payloads in Swift and sends them through the C shim to a remote RPC Portal.
 
 ## Star History
 
@@ -184,9 +163,9 @@ Remote RPC also goes through FFI: Swift builds JSON-RPC payloads → C shim → 
 
 ## Credits
 
-Built on top of [EasyTier](https://github.com/EasyTier/EasyTier). SwiftUI + Rust FFI for a native Mac feel.
+Built on [EasyTier](https://github.com/EasyTier/EasyTier). SwiftUI frontend, Rust FFI calling EasyTier Core.
 
-Bugs and feature requests go in Issues. Pull requests welcome. Stars appreciated.
+Bugs and feature requests go in Issues. Pull requests welcome.
 
 ## License
 

@@ -24,7 +24,7 @@ struct LogsView: View {
                     .font(.headline)
                 Spacer()
                 TextField("Search", text: $searchText)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.glassField)
                     .frame(width: 180)
                     .accessibilityLabel("Search logs")
                     .accessibilityHint("Filters log entries by substring.")
