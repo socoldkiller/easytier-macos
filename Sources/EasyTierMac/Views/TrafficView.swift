@@ -15,10 +15,10 @@ struct TrafficView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
-                StatusMetric(title: "Network", value: instance?.name ?? store.selectedConfig?.network_name ?? "-", systemImage: "network")
-                StatusMetric(title: "Upload", value: ByteFormatter.formatRate(latest?.txBytesPerSecond ?? 0), systemImage: "arrow.up", width: Self.rateMetricWidth)
-                StatusMetric(title: "Download", value: ByteFormatter.formatRate(latest?.rxBytesPerSecond ?? 0), systemImage: "arrow.down", width: Self.rateMetricWidth)
-                StatusMetric(title: "Samples", value: "\(samples.count)", systemImage: "waveform.path.ecg")
+                StatusBadge(title: "Network", value: instance?.name ?? store.selectedConfig?.network_name ?? "-", systemImage: "globe")
+                StatusBadge(title: "Upload", value: ByteFormatter.formatRate(latest?.txBytesPerSecond ?? 0), systemImage: "arrow.up", width: Self.rateMetricWidth)
+                StatusBadge(title: "Download", value: ByteFormatter.formatRate(latest?.rxBytesPerSecond ?? 0), systemImage: "arrow.down", width: Self.rateMetricWidth)
+                StatusBadge(title: "Samples", value: "\(samples.count)", systemImage: "waveform.path.ecg")
                 Spacer(minLength: 0)
             }
 
@@ -38,40 +38,6 @@ struct TrafficView: View {
             }
         }
         .padding()
-    }
-}
-
-private struct StatusMetric: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var title: String
-    var value: String
-    var systemImage: String
-    var width: CGFloat? = nil
-
-    var body: some View {
-        HStack(spacing: 9) {
-            Image(systemName: systemImage)
-                .font(.title3)
-                .foregroundStyle(.secondary)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(value)
-                    .font(.headline)
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                    .contentTransition(.opacity)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(10)
-        .frame(width: width, alignment: .leading)
-        .liquidGlassMetricBackground(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: value)
     }
 }
 

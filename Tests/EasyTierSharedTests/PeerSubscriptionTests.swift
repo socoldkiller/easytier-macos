@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import EasyTierShared
 
-@Test func peerCardDecodesFromCanonicalJSON() throws {
+@Test func peerCardDecodesFromInternalStorageJSON() throws {
     let json = #"""
     {
       "name": "Tokyo Relay",
@@ -38,25 +38,121 @@ import Testing
     #expect(card.urls == ["tcp://1.1.1.1:11010"])
 }
 
-@Test func peerSubscriptionDecodesFromSingleObject() throws {
+@Test func peerSubscriptionCodecImportsOutboundSubscriptionNodes() throws {
     let json = #"""
     {
-      "name": "Team A",
-      "cards": [
-        { "id": "c1", "name": "Tokyo", "proto": "quic", "urls": ["quic://1.2.3.4:11012"] },
-        { "id": "c2", "name": "SF", "urls": ["tcp://5.6.7.8:11010"] }
+      "outbounds": [
+        { "type": "quic", "tag": "Tokyo", "server": "tokyo.example.com", "server_port": 11012 },
+        { "type": "tcp", "tag": "SF", "server": "sf.example.com", "server_port": 11010 },
+        { "type": "trojan", "tag": "Proxy", "server": "proxy.example.com", "server_port": 443 },
+        { "type": "direct", "tag": "direct" },
+        { "type": "selector", "tag": "Auto", "outbounds": ["Tokyo", "SF"] }
       ]
     }
     """#.data(using: .utf8)!
 
     let subs = try PeerSubscriptionCodec.decode(json)
     #expect(subs.count == 1)
-    #expect(subs[0].name == "Team A")
+    #expect(subs[0].name == "Node Subscription")
     #expect(subs[0].cards.count == 2)
-    #expect(subs[0].cards[1].proto == "tcp")
+    #expect(subs[0].cards[0].id == "tokyo")
+    #expect(subs[0].cards[0].name == "Tokyo")
+    #expect(subs[0].cards[0].proto == "quic")
+    #expect(subs[0].cards[0].urls == ["quic://tokyo.example.com:11012"])
+    #expect(subs[0].cards[0].note == "Imported quic peer from subscription.")
+    #expect(subs[0].cards[1].urls == ["tcp://sf.example.com:11010"])
 }
 
-@Test func peerSubscriptionCodecAcceptsArrayOfCards() throws {
+@Test(arguments: ["tcp", "udp", "wg", "ws", "wss", "quic", "faketcp"])
+func peerSubscriptionCodecImportsEasyTierProtocolOutboundTypes(_ type: String) throws {
+    let json = """
+    {
+      "outbounds": [
+        { "type": "\(type)", "tag": "\(type)-node", "server": "\(type).example.com", "server_port": "11010" }
+      ]
+    }
+    """.data(using: .utf8)!
+
+    let subs = try PeerSubscriptionCodec.decode(json)
+    #expect(subs[0].cards.count == 1)
+    #expect(subs[0].cards[0].proto == type)
+    #expect(subs[0].cards[0].urls == ["\(type)://\(type).example.com:11010"])
+}
+
+@Test(arguments: ["trojan", "vless", "vmess", "shadowsocks", "hysteria2", "tuic", "wireguard"])
+func peerSubscriptionCodecRejectsNonEasyTierProtocolOutboundTypes(_ type: String) {
+    let json = """
+    {
+      "outbounds": [
+        { "type": "\(type)", "tag": "\(type)-node", "server": "\(type).example.com", "server_port": 443 }
+      ]
+    }
+    """.data(using: .utf8)!
+
+    #expect(throws: PeerSubscriptionDecodeError.self) {
+        _ = try PeerSubscriptionCodec.decode(json)
+    }
+}
+
+@Test func peerSubscriptionCodecUsesServerPortNameWhenTagMissing() throws {
+    let json = #"""
+    {
+      "outbounds": [
+        { "type": "udp", "server": "1.2.3.4", "server_port": 11010 }
+      ]
+    }
+    """#.data(using: .utf8)!
+
+    let subs = try PeerSubscriptionCodec.decode(json)
+    #expect(subs[0].cards[0].name == "1.2.3.4:11010")
+    #expect(subs[0].cards[0].id == "udp-1-2-3-4-11010")
+}
+
+@Test func peerSubscriptionCodecSkipsOutboundsWithoutServerOrPort() throws {
+    let json = #"""
+    {
+      "outbounds": [
+        { "type": "tcp", "tag": "No server", "server_port": 11010 },
+        { "type": "quic", "tag": "No port", "server": "missing-port.example.com" },
+        { "type": "wss", "tag": "Valid", "server": "valid.example.com", "server_port": 11012 }
+      ]
+    }
+    """#.data(using: .utf8)!
+
+    let subs = try PeerSubscriptionCodec.decode(json)
+    #expect(subs[0].cards.map(\.name) == ["Valid"])
+    #expect(subs[0].cards[0].urls == ["wss://valid.example.com:11012"])
+}
+
+@Test func peerSubscriptionCodecRejectsOnlySkippedOutbounds() {
+    let json = #"""
+    {
+      "outbounds": [
+        { "type": "direct", "tag": "direct" },
+        { "type": "block", "tag": "block" },
+        { "type": "dns", "tag": "dns" },
+        { "type": "selector", "tag": "selector", "outbounds": ["direct"] },
+        { "type": "urltest", "tag": "urltest", "outbounds": ["direct"] }
+      ]
+    }
+    """#.data(using: .utf8)!
+
+    #expect(throws: PeerSubscriptionDecodeError.self) {
+        _ = try PeerSubscriptionCodec.decode(json)
+    }
+}
+
+@Test func peerSubscriptionCodecRejectsOldCardsObject() {
+    let json = #"""
+    { "name": "Old", "cards": [ { "name": "A", "urls": ["tcp://1.1.1.1:11010"] } ] }
+    """#.data(using: .utf8)!
+
+    #expect(throws: PeerSubscriptionDecodeError.self) {
+        _ = try PeerSubscriptionCodec.decode(json)
+    }
+}
+
+@Test func peerSubscriptionCodecRejectsOldCardsArray() {
     let json = #"""
     [
       { "name": "A", "urls": ["tcp://1.1.1.1:11010"] },
@@ -64,23 +160,9 @@ import Testing
     ]
     """#.data(using: .utf8)!
 
-    let subs = try PeerSubscriptionCodec.decode(json)
-    #expect(subs.count == 1)
-    #expect(subs[0].cards.count == 2)
-}
-
-@Test func peerSubscriptionCodecAcceptsArrayOfSubscriptions() throws {
-    let json = #"""
-    [
-      { "name": "S1", "cards": [ { "name": "x", "urls": ["tcp://1.1.1.1:11010"] } ] },
-      { "name": "S2", "cards": [ { "name": "y", "urls": ["udp://2.2.2.2:11010"] } ] }
-    ]
-    """#.data(using: .utf8)!
-
-    let subs = try PeerSubscriptionCodec.decode(json)
-    #expect(subs.count == 2)
-    #expect(subs[0].name == "S1")
-    #expect(subs[1].cards[0].name == "y")
+    #expect(throws: PeerSubscriptionDecodeError.self) {
+        _ = try PeerSubscriptionCodec.decode(json)
+    }
 }
 
 @Test func peerSubscriptionCodecRejectsGarbage() {
@@ -103,19 +185,19 @@ import Testing
 }
 
 @Test(arguments: [
-    (#"{"name":"empty","urls":[]}"#, true),
-    (#"{"name":"no urls field at all"}"#, true),
-    (#"{"name":"garbage urls","urls":[1,2,3]}"#, true),
-    (#"{"name":"partially valid","urls":["tcp://1.1.1.1:11010", 42]}"#, true),
+    #"{"name":"empty","urls":[]}"#,
+    #"{"name":"no urls field at all"}"#,
+    #"{"name":"garbage urls","urls":[1,2,3]}"#,
+    #"{"name":"partially valid","urls":["tcp://1.1.1.1:11010", 42]}"#,
 ])
-func peerCardDecodesLossily(_ json: String, succeeds: Bool) throws {
+func peerCardDecodesLossily(_ json: String) throws {
     let card = try JSONDecoder().decode(PeerCard.self, from: json.data(using: .utf8)!)
     #expect(!card.id.isEmpty)
     #expect(card.name == card.name)
 }
 
 @MainActor
-@Test func storeAddPeerSubscriptionFromJSONPersistsAndReloads() async throws {
+@Test func storeAddSubscriptionFromJSONPersistsAndReloads() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("peer-sub-test-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -125,7 +207,11 @@ func peerCardDecodesLossily(_ json: String, succeeds: Bool) throws {
     let store = EasyTierAppStore(storage: storage)
 
     let json = #"""
-    { "name": "Sub One", "cards": [ { "name": "A", "urls": ["tcp://1.1.1.1:11010"] } ] }
+    {
+      "outbounds": [
+        { "type": "quic", "tag": "Persisted", "server": "persisted.example.com", "server_port": 11012 }
+      ]
+    }
     """#
     try store.addPeerSubscription(json: json)
     #expect(store.peerSubscriptions.count == 1)
@@ -136,7 +222,7 @@ func peerCardDecodesLossily(_ json: String, succeeds: Bool) throws {
     let reloaded = EasyTierAppStore(storage: storage)
     await reloaded.load()
     #expect(reloaded.peerSubscriptions.count == 1)
-    #expect(reloaded.peerSubscriptions[0].cards[0].urls == ["tcp://1.1.1.1:11010"])
+    #expect(reloaded.peerSubscriptions[0].cards[0].urls == ["quic://persisted.example.com:11012"])
 }
 
 @MainActor
@@ -154,11 +240,11 @@ func peerCardDecodesLossily(_ json: String, succeeds: Bool) throws {
     config.peer_urls = ["tcp://existing.example:11010"]
     store.updateSelectedConfig(config)
 
-    let card = PeerCard(name: "New", urls: ["quic://1.2.3.4:11012", "tcp://existing.example:11010"])
+    let card = PeerCard(name: "New", urls: ["tcp://1.2.3.4:11012", "tcp://existing.example:11010"])
     store.mergePeerCardIntoSelectedConfig(card)
 
     let updated = store.selectedConfig
-    #expect(updated?.peer_urls.contains("quic://1.2.3.4:11012") == true)
+    #expect(updated?.peer_urls.contains("tcp://1.2.3.4:11012") == true)
     #expect(updated?.peer_urls.filter { $0 == "tcp://existing.example:11010" }.count == 1)
 }
 
@@ -173,7 +259,7 @@ func peerCardDecodesLossily(_ json: String, succeeds: Bool) throws {
     let store = EasyTierAppStore(storage: storage)
     await store.load()
 
-    try store.addPeerSubscription(json: #"{"name":"To Delete","cards":[]}"#)
+    try store.addPeerSubscription(json: #"{"outbounds":[{"type":"tcp","tag":"To Delete","server":"delete.example.com","server_port":11010}]}"#)
     #expect(store.peerSubscriptions.count == 1)
     let id = store.peerSubscriptions[0].id
     store.deletePeerSubscription(id: id)

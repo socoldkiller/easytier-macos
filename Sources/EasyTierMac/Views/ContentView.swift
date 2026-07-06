@@ -1016,7 +1016,7 @@ private struct WorkspaceTabPicker: View {
     @Binding var selection: WorkspaceTab
 
     private static let preferredWidth: CGFloat = 184
-    private let tabs = WorkspaceTab.allCases
+    private let tabs = WorkspaceTab.displayOrder
 
     var body: some View {
         Picker("View", selection: $selection) {
@@ -1251,8 +1251,10 @@ private extension NSEvent.ModifierFlags {
 }
 
 extension WorkspaceTab {
+    fileprivate static let displayOrder: [WorkspaceTab] = [.status, .view, .config, .peers, .logs]
+
     fileprivate var motionIndex: Int {
-        WorkspaceTab.allCases.firstIndex(where: { $0.id == id }) ?? 0
+        WorkspaceTab.displayOrder.firstIndex(where: { $0.id == id }) ?? 0
     }
 
     fileprivate var systemImage: String {
@@ -1266,7 +1268,7 @@ extension WorkspaceTab {
         case .logs:
             return "doc.text.magnifyingglass"
         case .peers:
-            return "rectangle.stack.badge.plus"
+            return "wifi"
         }
     }
 }

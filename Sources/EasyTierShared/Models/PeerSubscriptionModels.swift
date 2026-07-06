@@ -147,18 +147,16 @@ public struct PeerCard: Codable, Identifiable, Equatable, Sendable {
 public enum PeerSubscriptionCodec {
     public static func decode(_ data: Data) throws -> [PeerSubscription] {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        guard let config = try? decoder.decode(OutboundSubscriptionConfig.self, from: data) else {
+            throw PeerSubscriptionDecodeError.invalidFormat
+        }
 
-        if let single = try? decoder.decode(PeerSubscription.self, from: data) {
-            return [single]
+        let cards = config.importablePeerCards()
+        guard !cards.isEmpty else {
+            throw PeerSubscriptionDecodeError.noImportableOutbounds
         }
-        if let array = try? decoder.decode([PeerSubscription].self, from: data) {
-            return array
-        }
-        if let cards = try? decoder.decode([PeerCard].self, from: data), !cards.isEmpty {
-            return [PeerSubscription(name: "Subscription", cards: cards)]
-        }
-        throw PeerSubscriptionDecodeError.invalidFormat
+
+        return [PeerSubscription(name: "Node Subscription", cards: cards)]
     }
 
     public static func decode(_ string: String) throws -> [PeerSubscription] {
@@ -171,12 +169,114 @@ public enum PeerSubscriptionCodec {
 
 public enum PeerSubscriptionDecodeError: Error, LocalizedError {
     case invalidFormat
+    case noImportableOutbounds
 
     public var errorDescription: String? {
         switch self {
         case .invalidFormat:
-            return "Subscription JSON must be a single subscription object, an array of subscriptions, or an array of peer cards."
+            return "Expected subscription JSON with top-level outbounds."
+        case .noImportableOutbounds:
+            return "Expected subscription JSON with EasyTier protocol outbounds."
         }
+    }
+}
+
+private struct OutboundSubscriptionConfig: Decodable {
+    var outbounds: [SubscriptionOutbound]
+
+    func importablePeerCards() -> [PeerCard] {
+        var usedIDs: Set<String> = []
+        return outbounds.enumerated().compactMap { index, outbound in
+            guard outbound.isImportable,
+                  let server = outbound.normalizedServer,
+                  let port = outbound.serverPort?.value
+            else {
+                return nil
+            }
+
+            let scheme = outbound.normalizedType
+            let name = outbound.normalizedTag ?? "\(server):\(port)"
+            let baseID = outbound.normalizedTag ?? "\(scheme)-\(server)-\(port)"
+            let id = uniqueID(from: baseID, fallbackIndex: index, usedIDs: &usedIDs)
+            return PeerCard(
+                id: id,
+                name: name,
+                proto: scheme,
+                urls: ["\(scheme)://\(server):\(port)"],
+                note: "Imported \(scheme) peer from subscription."
+            )
+        }
+    }
+
+    private func uniqueID(from rawValue: String, fallbackIndex: Int, usedIDs: inout Set<String>) -> String {
+        let normalized = rawValue
+            .lowercased()
+            .map { character in
+                character.isLetter || character.isNumber ? character : "-"
+            }
+            .reduce(into: "") { output, character in
+                if character == "-", output.last == "-" { return }
+                output.append(character)
+            }
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+
+        let base = normalized.isEmpty ? "subscription-\(fallbackIndex + 1)" : normalized
+        var candidate = base
+        var suffix = 2
+        while usedIDs.contains(candidate) {
+            candidate = "\(base)-\(suffix)"
+            suffix += 1
+        }
+        usedIDs.insert(candidate)
+        return candidate
+    }
+}
+
+private struct SubscriptionOutbound: Decodable {
+    var type: String
+    var tag: String?
+    var server: String?
+    var serverPort: IntOrString?
+
+    private enum CodingKeys: String, CodingKey {
+        case type, tag, server
+        case serverPort = "server_port"
+    }
+
+    var normalizedTag: String? {
+        tag?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+    }
+
+    var normalizedType: String {
+        type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    var normalizedServer: String? {
+        server?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+    }
+
+    var isImportable: Bool {
+        Self.easyTierProtocols.contains(normalizedType)
+    }
+
+    private static let easyTierProtocols: Set<String> = ["tcp", "udp", "wg", "ws", "wss", "quic", "faketcp"]
+}
+
+private struct IntOrString: Decodable {
+    var value: Int
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let intValue = try? container.decode(Int.self) {
+            value = intValue
+            return
+        }
+        if let stringValue = try? container.decode(String.self),
+           let intValue = Int(stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            value = intValue
+            return
+        }
+        throw DecodingError.dataCorruptedError(in: container, debugDescription: "server_port must be an integer.")
     }
 }
 

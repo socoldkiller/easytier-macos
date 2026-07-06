@@ -1468,10 +1468,10 @@ public final class EasyTierAppStore {
             }
             peerSubscriptions.append(contentsOf: merged)
             saveInBackground()
-            log("Added \(merged.count) peer subscription(s) from \(url.absoluteString).")
+            log("Added \(merged.count) subscription(s) from \(url.absoluteString).")
         } catch {
             setLastError(error)
-            log("Failed to fetch peer subscription from \(url.absoluteString): \(error.localizedDescription)")
+            log("Failed to fetch subscription from \(url.absoluteString): \(error.localizedDescription)")
         }
     }
 
@@ -1479,14 +1479,14 @@ public final class EasyTierAppStore {
         let decoded = try PeerSubscriptionCodec.decode(json)
         peerSubscriptions.append(contentsOf: decoded)
         saveInBackground()
-        log("Added \(decoded.count) peer subscription(s) from pasted JSON.")
+        log("Added \(decoded.count) subscription(s) from pasted JSON.")
     }
 
     public func deletePeerSubscription(id: String) {
         guard let index = peerSubscriptions.firstIndex(where: { $0.id == id }) else { return }
         let removed = peerSubscriptions.remove(at: index)
         saveInBackground()
-        log("Removed peer subscription \(removed.name).")
+        log("Removed subscription \(removed.name).")
     }
 
     public func refreshPeerSubscriptions() async {
@@ -1513,11 +1513,11 @@ public final class EasyTierAppStore {
                     }
                 }
             } catch {
-                log("Failed to refresh peer subscription from \(url.absoluteString): \(error.localizedDescription)")
+                log("Failed to refresh subscription from \(url.absoluteString): \(error.localizedDescription)")
             }
         }
         saveInBackground()
-        log("Peer subscriptions refresh complete.")
+        log("Subscriptions refresh complete.")
     }
 
     public func peerCardLatency(for card: PeerCard) -> Int? {

@@ -65,7 +65,7 @@ struct PeersView: View {
                 } label: {
                     Label("Add Subscription", systemImage: "plus")
                 }
-                .help("Add a peer subscription")
+                .help("Add a node subscription")
 
                 Button {
                     Task { await store.refreshPeerSubscriptions() }
@@ -107,7 +107,7 @@ struct PeersView: View {
             ContentUnavailableView(
                 "No Peer Subscriptions",
                 systemImage: "rectangle.stack.badge.plus",
-                description: Text("Add a subscription URL to fetch peer cards.\nEach card represents a group of peer URLs you can merge into the current network.")
+                description: Text("Add a subscription URL to import EasyTier node addresses.\nImported addresses can be merged into the current network.")
             )
             .frame(maxWidth: 420)
             Button("Add Subscription") { inputMode = .url; openAddSheet() }
@@ -252,11 +252,19 @@ private struct AddPeerSubscriptionSheet: View {
 
     private let sampleJSON = """
     {
-      "name": "Team A Relays",
-      "cards": [
-        { "id": "tokyo", "name": "Tokyo Relay", "proto": "quic",
-          "urls": ["quic://1.2.3.4:11012", "udp://1.2.3.4:11010"] },
-        { "id": "sf", "name": "SF Node", "urls": ["tcp://5.6.7.8:11010"] }
+      "outbounds": [
+        {
+          "type": "quic",
+          "tag": "Tokyo",
+          "server": "tokyo.example.com",
+          "server_port": 11012
+        },
+        {
+          "type": "tcp",
+          "tag": "San Francisco",
+          "server": "sf.example.com",
+          "server_port": 11010
+        }
       ]
     }
     """
@@ -281,10 +289,10 @@ private struct AddPeerSubscriptionSheet: View {
                         Text("Subscription URL")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
-                        TextField("https://example.com/peers.json", text: $urlText)
+                        TextField("https://example.com/subscription.json", text: $urlText)
                             .textFieldStyle(.roundedBorder)
                             .autocorrectionDisabled()
-                        Text("The app will fetch JSON from this URL and refresh it on demand.")
+                        Text("The app will fetch subscription JSON from this URL and refresh it on demand.")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                     }
