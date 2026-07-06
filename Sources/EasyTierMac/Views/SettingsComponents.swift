@@ -228,6 +228,8 @@ struct ModeOptionTile: View {
     var isSelected: Bool
     var action: () -> Void
 
+    private let cornerRadius: CGFloat = 12
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
@@ -241,20 +243,21 @@ struct ModeOptionTile: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 6)
-                Image(systemName: "checkmark.circle.fill")
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .font(.body)
-                    .foregroundStyle(isSelected ? Color.secondary : Color.secondary.opacity(0.25))
+                    .foregroundStyle(isSelected ? tint : Color.secondary.opacity(0.3))
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.primary.opacity(0.035))
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(.regularMaterial)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(isSelected ? Color.secondary.opacity(0.55) : Color.primary.opacity(0.06), lineWidth: isSelected ? 1.5 : 0.5)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(isSelected ? tint : Color.primary.opacity(0.08), lineWidth: isSelected ? 2 : 0.5)
             )
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
     }
