@@ -9,7 +9,17 @@ import ServiceManagement
 final class SoftwareUpdateController {
     var state: SoftwareUpdateState = .idle
 
+    var isPresentingUpdateSheet = false
+
+    var autoCheckOnLaunch: Bool {
+        get { userDefaults.object(forKey: Self.autoCheckKey) as? Bool ?? true }
+        set { userDefaults.set(newValue, forKey: Self.autoCheckKey) }
+    }
+
+    private(set) var hasUnacknowledgedUpdate = false
+
     @ObservationIgnored private var activeTask: Task<Void, Never>?
+    @ObservationIgnored private var didAutoCheckThisLaunch = false
 
     private let service: GitHubReleaseUpdateService
     private let userDefaults: UserDefaults
@@ -27,9 +37,37 @@ final class SoftwareUpdateController {
         return false
     }
 
+    var isDownloading: Bool {
+        if case .downloading = state { return true }
+        return false
+    }
+
     func checkForUpdates() {
         activeTask?.cancel()
         activeTask = Task { await runUpdateCheck() }
+    }
+
+    func presentUpdateSheet() {
+        isPresentingUpdateSheet = true
+    }
+
+    func dismissUpdateSheet() {
+        isPresentingUpdateSheet = false
+    }
+
+    func checkForUpdatesAndPresent() {
+        presentUpdateSheet()
+        checkForUpdates()
+    }
+
+    func scheduleAutomaticCheckIfNeeded() {
+        guard autoCheckOnLaunch, !didAutoCheckThisLaunch else { return }
+        didAutoCheckThisLaunch = true
+
+        guard shouldAutoCheckNow() else { return }
+
+        activeTask?.cancel()
+        activeTask = Task { await runUpdateCheck(autoPresentSheetOnUpdate: true) }
     }
 
     func downloadAvailableUpdate() {
@@ -38,23 +76,42 @@ final class SoftwareUpdateController {
         activeTask = Task { await download(update) }
     }
 
+    func cancelDownload() {
+        guard isDownloading else { return }
+        activeTask?.cancel()
+        if let update = state.visibleUpdate {
+            state = .available(update, currentVersion: AppVersionInfo.current.version)
+        }
+    }
+
     func skipAvailableUpdate() {
         guard let update = state.availableUpdate else { return }
         userDefaults.set(update.version, forKey: Self.skippedVersionKey)
+        hasUnacknowledgedUpdate = false
+        state = .noUpdate(currentVersion: AppVersionInfo.current.version)
     }
 
-    func remindLater() {}
+    func remindLater() {
+        guard state.availableUpdate != nil else { return }
+        hasUnacknowledgedUpdate = false
+        dismissUpdateSheet()
+    }
 
     func openReleaseNotes() {
         guard let update = state.visibleUpdate else { return }
         NSWorkspace.shared.open(update.releaseNotesURL)
     }
 
+    func revealDownloadedInFinder() {
+        guard case .readyToInstall(_, let fileURL) = state else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+    }
+
     func quitEasyTier() {
         EasyTierApplicationDelegate.quitEasyTier()
     }
 
-    private func runUpdateCheck() async {
+    private func runUpdateCheck(autoPresentSheetOnUpdate: Bool = false) async {
         state = .checking
         do {
             let manifest = try await service.fetchManifest()
@@ -66,7 +123,20 @@ final class SoftwareUpdateController {
                 currentSystemVersion: Self.currentSystemVersion,
                 architecture: Self.currentArchitecture
             )
-            state = update.map { .available($0, currentVersion: appInfo.version) } ?? .noUpdate(currentVersion: appInfo.version)
+            if let update {
+                if wasSkipped(update) {
+                    state = .noUpdate(currentVersion: appInfo.version)
+                } else {
+                    state = .available(update, currentVersion: appInfo.version)
+                    hasUnacknowledgedUpdate = true
+                    if autoPresentSheetOnUpdate {
+                        presentUpdateSheet()
+                    }
+                }
+            } else {
+                state = .noUpdate(currentVersion: appInfo.version)
+            }
+            recordSuccessfulCheckDate()
         } catch is CancellationError {
             return
         } catch {
@@ -124,6 +194,24 @@ final class SoftwareUpdateController {
     }
 
     private static let skippedVersionKey = "EasyTierUpdaterSkippedVersion"
+    private static let autoCheckKey = "EasyTierAutoCheckUpdates"
+    private static let lastCheckDateKey = "EasyTierLastUpdateCheckDate"
+    private static let autoCheckMinimumInterval: TimeInterval = 60 * 60 * 24
+
+    private func wasSkipped(_ update: EasyTierAvailableUpdate) -> Bool {
+        userDefaults.string(forKey: Self.skippedVersionKey) == update.version
+    }
+
+    private func shouldAutoCheckNow() -> Bool {
+        guard let last = userDefaults.object(forKey: Self.lastCheckDateKey) as? Date else {
+            return true
+        }
+        return Date().timeIntervalSince(last) >= Self.autoCheckMinimumInterval
+    }
+
+    private func recordSuccessfulCheckDate() {
+        userDefaults.set(Date(), forKey: Self.lastCheckDateKey)
+    }
 
     private func unregisterHelperBeforeOpeningUpdate() async {
         let service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
