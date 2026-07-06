@@ -199,14 +199,18 @@ final class SoftwareUpdateController {
     private static let autoCheckMinimumInterval: TimeInterval = 60 * 60 * 24
 
     private func wasSkipped(_ update: EasyTierAvailableUpdate) -> Bool {
-        userDefaults.string(forKey: Self.skippedVersionKey) == update.version
+        !EasyTierUpdateSkipPolicy.shouldPresent(
+            update: update,
+            skippedVersion: userDefaults.string(forKey: Self.skippedVersionKey)
+        )
     }
 
     private func shouldAutoCheckNow() -> Bool {
-        guard let last = userDefaults.object(forKey: Self.lastCheckDateKey) as? Date else {
-            return true
-        }
-        return Date().timeIntervalSince(last) >= Self.autoCheckMinimumInterval
+        EasyTierUpdateSkipPolicy.shouldAutoCheck(
+            lastCheckDate: userDefaults.object(forKey: Self.lastCheckDateKey) as? Date,
+            now: Date(),
+            minimumInterval: Self.autoCheckMinimumInterval
+        )
     }
 
     private func recordSuccessfulCheckDate() {

@@ -235,3 +235,21 @@ public enum EasyTierUpdateFeedRequest {
         return request
     }
 }
+
+public enum EasyTierUpdateSkipPolicy {
+    public static func shouldPresent(
+        update: EasyTierAvailableUpdate,
+        skippedVersion: String?
+    ) -> Bool {
+        skippedVersion != update.version
+    }
+
+    public static func shouldAutoCheck(
+        lastCheckDate: Date?,
+        now: Date,
+        minimumInterval: TimeInterval
+    ) -> Bool {
+        guard let lastCheckDate else { return true }
+        return now.timeIntervalSince(lastCheckDate) >= minimumInterval
+    }
+}

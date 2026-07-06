@@ -137,6 +137,64 @@ import Testing
     #expect(request.value(forHTTPHeaderField: "Pragma") == "no-cache")
 }
 
+@Test func skipPolicyPresentsUpdateWhenNoVersionSkipped() throws {
+    let update = try makeUpdate(version: "0.2.0")
+
+    #expect(EasyTierUpdateSkipPolicy.shouldPresent(update: update, skippedVersion: nil))
+    #expect(EasyTierUpdateSkipPolicy.shouldPresent(update: update, skippedVersion: "0.1.0"))
+}
+
+@Test func skipPolicySuppressesUpdateMatchingSkippedVersion() throws {
+    let update = try makeUpdate(version: "0.2.0")
+
+    #expect(!EasyTierUpdateSkipPolicy.shouldPresent(update: update, skippedVersion: "0.2.0"))
+}
+
+@Test func autoCheckPolicyAllowsFirstCheck() {
+    #expect(EasyTierUpdateSkipPolicy.shouldAutoCheck(
+        lastCheckDate: nil,
+        now: Date(),
+        minimumInterval: 60 * 60 * 24
+    ))
+}
+
+@Test func autoCheckPolicyThrottlesWithinInterval() {
+    let now = Date()
+    let recent = now.addingTimeInterval(-60 * 60)
+
+    #expect(!EasyTierUpdateSkipPolicy.shouldAutoCheck(
+        lastCheckDate: recent,
+        now: now,
+        minimumInterval: 60 * 60 * 24
+    ))
+}
+
+@Test func autoCheckPolicyAllowsAfterIntervalElapses() {
+    let now = Date()
+    let stale = now.addingTimeInterval(-(60 * 60 * 24 + 60))
+
+    #expect(EasyTierUpdateSkipPolicy.shouldAutoCheck(
+        lastCheckDate: stale,
+        now: now,
+        minimumInterval: 60 * 60 * 24
+    ))
+}
+
+private func makeUpdate(version: String) throws -> EasyTierAvailableUpdate {
+    EasyTierAvailableUpdate(
+        version: version,
+        build: "20260615123000",
+        tag: "v\(version)",
+        releaseNotesURL: try #require(URL(string: "https://github.com/socoldkiller/easytier-macos/releases/tag/v\(version)")),
+        architecture: "arm64",
+        asset: EasyTierUpdateAsset(
+            url: try #require(URL(string: "https://example.com/EasyTier.dmg")),
+            sha256: String(repeating: "a", count: 64),
+            size: 123_456
+        )
+    )
+}
+
 private func decodeManifest() throws -> EasyTierUpdateManifest {
     let json = """
     {
