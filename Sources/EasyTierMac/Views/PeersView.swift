@@ -51,33 +51,17 @@ struct PeersView: View {
         }
         .scrollContentBackground(.hidden)
         .hideScrollViewScrollers()
+        .safeAreaInset(edge: .top, spacing: 0) {
+            peerActionBar
+        }
         .overlay(alignment: .top) {
             if let notice = transientNotice {
                 PeerNoticeBanner(text: notice.text, severity: notice.severity)
                     .transition(.move(edge: .top).combined(with: .opacity))
-                    .padding(.top, 8)
+                    .padding(.top, 44)
             }
         }
         .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: allCards.count)
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                Menu {
-                    Button("Add Subscription URL…") { inputMode = .url; openAddSheet() }
-                    Button("Paste Subscription JSON…") { inputMode = .paste; openAddSheet() }
-                } label: {
-                    Label("Add Subscription", systemImage: "plus")
-                }
-                .help("Add a node subscription")
-
-                Button {
-                    Task { await store.refreshPeerSubscriptions() }
-                } label: {
-                    Label("Refresh", systemImage: store.isRefreshingPeerSubscriptions ? "hourglass" : "arrow.clockwise")
-                }
-                .disabled(subscriptions.isEmpty || store.isRefreshingPeerSubscriptions)
-                .help("Refresh all subscriptions from their source URLs")
-            }
-        }
         .sheet(isPresented: $showingAddSheet) {
             AddPeerSubscriptionSheet(
                 mode: inputMode,
@@ -158,6 +142,34 @@ struct PeersView: View {
                 pasteJSONError = error.localizedDescription
             }
         }
+    }
+
+    private var peerActionBar: some View {
+        HStack(spacing: 8) {
+            Spacer()
+            Menu {
+                Button("Add Subscription URL...") { inputMode = .url; openAddSheet() }
+                Button("Paste Subscription JSON...") { inputMode = .paste; openAddSheet() }
+            } label: {
+                Label("Add Subscription", systemImage: "plus")
+            }
+            .help("Add a node subscription")
+            .accessibilityLabel(Text("Add Subscription"))
+
+            Button {
+                Task { await store.refreshPeerSubscriptions() }
+            } label: {
+                Label("Refresh", systemImage: store.isRefreshingPeerSubscriptions ? "hourglass" : "arrow.clockwise")
+            }
+            .disabled(subscriptions.isEmpty || store.isRefreshingPeerSubscriptions)
+            .help("Refresh all subscriptions from their source URLs")
+            .accessibilityLabel(Text("Refresh Subscriptions"))
+        }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.borderless)
+        .controlSize(.regular)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 
     private func addToCurrentConfig(_ card: PeerCard) {
