@@ -8,6 +8,7 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(EasyTierAppStore.self) private var store
     @Environment(AppAppearanceSettings.self) private var appearanceSettings
+    @Environment(SoftwareUpdateController.self) private var updater
     @State private var showingTOML = false
     @State private var tomlMode: TOMLSheet.Mode = .export
     @State private var tomlText = ""
@@ -115,6 +116,12 @@ struct ContentView: View {
         }
         .sheet(isPresented: $store.isShowingLinuxInstallGuide) {
             LinuxInstallGuideView()
+        }
+        .sheet(isPresented: Binding(
+            get: { updater.isPresentingUpdateSheet },
+            set: { updater.isPresentingUpdateSheet = $0 }
+        )) {
+            UpdateSheet()
         }
         .alert(
             "EasyTier",

@@ -647,18 +647,16 @@ private struct SettingsAboutView: View {
 
                     CardSection("Software Update", systemImage: "arrow.down.circle", tint: SettingsTint.rpcServer) {
                         HStack(alignment: .center, spacing: 10) {
-                            Text(updateStatusText)
+                            Text(updateSummaryText)
                                 .font(.body)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(2)
 
                             Spacer(minLength: 0)
 
-                            updateAction
+                            Button("Check for Updates…") { updater.checkForUpdatesAndPresent() }
                                 .controlSize(.small)
                         }
-
-                        updateProgress
                     }
                 }
                 .padding(.horizontal, 18)
@@ -677,79 +675,25 @@ private struct SettingsAboutView: View {
             .padding(.horizontal, 18)
             .padding(.vertical, 10)
         }
-        .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: updateStatusText)
+        .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: updateSummaryText)
     }
 
-    private var updateStatusText: String {
+    private var updateSummaryText: String {
         switch updater.state {
         case .checking:
             "Checking stable releases…"
         case .noUpdate:
-            "EasyTier is already the latest version."
+            "EasyTier is up to date."
         case .available(let update, _):
             "EasyTier \(update.version) is available."
         case .downloading:
             "Downloading update…"
         case .readyToInstall:
-            "DMG opened. Quit before replacing EasyTier."
+            "Update ready to install."
         case .failed, .downloadFailed, .verificationFailed:
             "Updater needs attention."
         case .idle:
             "Checks stable releases only."
-        }
-    }
-
-    @ViewBuilder
-    private var updateAction: some View {
-        switch updater.state {
-        case .checking:
-            Button("Checking…") {}
-                .disabled(true)
-        case .available:
-            Button("Download") { updater.downloadAvailableUpdate() }
-        case .downloading:
-            Button("Downloading…") {}
-                .disabled(true)
-        case .downloadFailed, .verificationFailed:
-            Button("Try Again") { updater.downloadAvailableUpdate() }
-        case .readyToInstall:
-            Button("Quit EasyTier") { updater.quitEasyTier() }
-                .keyboardShortcut(.defaultAction)
-        default:
-            Button("Check Now") { updater.checkForUpdates() }
-        }
-    }
-
-    @ViewBuilder
-    private var updateProgress: some View {
-        switch updater.state {
-        case .available:
-            Button("Release Notes") { updater.openReleaseNotes() }
-                .buttonStyle(.link)
-                .font(.callout)
-        case .downloading(_, let progress):
-            HStack(spacing: 8) {
-                if let progress {
-                    ProgressView(value: progress)
-                    Text("\(Int((progress * 100).rounded()))%")
-                        .font(.callout.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 42, alignment: .trailing)
-                } else {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Downloading…")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        case .failed(let message), .downloadFailed(_, let message), .verificationFailed(_, let message):
-            Text(message)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-        default:
-            EmptyView()
         }
     }
 }

@@ -49,6 +49,7 @@ struct EasyTierApp: App {
                         await store.prepareForAppQuit()
                     }
                     await store.load()
+                    updater.scheduleAutomaticCheckIfNeeded()
                 }
         }
         .windowToolbarStyle(.unified)
@@ -90,8 +91,7 @@ struct EasyTierApp: App {
 
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates...") {
-                    store.isShowingAbout = true
-                    updater.checkForUpdates()
+                    updater.checkForUpdatesAndPresent()
                 }
             }
 
@@ -633,6 +633,7 @@ private enum MenuBarConnectionIcon {
 private struct MenuBarContent: View {
     @Environment(EasyTierAppStore.self) private var store
     @Environment(AppAppearanceSettings.self) private var appearanceSettings
+    @Environment(SoftwareUpdateController.self) private var updater
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismiss) private var dismiss
 
@@ -701,6 +702,15 @@ private struct MenuBarContent: View {
 
             if store.isQuitting {
                 MenuBarPlainRow(title: "Quitting EasyTier...", isMuted: true)
+                MenuBarDivider()
+            }
+
+            if updater.hasUnacknowledgedUpdate {
+                MenuBarUpdateBanner {
+                    openMainWindow()
+                    updater.checkForUpdatesAndPresent()
+                    dismissMenuBar()
+                }
                 MenuBarDivider()
             }
 
@@ -1381,5 +1391,45 @@ private struct MenuBarListButton: View {
     private var rowBackground: Color {
         if isDisabled { return .clear }
         return isHovering ? MenuBarPalette.selectedRow : .clear
+    }
+}
+
+private struct MenuBarUpdateBanner: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.body)
+                    .foregroundStyle(.orange)
+                Text("Update Available")
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(.primary)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+            .padding(.horizontal, 12)
+            .padding(.vertical, MenuBarPalette.selectedRowContentVerticalPadding)
+            .background(rowBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .padding(.horizontal, MenuBarPalette.selectedRowHorizontalInset)
+            .padding(.vertical, MenuBarPalette.selectedRowVerticalInset)
+        }
+        .buttonStyle(QuietPressButtonStyle(pressedScale: 0.985, pressedOpacity: 0.82))
+        .onHover { isHovering = $0 }
+        .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: isHovering)
+        .accessibilityLabel(Text("Update available"))
+        .accessibilityHint(Text("Opens the software update sheet"))
+    }
+
+    private var rowBackground: Color {
+        isHovering ? MenuBarPalette.selectedRow : Color.orange.opacity(0.1)
     }
 }
