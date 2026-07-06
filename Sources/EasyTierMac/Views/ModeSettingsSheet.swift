@@ -713,10 +713,10 @@ private struct SettingsAboutView: View {
 
                 Section("Resources") {
                     HStack(spacing: 14) {
-                        Link("Docs", destination: URL(string: "https://easytier.cn")!)
-                        Link("Releases", destination: URL(string: "https://github.com/socoldkiller/easytier-macos/releases")!)
-                        Link("GitHub", destination: URL(string: "https://github.com/socoldkiller/easytier-macos")!)
-                        Link("License", destination: URL(string: "https://github.com/socoldkiller/easytier-macos/blob/main/LICENSE")!)
+                        Link("Docs", destination: URL(string: "https://easytier.cn") ?? URL(fileURLWithPath: "/"))
+                        Link("Releases", destination: URL(string: "https://github.com/socoldkiller/easytier-macos/releases") ?? URL(fileURLWithPath: "/"))
+                        Link("GitHub", destination: URL(string: "https://github.com/socoldkiller/easytier-macos") ?? URL(fileURLWithPath: "/"))
+                        Link("License", destination: URL(string: "https://github.com/socoldkiller/easytier-macos/blob/main/LICENSE") ?? URL(fileURLWithPath: "/"))
                     }
                     .controlSize(.small)
                     SettingsMetadataRow(label: "License", value: "MIT © 2026 contributors")

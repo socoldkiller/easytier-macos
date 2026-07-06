@@ -480,14 +480,22 @@ public final class EasyTierAppStore {
         await busy {
             // Stop privileged instances via the daemon's retain-by-allowlist call.
             if instances.contains(where: { instanceClientKind[$0.instance_id] != .inProcess }) {
-                try? await privilegedClient.retain(instanceNames: [])
+                do {
+                    try await privilegedClient.retain(instanceNames: [])
+                } catch {
+                    log("Failed to retain privileged instance allowlist during stopAll: \(error.localizedDescription)")
+                }
             }
             // Stop in-process instances individually (no retain API).
             let inProcessInstanceNames = instances
                 .filter { instanceClientKind[$0.instance_id] == .inProcess }
                 .map(\.name)
             if !inProcessInstanceNames.isEmpty {
-                try? await inProcessClient.stop(instanceNames: inProcessInstanceNames)
+                do {
+                    try await inProcessClient.stop(instanceNames: inProcessInstanceNames)
+                } catch {
+                    log("Failed to stop in-process instances \(inProcessInstanceNames) during stopAll: \(error.localizedDescription)")
+                }
             }
             instanceClientKind.removeAll()
             pendingStarts.removeAll()
@@ -665,7 +673,7 @@ public final class EasyTierAppStore {
               let rpcURL = URL(string: "tcp://\(ip):\(AppMode.defaultRPCListenPort)")
         else {
             remoteConfigSession = RemoteConfigSession(
-                rpcURL: URL(string: "tcp://0.0.0.0:0")!,
+                rpcURL: Self.placeholderRPCURL,
                 instanceID: member.instanceID ?? "",
                 member: member,
                 config: NetworkConfig(),
@@ -1607,6 +1615,12 @@ public final class EasyTierAppStore {
     }()
     private static let trafficSampleWindow = 60
     private static let sleepRecoveryRestartThreshold: TimeInterval = 30
+
+    /// Sentinel RPC URL used when we cannot construct a real peer URL (e.g. the
+    /// member's instance ID or virtual IP is missing). It is structurally valid
+    /// so downstream code can pattern-match on `rpcURL` without crashing, and
+    /// the matching `loadError` surfaces the actual reason to the UI.
+    private static let placeholderRPCURL = URL(string: "tcp://0.0.0.0:0") ?? URL(fileURLWithPath: "/dev/null")
 }
 
 public struct LogEntry: Identifiable, Sendable, Equatable {

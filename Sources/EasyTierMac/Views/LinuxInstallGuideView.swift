@@ -58,11 +58,11 @@ struct LinuxInstallGuideView: View {
             Divider()
 
             HStack(spacing: 14) {
-                Link("Documentation", destination: URL(string: "https://easytier.cn/guide/installation.html")!)
+                Link("Documentation", destination: URL(string: "https://easytier.cn/guide/installation.html") ?? URL(fileURLWithPath: "/"))
                     .accessibilityHint("Opens the EasyTier installation guide in your browser.")
-                Link("Releases", destination: URL(string: "https://github.com/EasyTier/EasyTier/releases")!)
+                Link("Releases", destination: URL(string: "https://github.com/EasyTier/EasyTier/releases") ?? URL(fileURLWithPath: "/"))
                     .accessibilityHint("Opens the EasyTier Core releases page in your browser.")
-                Link("Service guide", destination: URL(string: "https://easytier.cn/guide/network/oneclick-install-as-service.html")!)
+                Link("Service guide", destination: URL(string: "https://easytier.cn/guide/network/oneclick-install-as-service.html") ?? URL(fileURLWithPath: "/"))
                     .accessibilityHint("Opens the EasyTier service install guide in your browser.")
 
                 Spacer()

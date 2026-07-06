@@ -397,8 +397,8 @@ struct ContentView: View {
                 Button("Install on Linux") {
                     store.isShowingLinuxInstallGuide = true
                 }
-                Link("Online Docs", destination: URL(string: "https://easytier.cn")!)
-                Link("Releases", destination: URL(string: "https://github.com/EasyTier/EasyTier/releases")!)
+                Link("Online Docs", destination: URL(string: "https://easytier.cn") ?? URL(fileURLWithPath: "/"))
+                Link("Releases", destination: URL(string: "https://github.com/EasyTier/EasyTier/releases") ?? URL(fileURLWithPath: "/"))
             } label: {
                 Label("Help", systemImage: "questionmark.circle")
             }
