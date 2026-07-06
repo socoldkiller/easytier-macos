@@ -128,6 +128,15 @@ import Testing
     #expect(try !EasyTierSHA256.file(fileURL, matches: String(repeating: "0", count: 64)))
 }
 
+@Test func updateFeedRequestBypassesCaches() throws {
+    let url = try #require(URL(string: "https://socoldkiller.github.io/easytier-swift/update.json"))
+    let request = EasyTierUpdateFeedRequest.request(for: url)
+
+    #expect(request.cachePolicy == .reloadIgnoringLocalAndRemoteCacheData)
+    #expect(request.value(forHTTPHeaderField: "Cache-Control") == "no-cache")
+    #expect(request.value(forHTTPHeaderField: "Pragma") == "no-cache")
+}
+
 private func decodeManifest() throws -> EasyTierUpdateManifest {
     let json = """
     {

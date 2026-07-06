@@ -222,3 +222,16 @@ public enum EasyTierSHA256 {
         try hexDigest(for: fileURL).caseInsensitiveCompare(expectedHexDigest) == .orderedSame
     }
 }
+
+public enum EasyTierUpdateFeedRequest {
+    public static func request(for url: URL) -> URLRequest {
+        var request = URLRequest(
+            url: url,
+            cachePolicy: .reloadIgnoringLocalAndRemoteCacheData,
+            timeoutInterval: 30
+        )
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        request.setValue("no-cache", forHTTPHeaderField: "Pragma")
+        return request
+    }
+}

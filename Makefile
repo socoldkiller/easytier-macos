@@ -9,7 +9,6 @@ INSTALL_APP_PATH ?= /Applications/EasyTier.app
 ARCH := $(shell uname -m)
 DMG_PATH ?= $(ARTIFACTS_DIR)/EasyTier-macOS-$(ARCH).dmg
 LOCAL_CERT_PATH ?= $(ARTIFACTS_DIR)/EasyTierLocalCodeSigning.cer
-LOCAL_INSTALL_NOTES_PATH ?= $(ARTIFACTS_DIR)/SELF_SIGNED_INSTALL.txt
 CORE_TAG ?= v2.6.4
 CODESIGN_IDENTITY ?=
 
@@ -98,25 +97,7 @@ app-release-signed: require-codesign-identity ffi
 	EASYTIER_EXPORT_APP_DIR="$(APP_PATH)" \
 	./scripts/package-app.sh
 
-$(LOCAL_INSTALL_NOTES_PATH):
-	mkdir -p "$(ARTIFACTS_DIR)"
-	printf '%s\n' \
-		'EasyTier self-signed developer-mode build' \
-		'' \
-		'This DMG is not Developer ID signed or Apple notarized.' \
-		'' \
-		'To try the privileged helper on macOS:' \
-		'1. Import and trust EasyTierLocalCodeSigning.cer for Code Signing.' \
-		'2. Drag EasyTier.app to Applications.' \
-		'3. Run xattr -cr /Applications/EasyTier.app if macOS copied quarantine attributes.' \
-		'4. Open EasyTier.app, click Install Helper, and approve it in System Settings if prompted.' \
-		'' \
-		'Do not use this self-signed build as a production release.' \
-		> "$(LOCAL_INSTALL_NOTES_PATH)"
-
-dmg-local: app-release-local $(LOCAL_INSTALL_NOTES_PATH)
-	EASYTIER_DMG_CODESIGN_CERT_PATH="$(LOCAL_CERT_PATH)" \
-	EASYTIER_DMG_INSTALL_NOTES_PATH="$(LOCAL_INSTALL_NOTES_PATH)" \
+dmg-local: app-release-local
 	./scripts/create-dmg.sh "$(APP_PATH)" "$(DMG_PATH)"
 
 dmg-adhoc: app-release-adhoc

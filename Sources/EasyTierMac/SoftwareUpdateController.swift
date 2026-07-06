@@ -179,7 +179,8 @@ struct GitHubReleaseUpdateService {
         if manifestURL.isFileURL {
             data = try Data(contentsOf: manifestURL)
         } else {
-            let (remoteData, response) = try await URLSession.shared.data(from: manifestURL)
+            let request = EasyTierUpdateFeedRequest.request(for: manifestURL)
+            let (remoteData, response) = try await URLSession.shared.data(for: request)
             try validate(response: response)
             data = remoteData
         }
