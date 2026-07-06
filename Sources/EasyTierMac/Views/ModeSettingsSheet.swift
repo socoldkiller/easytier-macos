@@ -158,6 +158,20 @@ struct EasyTierSettingsSheet: View {
                 }
             }
         }
+        .toolbar {
+            if isEasyTierActive {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Save") { saveSettings() }
+                        .keyboardShortcut(.defaultAction)
+                        .help("Save changes (⏎)")
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button("Done") { dismissWindow() }
+                    .keyboardShortcut(isEasyTierActive ? .cancelAction : .defaultAction)
+                    .help("Close settings (⎋)")
+            }
+        }
         .frame(width: Self.windowSize.width, height: Self.windowSize.height)
         .hideScrollViewScrollers()
         .alert("Disable TCP RPC Listen?", isPresented: $showingDisableRPCListenWarning) {
@@ -227,7 +241,6 @@ struct EasyTierSettingsSheet: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .safeAreaInset(edge: .bottom) { footer }
         .task { loginItem.refresh() }
     }
 
@@ -263,7 +276,6 @@ struct EasyTierSettingsSheet: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .safeAreaInset(edge: .bottom) { footer }
     }
 
     private var modeSection: some View {
@@ -402,21 +414,6 @@ struct EasyTierSettingsSheet: View {
     }
 
     // MARK: Footer
-
-    private var footer: some View {
-        HStack(spacing: 8) {
-            Spacer()
-            if isEasyTierActive {
-                Button("Save") { saveSettings() }
-                    .keyboardShortcut(.defaultAction)
-            }
-            Button("Done") { dismissWindow() }
-                .keyboardShortcut(isEasyTierActive ? .cancelAction : .defaultAction)
-        }
-        .controlSize(.small)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 7)
-    }
 
     // MARK: Bindings
 
@@ -663,16 +660,6 @@ private struct SettingsAboutView: View {
             }
         }
         .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
-        .safeAreaInset(edge: .bottom) {
-            HStack {
-                Spacer()
-                Button("Done") { dismissWindow() }
-                    .keyboardShortcut(.defaultAction)
-                    .controlSize(.small)
-            }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 10)
-        }
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: updateSummaryText)
     }
 
