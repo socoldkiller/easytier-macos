@@ -36,6 +36,7 @@ mkdir -p "$DMG_ROOT" "$MOUNT_DIR" "$(dirname "$OUTPUT_DMG")"
 
 ditto --noextattr --norsrc "$APP_PATH" "$DMG_ROOT/$APP_NAME"
 xattr -cr "$DMG_ROOT/$APP_NAME" 2>/dev/null || true
+ln -s /Applications "$DMG_ROOT/Applications"
 
 codesign --verify --deep --strict "$DMG_ROOT/$APP_NAME"
 
@@ -59,10 +60,17 @@ trap 'detach_mounted_image; cleanup' EXIT
 
 sync
 
-if command -v osascript >/dev/null 2>&1; then
-  osascript >/dev/null <<EOF || true
+rm -f "$MOUNT_DIR/.DS_Store"
+
+if ! command -v osascript >/dev/null 2>&1; then
+  echo "osascript is required to set the DMG Finder layout." >&2
+  exit 1
+fi
+
+osascript >/dev/null <<EOF
 tell application "Finder"
-  tell disk "$VOLUME_NAME"
+  set dmgFolder to POSIX file "$MOUNT_DIR" as alias
+  tell folder dmgFolder
     open
     set current view of container window to icon view
     set toolbar visible of container window to false
@@ -75,12 +83,16 @@ tell application "Finder"
     set text size of viewOptions to 13
     set label position of viewOptions to bottom
 
-    set position of item "$APP_NAME" of container window to {510, 295}
+    set position of item "$APP_NAME" of container window to {330, 310}
+    set position of item "Applications" of container window to {690, 310}
+    update without registering applications
+    delay 1
     close
   end tell
 end tell
 EOF
-fi
+
+bless --folder "$MOUNT_DIR" --openfolder "$MOUNT_DIR" >/dev/null 2>&1 || true
 
 sync
 detach_mounted_image
