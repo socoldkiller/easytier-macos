@@ -19,7 +19,7 @@ public enum AppMode: Codable, Equatable, Sendable {
     public var label: String {
         switch self {
         case let .normal(_, _, _, _, configServerURL):
-            configServerURL == nil ? "Normal" : "Remote"
+            configServerURL == nil ? "Normal" : "Config Server"
         case .remote:
             "Remote"
         }

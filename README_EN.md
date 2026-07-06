@@ -12,7 +12,7 @@
   </p>
 
   <p>
-    <img alt="macOS" src="https://img.shields.io/badge/macOS-14%2B-111111?style=for-the-badge&logo=apple&logoColor=white" />
+    <img alt="macOS" src="https://img.shields.io/badge/macOS-15%2B-111111?style=for-the-badge&logo=apple&logoColor=white" />
     <img alt="Swift" src="https://img.shields.io/badge/Swift-Native-F05138?style=for-the-badge&logo=swift&logoColor=white" />
     <a href="https://github.com/socoldkiller/easytier-macos/stargazers">
       <img alt="Stars" src="https://img.shields.io/github/stars/socoldkiller/easytier-macos?style=for-the-badge&logo=github&label=Stars" />
@@ -99,8 +99,9 @@ EasyTier Core output and app-level actions all land in one log panel. Copyable, 
 ### App modes
 
 - **Normal** — run EasyTier locally, own the network
-- **Remote** — connect to another device's RPC Portal, manage its networks remotely
-- **Config Server** — pull configs from a remote server for fleet management
+- **Config Server** — pull the network profile from a remote config server, for fleet-style config distribution
+
+> Additionally, double-click any remote peer in the device table to rename it; the change propagates to that peer over RPC in real time. This per-peer remote management is not a standalone app mode.
 
 ### Privileged helper
 

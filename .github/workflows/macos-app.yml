@@ -373,7 +373,7 @@ jobs:
               "version": version,
               "build": build,
               "tag": tag,
-              "minimumSystemVersion": "14.0",
+              "minimumSystemVersion": "15.0",
               "releaseNotesURL": f"https://github.com/{repository}/releases/tag/{tag}",
               "assets": assets,
           }

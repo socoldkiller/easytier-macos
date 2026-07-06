@@ -67,7 +67,7 @@ enum SettingsSelection: Hashable {
 struct EasyTierSettingsSheet: View {
     enum ModeKind: String, CaseIterable, Identifiable {
         case normal = "Normal"
-        case remote = "Remote"
+        case configServer = "Config Server"
         var id: String { rawValue }
     }
 
@@ -108,7 +108,7 @@ struct EasyTierSettingsSheet: View {
 
         switch mode {
         case let .normal(_, rpcListenEnabled, rpcListenPort, rpcPortalWhitelist, configServerURL):
-            _kind = State(initialValue: configServerURL == nil ? .normal : .remote)
+            _kind = State(initialValue: configServerURL == nil ? .normal : .configServer)
             _rpcListenEnabled = State(initialValue: rpcListenEnabled)
             _rpcListenPort = State(initialValue: rpcListenPort)
             _rpcPortalWhitelist = State(initialValue: Self.initialRPCPortalWhitelist(from: rpcPortalWhitelist))
@@ -294,12 +294,12 @@ struct EasyTierSettingsSheet: View {
                 action: { selectKind(.normal) }
             )
             ModeOptionTile(
-                title: "Remote",
+                title: "Config Server",
                 description: "Pull the network profile from a config server on launch.",
                 systemImage: "icloud.and.arrow.down",
                 tint: SettingsTint.remoteConfig,
-                isSelected: kind == .remote,
-                action: { selectKind(.remote) }
+                isSelected: kind == .configServer,
+                action: { selectKind(.configServer) }
             )
         }
     }
@@ -468,7 +468,7 @@ struct EasyTierSettingsSheet: View {
                 rpcPortalWhitelist: normalizedRPCPortalWhitelist,
                 configServerURL: nil
             )
-        case .remote:
+        case .configServer:
             .normal(
                 rpcPortal: nil,
                 rpcListenEnabled: false,
@@ -532,7 +532,7 @@ struct EasyTierSettingsSheet: View {
     private static func visibleEasyTierSections(for kind: ModeKind) -> [EasyTierSection] {
         switch kind {
         case .normal: [.mode, .magicDNS, .rpcServer]
-        case .remote: [.mode, .magicDNS, .remoteConfig]
+        case .configServer: [.mode, .magicDNS, .remoteConfig]
         }
     }
 
@@ -719,7 +719,7 @@ private struct SettingsAboutView: View {
                         Link("License", destination: URL(string: "https://github.com/socoldkiller/easytier-macos/blob/main/LICENSE")!)
                     }
                     .controlSize(.small)
-                    SettingsMetadataRow(label: "License", value: "LGPL-3.0 © 2026 contributors")
+                    SettingsMetadataRow(label: "License", value: "MIT © 2026 contributors")
                 }
 
                 Section("Software Update") {

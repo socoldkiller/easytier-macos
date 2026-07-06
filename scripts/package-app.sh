@@ -625,7 +625,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
     <key>EasyTierCoreCommit</key>
     <string>$CORE_COMMIT</string>
     <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
+    <string>15.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSSupportsAutomaticTermination</key>
