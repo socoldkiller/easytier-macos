@@ -637,9 +637,9 @@ private struct SettingsAboutView: View {
                     CardSection("Resources", systemImage: "link", tint: SettingsTint.launch) {
                         HStack(spacing: 14) {
                             Link("Docs", destination: URL(string: "https://easytier.cn")!)
-                            Link("Releases", destination: URL(string: "https://github.com/socoldkiller/easytier-swift/releases")!)
-                            Link("GitHub", destination: URL(string: "https://github.com/socoldkiller/easytier-swift")!)
-                            Link("License", destination: URL(string: "https://github.com/socoldkiller/easytier-swift/blob/main/LICENSE")!)
+                            Link("Releases", destination: URL(string: "https://github.com/socoldkiller/easytier-macos/releases")!)
+                            Link("GitHub", destination: URL(string: "https://github.com/socoldkiller/easytier-macos")!)
+                            Link("License", destination: URL(string: "https://github.com/socoldkiller/easytier-macos/blob/main/LICENSE")!)
                         }
                         .controlSize(.small)
                         SettingsMetadataRow(label: "License", value: "LGPL-3.0 © 2026 contributors")

@@ -276,7 +276,7 @@ struct GitHubReleaseUpdateService {
             if override.contains("://"), let url = URL(string: override) { return url }
             return URL(fileURLWithPath: override)
         }
-        return URL(string: "https://socoldkiller.github.io/easytier-swift/update.json")!
+        return URL(string: "https://socoldkiller.github.io/easytier-macos/update.json")!
     }
 }
 

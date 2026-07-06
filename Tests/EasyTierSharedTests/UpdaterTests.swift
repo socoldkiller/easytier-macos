@@ -9,7 +9,7 @@ import Testing
     #expect(manifest.channel == "stable")
     #expect(manifest.version == "0.2.0")
     #expect(manifest.assets["arm64"]?.size == 123_456)
-    #expect(manifest.releaseNotesURL.absoluteString == "https://github.com/socoldkiller/easytier-swift/releases/tag/v0.2.0")
+    #expect(manifest.releaseNotesURL.absoluteString == "https://github.com/socoldkiller/easytier-macos/releases/tag/v0.2.0")
 }
 
 @Test func updateManifestRejectsMissingRequiredFields() {
@@ -129,7 +129,7 @@ import Testing
 }
 
 @Test func updateFeedRequestBypassesCaches() throws {
-    let url = try #require(URL(string: "https://socoldkiller.github.io/easytier-swift/update.json"))
+    let url = try #require(URL(string: "https://socoldkiller.github.io/easytier-macos/update.json"))
     let request = EasyTierUpdateFeedRequest.request(for: url)
 
     #expect(request.cachePolicy == .reloadIgnoringLocalAndRemoteCacheData)
@@ -146,10 +146,10 @@ private func decodeManifest() throws -> EasyTierUpdateManifest {
       "build": "20260615123000",
       "tag": "v0.2.0",
       "minimumSystemVersion": "14.0",
-      "releaseNotesURL": "https://github.com/socoldkiller/easytier-swift/releases/tag/v0.2.0",
+      "releaseNotesURL": "https://github.com/socoldkiller/easytier-macos/releases/tag/v0.2.0",
       "assets": {
         "arm64": {
-          "url": "https://github.com/socoldkiller/easytier-swift/releases/download/v0.2.0/EasyTier-macOS-ARM64.dmg",
+          "url": "https://github.com/socoldkiller/easytier-macos/releases/download/v0.2.0/EasyTier-macOS-ARM64.dmg",
           "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "size": 123456
         }
