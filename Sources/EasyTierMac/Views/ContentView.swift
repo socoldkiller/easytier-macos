@@ -9,9 +9,7 @@ struct ContentView: View {
     @Environment(EasyTierAppStore.self) private var store
     @Environment(AppAppearanceSettings.self) private var appearanceSettings
     @Environment(SoftwareUpdateController.self) private var updater
-    @State private var showingTOML = false
-    @State private var tomlMode: TOMLSheet.Mode = .export
-    @State private var tomlText = ""
+    @State private var tomlPresentation: TOMLPresentation?
     @State private var draftConfig = NetworkConfig()
     @State private var draftConfigID: String?
     @State private var draftIsDirty = false
@@ -106,12 +104,12 @@ struct ContentView: View {
                 store.isShowingAbout = false
             }
         }
-        .sheet(isPresented: $showingTOML) {
+        .sheet(item: $tomlPresentation) { presentation in
             TOMLSheet(
-                mode: tomlMode,
-                initialText: tomlText
+                mode: presentation.mode,
+                initialText: presentation.text
             ) { text in
-                if tomlMode == .import { store.importTOML(text) }
+                if presentation.mode == .import { store.importTOML(text) }
             }
         }
         .sheet(isPresented: $store.isShowingLinuxInstallGuide) {
@@ -1003,22 +1001,24 @@ struct ContentView: View {
     }
 
     private func openImportTOML() {
-        tomlMode = .import
-        tomlText = ""
-        showingTOML = true
+        tomlPresentation = TOMLPresentation(mode: .import, text: "")
     }
 
     private func openExportTOML() {
         Task {
             do {
-                tomlText = try await store.exportSelectedTOML()
-                tomlMode = .export
-                showingTOML = true
+                tomlPresentation = TOMLPresentation(mode: .export, text: try await store.exportSelectedTOML())
             } catch {
                 store.lastError = error.localizedDescription
             }
         }
     }
+}
+
+private struct TOMLPresentation: Identifiable {
+    let id = UUID()
+    var mode: TOMLSheet.Mode
+    var text: String
 }
 
 private struct WorkspaceTabPicker: View {

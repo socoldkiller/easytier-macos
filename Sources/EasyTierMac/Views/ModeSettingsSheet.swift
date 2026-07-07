@@ -243,6 +243,8 @@ struct EasyTierSettingsSheet: View {
             }
             .formStyle(.grouped)
             .scrollContentBackground(.hidden)
+            .scrollIndicators(.hidden, axes: .vertical)
+            .hideScrollViewScrollers()
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 18)
@@ -268,19 +270,24 @@ struct EasyTierSettingsSheet: View {
 
     @ViewBuilder
     private func easyTierSectionView(_ section: EasyTierSection) -> some View {
-        VStack(alignment: .leading, spacing: 18) {
-            paneHeader(title: section.rawValue, subtitle: section.subtitle)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                paneHeader(title: section.rawValue, subtitle: section.subtitle)
 
-            switch section {
-            case .mode: modeSection
-            case .magicDNS: magicDNSSection
-            case .rpcServer: rpcServerSection
-            case .remoteConfig: remoteConfigSection
+                switch section {
+                case .mode: modeSection
+                case .magicDNS: magicDNSSection
+                case .rpcServer: rpcServerSection
+                case .remoteConfig: remoteConfigSection
+                }
             }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 18)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .scrollIndicators(.hidden, axes: .vertical)
+        .hideScrollViewScrollers()
     }
 
     private var modeSection: some View {
@@ -305,45 +312,56 @@ struct EasyTierSettingsSheet: View {
     }
 
     private var magicDNSSection: some View {
-        Form {
-            Section {
-                LabeledContent("DNS Suffix") {
-                    TextField("", text: $magicDNSSuffix)
-                        .textFieldStyle(.glassField)
-                        .font(.body.monospaced())
-                        .frame(width: 160)
-                }
-                LabeledContent("DNS Routing") {
-                    Text("Split DNS")
+        CardSection(
+            "Resolver",
+            footer: "Only names under this suffix are resolved by EasyTier. Other domains keep using system DNS. Running networks need a restart after it changes."
+        ) {
+            SettingsInlineRow("DNS Suffix") {
+                TextField("", text: $magicDNSSuffix)
+                    .textFieldStyle(.glassField)
+                    .font(.body.monospaced())
+                    .frame(width: 160)
+            }
+            SettingsRowDivider()
+            SettingsInlineRow("DNS Routing") {
+                Text("Split DNS")
+                    .foregroundStyle(.secondary)
+            }
+            SettingsRowDivider()
+            SettingsInlineRow("Resolver") {
+                HStack(spacing: 8) {
+                    Text(MagicDNSDisplay.resolverIP)
+                        .font(.callout.monospaced())
                         .foregroundStyle(.secondary)
+                    StatusDot(tone: .positive, accessibilityLabel: "Active")
                 }
-                LabeledContent("Resolver") {
-                    HStack(spacing: 8) {
-                        Text(MagicDNSDisplay.resolverIP)
-                            .font(.callout.monospaced())
-                            .foregroundStyle(.secondary)
-                        StatusDot(tone: .positive, accessibilityLabel: "Active")
-                    }
-                }
-            } footer: {
-                Text("Only names under this suffix are resolved by EasyTier. Other domains keep using system DNS. Running networks need a restart after it changes.")
             }
         }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
     }
 
     private var rpcServerSection: some View {
-        Form {
-            Section("Status") {
-                LabeledContent("Status", value: rpcListenEnabled ? "Listening" : "Off")
-                LabeledContent("Port", value: rpcListenEnabled ? "\(rpcListenPort)" : "-")
-                LabeledContent("Whitelist", value: "\(rpcPortalWhitelist.count)")
+        VStack(alignment: .leading, spacing: 18) {
+            CardSection("Status") {
+                SettingsInlineRow("Status") {
+                    Text(rpcListenEnabled ? "Listening" : "Off")
+                        .foregroundStyle(.secondary)
+                }
+                SettingsRowDivider()
+                SettingsInlineRow("Port") {
+                    Text(rpcListenEnabled ? "\(rpcListenPort)" : "-")
+                        .foregroundStyle(.secondary)
+                }
+                SettingsRowDivider()
+                SettingsInlineRow("Whitelist") {
+                    Text("\(rpcPortalWhitelist.count)")
+                        .foregroundStyle(.secondary)
+                }
             }
 
-            Section {
+            CardSection("Server", footer: "Address the GUI uses to reach EasyTier.") {
                 Toggle("TCP Listen", isOn: rpcListenBinding)
-                LabeledContent("Portal") {
+                SettingsRowDivider()
+                SettingsInlineRow("Portal") {
                     if rpcListenEnabled {
                         Text(verbatim: "tcp://0.0.0.0:\(rpcListenPort)")
                             .font(.callout.monospaced())
@@ -352,7 +370,8 @@ struct EasyTierSettingsSheet: View {
                         StatusPill("Off", tone: .neutral)
                     }
                 }
-                LabeledContent("Listen Port") {
+                SettingsRowDivider()
+                SettingsInlineRow("Listen Port") {
                     HStack(spacing: 8) {
                         TextField("", text: integerText($rpcListenPort))
                             .textFieldStyle(.glassField)
@@ -363,37 +382,33 @@ struct EasyTierSettingsSheet: View {
                     }
                     .disabled(!rpcListenEnabled)
                 }
-                LabeledContent("Whitelist") {
+                SettingsRowDivider()
+                SettingsInlineRow("Whitelist", alignment: .top) {
                     RPCPortalWhitelistEditor(values: $rpcPortalWhitelist)
                         .disabled(!rpcListenEnabled)
+                        .frame(maxWidth: 340, alignment: .leading)
                 }
-                LabeledContent("Remote RPC") {
+                SettingsRowDivider()
+                SettingsInlineRow("Remote RPC") {
                     TextField("", text: $remoteRPCAddress)
                         .textFieldStyle(.glassField)
+                        .frame(maxWidth: 340)
                 }
-            } header: {
-                Text("Server")
-            } footer: {
-                Text("Address the GUI uses to reach EasyTier.")
             }
         }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
     }
 
     private var remoteConfigSection: some View {
-        Form {
-            Section {
-                LabeledContent("Config Server") {
-                    TextField("https://example.com/config", text: $configServerURL)
-                        .textFieldStyle(.glassField)
-                }
-            } footer: {
-                Text("EasyTier fetches the network profile from this URL on launch.")
+        CardSection(
+            "Config Server",
+            footer: "EasyTier fetches the network profile from this URL on launch."
+        ) {
+            SettingsInlineRow("Config Server") {
+                TextField("https://example.com/config", text: $configServerURL)
+                    .textFieldStyle(.glassField)
+                    .frame(maxWidth: 340)
             }
         }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
     }
 
     // MARK: Footer
@@ -746,6 +761,8 @@ private struct SettingsAboutView: View {
             }
             .formStyle(.grouped)
             .scrollContentBackground(.hidden)
+            .scrollIndicators(.hidden, axes: .vertical)
+            .hideScrollViewScrollers()
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 18)
@@ -814,6 +831,43 @@ private struct SettingsSourceRevisionInfo: Equatable {
     private static func normalized(_ value: String?) -> String? {
         guard let value, !value.isEmpty, value != "unknown" else { return nil }
         return value
+    }
+}
+
+private struct SettingsInlineRow<Content: View>: View {
+    var label: String
+    var alignment: VerticalAlignment
+    @ViewBuilder var content: Content
+
+    init(
+        _ label: String,
+        alignment: VerticalAlignment = .center,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.label = label
+        self.alignment = alignment
+        self.content = content()
+    }
+
+    var body: some View {
+        HStack(alignment: alignment, spacing: 16) {
+            Text(label)
+                .font(.body.weight(.medium))
+                .foregroundStyle(.primary)
+                .frame(minWidth: 110, alignment: .leading)
+
+            Spacer(minLength: 12)
+
+            content
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+}
+
+private struct SettingsRowDivider: View {
+    var body: some View {
+        Divider()
+            .opacity(0.45)
     }
 }
 

@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Observation
+import TOML
 
 public struct RemoteConfigSession: Sendable {
     public let rpcURL: URL
@@ -835,8 +836,9 @@ public final class EasyTierAppStore {
             save()
             log("Imported \(stored.config.network_name).")
         } catch {
-            setLastError(error)
-            log("Import failed: \(error.localizedDescription)")
+            let message = Self.errorMessage(for: error, toml: toml)
+            setLastError(message, kind: Self.lastErrorKind(for: error))
+            log("Import failed: \(message)")
         }
     }
 
@@ -1432,12 +1434,50 @@ public final class EasyTierAppStore {
         } catch {
             // Surface the error to the UI instead of suppressing helper-permission messages.
             setLastError(error)
-            log("Error: \(error.localizedDescription)")
+            log("Error: \(Self.errorMessage(for: error))")
         }
     }
 
     private func setLastError(_ error: Error) {
-        setLastError(error.localizedDescription, kind: Self.lastErrorKind(for: error))
+        setLastError(Self.errorMessage(for: error), kind: Self.lastErrorKind(for: error))
+    }
+
+    private static func errorMessage(for error: Error, toml: String? = nil) -> String {
+        if let tomlError = error as? TOMLDecodingError {
+            let message = tomlError.description
+            if case let .invalidSyntax(line, column, _) = tomlError,
+               let toml,
+               let character = tomlCharacterDescription(in: toml, line: line, column: column)
+            {
+                return "\(message). Character at line \(line), column \(column): \(character)"
+            }
+            return message
+        }
+        return error.localizedDescription
+    }
+
+    private static func tomlCharacterDescription(in toml: String, line: Int, column: Int) -> String? {
+        let lines = toml.components(separatedBy: .newlines)
+        guard line > 0, line <= lines.count, column > 0 else { return nil }
+
+        let scalars = Array(lines[line - 1].unicodeScalars)
+        let index = column - 1
+        guard index < scalars.count else {
+            return index == scalars.count ? "end of line" : nil
+        }
+
+        let scalar = scalars[index]
+        let value = String(format: "U+%04X", scalar.value)
+        switch scalar {
+        case "\"":
+            return #"double quote " (U+0022)"#
+        case " ":
+            return "space (\(value))"
+        case "\t":
+            return "tab (\(value))"
+        default:
+            return #""\#(String(scalar))" (\#(value))"#
+        }
     }
 
     private func setLastError(_ message: String, kind: LastErrorKind? = nil) {

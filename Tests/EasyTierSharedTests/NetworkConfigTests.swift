@@ -368,6 +368,36 @@ import Testing
     #expect(decoded.vpn_portal_listen_port == 22_121)
 }
 
+@Test func tomlDecodesPrivateModePeerConfig() throws {
+    let toml = """
+    instance_name = "example-instance"
+    hostname = "example-host"
+    ipv4 = "192.0.2.10/24"
+    dhcp = false
+    listeners = [ "tcp://0.0.0.0:11010", "udp://0.0.0.0:11010", "wg://0.0.0.0:11011" ]
+
+    [network_identity]
+    network_name = "example-network"
+    network_secret = "example-secret"
+
+    [[peer]]
+    uri = "tcp://peer.example.test:11010"
+
+    [flags]
+    private_mode = true
+    """
+
+    _ = try NetworkConfigTOMLCodec.metadata(from: toml)
+    let decoded = try NetworkConfigTOMLCodec.decode(toml)
+
+    #expect(decoded.network_name == "example-network")
+    #expect(decoded.hostname == "example-host")
+    #expect(decoded.virtual_ipv4 == "192.0.2.10")
+    #expect(decoded.network_length == 24)
+    #expect(decoded.peer_urls == ["tcp://peer.example.test:11010"])
+    #expect(decoded.enable_private_mode == true)
+}
+
 @Test func tomlRejectsMalformedPortForwardInsteadOfDroppingIt() {
     let toml = """
     instance_name = "edge"
@@ -822,6 +852,25 @@ import Testing
     #expect(secrets.secrets["office"] == "import-secret")
     #expect(!toml.contains("import-secret"))
     #expect(store.configs.first?.config.network_secret?.nilIfEmpty == nil)
+}
+
+@MainActor
+@Test func importTOMLSurfacesReadableParserErrors() {
+    let store = EasyTierAppStore()
+
+    store.importTOML(#"instance_name = "broken"#)
+
+    #expect(store.lastError?.contains("Invalid TOML syntax at line") == true)
+}
+
+@MainActor
+@Test func importTOMLReportsInvalidCharacterAtParserErrorLocation() {
+    let store = EasyTierAppStore()
+
+    store.importTOML("instance_name = \u{201C}broken\"")
+
+    #expect(store.lastError?.contains("Character at line 1, column 17") == true)
+    #expect(store.lastError?.contains("U+201C") == true)
 }
 
 @MainActor
