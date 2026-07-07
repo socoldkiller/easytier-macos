@@ -144,9 +144,11 @@ struct ConfigEditorView: View {
                 HStack(spacing: 10) {
                     TextField("10.144.144.10", text: $config.virtual_ipv4)
                         .textFieldStyle(.glassField)
+                        .frame(minWidth: ConfigControlMetrics.addressFieldMinWidth)
                         .disabled(config.dhcp)
                     Stepper("/\(config.network_length)", value: $config.network_length, in: 1...32)
-                        .frame(width: 110)
+                        .monospacedDigit()
+                        .frame(minWidth: ConfigControlMetrics.stepperWidth, alignment: .leading)
                         .disabled(config.dhcp)
                 }
             }
@@ -212,6 +214,8 @@ struct ConfigEditorView: View {
                     FieldRow("SOCKS5 port") {
                         TextField("1080", value: $config.socks5_port, format: .number)
                             .textFieldStyle(.glassField)
+                            .monospacedDigit()
+                            .frame(width: ConfigControlMetrics.portFieldWidth, alignment: .leading)
                             .disabled(config.enable_socks5 != true || isRemote)
                     }
                     Toggle("VPN portal", isOn: $config.enable_vpn_portal)
@@ -219,15 +223,20 @@ struct ConfigEditorView: View {
                     FieldRow("VPN portal port") {
                         TextField("22022", value: $config.vpn_portal_listen_port, format: .number)
                             .textFieldStyle(.glassField)
+                            .monospacedDigit()
+                            .frame(width: ConfigControlMetrics.portFieldWidth, alignment: .leading)
                             .disabled(!config.enable_vpn_portal || isRemote)
                     }
                     FieldRow("VPN client network") {
                         TextField("10.0.0.0", text: $config.vpn_portal_client_network_addr)
                             .textFieldStyle(.glassField)
+                            .frame(minWidth: ConfigControlMetrics.addressFieldMinWidth)
                             .disabled(!config.enable_vpn_portal || isRemote)
                     }
                     FieldRow("VPN client prefix") {
                         Stepper("/\(config.vpn_portal_client_network_len)", value: $config.vpn_portal_client_network_len, in: 1...32)
+                            .monospacedDigit()
+                            .frame(minWidth: ConfigControlMetrics.stepperWidth, alignment: .leading)
                             .disabled(!config.enable_vpn_portal || isRemote)
                     }
                 }
@@ -564,6 +573,13 @@ struct ConfigEditorView: View {
     }
 }
 
+private enum ConfigControlMetrics {
+    static let addressFieldMinWidth: CGFloat = 150
+    static let secretFieldMinWidth: CGFloat = 220
+    static let portFieldWidth: CGFloat = 104
+    static let stepperWidth: CGFloat = 132
+}
+
 private struct ConfigEditorScrollOffsetKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
 
@@ -704,6 +720,7 @@ private struct NetworkSecretField: View {
         HStack(spacing: 8) {
             secretInput
                 .textFieldStyle(.glassField)
+                .frame(minWidth: ConfigControlMetrics.secretFieldMinWidth, maxWidth: .infinity)
                 .focused($isFocused)
                 .onChange(of: isFocused) { _, focused in
                     guard focused else { return }
@@ -886,12 +903,14 @@ private struct PortForwardEditor: View {
                 .labelsHidden()
                 PortForwardBindField(address: ruleBinding.bind_ip)
                 TextField("Bind port", value: ruleBinding.bind_port, format: .number)
-                    .frame(width: 90)
+                    .monospacedDigit()
+                    .frame(width: ConfigControlMetrics.portFieldWidth, alignment: .leading)
                 Text("->")
                     .foregroundStyle(.secondary)
                 PortForwardDestinationField(address: ruleBinding.dst_ip, options: destinationOptions)
                 TextField("Port", value: ruleBinding.dst_port, format: .number)
-                    .frame(width: 90)
+                    .monospacedDigit()
+                    .frame(width: ConfigControlMetrics.portFieldWidth, alignment: .leading)
                 if allowsReverse { reverseButton(for: rule) }
                 Button(role: .destructive) {
                     portForwards.removeAll { $0.id == rule.id }
@@ -974,6 +993,7 @@ private struct PortForwardBindField: View {
     var body: some View {
         HStack(spacing: 6) {
             TextField("Bind IP", text: $address)
+                .frame(minWidth: ConfigControlMetrics.addressFieldMinWidth)
 
             Menu {
                 ForEach(options) { option in
@@ -1011,6 +1031,7 @@ private struct PortForwardDestinationField: View {
     var body: some View {
         HStack(spacing: 6) {
             TextField("Destination IP", text: $address)
+                .frame(minWidth: ConfigControlMetrics.addressFieldMinWidth)
 
             if !options.isEmpty {
                 Menu {

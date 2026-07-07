@@ -35,14 +35,90 @@ public struct RemoteConfigSession: Sendable {
     }
 }
 
+private struct RuntimeDetailPresentationSignature: Equatable {
+    var devName: String?
+    var running: Bool?
+    var errorMessage: String?
+    var instanceID: String?
+    var localNode: RuntimeLocalNodeSignature?
+    var memberStatuses: [RuntimeMemberSignature]
+    var listenerErrorEvents: [String]
+    var fullyConnectedWithoutRemoteExpectation: Bool
+    var fullyConnectedWithRemoteExpectation: Bool
+
+    init(_ detail: NetworkInstanceRunningInfo) {
+        devName = detail.dev_name
+        running = detail.running
+        errorMessage = detail.error_msg
+        instanceID = detail.instance_id
+        localNode = detail.my_node_info.map(RuntimeLocalNodeSignature.init)
+        memberStatuses = detail.memberStatuses.map(RuntimeMemberSignature.init)
+        listenerErrorEvents = (detail.events ?? []).filter(Self.isPresentationRelevantEvent)
+        fullyConnectedWithoutRemoteExpectation = detail.isFullyConnected(expectRemotePeers: false)
+        fullyConnectedWithRemoteExpectation = detail.isFullyConnected(expectRemotePeers: true)
+    }
+
+    private static func isPresentationRelevantEvent(_ event: String) -> Bool {
+        event.contains("ListenerAddFailed")
+            || event.contains("ListenerAcceptFailed")
+            || event.contains("TunDeviceError")
+    }
+}
+
+private struct RuntimeLocalNodeSignature: Equatable {
+    var peerID: Int?
+    var displayIPv4: String
+    var hostname: String?
+    var udpNATType: Int?
+    var isPublicServer: Bool
+
+    init(_ node: NodeInfo) {
+        peerID = node.peer_id
+        displayIPv4 = node.displayIPv4
+        hostname = node.hostname
+        udpNATType = node.stun_info?.udp_nat_type
+        isPublicServer = node.feature_flag?.is_public_server == true
+    }
+}
+
+private struct RuntimeMemberSignature: Equatable {
+    var id: String
+    var isLocal: Bool
+    var peerID: String
+    var instanceID: String?
+    var virtualIPv4: String
+    var hostname: String
+    var routeCost: String
+    var tunnelProto: String
+    var natType: String
+    var isPublicServer: Bool
+
+    init(_ member: NetworkMemberStatus) {
+        id = member.id
+        isLocal = member.isLocal
+        peerID = member.peerID
+        instanceID = member.instanceID
+        virtualIPv4 = member.virtualIPv4
+        hostname = member.hostname
+        routeCost = member.routeCost
+        tunnelProto = member.tunnelProto
+        natType = member.natType
+        isPublicServer = member.isPublicServer
+    }
+}
+
 @MainActor
 @Observable
 public final class EasyTierAppStore {
     public var configs: [StoredNetworkConfig] = []
     public var selectedConfigID: String?
     public var mode: AppMode = .default
-    public var instances: [NetworkInstance] = []
-    public var runtimeDetails: [String: NetworkInstanceRunningInfo] = [:]
+    public var instances: [NetworkInstance] = [] {
+        didSet { instancesWriteCount += 1 }
+    }
+    public var runtimeDetails: [String: NetworkInstanceRunningInfo] = [:] {
+        didSet { runtimeDetailsWriteCount += 1 }
+    }
     public var selectedTab: WorkspaceTab = .status
     public var logLines: [LogEntry] = []
     public var isBusy = false
@@ -51,8 +127,12 @@ public final class EasyTierAppStore {
     public var isShowingSettings = false
     public var isShowingAbout = false
     public var isShowingLinuxInstallGuide = false
-    public var isConfigServerConnected = false
-    public var trafficSamplesByInstance: [String: [TrafficSample]] = [:]
+    public var isConfigServerConnected = false {
+        didSet { isConfigServerConnectedWriteCount += 1 }
+    }
+    public var trafficSamplesByInstance: [String: [TrafficSample]] = [:] {
+        didSet { trafficSamplesByInstanceWriteCount += 1 }
+    }
     public var runtimeIntents: [RuntimeIntent] = []
     public var reversedPortForwardFingerprints: [String: Set<String>] = [:]
     public var vpnOnDemandEnabled = false
@@ -91,8 +171,20 @@ public final class EasyTierAppStore {
     private var resignActiveObserver: NSObjectProtocol?
     private var wakeRecoveryTask: Task<Void, Never>?
 
+    @ObservationIgnored public private(set) var runtimeDetailsWriteCount = 0
+    @ObservationIgnored public private(set) var instancesWriteCount = 0
+    @ObservationIgnored public private(set) var trafficSamplesByInstanceWriteCount = 0
+    @ObservationIgnored public private(set) var isConfigServerConnectedWriteCount = 0
+
     public enum ClientKind: Sendable { case inProcess, privileged }
     private enum LastErrorKind { case helperPermission }
+
+    public func resetWriteCounters() {
+        runtimeDetailsWriteCount = 0
+        instancesWriteCount = 0
+        trafficSamplesByInstanceWriteCount = 0
+        isConfigServerConnectedWriteCount = 0
+    }
 
     public init(
         privilegedClient: any EasyTierCoreClient = PrivilegedEasyTierClient(),
@@ -1039,7 +1131,9 @@ public final class EasyTierAppStore {
             )
         }
         mergePendingStarts(into: &running)
-        recordTrafficSamples(for: running)
+        if selectedTab == .view {
+            recordTrafficSamples(for: running)
+        }
 
         var newDetails: [String: NetworkInstanceRunningInfo] = [:]
         for instance in running {
@@ -1047,19 +1141,25 @@ public final class EasyTierAppStore {
                 newDetails[instance.name] = detail
             }
         }
-        runtimeDetails = newDetails
+        if !runtimeDetailsPresentationUnchanged(runtimeDetails, newDetails) {
+            runtimeDetails = newDetails
+        }
 
         if !instancesStructureUnchanged(instances, running) {
             instances = running
         }
         updateSystemSleepAssertion(for: running)
         await reconcileRuntimeIntents()
+        let newConfigServerConnected: Bool
         if mode.configServerURL == nil {
-            isConfigServerConnected = false
+            newConfigServerConnected = false
         } else if helperRegistration?.state == .enabled {
-            isConfigServerConnected = try await privilegedClient.isConfigServerClientConnected()
+            newConfigServerConnected = try await privilegedClient.isConfigServerClientConnected()
         } else {
-            isConfigServerConnected = false
+            newConfigServerConnected = false
+        }
+        if isConfigServerConnected != newConfigServerConnected {
+            isConfigServerConnected = newConfigServerConnected
         }
     }
 
@@ -1082,6 +1182,20 @@ public final class EasyTierAppStore {
                 if old.isPublicServer != new.isPublicServer { return false }
                 if old.peerID != new.peerID { return false }
                 if old.instanceID != new.instanceID { return false }
+            }
+        }
+        return true
+    }
+
+    private func runtimeDetailsPresentationUnchanged(
+        _ current: [String: NetworkInstanceRunningInfo],
+        _ newDetails: [String: NetworkInstanceRunningInfo]
+    ) -> Bool {
+        guard current.count == newDetails.count else { return false }
+        for (name, newDetail) in newDetails {
+            guard let currentDetail = current[name] else { return false }
+            guard RuntimeDetailPresentationSignature(currentDetail) == RuntimeDetailPresentationSignature(newDetail) else {
+                return false
             }
         }
         return true

@@ -784,6 +784,12 @@ public struct TunnelInfo: Codable, Equatable, Sendable {
     public var tunnel_type: String?
     public var local_addr: URLValue?
     public var remote_addr: URLValue?
+
+    public init(tunnel_type: String? = nil, local_addr: URLValue? = nil, remote_addr: URLValue? = nil) {
+        self.tunnel_type = tunnel_type
+        self.local_addr = local_addr
+        self.remote_addr = remote_addr
+    }
 }
 
 public struct PeerConnStats: Codable, Equatable, Sendable {
@@ -818,6 +824,11 @@ public struct PeerConnStats: Codable, Equatable, Sendable {
 public struct PeerRoutePair: Codable, Equatable, Sendable {
     public var route: Route?
     public var peer: PeerInfo?
+
+    public init(route: Route? = nil, peer: PeerInfo? = nil) {
+        self.route = route
+        self.peer = peer
+    }
 }
 
 public struct NetworkMemberStatus: Identifiable, Equatable, Sendable {
