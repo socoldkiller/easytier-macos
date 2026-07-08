@@ -43,13 +43,6 @@ extension AnyTransition {
             identity: EasyTierTransitionModifier(offset: .zero, opacity: 1, scale: 1)
         )
     }
-
-    static var easyTierScaleFade: AnyTransition {
-        .modifier(
-            active: EasyTierTransitionModifier(offset: CGSize(width: 0, height: 6), opacity: 0, scale: 0.985),
-            identity: EasyTierTransitionModifier(offset: .zero, opacity: 1, scale: 1)
-        )
-    }
 }
 
 private struct EasyTierTransitionModifier: ViewModifier {

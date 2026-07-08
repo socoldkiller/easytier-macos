@@ -470,7 +470,7 @@ import Testing
     ]
     let snapshot = AppSnapshot(
         configs: [StoredNetworkConfig(config: config)],
-        mode: .remote(remoteRPCAddress: "tcp://127.0.0.1:15999"),
+        mode: .default,
         lastSelectedConfigID: "abc",
         vpnOnDemandEnabled: true
     )
@@ -493,7 +493,7 @@ import Testing
     let loaded = try storage.load()
 
     #expect(loaded.configs.first?.config.network_name == "lab")
-    #expect(loaded.mode == .remote(remoteRPCAddress: "tcp://127.0.0.1:15999"))
+    #expect(loaded.mode == .default)
     #expect(loaded.lastSelectedConfigID == "abc")
     #expect(loaded.vpnOnDemandEnabled)
 }
@@ -1357,55 +1357,6 @@ import Testing
     #expect(try storage.load().configs.first?.config.hostname == "desired")
 }
 
-@Test func reverseRuntimeIntentMaterializesPortForwardWithCurrentMemberIP() throws {
-    let intent = RuntimeIntent(
-        target: RuntimeIntentTarget(networkName: "office", instanceID: "remote-id", isLocal: false),
-        kind: .portForwardSet,
-        desired: RuntimeIntentDesired(
-            reversePortForwards: [
-                RuntimeReversePortForwardIntent(
-                    targetInstanceID: "source-id",
-                    targetPeerID: nil,
-                    bindIP: "0.0.0.0",
-                    bindPort: 80,
-                    targetPort: 8080,
-                    proto: "tcp"
-                ),
-            ]
-        ),
-        base: RuntimeIntentBase(portForwardFingerprint: "old")
-    )
-    let members = [
-        NetworkMemberStatus(
-            id: "peer-1",
-            isLocal: false,
-            peerID: "200",
-            instanceID: "source-id",
-            virtualIPv4: "10.126.126.9/24",
-            hostname: "source",
-            version: "test",
-            routeCost: "1",
-            tunnelProto: "tcp",
-            latency: "-",
-            uploadTotal: "-",
-            downloadTotal: "-",
-            lossRate: "-",
-            natType: "-",
-            isPublicServer: false,
-            txBytes: 0,
-            rxBytes: 0
-        ),
-    ]
-
-    let forwards = try #require(intent.materializedPortForwards(members: members))
-
-    #expect(forwards.count == 1)
-    #expect(forwards[0].bind_ip == "0.0.0.0")
-    #expect(forwards[0].bind_port == 80)
-    #expect(forwards[0].dst_ip == "10.126.126.9")
-    #expect(forwards[0].dst_port == 8080)
-}
-
 @MainActor
 @Test func runSelectedConfigReportsRunningPortConflictBeforeStarting() async {
     var running = NetworkConfig(instance_id: "running-id", network_name: "running")
@@ -2082,10 +2033,6 @@ private final class PendingStartClient: EasyTierCoreClient, @unchecked Sendable 
     func version() async throws -> String { "test" }
     func validate(toml _: String) async throws {}
 
-    func run(config _: NetworkConfig) async throws {
-        didRun = true
-    }
-
     func run(toml _: String) async throws {
         didRun = true
     }
@@ -2133,10 +2080,6 @@ private final class RecordingToggleClient: EasyTierCoreClient, EasyTierHelperShu
 
     func version() async throws -> String { "test" }
     func validate(toml _: String) async throws {}
-
-    func run(config: NetworkConfig) async throws {
-        runConfigs.append(config)
-    }
 
     func run(toml: String) async throws {
         runTOMLs.append(toml)
@@ -2227,10 +2170,6 @@ private final class HelperRunErrorClient: EasyTierCoreClient, @unchecked Sendabl
 
     func version() async throws -> String { "test" }
     func validate(toml _: String) async throws {}
-
-    func run(config _: NetworkConfig) async throws {
-        throw PrivilegedHelperError.helperReported(payload)
-    }
 
     func run(toml _: String) async throws {
         throw PrivilegedHelperError.helperReported(payload)

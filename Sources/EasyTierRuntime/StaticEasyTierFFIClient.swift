@@ -13,12 +13,6 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
         try Self.validateDirect(toml: toml)
     }
 
-    public func run(config: NetworkConfig) async throws {
-        let toml = try NetworkConfigTOMLCodec.encode(config)
-        try await validate(toml: toml)
-        try runSync(toml: toml)
-    }
-
     public func run(toml: String) async throws {
         try await validate(toml: toml)
         try runSync(toml: toml)
