@@ -33,7 +33,10 @@ struct EasyTierApp: App {
                         store: store,
                         updater: updater,
                         appearanceSettings: appearanceSettings,
-                        connectionState: menuBarConnectionState
+                        connectionState: menuBarConnectionState,
+                        configureWindow: { window in
+                            configureMainWindow(window, glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
+                        }
                     )
                     .frame(width: 0, height: 0)
                 )
@@ -268,6 +271,7 @@ private struct MenuBarStatusItemBridge: NSViewRepresentable {
     var updater: SoftwareUpdateController
     var appearanceSettings: AppAppearanceSettings
     var connectionState: ConnectionGlyphState
+    var configureWindow: (NSWindow) -> Void
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
@@ -276,6 +280,7 @@ private struct MenuBarStatusItemBridge: NSViewRepresentable {
             updater: updater,
             appearanceSettings: appearanceSettings,
             connectionState: connectionState,
+            configureOpenWindows: configureOpenWindows,
             openMainWindow: openMainWindow
         )
         return view
@@ -287,6 +292,7 @@ private struct MenuBarStatusItemBridge: NSViewRepresentable {
             updater: updater,
             appearanceSettings: appearanceSettings,
             connectionState: connectionState,
+            configureOpenWindows: configureOpenWindows,
             openMainWindow: openMainWindow
         )
     }
@@ -295,6 +301,18 @@ private struct MenuBarStatusItemBridge: NSViewRepresentable {
         NSApp.unhide(nil)
         openWindow(id: "main")
         NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async {
+            configureOpenWindows()
+            DispatchQueue.main.async {
+                configureOpenWindows()
+            }
+        }
+    }
+
+    private func configureOpenWindows() {
+        for window in NSApp.windows where window.level == .normal {
+            configureWindow(window)
+        }
     }
 }
 
@@ -309,6 +327,7 @@ private final class MenuBarStatusItemController: NSObject {
     private var localEventMonitor: Any?
     private var globalEventMonitor: Any?
     private var resignActiveObserver: NSObjectProtocol?
+    private var configureOpenWindowsAction: (() -> Void)?
     private var openMainWindowAction: (() -> Void)?
 
     private static let popoverSize = NSSize(width: 292, height: 370)
@@ -328,9 +347,11 @@ private final class MenuBarStatusItemController: NSObject {
         updater: SoftwareUpdateController,
         appearanceSettings: AppAppearanceSettings,
         connectionState: ConnectionGlyphState,
+        configureOpenWindows: @escaping () -> Void,
         openMainWindow: @escaping () -> Void
     ) {
         installStatusItemIfNeeded()
+        configureOpenWindowsAction = configureOpenWindows
         openMainWindowAction = openMainWindow
 
         if self.connectionState != connectionState {
@@ -431,6 +452,7 @@ private final class MenuBarStatusItemController: NSObject {
         if popover.isShown {
             closePopover()
         } else {
+            configureOpenWindowsAction?()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             installDismissHandlers()
             NSApp.activate(ignoringOtherApps: true)
@@ -848,8 +870,8 @@ private struct MenuBarContent: View {
     }
 
     private func openMainWindowAndDismiss() {
-        openMainWindow()
         dismissMenuBar()
+        openMainWindow()
     }
 
     private func dismissMenuBar() {

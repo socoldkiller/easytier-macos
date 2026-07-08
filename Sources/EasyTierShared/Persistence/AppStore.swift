@@ -35,78 +35,6 @@ public struct RemoteConfigSession: Sendable {
     }
 }
 
-private struct RuntimeDetailPresentationSignature: Equatable {
-    var devName: String?
-    var running: Bool?
-    var errorMessage: String?
-    var instanceID: String?
-    var localNode: RuntimeLocalNodeSignature?
-    var memberStatuses: [RuntimeMemberSignature]
-    var listenerErrorEvents: [String]
-    var fullyConnectedWithoutRemoteExpectation: Bool
-    var fullyConnectedWithRemoteExpectation: Bool
-
-    init(_ detail: NetworkInstanceRunningInfo) {
-        devName = detail.dev_name
-        running = detail.running
-        errorMessage = detail.error_msg
-        instanceID = detail.instance_id
-        localNode = detail.my_node_info.map(RuntimeLocalNodeSignature.init)
-        memberStatuses = detail.memberStatuses.map(RuntimeMemberSignature.init)
-        listenerErrorEvents = (detail.events ?? []).filter(Self.isPresentationRelevantEvent)
-        fullyConnectedWithoutRemoteExpectation = detail.isFullyConnected(expectRemotePeers: false)
-        fullyConnectedWithRemoteExpectation = detail.isFullyConnected(expectRemotePeers: true)
-    }
-
-    private static func isPresentationRelevantEvent(_ event: String) -> Bool {
-        event.contains("ListenerAddFailed")
-            || event.contains("ListenerAcceptFailed")
-            || event.contains("TunDeviceError")
-    }
-}
-
-private struct RuntimeLocalNodeSignature: Equatable {
-    var peerID: Int?
-    var displayIPv4: String
-    var hostname: String?
-    var udpNATType: Int?
-    var isPublicServer: Bool
-
-    init(_ node: NodeInfo) {
-        peerID = node.peer_id
-        displayIPv4 = node.displayIPv4
-        hostname = node.hostname
-        udpNATType = node.stun_info?.udp_nat_type
-        isPublicServer = node.feature_flag?.is_public_server == true
-    }
-}
-
-private struct RuntimeMemberSignature: Equatable {
-    var id: String
-    var isLocal: Bool
-    var peerID: String
-    var instanceID: String?
-    var virtualIPv4: String
-    var hostname: String
-    var routeCost: String
-    var tunnelProto: String
-    var natType: String
-    var isPublicServer: Bool
-
-    init(_ member: NetworkMemberStatus) {
-        id = member.id
-        isLocal = member.isLocal
-        peerID = member.peerID
-        instanceID = member.instanceID
-        virtualIPv4 = member.virtualIPv4
-        hostname = member.hostname
-        routeCost = member.routeCost
-        tunnelProto = member.tunnelProto
-        natType = member.natType
-        isPublicServer = member.isPublicServer
-    }
-}
-
 @MainActor
 @Observable
 public final class EasyTierAppStore {
@@ -133,6 +61,7 @@ public final class EasyTierAppStore {
     public var trafficSamplesByInstance: [String: [TrafficSample]] = [:] {
         didSet { trafficSamplesByInstanceWriteCount += 1 }
     }
+    private var statusMetricsByInstance: [String: [String: RuntimeMemberTrafficSnapshot]] = [:]
     public var runtimeIntents: [RuntimeIntent] = []
     public var reversedPortForwardFingerprints: [String: Set<String>] = [:]
     public var vpnOnDemandEnabled = false
@@ -159,7 +88,7 @@ public final class EasyTierAppStore {
     private let systemSleepPreventer: any SystemSleepPreventing
     private var secretCache: [String: String] = [:]
     private var pollingTask: Task<Void, Never>?
-    private var lastTrafficCounters: [String: (timestamp: Date, txBytes: Int64, rxBytes: Int64)] = [:]
+    private var trafficCountersByInstance: [String: RuntimeTrafficCounter] = [:]
     private var pendingStarts: [String: PendingNetworkStart] = [:]
     private var pollingEnabled: Bool = true
     private var instanceClientKind: [String: ClientKind] = [:]
@@ -275,7 +204,14 @@ public final class EasyTierAppStore {
     }
 
     public var selectedMemberStatuses: [NetworkMemberStatus] {
-        selectedRuntimeDetail?.memberStatuses ?? []
+        guard let detail = selectedRuntimeDetail else { return [] }
+        let members = detail.memberStatuses
+        guard let name = selectedRunningInstance?.name,
+              let trafficByMemberID = statusMetricsByInstance[name]
+        else { return members }
+        return members.map { member in
+            trafficByMemberID[member.id]?.applied(to: member) ?? member
+        }
     }
 
     public var selectedTrafficSamples: [TrafficSample] {
@@ -1131,22 +1067,29 @@ public final class EasyTierAppStore {
             )
         }
         mergePendingStarts(into: &running)
-        if selectedTab == .view {
-            recordTrafficSamples(for: running)
+        let presentationChange = RuntimePresentationReducer.reduce(
+            running: running,
+            previous: RuntimePresentationState(
+                instances: instances,
+                runtimeDetails: runtimeDetails,
+                statusMetricsByInstance: statusMetricsByInstance,
+                trafficSamplesByInstance: trafficSamplesByInstance,
+                trafficCountersByInstance: trafficCountersByInstance
+            ),
+            selectedTab: selectedTab
+        )
+        trafficCountersByInstance = presentationChange.state.trafficCountersByInstance
+        if presentationChange.shouldPublishRuntimeDetails {
+            runtimeDetails = presentationChange.state.runtimeDetails
         }
-
-        var newDetails: [String: NetworkInstanceRunningInfo] = [:]
-        for instance in running {
-            if let detail = instance.detail {
-                newDetails[instance.name] = detail
-            }
+        if presentationChange.shouldPublishInstances {
+            instances = presentationChange.state.instances
         }
-        if !runtimeDetailsPresentationUnchanged(runtimeDetails, newDetails) {
-            runtimeDetails = newDetails
+        if presentationChange.shouldPublishStatusMetrics {
+            statusMetricsByInstance = presentationChange.state.statusMetricsByInstance
         }
-
-        if !instancesStructureUnchanged(instances, running) {
-            instances = running
+        if presentationChange.shouldPublishTrafficSamples {
+            trafficSamplesByInstance = presentationChange.state.trafficSamplesByInstance
         }
         updateSystemSleepAssertion(for: running)
         await reconcileRuntimeIntents()
@@ -1161,44 +1104,6 @@ public final class EasyTierAppStore {
         if isConfigServerConnected != newConfigServerConnected {
             isConfigServerConnected = newConfigServerConnected
         }
-    }
-
-    private func instancesStructureUnchanged(_ current: [NetworkInstance], _ running: [NetworkInstance]) -> Bool {
-        guard current.count == running.count else { return false }
-        let currentByID = Dictionary(current.map { ($0.instance_id, $0) }, uniquingKeysWith: { $1 })
-        for newInstance in running {
-            guard let oldInstance = currentByID[newInstance.instance_id] else { return false }
-            if oldInstance.name != newInstance.name { return false }
-            if oldInstance.error_msg != newInstance.error_msg { return false }
-
-            let oldMembers = oldInstance.detail?.memberStatuses ?? []
-            let newMembers = newInstance.detail?.memberStatuses ?? []
-            guard oldMembers.count == newMembers.count else { return false }
-            for (old, new) in zip(oldMembers, newMembers) {
-                if old.id != new.id { return false }
-                if old.hostname != new.hostname { return false }
-                if old.isLocal != new.isLocal { return false }
-                if old.virtualIPv4 != new.virtualIPv4 { return false }
-                if old.isPublicServer != new.isPublicServer { return false }
-                if old.peerID != new.peerID { return false }
-                if old.instanceID != new.instanceID { return false }
-            }
-        }
-        return true
-    }
-
-    private func runtimeDetailsPresentationUnchanged(
-        _ current: [String: NetworkInstanceRunningInfo],
-        _ newDetails: [String: NetworkInstanceRunningInfo]
-    ) -> Bool {
-        guard current.count == newDetails.count else { return false }
-        for (name, newDetail) in newDetails {
-            guard let currentDetail = current[name] else { return false }
-            guard RuntimeDetailPresentationSignature(currentDetail) == RuntimeDetailPresentationSignature(newDetail) else {
-                return false
-            }
-        }
-        return true
     }
 
     private func reconcileRuntimeIntents() async {
@@ -1493,46 +1398,6 @@ public final class EasyTierAppStore {
         }
     }
 
-    private func recordTrafficSamples(for instances: [NetworkInstance]) {
-        let now = Date()
-        let activeNames = Set(instances.map(\.name))
-        trafficSamplesByInstance = trafficSamplesByInstance.filter { activeNames.contains($0.key) }
-        lastTrafficCounters = lastTrafficCounters.filter { activeNames.contains($0.key) }
-
-        for instance in instances {
-            guard let detail = instance.detail else { continue }
-            let totals = detail.trafficTotals
-            let previous = lastTrafficCounters[instance.name]
-            lastTrafficCounters[instance.name] = (now, totals.txBytes, totals.rxBytes)
-
-            guard let previous else {
-                appendTrafficSample(TrafficSample(timestamp: now, txBytesPerSecond: 0, rxBytesPerSecond: 0), for: instance.name)
-                continue
-            }
-
-            let interval = max(now.timeIntervalSince(previous.timestamp), 0.001)
-            let txDelta = max(0, totals.txBytes - previous.txBytes)
-            let rxDelta = max(0, totals.rxBytes - previous.rxBytes)
-            appendTrafficSample(
-                TrafficSample(
-                    timestamp: now,
-                    txBytesPerSecond: Double(txDelta) / interval,
-                    rxBytesPerSecond: Double(rxDelta) / interval
-                ),
-                for: instance.name
-            )
-        }
-    }
-
-    private func appendTrafficSample(_ sample: TrafficSample, for instanceName: String) {
-        var samples = trafficSamplesByInstance[instanceName] ?? []
-        samples.append(sample)
-        if samples.count > Self.trafficSampleWindow {
-            samples.removeFirst(samples.count - Self.trafficSampleWindow)
-        }
-        trafficSamplesByInstance[instanceName] = samples
-    }
-
     private func updateSystemSleepAssertion(for running: [NetworkInstance]) {
         systemSleepPreventer.setSystemSleepPrevented(
             !running.isEmpty,
@@ -1767,7 +1632,6 @@ public final class EasyTierAppStore {
         formatter.dateFormat = "HH:mm:ss"
         return formatter
     }()
-    private static let trafficSampleWindow = 60
     private static let sleepRecoveryRestartThreshold: TimeInterval = 30
 
     /// Sentinel RPC URL used when we cannot construct a real peer URL (e.g. the
