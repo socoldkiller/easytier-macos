@@ -73,7 +73,7 @@ public final class EasyTierAppStore {
             refreshSelectedRuntimeSnapshotsIfNeeded()
         }
     }
-    private var statusMetricsByInstance: [String: [String: RuntimeMemberTrafficSnapshot]] = [:]
+    private var statusMetricsByInstance: [String: [String: RuntimeMemberStatusMetricsSnapshot]] = [:]
     public private(set) var selectedStatusSnapshot: RuntimeStatusSnapshot = .empty
     public private(set) var selectedTrafficSnapshot: RuntimeTrafficSnapshot = .empty
     public var runtimeIntents: [RuntimeIntent] = []
@@ -236,7 +236,7 @@ public final class EasyTierAppStore {
             selectedConfig: config,
             runningInstance: instance,
             runtimeDetail: detail,
-            memberTrafficByID: statusMetrics
+            memberStatusMetricsByID: statusMetrics
         )
         if selectedStatusSnapshot != statusSnapshot {
             selectedStatusSnapshot = statusSnapshot
