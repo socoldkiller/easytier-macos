@@ -1,4 +1,3 @@
-import AppKit
 import EasyTierShared
 import SwiftUI
 
@@ -16,7 +15,6 @@ struct PeersView: View {
     @State private var appliedCardID: String?
     @State private var appliedState: PeerAppliedState = .none
     @State private var appliedFeedbackToken = 0
-    @State private var accessibilityAnnouncement: String?
 
     private var subscriptions: [PeerSubscription] { store.peerSubscriptions }
 
@@ -46,7 +44,6 @@ struct PeersView: View {
                     }
                 }
                 .padding(8)
-                .hideEnclosingScrollViewScrollers()
             }
         }
         .scrollContentBackground(.hidden)
@@ -76,14 +73,6 @@ struct PeersView: View {
             if !subscriptions.isEmpty, subscriptions.contains(where: { $0.subscriptionURL != nil }) {
                 await store.refreshPeerSubscriptions()
             }
-        }
-        .onChange(of: accessibilityAnnouncement) { _, newValue in
-            guard let newValue else { return }
-            NSAccessibility.post(
-                element: NSApp.mainWindow ?? NSApplication.shared,
-                notification: NSAccessibility.Notification.announcementRequested,
-                userInfo: [NSAccessibility.NotificationUserInfoKey.announcement: newValue]
-            )
         }
     }
 
@@ -176,20 +165,16 @@ struct PeersView: View {
         let result = store.previewPeerCardMerge(card)
 
         let state: PeerAppliedState
-        let announcement: String
         var noticeMessage: String? = nil
 
         switch result {
         case .added(let count):
             state = .added(count: count)
-            announcement = "Added \(count) peer\(count == 1 ? "" : "s") from \(card.name) to \(store.selectedConfig?.network_name ?? "the current network")."
         case .alreadyPresent:
             state = .alreadyPresent
-            announcement = "\(card.name) peers are already in the current network."
             noticeMessage = "Already in current network"
         case .noSelectedConfig:
             state = .noSelectedConfig
-            announcement = "Select or create a network config first."
             noticeMessage = "Select a network config first"
         }
 
@@ -200,8 +185,6 @@ struct PeersView: View {
             appliedCardID = card.id
             appliedState = state
         }
-
-        accessibilityAnnouncement = announcement
 
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(1.6))
