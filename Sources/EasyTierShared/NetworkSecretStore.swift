@@ -35,18 +35,10 @@ public struct SystemNetworkSecretStore: NetworkSecretStore {
     public func save(_ secret: String, for config: NetworkConfig) throws {
         let data = Data(secret.utf8)
         let query = baseQuery(for: config)
-        let attributes = try itemAttributes(data: data, config: config, requiresUserPresence: true)
+        let attributes = try itemAttributes(data: data, config: config)
         let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
-            try addItem(query: query, attributes: attributes, data: data, config: config)
-        } else if status == errSecMissingEntitlement {
-            let fallbackAttributes = try itemAttributes(data: data, config: config, requiresUserPresence: false)
-            let fallbackStatus = SecItemUpdate(query as CFDictionary, fallbackAttributes as CFDictionary)
-            if fallbackStatus == errSecItemNotFound {
-                try addItem(query: query, attributes: fallbackAttributes, data: data, config: config)
-            } else if fallbackStatus != errSecSuccess {
-                throw NetworkSecretStoreError.keychain(fallbackStatus)
-            }
+            try addItem(query: query, attributes: attributes, data: data)
         } else if status != errSecSuccess {
             throw NetworkSecretStoreError.keychain(status)
         }
@@ -100,29 +92,19 @@ public struct SystemNetworkSecretStore: NetworkSecretStore {
         ]
     }
 
-    private func addItem(query: [String: Any], attributes: [String: Any], data: Data, config: NetworkConfig) throws {
+private func addItem(query: [String: Any], attributes: [String: Any], data: Data) throws {
         var addQuery = query
         attributes.forEach { addQuery[$0.key] = $0.value }
         let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
-        if addStatus == errSecMissingEntitlement && attributes[kSecAttrAccessControl as String] != nil {
-            try addItem(
-                query: query,
-                attributes: itemAttributes(data: data, config: config, requiresUserPresence: false),
-                data: data,
-                config: config
-            )
-            return
-        }
         guard addStatus == errSecSuccess else { throw NetworkSecretStoreError.keychain(addStatus) }
     }
 
-    private func itemAttributes(data: Data, config: NetworkConfig, requiresUserPresence: Bool) throws -> [String: Any] {
+    private func itemAttributes(data: Data, config: NetworkConfig) throws -> [String: Any] {
         var attributes: [String: Any] = [
             kSecValueData as String: data,
             kSecAttrLabel as String: config.network_name,
             kSecAttrComment as String: "EasyTier network secret for \(config.network_name)",
         ]
-        guard requiresUserPresence else { return attributes }
 
         var error: Unmanaged<CFError>?
         guard let access = SecAccessControlCreateWithFlags(

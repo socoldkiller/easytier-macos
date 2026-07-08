@@ -429,12 +429,10 @@ sign_macho() {
   local identifier="$1"
   local path="$2"
   local entitlements="${3:-}"
-  local codesign_args=(--force)
+  local codesign_args=(--force --options runtime)
 
   if [[ "$CODE_SIGN_IDENTITY" != "-" && "$CODE_SIGN_TIMESTAMP" == "1" ]]; then
-    codesign_args+=(--timestamp --options runtime)
-  elif [[ "$CODE_SIGN_IDENTITY" != "-" ]]; then
-    codesign_args+=(--options runtime)
+    codesign_args+=(--timestamp)
   fi
 
   if [[ -n "$CODE_SIGN_KEYCHAIN" ]]; then
