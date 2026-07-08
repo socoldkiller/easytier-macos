@@ -1087,19 +1087,65 @@ extension TextFieldStyle where Self == GlassFieldStyle {
 private struct WindowAccessor: NSViewRepresentable {
     var configure: (NSWindow) -> Void
 
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async {
-            if let window = view.window {
-                configure(window)
-            }
-        }
+    func makeNSView(context: Context) -> WindowAccessorView {
+        let view = WindowAccessorView()
+        view.configureAction = { [configure] window in configure(window) }
         return view
     }
 
-    func updateNSView(_ view: NSView, context: Context) {
-        guard let window = view.window else { return }
-        configure(window)
+    func updateNSView(_ view: WindowAccessorView, context: Context) {
+        view.configureAction = { [configure] window in configure(window) }
+        if let window = view.window {
+            view.applyConfiguration(to: window)
+        }
+    }
+}
+
+private final class WindowAccessorView: NSView {
+    var configureAction: ((NSWindow) -> Void)?
+    nonisolated(unsafe) private var didBecomeKeyObserver: NSObjectProtocol?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard let window else { return }
+        applyConfiguration(to: window)
+        installKeyWindowObserver(for: window)
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        removeKeyWindowObserver()
+    }
+
+    func applyConfiguration(to window: NSWindow) {
+        configureAction?(window)
+    }
+
+    private func installKeyWindowObserver(for window: NSWindow) {
+        removeKeyWindowObserver()
+        didBecomeKeyObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, let window = self.window else { return }
+                self.applyConfiguration(to: window)
+            }
+        }
+    }
+
+    private func removeKeyWindowObserver() {
+        if let didBecomeKeyObserver {
+            NotificationCenter.default.removeObserver(didBecomeKeyObserver)
+            self.didBecomeKeyObserver = nil
+        }
+    }
+
+    deinit {
+        if let didBecomeKeyObserver {
+            NotificationCenter.default.removeObserver(didBecomeKeyObserver)
+        }
     }
 }
 
