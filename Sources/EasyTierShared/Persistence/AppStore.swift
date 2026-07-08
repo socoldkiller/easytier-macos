@@ -1,4 +1,3 @@
-import AppKit
 import Foundation
 import Observation
 import TOML
@@ -38,14 +37,24 @@ public struct RemoteConfigSession: Sendable {
 @MainActor
 @Observable
 public final class EasyTierAppStore {
-    public var configs: [StoredNetworkConfig] = []
-    public var selectedConfigID: String?
+    public var configs: [StoredNetworkConfig] = [] {
+        didSet { refreshSelectedRuntimeSnapshotsIfNeeded() }
+    }
+    public var selectedConfigID: String? {
+        didSet { refreshSelectedRuntimeSnapshotsIfNeeded() }
+    }
     public var mode: AppMode = .default
     public var instances: [NetworkInstance] = [] {
-        didSet { instancesWriteCount += 1 }
+        didSet {
+            instancesWriteCount += 1
+            refreshSelectedRuntimeSnapshotsIfNeeded()
+        }
     }
     public var runtimeDetails: [String: NetworkInstanceRunningInfo] = [:] {
-        didSet { runtimeDetailsWriteCount += 1 }
+        didSet {
+            runtimeDetailsWriteCount += 1
+            refreshSelectedRuntimeSnapshotsIfNeeded()
+        }
     }
     public var selectedTab: WorkspaceTab = .status
     public var logLines: [LogEntry] = []
@@ -59,9 +68,14 @@ public final class EasyTierAppStore {
         didSet { isConfigServerConnectedWriteCount += 1 }
     }
     public var trafficSamplesByInstance: [String: [TrafficSample]] = [:] {
-        didSet { trafficSamplesByInstanceWriteCount += 1 }
+        didSet {
+            trafficSamplesByInstanceWriteCount += 1
+            refreshSelectedRuntimeSnapshotsIfNeeded()
+        }
     }
     private var statusMetricsByInstance: [String: [String: RuntimeMemberTrafficSnapshot]] = [:]
+    public private(set) var selectedStatusSnapshot: RuntimeStatusSnapshot = .empty
+    public private(set) var selectedTrafficSnapshot: RuntimeTrafficSnapshot = .empty
     public var runtimeIntents: [RuntimeIntent] = []
     public var reversedPortForwardFingerprints: [String: Set<String>] = [:]
     public var vpnOnDemandEnabled = false
@@ -87,25 +101,21 @@ public final class EasyTierAppStore {
     private let networkSecretStore: any NetworkSecretStore
     private let systemSleepPreventer: any SystemSleepPreventing
     private var secretCache: [String: String] = [:]
-    private var pollingTask: Task<Void, Never>?
-    private var trafficCountersByInstance: [String: RuntimeTrafficCounter] = [:]
-    private var pendingStarts: [String: PendingNetworkStart] = [:]
-    private var pollingEnabled: Bool = true
-    private var instanceClientKind: [String: ClientKind] = [:]
-    private var pendingStartAfterApproval: NetworkConfig?
     private var lastErrorKind: LastErrorKind?
-    private var sleepStartedAt: Date?
-    private var runningConfigIDsBeforeSleep: [String] = []
-    private var sleepWakeNotificationObservers: [NSObjectProtocol] = []
-    private var resignActiveObserver: NSObjectProtocol?
-    private var wakeRecoveryTask: Task<Void, Never>?
+
+    @ObservationIgnored private lazy var runtimeSession = RuntimeSessionController(
+        privilegedClient: privilegedClient,
+        inProcessClient: inProcessClient,
+        helperRegistration: helperRegistration,
+        systemSleepPreventer: systemSleepPreventer
+    )
+    @ObservationIgnored private var isPublishingRuntimePresentation = false
 
     @ObservationIgnored public private(set) var runtimeDetailsWriteCount = 0
     @ObservationIgnored public private(set) var instancesWriteCount = 0
     @ObservationIgnored public private(set) var trafficSamplesByInstanceWriteCount = 0
     @ObservationIgnored public private(set) var isConfigServerConnectedWriteCount = 0
 
-    public enum ClientKind: Sendable { case inProcess, privileged }
     private enum LastErrorKind { case helperPermission }
 
     public func resetWriteCounters() {
@@ -149,11 +159,11 @@ public final class EasyTierAppStore {
     }
 
     private func client(for config: NetworkConfig) -> any EasyTierCoreClient {
-        config.requiresTUN ? privilegedClient : inProcessClient
+        runtimeSession.client(for: config)
     }
 
-    private func clientKind(for config: NetworkConfig) -> ClientKind {
-        config.requiresTUN ? .privileged : .inProcess
+    private func setRuntimeClientKind(for config: NetworkConfig) {
+        runtimeSession.setClientKind(for: config)
     }
 
     public var selectedConfig: NetworkConfig? {
@@ -199,24 +209,47 @@ public final class EasyTierAppStore {
     }
 
     public var selectedRuntimeDetail: NetworkInstanceRunningInfo? {
-        guard let name = selectedRunningInstance?.name else { return nil }
-        return runtimeDetails[name]
+        selectedStatusSnapshot.runtimeDetail
     }
 
     public var selectedMemberStatuses: [NetworkMemberStatus] {
-        guard let detail = selectedRuntimeDetail else { return [] }
-        let members = detail.memberStatuses
-        guard let name = selectedRunningInstance?.name,
-              let trafficByMemberID = statusMetricsByInstance[name]
-        else { return members }
-        return members.map { member in
-            trafficByMemberID[member.id]?.applied(to: member) ?? member
-        }
+        selectedStatusSnapshot.members
     }
 
     public var selectedTrafficSamples: [TrafficSample] {
-        guard let name = selectedRunningInstance?.name else { return [] }
-        return trafficSamplesByInstance[name] ?? []
+        selectedTrafficSnapshot.samples
+    }
+
+    private func refreshSelectedRuntimeSnapshotsIfNeeded() {
+        guard !isPublishingRuntimePresentation else { return }
+        refreshSelectedRuntimeSnapshots()
+    }
+
+    private func refreshSelectedRuntimeSnapshots() {
+        let config = selectedConfig
+        let instance = config.flatMap { runningInstance(matching: $0) }
+        let detail = instance.flatMap { runtimeDetails[$0.name] ?? $0.detail }
+        let statusMetrics = instance.flatMap { statusMetricsByInstance[$0.name] }
+        let trafficSamples = instance.flatMap { trafficSamplesByInstance[$0.name] } ?? []
+
+        let statusSnapshot = RuntimeStatusSnapshot.build(
+            selectedConfig: config,
+            runningInstance: instance,
+            runtimeDetail: detail,
+            memberTrafficByID: statusMetrics
+        )
+        if selectedStatusSnapshot != statusSnapshot {
+            selectedStatusSnapshot = statusSnapshot
+        }
+
+        let trafficSnapshot = RuntimeTrafficSnapshot.build(
+            selectedConfig: config,
+            runningInstance: instance,
+            samples: trafficSamples
+        )
+        if selectedTrafficSnapshot != trafficSnapshot {
+            selectedTrafficSnapshot = trafficSnapshot
+        }
     }
 
     public func load() async {
@@ -312,8 +345,8 @@ public final class EasyTierAppStore {
                 return
             }
         }
-        instanceClientKind.removeValue(forKey: config.instance_id)
-        clearPendingStart(for: config)
+        runtimeSession.clearClientKind(for: config)
+        runtimeSession.clearPendingStart(for: config)
         runtimeIntents.removeAll { intent in
             intent.target.isLocal && (intent.target.instanceID == config.instance_id || intent.target.networkName == config.network_name)
         }
@@ -388,13 +421,13 @@ public final class EasyTierAppStore {
                 do {
                     try await helperRegistration.ensureRegistered()
                 } catch {
-                    pendingStartAfterApproval = cleanConfig
+                    runtimeSession.setPendingStartAfterApproval(cleanConfig)
                     throw error
                 }
             }
             try await client(for: config).run(toml: try encodedTOML(for: cleanConfig))
-            instanceClientKind[cleanConfig.instance_id] = clientKind(for: cleanConfig)
-            recordPendingStart(for: config)
+            setRuntimeClientKind(for: cleanConfig)
+            runtimeSession.recordPendingStart(for: config)
             log("Started \(config.network_name).")
             try await refreshRuntimeThrowing()
             if var instance = selectedRunningInstance {
@@ -408,8 +441,7 @@ public final class EasyTierAppStore {
 
     /// Retry the most recent start after the user approved the privileged helper.
     public func retryStartAfterHelperApproval() async {
-        guard let config = pendingStartAfterApproval else { return }
-        pendingStartAfterApproval = nil
+        guard let config = runtimeSession.takePendingStartAfterApproval() else { return }
         if let helperRegistration {
             await helperRegistration.refresh()
             guard helperRegistration.state == .enabled else {
@@ -419,9 +451,9 @@ public final class EasyTierAppStore {
         }
         await busy {
             try await client(for: config).run(toml: try encodedTOML(for: config))
-            instanceClientKind[config.instance_id] = clientKind(for: config)
+            setRuntimeClientKind(for: config)
             if let selectedConfig, selectedConfig.instance_id == config.instance_id {
-                recordPendingStart(for: selectedConfig)
+                runtimeSession.recordPendingStart(for: selectedConfig)
             }
             log("Started \(config.network_name) after helper approval.")
             try await refreshRuntimeThrowing()
@@ -438,8 +470,8 @@ public final class EasyTierAppStore {
             }
             persistRuntimeHostname(from: runningInstance, forConfigID: config.instance_id)
             try await client(for: config).stop(instanceNames: [runningInstance.name])
-            clearPendingStart(for: config)
-            instanceClientKind.removeValue(forKey: config.instance_id)
+            runtimeSession.clearPendingStart(for: config)
+            runtimeSession.clearClientKind(for: config)
             log("Stopped \(config.network_name).")
             try await refreshRuntimeThrowing()
         }
@@ -455,18 +487,18 @@ public final class EasyTierAppStore {
             let targetClient = client(for: config)
             try await targetClient.validate(toml: try encodedTOML(for: cleanConfig))
             try await targetClient.stop(instanceNames: [instance.name])
-            clearPendingStart(for: config)
+            runtimeSession.clearPendingStart(for: config)
             if config.requiresTUN, let helperRegistration {
                 do {
                     try await helperRegistration.ensureRegistered()
                 } catch {
-                    pendingStartAfterApproval = cleanConfig
+                    runtimeSession.setPendingStartAfterApproval(cleanConfig)
                     throw error
                 }
             }
             try await targetClient.run(toml: try encodedTOML(for: cleanConfig))
-            instanceClientKind[cleanConfig.instance_id] = clientKind(for: cleanConfig)
-            recordPendingStart(for: config)
+            setRuntimeClientKind(for: cleanConfig)
+            runtimeSession.recordPendingStart(for: config)
             log("Restarted \(config.network_name).")
             try await refreshRuntimeThrowing()
         }
@@ -508,7 +540,7 @@ public final class EasyTierAppStore {
     public func stopAll() async {
         await busy {
             // Stop privileged instances via the daemon's retain-by-allowlist call.
-            if instances.contains(where: { instanceClientKind[$0.instance_id] != .inProcess }) {
+            if runtimeSession.hasPrivilegedInstances(in: instances) {
                 do {
                     try await privilegedClient.retain(instanceNames: [])
                 } catch {
@@ -516,9 +548,7 @@ public final class EasyTierAppStore {
                 }
             }
             // Stop in-process instances individually (no retain API).
-            let inProcessInstanceNames = instances
-                .filter { instanceClientKind[$0.instance_id] == .inProcess }
-                .map(\.name)
+            let inProcessInstanceNames = runtimeSession.inProcessInstanceNames(in: instances)
             if !inProcessInstanceNames.isEmpty {
                 do {
                     try await inProcessClient.stop(instanceNames: inProcessInstanceNames)
@@ -526,8 +556,7 @@ public final class EasyTierAppStore {
                     log("Failed to stop in-process instances \(inProcessInstanceNames) during stopAll: \(error.localizedDescription)")
                 }
             }
-            instanceClientKind.removeAll()
-            pendingStarts.removeAll()
+            runtimeSession.clearRuntimeTracking()
             log("Stopped all EasyTier instances.")
             try await refreshRuntimeThrowing()
         }
@@ -887,106 +916,42 @@ public final class EasyTierAppStore {
     }
 
     public func startPolling() {
-        pollingTask?.cancel()
-        pollingTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(1))
-                guard let self, self.pollingEnabled else { continue }
-                if self.isAnyViewScrolling { continue }
-                await self.refreshRuntime()
-            }
-        }
-        registerSleepWakeNotifications()
+        runtimeSession.startPolling(
+            isScrolling: { [weak self] in self?.isAnyViewScrolling == true },
+            refresh: { [weak self] in await self?.refreshRuntime() },
+            clearSecretCache: { [weak self] in self?.clearSecretCache() },
+            handleWillSleep: { [weak self] in self?.handleSystemWillSleep() },
+            handleDidWake: { [weak self] in await self?.handleSystemDidWake() }
+        )
     }
 
     public func stopPolling() {
-        pollingTask?.cancel()
-        pollingTask = nil
-        wakeRecoveryTask?.cancel()
-        wakeRecoveryTask = nil
-        updateSystemSleepAssertion(for: [])
-        unregisterSleepWakeNotifications()
+        runtimeSession.stopPolling()
     }
 
     public func pausePolling() {
-        pollingEnabled = false
+        runtimeSession.pausePolling()
     }
 
     public func resumePolling() {
-        pollingEnabled = true
+        runtimeSession.resumePolling()
     }
 
     func handleSystemWillSleep(now: Date = Date()) {
-        wakeRecoveryTask?.cancel()
-        wakeRecoveryTask = nil
-        sleepStartedAt = now
-        runningConfigIDsBeforeSleep = configs
-            .filter { runningInstance(matching: $0.config) != nil }
-            .map(\.id)
-        pausePolling()
+        runtimeSession.handleSystemWillSleep(
+            now: now,
+            configs: configs,
+            runningInstance: { [weak self] config in self?.runningInstance(matching: config) }
+        )
     }
 
     func handleSystemDidWake(now: Date = Date()) async {
-        let sleepDuration = sleepStartedAt.map { now.timeIntervalSince($0) } ?? 0
-        let configIDsToRecover = runningConfigIDsBeforeSleep
-        sleepStartedAt = nil
-        runningConfigIDsBeforeSleep = []
-        resumePolling()
+        let configIDsToRecover = runtimeSession.wakeRecoveryConfigIDs(now: now)
         await refreshRuntime()
 
-        guard sleepDuration >= Self.sleepRecoveryRestartThreshold,
-              !configIDsToRecover.isEmpty
-        else { return }
+        guard !configIDsToRecover.isEmpty else { return }
 
         await recoverPreviouslyRunningConfigsAfterWake(configIDs: configIDsToRecover)
-    }
-
-    private func registerSleepWakeNotifications() {
-        unregisterSleepWakeNotifications()
-        let center = NSWorkspace.shared.notificationCenter
-        let willSleepObserver = center.addObserver(
-            forName: NSWorkspace.willSleepNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.handleSystemWillSleep()
-            }
-        }
-        let didWakeObserver = center.addObserver(
-            forName: NSWorkspace.didWakeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.wakeRecoveryTask?.cancel()
-                self?.wakeRecoveryTask = Task { @MainActor [weak self] in
-                    try? await Task.sleep(for: .seconds(3))
-                    await self?.handleSystemDidWake()
-                }
-            }
-        }
-        sleepWakeNotificationObservers = [willSleepObserver, didWakeObserver]
-        resignActiveObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didResignActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.clearSecretCache()
-            }
-        }
-    }
-
-    private func unregisterSleepWakeNotifications() {
-        for observer in sleepWakeNotificationObservers {
-            NSWorkspace.shared.notificationCenter.removeObserver(observer)
-        }
-        sleepWakeNotificationObservers = []
-        if let resignActiveObserver {
-            NotificationCenter.default.removeObserver(resignActiveObserver)
-            self.resignActiveObserver = nil
-        }
     }
 
     private func clearSecretCache() {
@@ -1018,63 +983,33 @@ public final class EasyTierAppStore {
         if let runningInstance {
             persistRuntimeHostname(from: runningInstance, forConfigID: config.instance_id)
             try await targetClient.stop(instanceNames: [runningInstance.name])
-            clearPendingStart(for: config)
+            runtimeSession.clearPendingStart(for: config)
         }
         if config.requiresTUN, let helperRegistration {
             do {
                 try await helperRegistration.ensureRegistered()
             } catch {
-                pendingStartAfterApproval = cleanConfig
+                runtimeSession.setPendingStartAfterApproval(cleanConfig)
                 throw error
             }
         }
         try await targetClient.run(toml: try encodedTOML(for: cleanConfig))
-        instanceClientKind[cleanConfig.instance_id] = clientKind(for: cleanConfig)
-        recordPendingStart(for: config)
+        setRuntimeClientKind(for: cleanConfig)
+        runtimeSession.recordPendingStart(for: config)
         log("Recovered \(config.network_name) after system wake.")
     }
 
     private func refreshRuntimeThrowing() async throws {
-        // Merge runtime info from both the privileged daemon (TUN instances) and
-        // the in-process client (no_tun instances). Failures from either side
-        // are tolerated so a missing/unapproved helper does not break no_tun.
-        var infos: [String: NetworkInstanceRunningInfo] = [:]
-        if helperRegistration?.state == .enabled {
-            if let daemonInfos = try? await privilegedClient.collectNetworkInfos() {
-                infos.merge(daemonInfos) { _, new in new }
-            }
-        }
-        if let inProcessInfos = try? await inProcessClient.collectNetworkInfos() {
-            infos.merge(inProcessInfos) { _, new in new }
-        }
-
-        let previousOrder = instances.map(\.name)
-        let newNames = infos.keys.filter { !previousOrder.contains($0) }
-        let keptNames = previousOrder.filter { infos.keys.contains($0) }
-        let orderedNames = newNames + keptNames
-        var running = orderedNames.compactMap { key -> NetworkInstance? in
-            guard let detail = infos[key] else { return nil }
-            let resolvedID = detail.instance_id ?? key
-            return NetworkInstance(
-                instance_id: resolvedID,
-                name: key,
-                running: true,
-                detail: detail
-            )
-        }
-        mergePendingStarts(into: &running)
-        let presentationChange = RuntimePresentationReducer.reduce(
-            running: running,
-            previous: RuntimePresentationState(
-                instances: instances,
-                runtimeDetails: runtimeDetails,
-                statusMetricsByInstance: statusMetricsByInstance,
-                trafficSamplesByInstance: trafficSamplesByInstance,
-                trafficCountersByInstance: trafficCountersByInstance
-            ),
-            selectedTab: selectedTab
+        let result = try await runtimeSession.refreshRuntime(
+            currentInstances: instances,
+            currentRuntimeDetails: runtimeDetails,
+            currentStatusMetrics: statusMetricsByInstance,
+            currentTrafficSamples: trafficSamplesByInstance,
+            selectedTab: selectedTab,
+            mode: mode
         )
-        trafficCountersByInstance = presentationChange.state.trafficCountersByInstance
+        let presentationChange = result.presentationChange
+        isPublishingRuntimePresentation = true
         if presentationChange.shouldPublishRuntimeDetails {
             runtimeDetails = presentationChange.state.runtimeDetails
         }
@@ -1087,16 +1022,10 @@ public final class EasyTierAppStore {
         if presentationChange.shouldPublishTrafficSamples {
             trafficSamplesByInstance = presentationChange.state.trafficSamplesByInstance
         }
-        updateSystemSleepAssertion(for: running)
+        isPublishingRuntimePresentation = false
+        refreshSelectedRuntimeSnapshots()
         await reconcileRuntimeIntents()
-        let newConfigServerConnected: Bool
-        if mode.configServerURL == nil {
-            newConfigServerConnected = false
-        } else if helperRegistration?.state == .enabled {
-            newConfigServerConnected = try await privilegedClient.isConfigServerClientConnected()
-        } else {
-            newConfigServerConnected = false
-        }
+        let newConfigServerConnected = result.isConfigServerConnected
         if isConfigServerConnected != newConfigServerConnected {
             isConfigServerConnected = newConfigServerConnected
         }
@@ -1359,48 +1288,6 @@ public final class EasyTierAppStore {
         save()
     }
 
-    private func recordPendingStart(for config: NetworkConfig) {
-        pendingStarts[config.instance_id] = PendingNetworkStart(
-            instanceID: config.instance_id,
-            name: config.network_name
-        )
-    }
-
-    private func clearPendingStart(for config: NetworkConfig) {
-        pendingStarts.removeValue(forKey: config.instance_id)
-    }
-
-    private func mergePendingStarts(into running: inout [NetworkInstance]) {
-        let runningIDs = Set(running.map(\.instance_id))
-        let runningNames = Set(running.map(\.name))
-
-        pendingStarts = pendingStarts.filter { _, pending in
-            if runningIDs.contains(pending.instanceID) || runningNames.contains(pending.name) {
-                return false
-            }
-            return true
-        }
-
-        for pending in pendingStarts.values.sorted(by: { $0.name < $1.name }) {
-            guard !running.contains(where: { $0.instance_id == pending.instanceID || $0.name == pending.name }) else { continue }
-            running.append(
-                NetworkInstance(
-                    instance_id: pending.instanceID,
-                    name: pending.name,
-                    running: true,
-                    detail: NetworkInstanceRunningInfo(running: true)
-                )
-            )
-        }
-    }
-
-    private func updateSystemSleepAssertion(for running: [NetworkInstance]) {
-        systemSleepPreventer.setSystemSleepPrevented(
-            !running.isEmpty,
-            reason: "EasyTier is keeping network instances reachable."
-        )
-    }
-
     private func busy(_ operation: () async throws -> Void) async {
         isBusy = true
         defer { isBusy = false }
@@ -1628,8 +1515,6 @@ public final class EasyTierAppStore {
         formatter.dateFormat = "HH:mm:ss"
         return formatter
     }()
-    private static let sleepRecoveryRestartThreshold: TimeInterval = 30
-
     /// Sentinel RPC URL used when we cannot construct a real peer URL (e.g. the
     /// member's instance ID or virtual IP is missing). It is structurally valid
     /// so downstream code can pattern-match on `rpcURL` without crashing, and
@@ -1645,11 +1530,6 @@ public struct LogEntry: Identifiable, Sendable, Equatable {
         self.id = id
         self.text = text
     }
-}
-
-private struct PendingNetworkStart: Sendable {
-    var instanceID: String
-    var name: String
 }
 
 private struct RuntimeIntentObservation {

@@ -326,7 +326,7 @@ private final class MenuBarStatusItemController: NSObject {
     private var animationTask: Task<Void, Never>?
     private var localEventMonitor: Any?
     private var globalEventMonitor: Any?
-    private var resignActiveObserver: NSObjectProtocol?
+    private var resignActiveTask: Task<Void, Never>?
     private var configureOpenWindowsAction: (() -> Void)?
     private var openMainWindowAction: (() -> Void)?
 
@@ -473,12 +473,13 @@ private final class MenuBarStatusItemController: NSObject {
             }
         }
 
-        resignActiveObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didResignActiveNotification,
-            object: NSApp,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
+        resignActiveTask = Task { @MainActor [weak self] in
+            let notifications = NotificationCenter.default.notifications(
+                named: NSApplication.didResignActiveNotification,
+                object: NSApp
+            )
+            for await _ in notifications {
+                guard !Task.isCancelled else { break }
                 self?.closePopover()
             }
         }
@@ -493,10 +494,8 @@ private final class MenuBarStatusItemController: NSObject {
             NSEvent.removeMonitor(globalEventMonitor)
             self.globalEventMonitor = nil
         }
-        if let resignActiveObserver {
-            NotificationCenter.default.removeObserver(resignActiveObserver)
-            self.resignActiveObserver = nil
-        }
+        resignActiveTask?.cancel()
+        resignActiveTask = nil
     }
 
     private func closePopoverIfClickIsOutside(_ event: NSEvent) {

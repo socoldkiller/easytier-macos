@@ -18,13 +18,10 @@ struct StatusView: View {
     var onConfigureLocalMember: () -> Void = {}
     var onConfigureRemoteMember: (NetworkMemberStatus) -> Void = { _ in }
 
-    private var instance: NetworkInstance? { store.selectedRunningInstance }
-    private var members: [NetworkMemberStatus] { store.selectedMemberStatuses }
-    private var runtimeError: String? {
-        var inst = instance
-        inst?.detail = store.selectedRuntimeDetail
-        return inst?.runtimeErrorMessage
-    }
+    private var snapshot: RuntimeStatusSnapshot { store.selectedStatusSnapshot }
+    private var instance: NetworkInstance? { snapshot.instance }
+    private var members: [NetworkMemberStatus] { snapshot.members }
+    private var runtimeError: String? { snapshot.runtimeError }
     private var runtimeIntentConflict: RuntimeIntent? {
         let networkName = instance?.name ?? store.selectedConfig?.network_name
         return store.runtimeIntents.first { intent in
@@ -34,10 +31,8 @@ struct StatusView: View {
     private var connectionState: ConnectionGlyphState {
         if runtimeError != nil { return .error }
         if store.isBusy { return .connecting }
-        guard let instance else { return .idle }
-        var inst = instance
-        inst.detail = store.selectedRuntimeDetail
-        return store.instanceIsFullyConnected(inst) ? .connected : .connecting
+        guard instance != nil else { return .idle }
+        return snapshot.isFullyConnected ? .connected : .connecting
     }
 
     var body: some View {
@@ -138,13 +133,13 @@ struct StatusView: View {
         HStack(spacing: 10) {
             StatusBadge(
                 title: "Network",
-                value: instance?.name ?? store.selectedConfig?.network_name ?? "-",
+                value: snapshot.networkName,
                 systemImage: "globe"
             )
             StatusBadge(title: "Members", value: "\(members.count)", systemImage: "person.2.fill", width: 136)
             StatusBadge(
                 title: "Device",
-                value: store.selectedRuntimeDetail?.dev_name ?? instance?.detail?.dev_name ?? "-",
+                value: snapshot.deviceName,
                 systemImage: "desktopcomputer",
                 width: 152
             )
@@ -211,10 +206,10 @@ struct StatusView: View {
 
     private var networkSearchFields: [String] {
         var fields = [
-            instance?.name ?? "",
+            snapshot.networkName,
             instance?.instance_id ?? "",
-            instance?.detail?.dev_name ?? "",
-            instance?.detail?.error_msg ?? "",
+            snapshot.deviceName,
+            runtimeError ?? "",
             store.selectedConfigID ?? "",
             store.selectedConfig?.network_name ?? "",
             store.selectedConfig?.instance_id ?? "",

@@ -1500,6 +1500,141 @@ import Testing
 }
 
 @MainActor
+@Test func runtimeSessionControllerKeepsPendingStartUntilRuntimeAppears() async throws {
+    let client = RecordingToggleClient()
+    let sleepPreventer = RecordingSystemSleepPreventer()
+    let controller = RuntimeSessionController(
+        privilegedClient: client,
+        inProcessClient: client,
+        helperRegistration: nil,
+        systemSleepPreventer: sleepPreventer
+    )
+    let config = NetworkConfig(instance_id: "pending-id", network_name: "pending-network")
+
+    controller.recordPendingStart(for: config)
+    let pendingResult = try await controller.refreshRuntime(
+        currentInstances: [],
+        currentRuntimeDetails: [:],
+        currentStatusMetrics: [:],
+        currentTrafficSamples: [:],
+        selectedTab: .status,
+        mode: .default
+    )
+
+    #expect(pendingResult.presentationChange.state.instances.map(\.instance_id) == [config.instance_id])
+    #expect(pendingResult.presentationChange.state.instances.first?.detail?.running == true)
+    #expect(sleepPreventer.isPreventingSystemSleep)
+
+    client.networkInfos = [
+        config.network_name: NetworkInstanceRunningInfo(running: true, instance_id: config.instance_id),
+    ]
+    let runningResult = try await controller.refreshRuntime(
+        currentInstances: pendingResult.presentationChange.state.instances,
+        currentRuntimeDetails: pendingResult.presentationChange.state.runtimeDetails,
+        currentStatusMetrics: pendingResult.presentationChange.state.statusMetricsByInstance,
+        currentTrafficSamples: pendingResult.presentationChange.state.trafficSamplesByInstance,
+        selectedTab: .status,
+        mode: .default
+    )
+
+    #expect(runningResult.presentationChange.state.instances.map(\.instance_id) == [config.instance_id])
+    #expect(runningResult.presentationChange.state.instances.map(\.name) == [config.network_name])
+}
+
+@Test func runtimeTrafficSnapshotPrecomputesDisplaySamples() throws {
+    let config = NetworkConfig(instance_id: "traffic-id", network_name: "traffic-network")
+    let instance = NetworkInstance(instance_id: config.instance_id, name: config.network_name, running: true)
+    let base = Date(timeIntervalSince1970: 1_000)
+    let earliest = TrafficSample(timestamp: base, txBytesPerSecond: 80, rxBytesPerSecond: 20)
+    let latest = TrafficSample(timestamp: base.addingTimeInterval(30), txBytesPerSecond: 120, rxBytesPerSecond: 40)
+    let invalid = TrafficSample(timestamp: base.addingTimeInterval(10), txBytesPerSecond: .nan, rxBytesPerSecond: 50)
+
+    let snapshot = RuntimeTrafficSnapshot.build(
+        selectedConfig: config,
+        runningInstance: instance,
+        samples: [latest, invalid, earliest]
+    )
+
+    #expect(snapshot.networkName == config.network_name)
+    #expect(snapshot.samples.count == 3)
+    #expect(snapshot.displaySamples.map(\.id) == [earliest.id, latest.id])
+    #expect(snapshot.latest?.id == latest.id)
+    #expect(snapshot.maxValue == 200)
+    #expect(snapshot.timeSpanLabel == "Last 30 sec")
+    #expect(snapshot.accessibilitySummary.contains("Upload"))
+    #expect(snapshot.accessibilitySummary.contains("Download"))
+}
+
+@Test func runtimeStatusSnapshotAppliesMemberTrafficMetrics() throws {
+    let config = NetworkConfig(instance_id: "status-id", network_name: "status-network")
+    let detail = NetworkInstanceRunningInfo(
+        dev_name: "utun9",
+        my_node_info: NodeInfo(ipv4_addr: "10.0.0.1", hostname: "local-host", peer_id: 7),
+        running: true,
+        instance_id: config.instance_id
+    )
+    let instance = NetworkInstance(instance_id: config.instance_id, name: config.network_name, running: true, detail: detail)
+    let member = try #require(detail.memberStatuses.first)
+    var trafficMember = member
+    trafficMember.txBytes = 2_048
+    trafficMember.rxBytes = 4_096
+
+    let snapshot = RuntimeStatusSnapshot.build(
+        selectedConfig: config,
+        runningInstance: instance,
+        runtimeDetail: detail,
+        memberTrafficByID: [member.id: RuntimeMemberTrafficSnapshot(trafficMember)]
+    )
+
+    let displayedMember = try #require(snapshot.members.first)
+    #expect(snapshot.networkName == config.network_name)
+    #expect(snapshot.deviceName == "utun9")
+    #expect(snapshot.isFullyConnected)
+    #expect(displayedMember.txBytes == 2_048)
+    #expect(displayedMember.rxBytes == 4_096)
+    #expect(displayedMember.uploadTotal == ByteFormatter.format(2_048))
+    #expect(displayedMember.downloadTotal == ByteFormatter.format(4_096))
+}
+
+@MainActor
+@Test func appStoreSelectedRuntimeSnapshotsFollowSelectedConfig() throws {
+    let first = NetworkConfig(instance_id: "first-id", network_name: "first-network")
+    let second = NetworkConfig(instance_id: "second-id", network_name: "second-network")
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let store = EasyTierAppStore(client: RecordingToggleClient(), storage: EasyTierStorage(baseDirectory: directory))
+    let firstSample = TrafficSample(timestamp: Date(timeIntervalSince1970: 1), txBytesPerSecond: 1, rxBytesPerSecond: 2)
+    let secondSample = TrafficSample(timestamp: Date(timeIntervalSince1970: 2), txBytesPerSecond: 3, rxBytesPerSecond: 4)
+
+    store.configs = [
+        StoredNetworkConfig(config: first),
+        StoredNetworkConfig(config: second),
+    ]
+    store.selectedConfigID = first.instance_id
+    store.instances = [
+        NetworkInstance(instance_id: first.instance_id, name: first.network_name, running: true),
+        NetworkInstance(instance_id: second.instance_id, name: second.network_name, running: true),
+    ]
+    store.runtimeDetails = [
+        first.network_name: NetworkInstanceRunningInfo(dev_name: "first-device", running: true, instance_id: first.instance_id),
+        second.network_name: NetworkInstanceRunningInfo(dev_name: "second-device", running: true, instance_id: second.instance_id),
+    ]
+    store.trafficSamplesByInstance = [
+        first.network_name: [firstSample],
+        second.network_name: [secondSample],
+    ]
+
+    #expect(store.selectedStatusSnapshot.networkName == first.network_name)
+    #expect(store.selectedStatusSnapshot.deviceName == "first-device")
+    #expect(store.selectedTrafficSnapshot.samples.map(\.id) == [firstSample.id])
+
+    store.selectedConfigID = second.instance_id
+
+    #expect(store.selectedStatusSnapshot.networkName == second.network_name)
+    #expect(store.selectedStatusSnapshot.deviceName == "second-device")
+    #expect(store.selectedTrafficSnapshot.samples.map(\.id) == [secondSample.id])
+}
+
+@MainActor
 @Test func helperPermissionErrorsDoNotBecomeModalLastError() async throws {
     let client = HelperRunErrorClient(
         payload: PrivilegedHelperErrorPayload(
