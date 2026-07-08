@@ -1543,12 +1543,44 @@ private struct ConnectionEmptyState: View {
             Label {
                 Text(title)
             } icon: {
-                ConnectionGlyph(state: state, size: 46)
+                ConnectionSignalGlyph(state: state, size: 46)
             }
         } description: {
             description
         }
         .padding()
+    }
+}
+
+private struct ConnectionSignalGlyph: View {
+    var state: ConnectionGlyphState
+    var size: CGFloat
+
+    var body: some View {
+        Image(systemName: "dot.radiowaves.left.and.right")
+            .symbolRenderingMode(.hierarchical)
+            .font(.system(size: size, weight: .semibold))
+            .foregroundStyle(iconColor)
+            .frame(width: size, height: size)
+            .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var iconColor: Color {
+        switch state {
+        case .idle: .primary.opacity(0.68)
+        case .connecting: .orange
+        case .connected: EasyTierColors.statusConnected
+        case .error: .red
+        }
+    }
+
+    private var accessibilityLabel: Text {
+        switch state {
+        case .idle: Text("Disconnected")
+        case .connecting: Text("Connecting")
+        case .connected: Text("Connected")
+        case .error: Text("Connection error")
+        }
     }
 }
 

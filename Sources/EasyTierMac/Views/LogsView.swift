@@ -62,19 +62,31 @@ struct LogsView: View {
                     .accessibilityValue("\(filteredEntries.count) of \(store.logLines.count) entries")
             }
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 6) {
-                    ForEach(filteredEntries) { entry in
-                        Text(entry.text)
-                            .font(.system(.callout, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+            GeometryReader { proxy in
+                ScrollView {
+                    if filteredEntries.isEmpty {
+                        ContentUnavailableView(
+                            emptyStateTitle,
+                            systemImage: emptyStateSystemImage,
+                            description: Text(emptyStateDescription)
+                        )
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .center)
+                    } else {
+                        LazyVStack(alignment: .leading, spacing: 6) {
+                            ForEach(filteredEntries) { entry in
+                                Text(entry.text)
+                                    .font(.system(.callout, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        .padding(12)
                     }
                 }
-                .padding(12)
+                .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
+                .hideScrollViewScrollers()
             }
-            .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
-            .hideScrollViewScrollers()
             .frostedGlassBackground(in: RoundedRectangle(cornerRadius: 8))
             if let exportError {
                 Text(exportError)
@@ -97,6 +109,20 @@ struct LogsView: View {
                 exportError = error.localizedDescription
             }
         }
+    }
+
+    private var emptyStateTitle: String {
+        store.logLines.isEmpty ? "No Runtime Logs" : "No Search Results"
+    }
+
+    private var emptyStateSystemImage: String {
+        store.logLines.isEmpty ? "doc.text.magnifyingglass" : "magnifyingglass"
+    }
+
+    private var emptyStateDescription: String {
+        store.logLines.isEmpty
+            ? "Run the selected network to collect runtime logs."
+            : "Try a different log search term."
     }
 
     private func copyAll() {

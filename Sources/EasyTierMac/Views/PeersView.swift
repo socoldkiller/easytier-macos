@@ -23,27 +23,29 @@ struct PeersView: View {
     }
 
     var body: some View {
-        ScrollView {
-            if allCards.isEmpty {
-                emptyState
-                    .padding(.top, 40)
-            } else {
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 220, maximum: 280), spacing: 8)],
-                    spacing: 8
-                ) {
-                    ForEach(allCards, id: \.card.id) { entry in
-                        PeerCardView(
-                            subscription: entry.subscription,
-                            card: entry.card,
-                            latencyMs: store.peerCardLatency(for: entry.card),
-                            targetNetworkName: store.selectedConfig?.network_name,
-                            appliedState: appliedCardID == entry.card.id ? appliedState : .none,
-                            onAddToCurrentConfig: { addToCurrentConfig(entry.card) }
-                        )
+        GeometryReader { proxy in
+            ScrollView {
+                if allCards.isEmpty {
+                    emptyState
+                        .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .center)
+                } else {
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 220, maximum: 280), spacing: 8)],
+                        spacing: 8
+                    ) {
+                        ForEach(allCards, id: \.card.id) { entry in
+                            PeerCardView(
+                                subscription: entry.subscription,
+                                card: entry.card,
+                                latencyMs: store.peerCardLatency(for: entry.card),
+                                targetNetworkName: store.selectedConfig?.network_name,
+                                appliedState: appliedCardID == entry.card.id ? appliedState : .none,
+                                onAddToCurrentConfig: { addToCurrentConfig(entry.card) }
+                            )
+                        }
                     }
+                    .padding(8)
                 }
-                .padding(8)
             }
         }
         .scrollContentBackground(.hidden)
@@ -81,14 +83,15 @@ struct PeersView: View {
         VStack(spacing: 14) {
             ContentUnavailableView(
                 "No Peer Subscriptions",
-                systemImage: "rectangle.stack.badge.plus",
-                description: Text("Add a subscription URL to import EasyTier node addresses.\nImported addresses can be merged into the current network.")
+                systemImage: "wifi",
+                description: Text("Add a subscription URL to import EasyTier node addresses.")
             )
-            .frame(maxWidth: 420)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: 420, alignment: .center)
             Button("Add Subscription") { inputMode = .url; openAddSheet() }
                 .buttonStyle(.borderedProminent)
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private func openAddSheet() {

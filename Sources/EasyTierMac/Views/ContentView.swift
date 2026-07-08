@@ -193,7 +193,7 @@ struct ContentView: View {
             } else {
                 ContentUnavailableView(
                     "No Network",
-                    systemImage: "network",
+                    systemImage: "slider.horizontal.3",
                     description: Text("Create a network config to begin.")
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
