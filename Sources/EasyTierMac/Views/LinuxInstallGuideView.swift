@@ -162,7 +162,6 @@ private struct CommandField: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
                     .fixedSize(horizontal: true, vertical: false)
-                    .hideEnclosingScrollViewScrollers()
             }
             .scrollIndicators(.hidden)
 

@@ -47,7 +47,6 @@ struct ConfigEditorView: View {
                 advancedDisclosure
             }
             .padding(18)
-            .hideEnclosingScrollViewScrollers()
         }
         .coordinateSpace(name: Self.scrollSpaceName)
         .scrollIndicators(.hidden, axes: [.vertical, .horizontal])

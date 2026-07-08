@@ -295,7 +295,6 @@ private struct MemberGridTable: View {
                 }
                 .frame(width: tableWidth, alignment: .topLeading)
                 .frame(minHeight: proxy.size.height, alignment: .topLeading)
-                .hideEnclosingScrollViewScrollers()
             }
             .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
             .defaultScrollAnchor(.topLeading)

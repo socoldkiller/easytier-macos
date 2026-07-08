@@ -72,7 +72,6 @@ struct LogsView: View {
                     }
                 }
                 .padding(12)
-                .hideEnclosingScrollViewScrollers()
             }
             .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
             .hideScrollViewScrollers()
