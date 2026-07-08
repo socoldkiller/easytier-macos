@@ -71,10 +71,6 @@ struct ContentView: View {
         .onChange(of: selectedTabLocal) { _, newTab in
             selectWorkspaceTab(newTab)
         }
-        .onChange(of: store.selectedConfig?.peer_urls) { _, _ in
-            // No-op: peer_urls sync is handled via pendingMergeRequest below
-            // to avoid race between commitDraft and loadDraft.
-        }
         .onChange(of: store.pendingPeerCardMerge) { _, card in
             handlePendingPeerCardMerge(card)
         }

@@ -296,7 +296,6 @@ private final class RuntimeStressClient: EasyTierCoreClient, @unchecked Sendable
 
     func version() async throws -> String { "stress" }
     func validate(toml _: String) async throws {}
-    func run(config _: NetworkConfig) async throws {}
     func run(toml _: String) async throws {}
     func stop(instanceNames _: [String]) async throws {}
     func retain(instanceNames _: [String]) async throws {}
@@ -418,7 +417,6 @@ private class StaticRuntimeClient: EasyTierCoreClient, @unchecked Sendable {
 
     func version() async throws -> String { "static" }
     func validate(toml _: String) async throws {}
-    func run(config _: NetworkConfig) async throws {}
     func run(toml _: String) async throws {}
     func stop(instanceNames _: [String]) async throws {}
     func retain(instanceNames _: [String]) async throws {}

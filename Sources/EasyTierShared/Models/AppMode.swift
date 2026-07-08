@@ -2,7 +2,6 @@ import Foundation
 
 public enum AppMode: Codable, Equatable, Sendable {
     case normal(rpcPortal: String?, rpcListenEnabled: Bool, rpcListenPort: Int, rpcPortalWhitelist: [String]?, configServerURL: URL?)
-    case remote(remoteRPCAddress: String)
 
     /// EasyTier core's rpc_portal default starts by trying TCP 15888.
     public static let defaultRPCListenPort = 15_888
@@ -20,8 +19,6 @@ public enum AppMode: Codable, Equatable, Sendable {
         switch self {
         case let .normal(_, _, _, _, configServerURL):
             configServerURL == nil ? "Normal" : "Config Server"
-        case .remote:
-            "Remote"
         }
     }
 
@@ -29,8 +26,6 @@ public enum AppMode: Codable, Equatable, Sendable {
         switch self {
         case let .normal(_, _, _, _, url):
             url
-        case .remote:
-            nil
         }
     }
 
@@ -38,8 +33,6 @@ public enum AppMode: Codable, Equatable, Sendable {
         switch self {
         case let .normal(rpcPortal, _, _, _, _):
             rpcPortal
-        case .remote:
-            nil
         }
     }
 
@@ -47,16 +40,12 @@ public enum AppMode: Codable, Equatable, Sendable {
         switch self {
         case let .normal(_, _, _, whitelist, _):
             whitelist
-        case .remote:
-            nil
         }
     }
 }
 
 public enum ConfigSource: String, Codable, CaseIterable, Sendable {
-    case legacy
     case user
-    case web
 }
 
 public struct StoredNetworkConfig: Codable, Identifiable, Equatable, Sendable {

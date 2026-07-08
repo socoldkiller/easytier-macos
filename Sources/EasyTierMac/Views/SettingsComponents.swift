@@ -5,9 +5,6 @@ enum SettingsTint {
     static let magicDNS = Color.indigo
     static let rpcServer = Color.teal
     static let remoteConfig = Color.purple
-    static let appearance = Color.pink
-    static let launch = Color.green
-    static let quit = Color.orange
 }
 
 struct SectionIcon: View {
@@ -89,28 +86,6 @@ struct CardSection<Content: View>: View {
     }
 }
 
-struct SectionHeader: View {
-    var title: String
-    var subtitle: String
-    var systemImage: String
-    var tint: Color
-
-    var body: some View {
-        HStack(spacing: 7) {
-            SectionIcon(systemImage: systemImage, tint: tint, size: 22)
-            VStack(alignment: .leading, spacing: 0.5) {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
-        }
-    }
-}
-
 struct FieldRow<Content: View>: View {
     var label: String
     var description: String?
@@ -171,13 +146,12 @@ struct FieldRow<Content: View>: View {
 
 struct StatusPill: View {
     enum Tone {
-        case neutral, positive, warning, danger
+        case neutral, positive, warning
         var color: Color {
             switch self {
             case .neutral: .secondary
             case .positive: .green
             case .warning: .orange
-            case .danger: .red
             }
         }
     }

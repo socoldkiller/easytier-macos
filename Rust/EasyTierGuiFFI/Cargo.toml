@@ -9,7 +9,6 @@ name = "easytier_ffi"
 crate-type = ["staticlib"]
 
 [dependencies]
-anyhow = "1"
 dashmap = "6.0"
 easytier = { path = "../../Vendor/EasyTier/easytier" }
 once_cell = "1.18.0"

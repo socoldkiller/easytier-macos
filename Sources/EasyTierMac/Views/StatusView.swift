@@ -241,28 +241,6 @@ struct StatusView: View {
         return fields
     }
 
-    @ViewBuilder
-    private func expandablePublicServerCell<Content: View>(
-        for row: MemberTableRow,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        if row.isPublicServerGroup {
-            content()
-                .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    togglePublicServerGroup()
-                }
-                .help(publicServerGroupExpanded ? "Collapse public servers" : "Show public servers")
-                .accessibilityAddTraits(.isButton)
-                .accessibilityAction {
-                    togglePublicServerGroup()
-                }
-        } else {
-            content()
-        }
-    }
-
     private func togglePublicServerGroup() {
         withAnimation(EasyTierMotion.quick(reduceMotion: reduceMotion)) {
             publicServerGroupExpanded.toggle()
@@ -1283,10 +1261,6 @@ private enum LatencyQuality: Equatable {
         }
     }
 
-    var isKnown: Bool {
-        self != .unknown
-    }
-
     var color: Color {
         switch self {
         case .unknown:
@@ -1628,8 +1602,6 @@ private struct RuntimeIntentConflictBanner: View {
         switch intent.kind {
         case .hostname:
             "Hostname change conflict"
-        case .portForwardSet:
-            "Port forwarding change conflict"
         }
     }
 

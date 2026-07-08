@@ -589,10 +589,6 @@ public final class EasyTierAppStore {
         log(message)
     }
 
-    public func clearHelperPermissionError() {
-        // Retained as a no-op for callers that used to clear the old suppressed banner.
-    }
-
     public var lastErrorIsHelperPermission: Bool {
         guard let message = lastError else { return false }
         if lastErrorKind == .helperPermission { return true }

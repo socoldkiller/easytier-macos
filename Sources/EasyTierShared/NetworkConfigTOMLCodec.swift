@@ -2,13 +2,10 @@ import Foundation
 import TOML
 
 public enum TOMLCodecError: LocalizedError, Equatable {
-    case invalidLine(String)
     case invalidValue(String)
 
     public var errorDescription: String? {
         switch self {
-        case let .invalidLine(line):
-            "Could not parse TOML line: \(line)"
         case let .invalidValue(value):
             "Could not parse TOML value: \(value)"
         }
@@ -232,9 +229,7 @@ private struct FlagsTOML: Codable {
     var enable_udp_broadcast_relay: Bool?
     var disable_sym_hole_punching: Bool?
     var accept_dns: Bool?
-    var enable_magic_dns: Bool?
     var private_mode: Bool?
-    var enable_private_mode: Bool?
     var tld_dns_zone: String?
     var relay_network_whitelist: String?
     var dev_name: String?
@@ -299,9 +294,7 @@ private struct FlagsTOML: Codable {
         if let enable_udp_broadcast_relay { config.enable_udp_broadcast_relay = enable_udp_broadcast_relay }
         if let disable_sym_hole_punching { config.disable_sym_hole_punching = disable_sym_hole_punching }
         if let accept_dns { config.enable_magic_dns = accept_dns }
-        if let enable_magic_dns { config.enable_magic_dns = enable_magic_dns }
         if let private_mode { config.enable_private_mode = private_mode }
-        if let enable_private_mode { config.enable_private_mode = enable_private_mode }
         if let relay_network_whitelist {
             config.enable_relay_network_whitelist = relay_network_whitelist != "*"
             config.relay_network_whitelist = relay_network_whitelist == "*" ? [] : relay_network_whitelist.split(separator: " ").map(String.init)

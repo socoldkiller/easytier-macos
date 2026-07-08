@@ -41,10 +41,6 @@ public struct LocalFFIRPCTransport: EasyTierRPCTransport {
         )
     }
 
-    public func disconnect() async throws {
-        try await client.disconnectRPCClient(clientID: clientID)
-    }
-
     private static func defaultClientID(for rpcURL: URL) -> String {
         let hex = rpcURL.absoluteString.utf8.map { String(format: "%02x", Int($0)) }.joined()
         return "local-ffi-rpc-\(hex)"
@@ -140,20 +136,8 @@ public struct EasyTierRemoteRPCClient: Sendable {
         return try await patchConfig(instanceID: instanceID, patch: patch)
     }
 
-    public static func getConfig(rpcURL: URL, instanceID: String, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
-        try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).getConfig(instanceID: instanceID)
-    }
-
     public static func getConfigParsed(rpcURL: URL, instanceID: String, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> NetworkConfig {
         try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).getConfigParsed(instanceID: instanceID)
-    }
-
-    public static func listPeers(rpcURL: URL, instanceID: String, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
-        try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).listPeers(instanceID: instanceID)
-    }
-
-    public static func listPortForwards(rpcURL: URL, instanceID: String, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
-        try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).listPortForwards(instanceID: instanceID)
     }
 
     @discardableResult
@@ -164,11 +148,6 @@ public struct EasyTierRemoteRPCClient: Sendable {
     @discardableResult
     public static func patchPortForwards(rpcURL: URL, instanceID: String, portForwards: [PortForwardConfig], privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
         try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).patchPortForwards(instanceID: instanceID, portForwards: portForwards)
-    }
-
-    @discardableResult
-    public static func patchPortForwardAdd(rpcURL: URL, instanceID: String, portForward: PortForwardConfig, privilegedClient: PrivilegedEasyTierClient = PrivilegedEasyTierClient()) async throws -> String {
-        try await EasyTierRemoteRPCClient(rpcURL: rpcURL, privilegedClient: privilegedClient).patchPortForwardAdd(instanceID: instanceID, portForward: portForward)
     }
 
     @discardableResult
@@ -190,7 +169,6 @@ extension EasyTierRemoteRPCClient {
     static let configService = "api.config.ConfigRpcService"
     static let peerManageService = "api.instance.PeerManageRpcService"
     static let portForwardService = "api.instance.PortForwardManageRpcService"
-    static let webClientService = "api.manage.WebClientService"
 
     static func instancePayload(instanceID: String) throws -> String {
         try encodePayload(InstanceRequestPayload(instance: instanceIdentifier(instanceID: instanceID)))

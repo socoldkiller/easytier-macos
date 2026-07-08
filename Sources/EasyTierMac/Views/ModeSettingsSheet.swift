@@ -3,7 +3,7 @@ import EasyTierShared
 import SwiftUI
 
 enum MagicDNSDisplay {
-    static let resolverIP = "100.100.100.101"
+    static let resolverIP = MagicDNSSystemResolverConfigurator.resolverIP
 }
 
 enum EasyTierSettingsTab: String, CaseIterable, Identifiable, Hashable {
@@ -83,7 +83,6 @@ struct EasyTierSettingsSheet: View {
     @State private var rpcListenPort: Int
     @State private var rpcPortalWhitelist: [String]
     @State private var configServerURL: String
-    @State private var remoteRPCAddress: String
     @State private var magicDNSSuffix: String
     @State private var settingsError: String?
     @State private var showingDisableRPCListenWarning = false
@@ -113,14 +112,6 @@ struct EasyTierSettingsSheet: View {
             _rpcListenPort = State(initialValue: rpcListenPort)
             _rpcPortalWhitelist = State(initialValue: Self.initialRPCPortalWhitelist(from: rpcPortalWhitelist))
             _configServerURL = State(initialValue: configServerURL?.absoluteString ?? "")
-            _remoteRPCAddress = State(initialValue: Self.normalizedSingleValue(Self.defaultRemoteRPCAddress, fallback: Self.defaultRemoteRPCAddress))
-        case let .remote(remoteRPCAddress):
-            _kind = State(initialValue: .normal)
-            _rpcListenEnabled = State(initialValue: true)
-            _rpcListenPort = State(initialValue: AppMode.defaultRPCListenPort)
-            _rpcPortalWhitelist = State(initialValue: AppMode.defaultRPCPortalWhitelist)
-            _configServerURL = State(initialValue: "")
-            _remoteRPCAddress = State(initialValue: Self.normalizedSingleValue(remoteRPCAddress, fallback: Self.defaultRemoteRPCAddress))
         }
     }
 
@@ -388,12 +379,6 @@ struct EasyTierSettingsSheet: View {
                         .disabled(!rpcListenEnabled)
                         .frame(maxWidth: 340, alignment: .leading)
                 }
-                SettingsRowDivider()
-                SettingsInlineRow("Remote RPC") {
-                    TextField("", text: $remoteRPCAddress)
-                        .textFieldStyle(.glassField)
-                        .frame(maxWidth: 340)
-                }
             }
         }
     }
@@ -564,15 +549,6 @@ struct EasyTierSettingsSheet: View {
         let legacyDefaults = Set(["127.0.0.0/8", "::1/128", "10.126.126.0/24"])
         return values.isEmpty || Set(values).isSubset(of: legacyDefaults) ? AppMode.defaultRPCPortalWhitelist : values
     }
-
-    private static func normalizedSingleValue(_ value: String, fallback: String) -> String {
-        let parts = value.split(whereSeparator: \.isWhitespace).map(String.init)
-        if parts.isEmpty { return fallback }
-        if Set(parts).count == 1 { return parts[0] }
-        return value.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private static let defaultRemoteRPCAddress = "tcp://127.0.0.1:\(AppMode.defaultRPCListenPort)"
 
     private static let sidebarWidth: CGFloat = 220
     fileprivate static let sidebarTopClearance: CGFloat = 8
