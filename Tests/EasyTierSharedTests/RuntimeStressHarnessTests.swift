@@ -91,6 +91,29 @@ import Testing
 }
 
 @MainActor
+@Test func statusMemberTrafficRefreshesEachRuntimePollWithoutRuntimeDetailReassignment() async {
+    let profile = RuntimeStressProfile(instanceCount: 1, peersPerInstance: 1, iterations: 5)
+    let client = RuntimeStressClient(profile: profile)
+    let store = EasyTierAppStore(client: client)
+    RuntimeStressHarness.seed(store, profile: profile)
+    store.selectedTab = .status
+    store.resetWriteCounters()
+
+    let result = await RuntimeStressHarness.runCompressedPollingLoop(
+        store: store,
+        client: client,
+        profile: profile
+    )
+
+    #expect(
+        result.runtimeDetailsWrites == 1,
+        "runtimeDetails should still avoid republishing stats-only changes, got \(result.runtimeDetailsWrites)/\(profile.iterations)."
+    )
+    #expect(result.selectedTxBytes == Int64(profile.iterations * 10_000))
+    #expect(result.selectedRxBytes == Int64(profile.iterations * 12_000))
+}
+
+@MainActor
 @Test func trafficSamplesSkippedWhenNotOnTrafficTab() async {
     let profile = RuntimeStressProfile(instanceCount: 1, peersPerInstance: 3, iterations: 20)
     let client = RuntimeStressClient(profile: profile)
@@ -198,6 +221,8 @@ private struct RuntimeStressResult: Sendable {
     var instanceCount: Int
     var selectedMemberCount: Int
     var selectedTrafficSampleCount: Int
+    var selectedTxBytes: Int64
+    var selectedRxBytes: Int64
     var collectCount: Int
     var runtimeDetailsWrites: Int
     var instancesWrites: Int
@@ -238,6 +263,8 @@ private enum RuntimeStressHarness {
             instanceCount: store.instances.count,
             selectedMemberCount: store.selectedMemberStatuses.count,
             selectedTrafficSampleCount: store.selectedTrafficSamples.count,
+            selectedTxBytes: store.selectedMemberStatuses.reduce(0) { $0 + $1.txBytes },
+            selectedRxBytes: store.selectedMemberStatuses.reduce(0) { $0 + $1.rxBytes },
             collectCount: client.collectCount,
             runtimeDetailsWrites: store.runtimeDetailsWriteCount,
             instancesWrites: store.instancesWriteCount,
