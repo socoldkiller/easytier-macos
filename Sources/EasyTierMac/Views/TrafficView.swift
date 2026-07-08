@@ -8,22 +8,20 @@ struct TrafficView: View {
 
     private static let rateMetricWidth: CGFloat = 136
 
-    private var instance: NetworkInstance? { store.selectedRunningInstance }
-    private var samples: [TrafficSample] { store.selectedTrafficSamples }
-    private var latest: TrafficSample? { samples.last }
+    private var snapshot: RuntimeTrafficSnapshot { store.selectedTrafficSnapshot }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
-                StatusBadge(title: "Network", value: instance?.name ?? store.selectedConfig?.network_name ?? "-", systemImage: "globe")
-                StatusBadge(title: "Upload", value: ByteFormatter.formatRate(latest?.txBytesPerSecond ?? 0), systemImage: "arrow.up", width: Self.rateMetricWidth)
-                StatusBadge(title: "Download", value: ByteFormatter.formatRate(latest?.rxBytesPerSecond ?? 0), systemImage: "arrow.down", width: Self.rateMetricWidth)
-                StatusBadge(title: "Samples", value: "\(samples.count)", systemImage: "waveform.path.ecg")
+                StatusBadge(title: "Network", value: snapshot.networkName, systemImage: "globe")
+                StatusBadge(title: "Upload", value: ByteFormatter.formatRate(snapshot.latest?.txBytesPerSecond ?? 0), systemImage: "arrow.up", width: Self.rateMetricWidth)
+                StatusBadge(title: "Download", value: ByteFormatter.formatRate(snapshot.latest?.rxBytesPerSecond ?? 0), systemImage: "arrow.down", width: Self.rateMetricWidth)
+                StatusBadge(title: "Samples", value: "\(snapshot.samples.count)", systemImage: "waveform.path.ecg")
                 Spacer(minLength: 0)
             }
 
-            MotionSwitch(id: instance == nil ? "empty" : "chart", insertionEdge: .bottom) {
-                if instance == nil {
+            MotionSwitch(id: snapshot.hasRunningInstance ? "chart" : "empty", insertionEdge: .bottom) {
+                if !snapshot.hasRunningInstance {
                     ContentUnavailableView(
                         "No Traffic Data",
                         systemImage: "chart.xyaxis.line",
@@ -31,7 +29,7 @@ struct TrafficView: View {
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    TrafficLineChart(samples: samples)
+                    TrafficLineChart(snapshot: snapshot)
                         .equatable()
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
@@ -42,7 +40,7 @@ struct TrafficView: View {
 }
 
 private struct TrafficLineChart: View, Equatable {
-    var samples: [TrafficSample]
+    var snapshot: RuntimeTrafficSnapshot
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var selectedSample: TrafficSample?
@@ -51,21 +49,8 @@ private struct TrafficLineChart: View, Equatable {
     private let downloadColor = EasyTierColors.metricDownload
 
     nonisolated static func == (lhs: TrafficLineChart, rhs: TrafficLineChart) -> Bool {
-        lhs.samples == rhs.samples
+        lhs.snapshot == rhs.snapshot
     }
-
-    private var displaySamples: [TrafficSample] {
-        samples
-            .filter { sample in
-                sample.timestamp.timeIntervalSinceReferenceDate.isFinite
-                    && sample.txBytesPerSecond.isFinite
-                    && sample.rxBytesPerSecond.isFinite
-            }
-            .sorted { $0.timestamp < $1.timestamp }
-    }
-
-    private var latest: TrafficSample? { displaySamples.last }
-    private var maxValue: Double { Self.maxChartValue(for: displaySamples) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -73,7 +58,7 @@ private struct TrafficLineChart: View, Equatable {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Traffic trend")
                         .font(.headline.weight(.semibold))
-                    Text(timeSpanLabel)
+                    Text(snapshot.timeSpanLabel)
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                 }
@@ -84,20 +69,20 @@ private struct TrafficLineChart: View, Equatable {
                     RateLegendItem(
                         color: uploadColor,
                         title: "Upload",
-                        value: ByteFormatter.formatRate(latest?.txBytesPerSecond ?? 0),
+                        value: ByteFormatter.formatRate(snapshot.latest?.txBytesPerSecond ?? 0),
                         systemImage: "arrow.up"
                     )
                     RateLegendItem(
                         color: downloadColor,
                         title: "Download",
-                        value: ByteFormatter.formatRate(latest?.rxBytesPerSecond ?? 0),
+                        value: ByteFormatter.formatRate(snapshot.latest?.rxBytesPerSecond ?? 0),
                         systemImage: "arrow.down"
                     )
                 }
             }
 
             ZStack {
-                if displaySamples.isEmpty {
+                if snapshot.displaySamples.isEmpty {
                     ContentUnavailableView(
                         "Waiting for traffic data",
                         systemImage: "waveform.path.ecg",
@@ -121,7 +106,7 @@ private struct TrafficLineChart: View, Equatable {
         }
         .shadow(color: shadowColor, radius: 10, y: 5)
         .animation(.easeOut(duration: 0.16), value: selectedSample?.id)
-        .onChange(of: samples) { _, newSamples in
+        .onChange(of: snapshot.displaySamples) { _, newSamples in
             if let selectedSample, !newSamples.contains(where: { $0.id == selectedSample.id }) {
                 self.selectedSample = nil
             }
@@ -130,7 +115,7 @@ private struct TrafficLineChart: View, Equatable {
 
     private var chart: some View {
         Chart {
-            ForEach(displaySamples) { sample in
+            ForEach(snapshot.displaySamples) { sample in
                 AreaMark(
                     x: .value("Time", sample.timestamp),
                     yStart: .value("Baseline", 0.0),
@@ -141,7 +126,7 @@ private struct TrafficLineChart: View, Equatable {
                 .interpolationMethod(.linear)
             }
 
-            ForEach(displaySamples) { sample in
+            ForEach(snapshot.displaySamples) { sample in
                 AreaMark(
                     x: .value("Time", sample.timestamp),
                     yStart: .value("Baseline", 0.0),
@@ -152,7 +137,7 @@ private struct TrafficLineChart: View, Equatable {
                 .interpolationMethod(.linear)
             }
 
-            ForEach(displaySamples) { sample in
+            ForEach(snapshot.displaySamples) { sample in
                 LineMark(
                     x: .value("Time", sample.timestamp),
                     y: .value("Download", sample.rxBytesPerSecond),
@@ -163,7 +148,7 @@ private struct TrafficLineChart: View, Equatable {
                 .interpolationMethod(.linear)
             }
 
-            ForEach(displaySamples) { sample in
+            ForEach(snapshot.displaySamples) { sample in
                 LineMark(
                     x: .value("Time", sample.timestamp),
                     y: .value("Upload", sample.txBytesPerSecond),
@@ -194,7 +179,7 @@ private struct TrafficLineChart: View, Equatable {
                 .symbolSize(38)
             }
 
-            if let latest {
+            if let latest = snapshot.latest {
                 PointMark(
                     x: .value("Latest upload time", latest.timestamp),
                     y: .value("Latest upload", latest.txBytesPerSecond)
@@ -211,7 +196,7 @@ private struct TrafficLineChart: View, Equatable {
             }
         }
         .chartLegend(.hidden)
-        .chartYScale(domain: 0...maxValue)
+        .chartYScale(domain: 0...snapshot.maxValue)
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 4)) { value in
                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.6))
@@ -229,7 +214,7 @@ private struct TrafficLineChart: View, Equatable {
             }
         }
         .chartYAxis {
-            AxisMarks(position: .leading, values: Self.axisValues(maxValue: maxValue)) { value in
+            AxisMarks(position: .leading, values: RuntimeTrafficSnapshot.axisValues(maxValue: snapshot.maxValue)) { value in
                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.7))
                     .foregroundStyle(axisGridColor)
                 AxisValueLabel {
@@ -247,7 +232,7 @@ private struct TrafficLineChart: View, Equatable {
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
         .accessibilityLabel(Text("Traffic trend chart"))
-        .accessibilityValue(Text(chartAccessibilitySummary))
+        .accessibilityValue(Text(snapshot.accessibilitySummary))
         .accessibilityHint(Text("Shows upload and download rates over time"))
         .chartOverlay { chartProxy in
             GeometryReader { geometryProxy in
@@ -292,28 +277,7 @@ private struct TrafficLineChart: View, Equatable {
 
         let xPosition = location.x - plotRect.minX
         guard let date = chartProxy.value(atX: xPosition, as: Date.self) else { return }
-        selectedSample = Self.closestSample(to: date, in: displaySamples)
-    }
-
-    private var timeSpanLabel: String {
-        guard let first = displaySamples.first?.timestamp, let last = displaySamples.last?.timestamp else {
-            return "Waiting for samples"
-        }
-        guard displaySamples.count > 1 else {
-            return "Collecting samples"
-        }
-        let seconds = max(0, last.timeIntervalSince(first))
-        if seconds < 90 {
-            return "Last \(Int(seconds.rounded())) sec"
-        }
-        return "Last \(String(format: "%.1f", seconds / 60)) min"
-    }
-
-    private var chartAccessibilitySummary: String {
-        guard let latest else { return "No data yet" }
-        let upload = ByteFormatter.formatRate(latest.txBytesPerSecond)
-        let download = ByteFormatter.formatRate(latest.rxBytesPerSecond)
-        return "Upload \(upload), Download \(download)"
+        selectedSample = Self.closestSample(to: date, in: snapshot.displaySamples)
     }
 
     private var panelStroke: Color {
@@ -338,32 +302,6 @@ private struct TrafficLineChart: View, Equatable {
 
     private var downloadAreaGradient: LinearGradient {
         LinearGradient(colors: [downloadColor.opacity(0.13), downloadColor.opacity(0.0)], startPoint: .top, endPoint: .bottom)
-    }
-
-    private static func maxChartValue(for samples: [TrafficSample]) -> Double {
-        let maxSampleValue = samples.lazy.flatMap { [$0.txBytesPerSecond, $0.rxBytesPerSecond] }.max() ?? 0
-        return niceAxisMaximum(max(maxSampleValue, 16))
-    }
-
-    private static func axisValues(maxValue: Double) -> [Double] {
-        (0...4).map { maxValue * Double($0) / 4 }
-    }
-
-    private static func niceAxisMaximum(_ value: Double) -> Double {
-        let exponent = floor(log10(value))
-        let scale = pow(10, exponent)
-        let normalized = value / scale
-        let niceNormalized: Double
-        if normalized <= 1 {
-            niceNormalized = 1
-        } else if normalized <= 2 {
-            niceNormalized = 2
-        } else if normalized <= 5 {
-            niceNormalized = 5
-        } else {
-            niceNormalized = 10
-        }
-        return niceNormalized * scale
     }
 
     private static func closestSample(to date: Date, in samples: [TrafficSample]) -> TrafficSample? {
