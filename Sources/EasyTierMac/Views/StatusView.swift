@@ -447,7 +447,7 @@ private struct MemberGridRowView: View {
             cell(.ipv4) { MemberIPv4Cell(row: row) }
             cell(.route) { MemberRouteCell(row: row) }
             cell(.tunnel) { Text(row.tunnelProto).lineLimit(1) }
-            cell(.latency) { LatencyMetricText(value: row.latency, animates: false) }
+            cell(.latency) { LatencyMetricText(value: row.latency, animationsPaused: animationsPaused) }
             cell(.upload) { TrafficMetricText(value: row.uploadTotal, accent: EasyTierColors.metricUpload, animationsPaused: animationsPaused) }
             cell(.download) { TrafficMetricText(value: row.downloadTotal, accent: EasyTierColors.metricDownload, animationsPaused: animationsPaused) }
             cell(.loss) { AnimatedMetricText(value: row.lossRate, animates: false) }
@@ -1085,21 +1085,49 @@ private struct MemberRouteCell: View {
 }
 
 private struct LatencyMetricText: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var value: String
-    var animates = true
+    var animationsPaused: Bool
+
+    @State private var pulseTrigger = 0
 
     private var quality: LatencyQuality {
         LatencyQuality(value)
     }
 
     var body: some View {
-        AnimatedMetricText(
-            value: value,
-            color: quality.color,
-            fontWeight: .regular,
-            animates: animates
-        )
+        Text(value)
+            .fontWeight(.regular)
+            .foregroundStyle(quality.color)
+            .monospacedDigit()
+            .lineLimit(1)
+            .minimumScaleFactor(0.82)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .frame(minWidth: 78, alignment: .leading)
+            .contentTransition(shouldAnimate ? .numericText() : .identity)
+            .trafficPulse(accent: quality.color, isVisible: shouldShowPulse, trigger: pulseTrigger)
+            .animation(shouldAnimate ? .spring(response: 0.26, dampingFraction: 0.72, blendDuration: 0.02) : nil, value: value)
+            .onChange(of: value) { oldValue, newValue in
+                guard oldValue != newValue else { return }
+                if shouldAnimate, oldValue != "-", newValue != "-" {
+                    triggerPulse()
+                }
+            }
         .help(quality.helpText(for: value))
+    }
+
+    private var shouldAnimate: Bool {
+        !animationsPaused && !reduceMotion
+    }
+
+    private var shouldShowPulse: Bool {
+        shouldAnimate && quality != .unknown
+    }
+
+    private func triggerPulse() {
+        pulseTrigger &+= 1
     }
 }
 

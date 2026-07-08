@@ -1,12 +1,16 @@
 import Foundation
 
-struct RuntimeMemberTrafficSnapshot: Equatable {
+struct RuntimeMemberStatusMetricsSnapshot: Equatable {
     var txBytes: Int64
     var rxBytes: Int64
+    var latency: String
+    var lossRate: String
 
     init(_ member: NetworkMemberStatus) {
         txBytes = member.txBytes
         rxBytes = member.rxBytes
+        latency = member.latency
+        lossRate = member.lossRate
     }
 
     func applied(to member: NetworkMemberStatus) -> NetworkMemberStatus {
@@ -15,6 +19,8 @@ struct RuntimeMemberTrafficSnapshot: Equatable {
         updated.downloadTotal = rxBytes > 0 ? ByteFormatter.format(rxBytes) : "-"
         updated.txBytes = txBytes
         updated.rxBytes = rxBytes
+        updated.latency = latency
+        updated.lossRate = lossRate
         return updated
     }
 }
@@ -28,7 +34,7 @@ struct RuntimeTrafficCounter {
 struct RuntimePresentationState {
     var instances: [NetworkInstance] = []
     var runtimeDetails: [String: NetworkInstanceRunningInfo] = [:]
-    var statusMetricsByInstance: [String: [String: RuntimeMemberTrafficSnapshot]] = [:]
+    var statusMetricsByInstance: [String: [String: RuntimeMemberStatusMetricsSnapshot]] = [:]
     var trafficSamplesByInstance: [String: [TrafficSample]] = [:]
     var trafficCountersByInstance: [String: RuntimeTrafficCounter] = [:]
 }
@@ -101,9 +107,9 @@ enum RuntimePresentationReducer {
 
     private static func statusMetrics(
         from running: [NetworkInstance],
-        previous: [String: [String: RuntimeMemberTrafficSnapshot]],
+        previous: [String: [String: RuntimeMemberStatusMetricsSnapshot]],
         isActive: Bool
-    ) -> [String: [String: RuntimeMemberTrafficSnapshot]] {
+    ) -> [String: [String: RuntimeMemberStatusMetricsSnapshot]] {
         guard isActive else { return previous }
 
         let activeNames = Set(running.map(\.name))
@@ -113,7 +119,7 @@ enum RuntimePresentationReducer {
             guard let detail = instance.detail else { continue }
             next[instance.name] = Dictionary(
                 uniqueKeysWithValues: detail.memberStatuses.map { member in
-                    (member.id, RuntimeMemberTrafficSnapshot(member))
+                    (member.id, RuntimeMemberStatusMetricsSnapshot(member))
                 }
             )
         }

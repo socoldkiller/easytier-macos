@@ -95,7 +95,7 @@ final class RuntimeSessionController {
     func refreshRuntime(
         currentInstances: [NetworkInstance],
         currentRuntimeDetails: [String: NetworkInstanceRunningInfo],
-        currentStatusMetrics: [String: [String: RuntimeMemberTrafficSnapshot]],
+        currentStatusMetrics: [String: [String: RuntimeMemberStatusMetricsSnapshot]],
         currentTrafficSamples: [String: [TrafficSample]],
         selectedTab: WorkspaceTab,
         mode: AppMode

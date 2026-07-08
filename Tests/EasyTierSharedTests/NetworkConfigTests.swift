@@ -1583,7 +1583,7 @@ import Testing
         selectedConfig: config,
         runningInstance: instance,
         runtimeDetail: detail,
-        memberTrafficByID: [member.id: RuntimeMemberTrafficSnapshot(trafficMember)]
+        memberStatusMetricsByID: [member.id: RuntimeMemberStatusMetricsSnapshot(trafficMember)]
     )
 
     let displayedMember = try #require(snapshot.members.first)
@@ -1594,6 +1594,47 @@ import Testing
     #expect(displayedMember.rxBytes == 4_096)
     #expect(displayedMember.uploadTotal == ByteFormatter.format(2_048))
     #expect(displayedMember.downloadTotal == ByteFormatter.format(4_096))
+}
+
+@Test func runtimeStatusSnapshotAppliesMemberLatencyMetrics() throws {
+    let config = NetworkConfig(instance_id: "status-id", network_name: "status-network")
+    let detail = NetworkInstanceRunningInfo(
+        dev_name: "utun9",
+        peer_route_pairs: [
+            PeerRoutePair(
+                route: Route(
+                    peer_id: 9,
+                    ipv4_addr: IPv4InetValue(rawValue: "10.0.0.9/24"),
+                    hostname: "remote"
+                ),
+                peer: PeerInfo(
+                    peer_id: 9,
+                    conns: [
+                        PeerConnInfo(
+                            peer_id: 9,
+                            stats: PeerConnStats(latency_us: 1_000)
+                        ),
+                    ]
+                )
+            ),
+        ],
+        running: true,
+        instance_id: config.instance_id
+    )
+    let instance = NetworkInstance(instance_id: config.instance_id, name: config.network_name, running: true, detail: detail)
+    let member = try #require(detail.memberStatuses.first)
+    var metricMember = member
+    metricMember.latency = "8 ms"
+
+    let snapshot = RuntimeStatusSnapshot.build(
+        selectedConfig: config,
+        runningInstance: instance,
+        runtimeDetail: detail,
+        memberStatusMetricsByID: [member.id: RuntimeMemberStatusMetricsSnapshot(metricMember)]
+    )
+
+    let displayedMember = try #require(snapshot.members.first)
+    #expect(displayedMember.latency == "8 ms")
 }
 
 @MainActor

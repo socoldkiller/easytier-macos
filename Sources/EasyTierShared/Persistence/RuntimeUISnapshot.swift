@@ -27,7 +27,7 @@ public struct RuntimeStatusSnapshot: Equatable, Sendable {
         selectedConfig: NetworkConfig?,
         runningInstance: NetworkInstance?,
         runtimeDetail: NetworkInstanceRunningInfo?,
-        memberTrafficByID: [String: RuntimeMemberTrafficSnapshot]?
+        memberStatusMetricsByID: [String: RuntimeMemberStatusMetricsSnapshot]?
     ) -> RuntimeStatusSnapshot {
         guard let selectedConfig else { return .empty }
 
@@ -38,9 +38,9 @@ public struct RuntimeStatusSnapshot: Equatable, Sendable {
 
         let members = runtimeDetail?.memberStatuses ?? []
         let displayedMembers: [NetworkMemberStatus]
-        if let memberTrafficByID {
+        if let memberStatusMetricsByID {
             displayedMembers = members.map { member in
-                memberTrafficByID[member.id]?.applied(to: member) ?? member
+                memberStatusMetricsByID[member.id]?.applied(to: member) ?? member
             }
         } else {
             displayedMembers = members

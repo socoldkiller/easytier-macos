@@ -25,6 +25,28 @@ import Testing
     #expect(second.state.statusMetricsByInstance["fixture-network"]?["peer-200"]?.rxBytes == 60_000)
 }
 
+@Test func latencyOnlyChangePublishesStatusMetricsOnlyOnStatusTab() {
+    let first = RuntimePresentationReducer.reduce(
+        running: [RuntimePresentationFixture.instance(txBytes: 10_000, rxBytes: 12_000, latencyUs: 1_000)],
+        previous: RuntimePresentationState(),
+        selectedTab: .status,
+        now: RuntimePresentationFixture.t0
+    )
+
+    let second = RuntimePresentationReducer.reduce(
+        running: [RuntimePresentationFixture.instance(txBytes: 10_000, rxBytes: 12_000, latencyUs: 8_000)],
+        previous: first.state,
+        selectedTab: .status,
+        now: RuntimePresentationFixture.t1
+    )
+
+    #expect(!second.shouldPublishInstances)
+    #expect(!second.shouldPublishRuntimeDetails)
+    #expect(second.shouldPublishStatusMetrics)
+    #expect(!second.shouldPublishTrafficSamples)
+    #expect(second.state.statusMetricsByInstance["fixture-network"]?["peer-200"]?.latency == "8 ms")
+}
+
 @Test func inactiveStatusTabDoesNotPublishStatusMetrics() {
     let first = RuntimePresentationReducer.reduce(
         running: [RuntimePresentationFixture.instance(txBytes: 10_000, rxBytes: 12_000)],
@@ -126,7 +148,8 @@ private enum RuntimePresentationFixture {
     static func instance(
         hostname: String = "peer-a",
         txBytes: Int,
-        rxBytes: Int
+        rxBytes: Int,
+        latencyUs: Int = 1_000
     ) -> NetworkInstance {
         NetworkInstance(
             instance_id: "fixture-instance",
@@ -167,7 +190,7 @@ private enum RuntimePresentationFixture {
                                         tx_bytes: txBytes,
                                         rx_packets: rxBytes / 1200,
                                         tx_packets: txBytes / 1200,
-                                        latency_us: 1_000
+                                        latency_us: latencyUs
                                     )
                                 ),
                             ],
