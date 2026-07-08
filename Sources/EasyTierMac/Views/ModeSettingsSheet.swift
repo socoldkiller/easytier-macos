@@ -87,15 +87,15 @@ struct EasyTierSettingsSheet: View {
     @State private var settingsError: String?
     @State private var showingDisableRPCListenWarning = false
 
-    var onSave: (AppMode, MagicDNSSettings) -> Void
+    var onChange: (AppMode, MagicDNSSettings) -> Void
 
     init(
         initialTab: EasyTierSettingsTab = .general,
         mode: AppMode,
         magicDNSSettings: MagicDNSSettings,
-        onSave: @escaping (AppMode, MagicDNSSettings) -> Void
+        onChange: @escaping (AppMode, MagicDNSSettings) -> Void
     ) {
-        self.onSave = onSave
+        self.onChange = onChange
         let requestedRaw = UserDefaults.standard.string(forKey: EasyTierSettingsTabRequest.key)
         let requestedTab = requestedRaw.flatMap(EasyTierSettingsTab.init(rawValue:)) ?? initialTab
         switch requestedTab {
@@ -142,20 +142,22 @@ struct EasyTierSettingsSheet: View {
                     selection = .easyTier(.mode)
                 }
             }
+            applySettings()
         }
-        .toolbar {
-            if isEasyTierActive {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Save") { saveSettings() }
-                        .keyboardShortcut(.defaultAction)
-                        .help("Save changes (⏎)")
-                }
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button("Done") { dismissWindow() }
-                    .keyboardShortcut(isEasyTierActive ? .cancelAction : .defaultAction)
-                    .help("Close settings (⎋)")
-            }
+        .onChange(of: rpcListenEnabled) { _, _ in
+            applySettings()
+        }
+        .onChange(of: rpcListenPort) { _, _ in
+            applySettings()
+        }
+        .onChange(of: rpcPortalWhitelist) { _, _ in
+            applySettings()
+        }
+        .onChange(of: configServerURL) { _, _ in
+            applySettings()
+        }
+        .onChange(of: magicDNSSuffix) { _, _ in
+            applySettings()
         }
         .frame(
             minWidth: Self.windowSize.width,
@@ -167,7 +169,7 @@ struct EasyTierSettingsSheet: View {
         .hideScrollViewScrollers()
         .background(
             SettingsEscapeKeyBridge(isEnabled: settingsEscapeKeyHandlingEnabled) {
-                dismissSettingsWithoutSaving()
+                dismissWindow()
             }
             .frame(width: 0, height: 0)
         )
@@ -201,45 +203,42 @@ struct EasyTierSettingsSheet: View {
     // MARK: General
 
     private var generalSettings: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            paneHeader(title: "General", subtitle: "Appearance, launch, and quit behavior for the EasyTier GUI.")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                paneHeader(title: "General", subtitle: "Appearance, launch, and quit behavior for the EasyTier GUI.")
 
-            Form {
-                Section {
+                CardSection(
+                    "Appearance",
+                    footer: "Panel backgrounds apply only while frosted glass is enabled. Traditional mode keeps solid panels for readability."
+                ) {
                     Toggle("Frosted Glass", isOn: appearance.glassEffectsEnabledBinding)
+                    SettingsRowDivider()
                     Toggle("Panel Backgrounds", isOn: appearance.glassPanelBackgroundsEnabledBinding)
                         .disabled(!appearance.glassEffectsEnabled)
-                } header: {
-                    Text("Appearance")
-                } footer: {
-                    Text("Panel backgrounds apply only while frosted glass is enabled. Traditional mode keeps solid panels for readability.")
                 }
 
-                Section {
+                CardSection(
+                    "General",
+                    footer: "Open EasyTier automatically when you sign in."
+                ) {
                     Toggle("Launch at Login", isOn: $loginItem.isEnabled)
                         .onChange(of: loginItem.isEnabled) { _, _ in loginItem.apply() }
-                } header: {
-                    Text("General")
-                } footer: {
-                    Text("Open EasyTier automatically when you sign in.")
                 }
 
-                Section {
+                CardSection(
+                    "Quit Behavior",
+                    footer: "Only helper-backed VPN networks can keep running after the app quits. no_tun networks stop with the app."
+                ) {
                     Toggle("Keep VPN Running After Quit", isOn: vpnOnDemandBinding)
-                } header: {
-                    Text("Quit Behavior")
-                } footer: {
-                    Text("Only helper-backed VPN networks can keep running after the app quits. no_tun networks stop with the app.")
                 }
             }
-            .formStyle(.grouped)
-            .scrollContentBackground(.hidden)
-            .scrollIndicators(.hidden, axes: .vertical)
-            .hideScrollViewScrollers()
+            .padding(.horizontal, 20)
+            .padding(.vertical, 18)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .scrollIndicators(.hidden, axes: .vertical)
+        .hideScrollViewScrollers()
         .task { loginItem.refresh() }
     }
 
@@ -439,12 +438,11 @@ struct EasyTierSettingsSheet: View {
         )
     }
 
-    private func saveSettings() {
+    private func applySettings() {
         do {
             let settings = try MagicDNSSettings(dnsSuffix: magicDNSSuffix)
-            magicDNSSuffix = settings.dnsSuffix
-            onSave(buildMode(), settings)
-            dismissWindow()
+            settingsError = nil
+            onChange(buildMode(), settings)
         } catch {
             settingsError = error.localizedDescription
         }
@@ -452,10 +450,6 @@ struct EasyTierSettingsSheet: View {
 
     private var settingsEscapeKeyHandlingEnabled: Bool {
         settingsError == nil && !showingDisableRPCListenWarning
-    }
-
-    private func dismissSettingsWithoutSaving() {
-        dismissWindow()
     }
 
     private func buildMode() -> AppMode {
@@ -498,11 +492,6 @@ struct EasyTierSettingsSheet: View {
         withAnimation(EasyTierMotion.selection(reduceMotion: reduceMotion)) {
             selection = target
         }
-    }
-
-    private var isEasyTierActive: Bool {
-        if case .easyTier = effectiveSelection { return true }
-        return false
     }
 
     private var effectiveSelection: SettingsSelection {
@@ -640,24 +629,20 @@ private struct SettingsSidebar: View {
             Section {
                 Label("General", systemImage: "gearshape")
                     .tag(SettingsSelection.general)
+
+                ForEach(visibleEasyTierSections) { section in
+                    Label(section.rawValue, systemImage: section.systemImage)
+                        .tag(SettingsSelection.easyTier(section))
+                }
+
+                Label("About", systemImage: "info.circle")
+                    .tag(SettingsSelection.about)
             } header: {
                 Color.clear
                     .frame(height: EasyTierSettingsSheet.sidebarTopClearance)
                     .listRowInsets(EdgeInsets())
                     .listRowSeparator(.hidden)
                     .accessibilityHidden(true)
-            }
-
-            Section("EasyTier") {
-                ForEach(visibleEasyTierSections) { section in
-                    Label(section.rawValue, systemImage: section.systemImage)
-                        .tag(SettingsSelection.easyTier(section))
-                }
-            }
-
-            Section {
-                Label("About", systemImage: "info.circle")
-                    .tag(SettingsSelection.about)
             }
         }
         .listStyle(.sidebar)
