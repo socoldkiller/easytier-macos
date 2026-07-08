@@ -159,13 +159,6 @@ struct EasyTierSettingsSheet: View {
         .onChange(of: magicDNSSuffix) { _, _ in
             applySettings()
         }
-        .frame(
-            minWidth: Self.windowSize.width,
-            idealWidth: Self.windowSize.width,
-            minHeight: Self.windowSize.height,
-            idealHeight: 620,
-            alignment: .topLeading
-        )
         .hideScrollViewScrollers()
         .background(
             SettingsEscapeKeyBridge(isEnabled: settingsEscapeKeyHandlingEnabled) {
@@ -541,7 +534,6 @@ struct EasyTierSettingsSheet: View {
 
     private static let sidebarWidth: CGFloat = 220
     fileprivate static let sidebarTopClearance: CGFloat = 8
-    private static let windowSize = CGSize(width: 600, height: 500)
 }
 
 private struct SettingsEscapeKeyBridge: NSViewRepresentable {
@@ -699,6 +691,9 @@ private struct SettingsAboutView: View {
                 }
 
                 Section("Software Update") {
+                    Toggle("Check for Updates Automatically", isOn: autoCheckUpdatesBinding)
+                        .toggleStyle(.checkbox)
+
                     LabeledContent {
                         HStack(spacing: 10) {
                             if case .available = updater.state {
@@ -747,6 +742,17 @@ private struct SettingsAboutView: View {
             "Updater needs attention."
         case .idle:
             "Checks stable releases only."
+        }
+    }
+
+    private var autoCheckUpdatesBinding: Binding<Bool> {
+        Binding {
+            updater.autoCheckOnLaunch
+        } set: { isEnabled in
+            updater.autoCheckOnLaunch = isEnabled
+            if isEnabled {
+                updater.scheduleAutomaticCheckIfNeeded()
+            }
         }
     }
 }

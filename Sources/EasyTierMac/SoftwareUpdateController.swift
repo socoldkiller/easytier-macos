@@ -12,8 +12,9 @@ final class SoftwareUpdateController {
     var isPresentingUpdateSheet = false
 
     var autoCheckOnLaunch: Bool {
-        get { userDefaults.object(forKey: Self.autoCheckKey) as? Bool ?? true }
-        set { userDefaults.set(newValue, forKey: Self.autoCheckKey) }
+        didSet {
+            userDefaults.set(autoCheckOnLaunch, forKey: Self.autoCheckKey)
+        }
     }
 
     var lastCheckDate: Date? {
@@ -48,6 +49,7 @@ final class SoftwareUpdateController {
     ) {
         self.service = service
         self.userDefaults = userDefaults
+        autoCheckOnLaunch = userDefaults.object(forKey: Self.autoCheckKey) as? Bool ?? true
     }
 
     var isChecking: Bool {
