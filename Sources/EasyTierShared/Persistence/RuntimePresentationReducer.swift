@@ -57,22 +57,25 @@ enum RuntimePresentationReducer {
         now: Date = Date(),
         trafficSampleWindow: Int = Self.defaultTrafficSampleWindow
     ) -> RuntimePresentationChange {
-        let newDetails = runtimeDetails(from: running)
-        let nextRuntimeDetails = runtimeDetailsPresentationUnchanged(previous.runtimeDetails, newDetails)
+        let runningSnapshots = running.map(RuntimeInstancePresentationSnapshot.init)
+        let newDetails = runtimeDetails(from: runningSnapshots)
+        let runtimeDetailsUnchanged = runtimeDetailsPresentationUnchanged(previous.runtimeDetails, runningSnapshots)
+        let nextRuntimeDetails = runtimeDetailsUnchanged
             ? previous.runtimeDetails
             : newDetails
 
-        let nextInstances = instancesStructureUnchanged(previous.instances, running)
+        let instancesUnchanged = instancesStructureUnchanged(previous.instances, runningSnapshots)
+        let nextInstances = instancesUnchanged
             ? previous.instances
             : running
 
         let statusMetricsResult = statusMetrics(
-            from: running,
+            from: runningSnapshots,
             previous: previous.statusMetricsByInstance,
             isActive: selectedTab == .status
         )
         let trafficSamplesResult = trafficSamples(
-            from: running,
+            from: runningSnapshots,
             previousSamples: previous.trafficSamplesByInstance,
             previousCounters: previous.trafficCountersByInstance,
             isActive: selectedTab == .view,
@@ -88,37 +91,37 @@ enum RuntimePresentationReducer {
                 trafficSamplesByInstance: trafficSamplesResult.samples,
                 trafficCountersByInstance: trafficSamplesResult.counters
             ),
-            shouldPublishInstances: nextInstances != previous.instances,
-            shouldPublishRuntimeDetails: nextRuntimeDetails != previous.runtimeDetails,
+            shouldPublishInstances: !instancesUnchanged,
+            shouldPublishRuntimeDetails: !runtimeDetailsUnchanged,
             shouldPublishStatusMetrics: statusMetricsResult != previous.statusMetricsByInstance,
             shouldPublishTrafficSamples: trafficSamplesResult.samples != previous.trafficSamplesByInstance
         )
     }
 
-    private static func runtimeDetails(from running: [NetworkInstance]) -> [String: NetworkInstanceRunningInfo] {
+    private static func runtimeDetails(from running: [RuntimeInstancePresentationSnapshot]) -> [String: NetworkInstanceRunningInfo] {
         var details: [String: NetworkInstanceRunningInfo] = [:]
-        for instance in running {
-            if let detail = instance.detail {
-                details[instance.name] = detail
+        for snapshot in running {
+            if let detail = snapshot.instance.detail {
+                details[snapshot.instance.name] = detail
             }
         }
         return details
     }
 
     private static func statusMetrics(
-        from running: [NetworkInstance],
+        from running: [RuntimeInstancePresentationSnapshot],
         previous: [String: [String: RuntimeMemberStatusMetricsSnapshot]],
         isActive: Bool
     ) -> [String: [String: RuntimeMemberStatusMetricsSnapshot]] {
         guard isActive else { return previous }
 
-        let activeNames = Set(running.map(\.name))
+        let activeNames = Set(running.map(\.instance.name))
         var next = previous.filter { activeNames.contains($0.key) }
 
-        for instance in running {
-            guard let detail = instance.detail else { continue }
-            next[instance.name] = Dictionary(
-                uniqueKeysWithValues: detail.memberStatuses.map { member in
+        for snapshot in running {
+            guard snapshot.instance.detail != nil else { continue }
+            next[snapshot.instance.name] = Dictionary(
+                uniqueKeysWithValues: snapshot.memberStatuses.map { member in
                     (member.id, RuntimeMemberStatusMetricsSnapshot(member))
                 }
             )
@@ -128,7 +131,7 @@ enum RuntimePresentationReducer {
     }
 
     private static func trafficSamples(
-        from running: [NetworkInstance],
+        from running: [RuntimeInstancePresentationSnapshot],
         previousSamples: [String: [TrafficSample]],
         previousCounters: [String: RuntimeTrafficCounter],
         isActive: Bool,
@@ -137,15 +140,16 @@ enum RuntimePresentationReducer {
     ) -> (samples: [String: [TrafficSample]], counters: [String: RuntimeTrafficCounter]) {
         guard isActive else { return (previousSamples, previousCounters) }
 
-        let activeNames = Set(running.map(\.name))
+        let activeNames = Set(running.map(\.instance.name))
         var nextSamples = previousSamples.filter { activeNames.contains($0.key) }
         var nextCounters = previousCounters.filter { activeNames.contains($0.key) }
 
-        for instance in running {
-            guard let detail = instance.detail else { continue }
-            let totals = detail.trafficTotals
-            let previous = nextCounters[instance.name]
-            nextCounters[instance.name] = RuntimeTrafficCounter(
+        for snapshot in running {
+            guard snapshot.instance.detail != nil else { continue }
+            let totals = snapshot.trafficTotals
+            let instanceName = snapshot.instance.name
+            let previous = nextCounters[instanceName]
+            nextCounters[instanceName] = RuntimeTrafficCounter(
                 timestamp: now,
                 txBytes: totals.txBytes,
                 rxBytes: totals.rxBytes
@@ -165,27 +169,31 @@ enum RuntimePresentationReducer {
                 sample = TrafficSample(timestamp: now, txBytesPerSecond: 0, rxBytesPerSecond: 0)
             }
 
-            var samples = nextSamples[instance.name] ?? []
+            var samples = nextSamples[instanceName] ?? []
             samples.append(sample)
             if samples.count > sampleWindow {
                 samples.removeFirst(samples.count - sampleWindow)
             }
-            nextSamples[instance.name] = samples
+            nextSamples[instanceName] = samples
         }
 
         return (nextSamples, nextCounters)
     }
 
-    private static func instancesStructureUnchanged(_ current: [NetworkInstance], _ running: [NetworkInstance]) -> Bool {
+    private static func instancesStructureUnchanged(
+        _ current: [NetworkInstance],
+        _ running: [RuntimeInstancePresentationSnapshot]
+    ) -> Bool {
         guard current.count == running.count else { return false }
         let currentByID = Dictionary(current.map { ($0.instance_id, $0) }, uniquingKeysWith: { $1 })
-        for newInstance in running {
+        for snapshot in running {
+            let newInstance = snapshot.instance
             guard let oldInstance = currentByID[newInstance.instance_id] else { return false }
             if oldInstance.name != newInstance.name { return false }
             if oldInstance.error_msg != newInstance.error_msg { return false }
 
             let oldMembers = oldInstance.detail?.memberStatuses ?? []
-            let newMembers = newInstance.detail?.memberStatuses ?? []
+            let newMembers = snapshot.memberStatuses
             guard oldMembers.count == newMembers.count else { return false }
             for (old, new) in zip(oldMembers, newMembers) {
                 if old.id != new.id { return false }
@@ -202,16 +210,32 @@ enum RuntimePresentationReducer {
 
     private static func runtimeDetailsPresentationUnchanged(
         _ current: [String: NetworkInstanceRunningInfo],
-        _ newDetails: [String: NetworkInstanceRunningInfo]
+        _ running: [RuntimeInstancePresentationSnapshot]
     ) -> Bool {
-        guard current.count == newDetails.count else { return false }
-        for (name, newDetail) in newDetails {
-            guard let currentDetail = current[name] else { return false }
-            guard RuntimeDetailPresentationSignature(currentDetail) == RuntimeDetailPresentationSignature(newDetail) else {
+        let detailsCount = running.reduce(into: 0) { count, snapshot in
+            if snapshot.instance.detail != nil { count += 1 }
+        }
+        guard current.count == detailsCount else { return false }
+        for snapshot in running {
+            guard let newDetail = snapshot.instance.detail else { continue }
+            guard let currentDetail = current[snapshot.instance.name] else { return false }
+            guard RuntimeDetailPresentationSignature(currentDetail) == RuntimeDetailPresentationSignature(newDetail, memberStatuses: snapshot.memberStatuses) else {
                 return false
             }
         }
         return true
+    }
+}
+
+private struct RuntimeInstancePresentationSnapshot {
+    var instance: NetworkInstance
+    var memberStatuses: [NetworkMemberStatus]
+    var trafficTotals: (txBytes: Int64, rxBytes: Int64)
+
+    init(instance: NetworkInstance) {
+        self.instance = instance
+        memberStatuses = instance.detail?.memberStatuses ?? []
+        trafficTotals = instance.detail?.trafficTotals ?? (txBytes: 0, rxBytes: 0)
     }
 }
 
@@ -226,13 +250,13 @@ private struct RuntimeDetailPresentationSignature: Equatable {
     var fullyConnectedWithoutRemoteExpectation: Bool
     var fullyConnectedWithRemoteExpectation: Bool
 
-    init(_ detail: NetworkInstanceRunningInfo) {
+    init(_ detail: NetworkInstanceRunningInfo, memberStatuses: [NetworkMemberStatus]? = nil) {
         devName = detail.dev_name
         running = detail.running
         errorMessage = detail.error_msg
         instanceID = detail.instance_id
         localNode = detail.my_node_info.map(RuntimeLocalNodeSignature.init)
-        memberStatuses = detail.memberStatuses.map(RuntimeMemberSignature.init)
+        self.memberStatuses = (memberStatuses ?? detail.memberStatuses).map(RuntimeMemberSignature.init)
         listenerErrorEvents = (detail.events ?? []).filter(Self.isPresentationRelevantEvent)
         fullyConnectedWithoutRemoteExpectation = detail.isFullyConnected(expectRemotePeers: false)
         fullyConnectedWithRemoteExpectation = detail.isFullyConnected(expectRemotePeers: true)
