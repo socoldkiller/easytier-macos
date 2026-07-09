@@ -197,7 +197,7 @@ struct EasyTierSettingsSheet: View {
 
     private var generalSettings: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            LazyVStack(alignment: .leading, spacing: 18) {
                 paneHeader(title: "General", subtitle: "Appearance, launch, and quit behavior for the EasyTier GUI.")
 
                 CardSection(
@@ -257,7 +257,7 @@ struct EasyTierSettingsSheet: View {
     @ViewBuilder
     private func easyTierSectionView(_ section: EasyTierSection) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            LazyVStack(alignment: .leading, spacing: 18) {
                 paneHeader(title: section.rawValue, subtitle: section.subtitle)
 
                 switch section {
