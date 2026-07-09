@@ -99,14 +99,16 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelperS
     }
 
     public func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] {
-        do {
-            let payload = try await callHelperReturningPayload { service, reply in
-                service.collectNetworkInfos(reply: reply)
+        try await Task.detached(priority: .userInitiated) { [self] in
+            do {
+                let payload = try await callHelperReturningPayload { service, reply in
+                    service.collectNetworkInfos(reply: reply)
+                }
+                return try JSONDecoder().decode([String: NetworkInstanceRunningInfo].self, from: Data(payload.utf8))
+            } catch let error as DecodingError {
+                throw PrivilegedHelperError.invalidPayload(String(describing: error))
             }
-            return try Self.decoder.decode([String: NetworkInstanceRunningInfo].self, from: Data(payload.utf8))
-        } catch let error as DecodingError {
-            throw PrivilegedHelperError.invalidPayload(String(describing: error))
-        }
+        }.value
     }
 
     public func configureRPCPortal(_ rpcPortal: String?, whitelist: [String]?) async throws {
