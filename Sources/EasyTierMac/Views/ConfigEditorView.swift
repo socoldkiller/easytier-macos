@@ -30,7 +30,7 @@ struct ConfigEditorView: View {
             }
             .frame(height: 0)
 
-            VStack(alignment: .leading, spacing: 14) {
+            LazyVStack(alignment: .leading, spacing: 14) {
                 CardSection("Network") {
                     networkNameRow
                     FieldRow("Network secret") {
