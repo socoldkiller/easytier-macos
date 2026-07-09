@@ -14,7 +14,7 @@ final class LoginItemController {
         self.service = .mainApp
         self.userDefaults = userDefaults
         let stored = userDefaults.object(forKey: Self.key) as? Bool
-        self.isEnabled = stored ?? (Self.service.status == .enabled)
+        self.isEnabled = stored ?? false
     }
 
     func refresh() {

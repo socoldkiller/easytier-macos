@@ -232,7 +232,10 @@ struct EasyTierSettingsSheet: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .scrollIndicators(.hidden, axes: .vertical)
         .hideScrollViewScrollers()
-        .task { loginItem.refresh() }
+        .task {
+            await Task.yield()
+            loginItem.refresh()
+        }
     }
 
     @ViewBuilder
