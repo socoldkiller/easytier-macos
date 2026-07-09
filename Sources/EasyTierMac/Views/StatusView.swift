@@ -19,41 +19,34 @@ struct StatusView: View {
     var onConfigureRemoteMember: (NetworkMemberStatus) -> Void = { _ in }
 
     private var snapshot: RuntimeStatusSnapshot { store.selectedStatusSnapshot }
-    private var instance: NetworkInstance? { snapshot.instance }
     private var members: [NetworkMemberStatus] { snapshot.members }
-    private var runtimeError: String? { snapshot.runtimeError }
-    private var runtimeIntentConflict: RuntimeIntent? {
-        let networkName = instance?.name ?? store.selectedConfig?.network_name
+    private func runtimeIntentConflict(for display: StatusDisplayModel) -> RuntimeIntent? {
+        let networkName = display.instance?.name ?? store.selectedConfig?.network_name
         return store.runtimeIntents.first { intent in
             intent.status == .conflict && (networkName == nil || intent.target.networkName == networkName)
         }
     }
-    private var connectionState: ConnectionGlyphState {
-        if runtimeError != nil { return .error }
-        if store.isBusy { return .connecting }
-        guard instance != nil else { return .idle }
-        return snapshot.isFullyConnected ? .connected : .connecting
-    }
 
     var body: some View {
         @Bindable var store = self.store
+        let display = statusDisplay
         VStack(alignment: .leading, spacing: 14) {
-            header
+            header(display)
 
-            if instance != nil, !members.isEmpty || !memberSearchQuery.isEmpty {
+            if display.instance != nil, !display.members.isEmpty || !display.memberSearchQuery.isEmpty {
                 MemberSearchField(
                     text: $memberSearchText,
-                    resultCount: filteredMembers.count,
-                    totalCount: members.count
+                    resultCount: display.filteredMembers.count,
+                    totalCount: display.members.count
                 )
             }
 
-            if let runtimeError {
+            if let runtimeError = display.runtimeError {
                 ErrorBanner(message: runtimeError)
                     .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 8))
             }
 
-            if let conflict = runtimeIntentConflict {
+            if let conflict = runtimeIntentConflict(for: display) {
                 RuntimeIntentConflictBanner(
                     intent: conflict,
                     useRemoteAction: { store.useRemoteValue(forRuntimeIntent: conflict.id) },
@@ -67,12 +60,12 @@ struct StatusView: View {
                 .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 8))
             }
 
-            MotionSwitch(id: contentMotionID, insertionEdge: .bottom) {
-                statusContent
+            MotionSwitch(id: display.contentMotionID, insertionEdge: .bottom) {
+                statusContent(display)
             }
         }
         .padding()
-        .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: runtimeError)
+        .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: display.runtimeError)
         .onAppear { displayedMembers = members }
         .onChange(of: members) { _, newMembers in
             guard !memberTableIsScrolling else { return }
@@ -95,22 +88,22 @@ struct StatusView: View {
     }
 
     @ViewBuilder
-    private var statusContent: some View {
-        if instance == nil {
+    private func statusContent(_ display: StatusDisplayModel) -> some View {
+        if display.instance == nil {
             ConnectionEmptyState(
                 "No Running Network",
-                state: connectionState,
+                state: display.connectionState,
                 description: Text("Run the selected network to see its members.")
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if members.isEmpty {
+        } else if display.members.isEmpty {
             ConnectionEmptyState(
                 "No Member Information",
-                state: connectionState,
-                description: Text(runtimeError ?? "EasyTier is running, but runtime member details have not arrived yet.")
+                state: display.connectionState,
+                description: Text(display.runtimeError ?? "EasyTier is running, but runtime member details have not arrived yet.")
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if !memberSearchQuery.isEmpty, filteredMembers.isEmpty {
+        } else if !display.memberSearchQuery.isEmpty, display.filteredMembers.isEmpty {
             ContentUnavailableView(
                 "No Search Results",
                 systemImage: "magnifyingglass",
@@ -118,40 +111,33 @@ struct StatusView: View {
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            memberTable
+            memberTable(display)
         }
     }
 
-    private var contentMotionID: String {
-        if instance == nil { return "empty-no-running" }
-        if members.isEmpty { return "empty-no-members" }
-        if !memberSearchQuery.isEmpty, filteredMembers.isEmpty { return "members-search-empty" }
-        return "members-\(memberSearchQuery.isEmpty ? "all" : "search")"
-    }
-
-    private var header: some View {
+    private func header(_ display: StatusDisplayModel) -> some View {
         HStack(spacing: 10) {
             StatusBadge(
                 title: "Network",
-                value: snapshot.networkName,
+                value: display.snapshot.networkName,
                 systemImage: "globe"
             )
-            StatusBadge(title: "Members", value: "\(members.count)", systemImage: "person.2.fill", width: 136)
+            StatusBadge(title: "Members", value: "\(display.members.count)", systemImage: "person.2.fill", width: 136)
             StatusBadge(
                 title: "Device",
-                value: snapshot.deviceName,
+                value: display.snapshot.deviceName,
                 systemImage: "desktopcomputer",
                 width: 152
             )
-            StatusBadge(title: "Mode", value: store.mode.label, systemImage: "slider.horizontal.3")
+            StatusBadge(title: "Mode", value: display.modeLabel, systemImage: "slider.horizontal.3")
             Spacer(minLength: 0)
         }
     }
 
-    private var memberTable: some View {
+    private func memberTable(_ display: StatusDisplayModel) -> some View {
         @Bindable var store = self.store
         return MemberGridTable(
-            rows: memberTableRows,
+            rowItems: display.memberRowItems,
             highlightedMemberPeerID: highlightedMemberPeerID,
             publicServerGroupExpanded: $publicServerGroupExpanded,
             isScrolling: $memberTableIsScrolling,
@@ -162,49 +148,23 @@ struct StatusView: View {
         )
     }
 
-    private var memberTableRows: [MemberTableRow] {
-        let visibleMembers = filteredMembers
-        if !memberSearchQuery.isEmpty {
-            return visibleMembers.map(MemberTableRow.member)
+    private var statusDisplay: StatusDisplayModel {
+        let snapshot = self.snapshot
+        let members = snapshot.members
+        let instance = snapshot.instance
+        let runtimeError = snapshot.runtimeError
+        let connectionState: ConnectionGlyphState
+        if runtimeError != nil {
+            connectionState = .error
+        } else if store.isBusy {
+            connectionState = .connecting
+        } else if instance == nil {
+            connectionState = .idle
+        } else {
+            connectionState = snapshot.isFullyConnected ? .connected : .connecting
         }
-
-        let publicServers = visibleMembers.filter { !$0.isLocal && $0.isPublicServer }
-        guard publicServers.count > 1 else {
-            return visibleMembers.map(MemberTableRow.member)
-        }
-
-        let publicServerIDs = Set(publicServers.map(\.id))
-        var insertedPublicServerGroup = false
-
-        return visibleMembers.compactMap { member in
-            guard publicServerIDs.contains(member.id) else {
-                return .member(member)
-            }
-
-            guard !insertedPublicServerGroup else { return nil }
-            insertedPublicServerGroup = true
-            return .publicServerGroup(publicServers)
-        }
-    }
-
-    private var memberSearchQuery: SearchQuery {
-        SearchQuery(memberSearchText)
-    }
-
-    private var tableMembers: [NetworkMemberStatus] {
-        memberTableIsScrolling && !displayedMembers.isEmpty ? displayedMembers : members
-    }
-
-    private var filteredMembers: [NetworkMemberStatus] {
-        let query = memberSearchQuery
-        guard !query.isEmpty else { return tableMembers }
-        if query.matches(networkSearchFields) { return tableMembers }
-        return tableMembers.filter { member in
-            query.matches(member.searchFields)
-        }
-    }
-
-    private var networkSearchFields: [String] {
+        let tableMembers = memberTableIsScrolling && !displayedMembers.isEmpty ? displayedMembers : members
+        let memberSearchQuery = SearchQuery(memberSearchText)
         var fields = [
             snapshot.networkName,
             instance?.instance_id ?? "",
@@ -233,13 +193,26 @@ struct StatusView: View {
             fields.append(contentsOf: config.enabledSearchFeatureLabels)
         }
 
-        return fields
-    }
-
-    private func togglePublicServerGroup() {
-        withAnimation(EasyTierMotion.quick(reduceMotion: reduceMotion)) {
-            publicServerGroupExpanded.toggle()
+        let filteredMembers: [NetworkMemberStatus]
+        if memberSearchQuery.isEmpty || memberSearchQuery.matches(fields) {
+            filteredMembers = tableMembers
+        } else {
+            filteredMembers = tableMembers.filter { member in
+                memberSearchQuery.matches(member.searchFields)
+            }
         }
+
+        return StatusDisplayModel(
+            snapshot: snapshot,
+            instance: instance,
+            members: members,
+            runtimeError: runtimeError,
+            connectionState: connectionState,
+            modeLabel: store.mode.label,
+            memberSearchQuery: memberSearchQuery,
+            filteredMembers: filteredMembers,
+            publicServerGroupExpanded: publicServerGroupExpanded
+        )
     }
 
     private func beginRenamingHostname(_ member: NetworkMemberStatus) {
@@ -258,8 +231,102 @@ struct StatusView: View {
 
 }
 
+private struct StatusDisplayModel {
+    var snapshot: RuntimeStatusSnapshot
+    var instance: NetworkInstance?
+    var members: [NetworkMemberStatus]
+    var runtimeError: String?
+    var connectionState: ConnectionGlyphState
+    var modeLabel: String
+    var memberSearchQuery: SearchQuery
+    var filteredMembers: [NetworkMemberStatus]
+    var memberRowItems: [MemberGridRowItem]
+
+    init(
+        snapshot: RuntimeStatusSnapshot,
+        instance: NetworkInstance?,
+        members: [NetworkMemberStatus],
+        runtimeError: String?,
+        connectionState: ConnectionGlyphState,
+        modeLabel: String,
+        memberSearchQuery: SearchQuery,
+        filteredMembers: [NetworkMemberStatus],
+        publicServerGroupExpanded: Bool
+    ) {
+        self.snapshot = snapshot
+        self.instance = instance
+        self.members = members
+        self.runtimeError = runtimeError
+        self.connectionState = connectionState
+        self.modeLabel = modeLabel
+        self.memberSearchQuery = memberSearchQuery
+        self.filteredMembers = filteredMembers
+        memberRowItems = Self.buildMemberRowItems(
+            members: filteredMembers,
+            isSearching: !memberSearchQuery.isEmpty,
+            publicServerGroupExpanded: publicServerGroupExpanded
+        )
+    }
+
+    var contentMotionID: String {
+        if instance == nil { return "empty-no-running" }
+        if members.isEmpty { return "empty-no-members" }
+        if !memberSearchQuery.isEmpty, filteredMembers.isEmpty { return "members-search-empty" }
+        return "members-\(memberSearchQuery.isEmpty ? "all" : "search")"
+    }
+
+    private static func buildMemberRowItems(
+        members visibleMembers: [NetworkMemberStatus],
+        isSearching: Bool,
+        publicServerGroupExpanded: Bool
+    ) -> [MemberGridRowItem] {
+        let rows = buildMemberRows(members: visibleMembers, isSearching: isSearching)
+        var items: [MemberGridRowItem] = []
+        items.reserveCapacity(rows.count)
+
+        for row in rows {
+            items.append(MemberGridRowItem(row: row, depth: 0, stripeIndex: items.count))
+            if publicServerGroupExpanded, let children = row.children {
+                items.reserveCapacity(items.count + children.count)
+                for child in children {
+                    items.append(MemberGridRowItem(row: child, depth: 1, stripeIndex: items.count))
+                }
+            }
+        }
+
+        return items
+    }
+
+    private static func buildMemberRows(
+        members visibleMembers: [NetworkMemberStatus],
+        isSearching: Bool
+    ) -> [MemberTableRow] {
+        if isSearching {
+            return visibleMembers.map(MemberTableRow.member)
+        }
+
+        let publicServers = visibleMembers.filter { !$0.isLocal && $0.isPublicServer }
+        guard publicServers.count > 1 else {
+            return visibleMembers.map(MemberTableRow.member)
+        }
+
+        let publicServerIDs = Set(publicServers.map(\.id))
+        var insertedPublicServerGroup = false
+
+        return visibleMembers.compactMap { member in
+            guard publicServerIDs.contains(member.id) else {
+                return .member(member)
+            }
+
+            guard !insertedPublicServerGroup else { return nil }
+            insertedPublicServerGroup = true
+            return .publicServerGroup(publicServers)
+        }
+    }
+}
+
 private struct MemberGridTable: View {
-    var rows: [MemberTableRow]
+    var rowItems: [MemberGridRowItem]
     var highlightedMemberPeerID: String?
     @Binding var publicServerGroupExpanded: Bool
     @Binding var isScrolling: Bool
@@ -276,13 +343,13 @@ private struct MemberGridTable: View {
             ScrollView([.horizontal, .vertical]) {
                 LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
                     Section {
-                        ForEach(Array(flattenedRows.enumerated()), id: \.element.id) { indexedItem in
+                        ForEach(rowItems) { item in
                             MemberGridRowView(
-                                item: indexedItem.element,
+                                item: item,
                                 columnWidths: widths,
                                 highlightedMemberPeerID: highlightedMemberPeerID,
                                 animationsPaused: isScrolling,
-                                isStripedRow: !indexedItem.offset.isMultiple(of: 2),
+                                isStripedRow: !item.stripeIndex.isMultiple(of: 2),
                                 publicServerGroupExpanded: $publicServerGroupExpanded,
                                 onRenameHostname: onRenameHostname,
                                 onConfigureLocalMember: onConfigureLocalMember,
@@ -303,25 +370,12 @@ private struct MemberGridTable: View {
             .reflectScrollPhase(to: $globalScrolling)
         }
     }
-
-    private var flattenedRows: [MemberGridRowItem] {
-        rows.flatMap { row -> [MemberGridRowItem] in
-            guard let children = row.children else {
-                return [.init(row: row, depth: 0)]
-            }
-
-            var result = [MemberGridRowItem(row: row, depth: 0)]
-            if publicServerGroupExpanded {
-                result += children.map { MemberGridRowItem(row: $0, depth: 1) }
-            }
-            return result
-        }
-    }
 }
 
 private struct MemberGridRowItem: Identifiable {
     var row: MemberTableRow
     var depth: Int
+    var stripeIndex: Int
 
     var id: String { "\(row.id)-\(depth)" }
 }
@@ -702,21 +756,54 @@ private struct MemberSearchField: View {
 }
 
 private struct PublicServerGroupSummary: Equatable {
-    var members: [NetworkMemberStatus]
+    private enum RouteTone: Equatable {
+        case connected
+        case connecting
+        case secondary
+    }
 
-    var count: Int { members.count }
+    var count: Int
+    var subtitle: String
+    var routeSummary: String
+    var tunnelProto: String
+    var latencySummary: String
+    var uploadTotal: String
+    var downloadTotal: String
+    var lossRate: String
+    var natType: String
+    var version: String
 
-    var subtitle: String {
-        ["\(count) online", routeSummary, latencySummary]
+    private var routeTone: RouteTone
+
+    init(members: [NetworkMemberStatus]) {
+        count = members.count
+        routeSummary = Self.routeSummary(members: members)
+        tunnelProto = Self.collapsedUniqueValue(members.map(\.tunnelProto))
+        latencySummary = Self.latencySummary(members: members)
+        uploadTotal = Self.totalBytes(members.map(\.txBytes))
+        downloadTotal = Self.totalBytes(members.map(\.rxBytes))
+        lossRate = Self.lossRate(members: members)
+        natType = Self.collapsedUniqueValue(members.map(\.natType), mixedLabel: "Mixed")
+        version = Self.version(members: members)
+        routeTone = Self.routeTone(members: members)
+        subtitle = ["\(count) online", routeSummary, latencySummary]
             .filter { !$0.isEmpty && $0 != "-" }
             .joined(separator: " · ")
     }
 
-    var routeSummary: String {
+    var routeSummaryColor: Color {
+        switch routeTone {
+        case .connected: EasyTierColors.statusConnected
+        case .connecting: EasyTierColors.statusConnecting
+        case .secondary: Color.secondary
+        }
+    }
+
+    private static func routeSummary(members: [NetworkMemberStatus]) -> String {
         let p2pCount = members.count { $0.routeCost == "P2P" }
         let relayCount = members.count { $0.routeCost.hasPrefix("Relay") }
         let localCount = members.count { $0.routeCost == "Local" }
-        let otherCount = max(0, count - p2pCount - relayCount - localCount)
+        let otherCount = max(0, members.count - p2pCount - relayCount - localCount)
 
         var parts: [String] = []
         if p2pCount > 0 { parts.append("\(p2pCount) P2P") }
@@ -725,58 +812,42 @@ private struct PublicServerGroupSummary: Equatable {
         return parts.isEmpty ? "-" : parts.joined(separator: " + ")
     }
 
-    var routeSummaryColor: Color {
-        if members.allSatisfy({ $0.routeCost == "P2P" }) { return EasyTierColors.statusConnected }
-        if members.contains(where: { $0.routeCost.hasPrefix("Relay") }) { return EasyTierColors.statusConnecting }
-        return Color.secondary
+    private static func routeTone(members: [NetworkMemberStatus]) -> RouteTone {
+        if members.allSatisfy({ $0.routeCost == "P2P" }) { return .connected }
+        if members.contains(where: { $0.routeCost.hasPrefix("Relay") }) { return .connecting }
+        return .secondary
     }
 
-    var tunnelProto: String {
-        collapsedUniqueValue(members.map(\.tunnelProto))
-    }
-
-    var latencySummary: String {
+    private static func latencySummary(members: [NetworkMemberStatus]) -> String {
         let values = members.compactMap { $0.latency.millisecondsValue }
         guard let min = values.min(), let max = values.max() else { return "-" }
         return min == max ? "\(min) ms" : "\(min)-\(max) ms"
     }
 
-    var uploadTotal: String {
-        totalBytes(members.map(\.txBytes))
-    }
-
-    var downloadTotal: String {
-        totalBytes(members.map(\.rxBytes))
-    }
-
-    var lossRate: String {
+    private static func lossRate(members: [NetworkMemberStatus]) -> String {
         let values = members.compactMap { $0.lossRate.percentValue }
         guard !values.isEmpty else { return "-" }
         let average = Double(values.reduce(0, +)) / Double(values.count)
         return "\(Int(average.rounded()))%"
     }
 
-    var natType: String {
-        collapsedUniqueValue(members.map(\.natType), mixedLabel: "Mixed")
-    }
-
-    var version: String {
+    private static func version(members: [NetworkMemberStatus]) -> String {
         let versions = normalizedUniqueValues(members.map(\.version))
         guard !versions.isEmpty else { return "-" }
         return versions.count == 1 ? versions[0] : "\(versions.count) versions"
     }
 
-    private func collapsedUniqueValue(_ values: [String], mixedLabel: String = "Mixed") -> String {
+    private static func collapsedUniqueValue(_ values: [String], mixedLabel: String = "Mixed") -> String {
         let uniqueValues = normalizedUniqueValues(values)
         guard !uniqueValues.isEmpty else { return "-" }
         return uniqueValues.count == 1 ? uniqueValues[0] : mixedLabel
     }
 
-    private func normalizedUniqueValues(_ values: [String]) -> [String] {
+    private static func normalizedUniqueValues(_ values: [String]) -> [String] {
         Array(Set(values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty && $0 != "-" })).sorted()
     }
 
-    private func totalBytes(_ values: [Int64]) -> String {
+    private static func totalBytes(_ values: [Int64]) -> String {
         let total = values.reduce(0, +)
         return total > 0 ? ByteFormatter.format(total) : "-"
     }
