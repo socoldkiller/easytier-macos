@@ -23,9 +23,11 @@ struct PeersView: View {
     }
 
     var body: some View {
+        let cards = allCards
+
         GeometryReader { proxy in
             ScrollView {
-                if allCards.isEmpty {
+                if cards.isEmpty {
                     emptyState
                         .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .center)
                 } else {
@@ -33,7 +35,7 @@ struct PeersView: View {
                         columns: [GridItem(.adaptive(minimum: 220, maximum: 280), spacing: 8)],
                         spacing: 8
                     ) {
-                        ForEach(allCards, id: \.card.id) { entry in
+                        ForEach(cards, id: \.card.id) { entry in
                             PeerCardView(
                                 subscription: entry.subscription,
                                 card: entry.card,
@@ -60,7 +62,7 @@ struct PeersView: View {
                     .padding(.top, 44)
             }
         }
-        .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: allCards.count)
+        .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: cards.count)
         .sheet(isPresented: $showingAddSheet) {
             AddPeerSubscriptionSheet(
                 mode: inputMode,

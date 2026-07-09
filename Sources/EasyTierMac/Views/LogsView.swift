@@ -18,6 +18,8 @@ struct LogsView: View {
     }
 
     var body: some View {
+        let entries = filteredEntries
+
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Text("Runtime Log")
@@ -45,7 +47,7 @@ struct LogsView: View {
                 }
                 .accessibilityLabel("Copy logs")
                 .accessibilityHint("Copies the currently filtered log entries to the clipboard.")
-                .disabled(filteredEntries.isEmpty)
+                .disabled(entries.isEmpty)
                 Button {
                     showingExportPanel = true
                 } label: {
@@ -54,17 +56,17 @@ struct LogsView: View {
                 }
                 .accessibilityLabel("Export logs")
                 .accessibilityHint("Saves the currently filtered log entries to a file.")
-                .disabled(filteredEntries.isEmpty)
-                Text("\(filteredEntries.count)/\(store.logLines.count)")
+                .disabled(entries.isEmpty)
+                Text("\(entries.count)/\(store.logLines.count)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityLabel("Filtered entry count")
-                    .accessibilityValue("\(filteredEntries.count) of \(store.logLines.count) entries")
+                    .accessibilityValue("\(entries.count) of \(store.logLines.count) entries")
             }
 
             GeometryReader { proxy in
                 ScrollView {
-                    if filteredEntries.isEmpty {
+                    if entries.isEmpty {
                         ContentUnavailableView(
                             emptyStateTitle,
                             systemImage: emptyStateSystemImage,
@@ -74,7 +76,7 @@ struct LogsView: View {
                         .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .center)
                     } else {
                         LazyVStack(alignment: .leading, spacing: 6) {
-                            ForEach(filteredEntries) { entry in
+                            ForEach(entries) { entry in
                                 Text(entry.text)
                                     .font(.system(.callout, design: .monospaced))
                                     .textSelection(.enabled)
@@ -98,7 +100,7 @@ struct LogsView: View {
         .padding()
         .fileExporter(
             isPresented: $showingExportPanel,
-            document: LogDocument(entries: filteredEntries),
+            document: LogDocument(entries: entries),
             contentType: .plainText,
             defaultFilename: "easytier-logs"
         ) { result in
