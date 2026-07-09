@@ -748,10 +748,8 @@ struct ContentView: View {
         commitDraft(saveImmediately: false)
         workspaceTransitionEdge = networkTransitionEdge(from: previousValue, to: newValue)
         workspaceTransitionDistance = Self.networkTransitionDistance
-        withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
-            store.selectedConfigID = newValue
-            loadDraft(for: newValue)
-        }
+        store.selectedConfigID = newValue
+        loadDraft(for: newValue)
     }
 
     private func selectWorkspaceTab(_ tab: WorkspaceTab) {
@@ -760,9 +758,7 @@ struct ContentView: View {
         workspaceTransitionEdge =
             tab.motionIndex > store.selectedTab.motionIndex ? .trailing : .leading
         workspaceTransitionDistance = Self.tabTransitionDistance
-        withAnimation(EasyTierMotion.selection(reduceMotion: reduceMotion)) {
-            store.selectedTab = tab
-        }
+        store.selectedTab = tab
     }
 
     private func handlePendingPeerCardMerge(_ card: PeerCard?) {
