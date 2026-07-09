@@ -32,12 +32,16 @@ concurrency:
 jobs:
   build:
     name: Build EasyTier.app
+    # Push/tag builds use the shared self-hosted macOS runner pool. Any online
+    # runner with the easytier-macos label is eligible, so CI can continue when
+    # one machine is offline or asleep.
     runs-on: ${{ ((github.event_name == 'workflow_dispatch' && inputs.runner == 'self-hosted') || github.event_name == 'push') && 'easytier-macos' || 'macos-14' }}
     timeout-minutes: 90
     permissions:
       contents: read
     env:
       EASYTIER_BUILD_CONFIGURATION: release
+      EASYTIER_APP_PRODUCTS_DIR: ${{ secrets.EASYTIER_APP_PRODUCTS_DIR || format('{0}/EasyTierAppProducts', runner.temp) }}
       EASYTIER_EXPORT_APP_DIR: ${{ github.workspace }}/.build/artifacts/EasyTier.app
 
     steps:
@@ -259,7 +263,7 @@ jobs:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/')
     needs: build
-    runs-on: easytier-macos
+    runs-on: [self-hosted, macOS, ARM64, easytier-macos]
     permissions:
       contents: write
       pages: write
