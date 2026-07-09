@@ -118,10 +118,24 @@ struct EasyTierApp: App {
     private func configureMainWindow(_ window: NSWindow, glassEffectsEnabled: Bool) {
         let frame = window.frame
         let effectiveGlass = glassEffectsEnabled && !NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
-        window.styleMask.insert(.fullSizeContentView)
-        window.titlebarAppearsTransparent = true
-        window.isOpaque = !effectiveGlass
-        window.backgroundColor = effectiveGlass ? .clear : .windowBackgroundColor
+
+        if !window.styleMask.contains(.fullSizeContentView) {
+            window.styleMask.insert(.fullSizeContentView)
+        }
+        if !window.titlebarAppearsTransparent {
+            window.titlebarAppearsTransparent = true
+        }
+
+        let targetOpacity = !effectiveGlass
+        if window.isOpaque != targetOpacity {
+            window.isOpaque = targetOpacity
+        }
+
+        let targetBackgroundColor: NSColor = effectiveGlass ? .clear : .windowBackgroundColor
+        if window.backgroundColor != targetBackgroundColor {
+            window.backgroundColor = targetBackgroundColor
+        }
+
         if window.frame != frame {
             window.setFrame(frame, display: true)
         }
