@@ -88,15 +88,13 @@ struct ContentView: View {
         }
         .onChange(of: store.isShowingSettings) { _, isShowing in
             if isShowing {
-                EasyTierSettingsTabRequest.set(.general)
-                openWindow(id: "settings")
+                openSettings(tab: .general)
                 store.isShowingSettings = false
             }
         }
         .onChange(of: store.isShowingAbout) { _, isShowing in
             if isShowing {
-                EasyTierSettingsTabRequest.set(.about)
-                openWindow(id: "settings")
+                openSettings(tab: .about)
                 store.isShowingAbout = false
             }
         }
@@ -342,7 +340,7 @@ struct ContentView: View {
                 .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
             } else {
                 Button {
-                    store.isShowingSettings = true
+                    openSettings(tab: .general)
                 } label: {
                     Label("Settings", systemImage: "gearshape")
                 }
@@ -719,6 +717,11 @@ struct ContentView: View {
         }
         networkSearchText = ""
         selectedSearchResultID = nil
+    }
+
+    private func openSettings(tab: EasyTierSettingsTab) {
+        EasyTierSettingsTabRequest.set(tab)
+        openWindow(id: "settings")
     }
 
     private func highlightSearchResult(peerID: String) {
