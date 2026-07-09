@@ -297,6 +297,7 @@ private struct MemberGridTable: View {
                 .frame(minHeight: proxy.size.height, alignment: .topLeading)
             }
             .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
+            .hideScrollViewScrollers()
             .defaultScrollAnchor(.topLeading)
             .trackScrollPhase(isScrolling: $isScrolling)
             .reflectScrollPhase(to: $globalScrolling)

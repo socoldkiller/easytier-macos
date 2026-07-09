@@ -50,6 +50,7 @@ struct ConfigEditorView: View {
         }
         .coordinateSpace(name: Self.scrollSpaceName)
         .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
+        .hideScrollViewScrollers()
         .textFieldStyle(.glassField)
         .onScrollPhaseChange { _, phase in
             store.isAnyViewScrolling = phase.isScrolling
