@@ -98,6 +98,7 @@ struct EasyTierSettingsSheet: View {
         NavigationSplitView {
             SettingsSidebar(selection: effectiveSelectionBinding, visibleEasyTierSections: visibleEasyTierSections)
                 .navigationSplitViewColumnWidth(min: 200, ideal: Self.sidebarWidth, max: 240)
+                .easyTierSidebarBackground(glassEffectsEnabled: appearance.glassEffectsEnabled)
         } detail: {
             detailContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

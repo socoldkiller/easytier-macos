@@ -970,9 +970,30 @@ extension View {
     @ViewBuilder
     func easyTierWindowBackground(glassEffectsEnabled: Bool) -> some View {
         if glassEffectsEnabled {
-            containerBackground(for: .window) { FrostedGlass() }
+            containerBackground(for: .window) {
+                FrostedGlass(
+                    material: .underWindowBackground,
+                    blendingMode: .behindWindow
+                )
+            }
         } else {
             containerBackground(Color(nsColor: .windowBackgroundColor), for: .window)
+        }
+    }
+
+    func easyTierSidebarBackground(glassEffectsEnabled: Bool) -> some View {
+        background {
+            if glassEffectsEnabled {
+                FrostedGlass(
+                    material: .sidebar,
+                    blendingMode: .behindWindow
+                )
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+            } else {
+                Color(nsColor: .windowBackgroundColor)
+                    .ignoresSafeArea()
+            }
         }
     }
 

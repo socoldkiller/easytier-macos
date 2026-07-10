@@ -265,11 +265,8 @@ struct ContentView: View {
         .onChange(of: networkSearchQuery.isEmpty ? [] : networkSearchResultIDs) { _, ids in
             reconcileSearchSelection(with: ids)
         }
+        .easyTierSidebarBackground(glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
         .background {
-            if !appearanceSettings.glassEffectsEnabled {
-                Color(nsColor: .windowBackgroundColor)
-                    .ignoresSafeArea()
-            }
             SearchKeyboardBridge(
                 isActive: !networkSearchQuery.isEmpty,
                 onUp: { moveSelectedSearchResult(by: -1) },
