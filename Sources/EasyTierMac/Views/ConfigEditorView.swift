@@ -7,7 +7,6 @@ struct ConfigEditorView: View {
     @Binding var config: NetworkConfig
     var members: [NetworkMemberStatus] = []
     var remoteSession: RemoteConfigSession? = nil
-    var onScrolledPastTopChange: (Bool) -> Void = { _ in }
     @State private var reversePortForwardStatus: [UUID: Bool] = [:]
     @State private var reversePortForwardPending: Set<UUID> = []
 
@@ -16,20 +15,8 @@ struct ConfigEditorView: View {
 
     private var isRemote: Bool { remoteSession != nil }
 
-    private static let scrollSpaceName = "ConfigEditorScroll"
-    private static let toolbarHideThreshold: CGFloat = 18
-
     var body: some View {
         ScrollView {
-            GeometryReader { proxy in
-                Color.clear
-                    .preference(
-                        key: ConfigEditorScrollOffsetKey.self,
-                        value: proxy.frame(in: .named(Self.scrollSpaceName)).minY
-                    )
-            }
-            .frame(height: 0)
-
             LazyVStack(alignment: .leading, spacing: 14) {
                 CardSection("Network") {
                     networkNameRow
@@ -47,8 +34,9 @@ struct ConfigEditorView: View {
                 advancedDisclosure
             }
             .padding(18)
+            .frame(maxWidth: 960, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .coordinateSpace(name: Self.scrollSpaceName)
         .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
         .hideScrollViewScrollers()
         .textFieldStyle(.glassField)
@@ -63,9 +51,6 @@ struct ConfigEditorView: View {
         }
         .onChange(of: config.instance_id) { _, _ in
             syncDisplayMode()
-        }
-        .onPreferenceChange(ConfigEditorScrollOffsetKey.self) { minY in
-            onScrolledPastTopChange(minY < -Self.toolbarHideThreshold)
         }
         .onChange(of: displayAdvanced) { _, newValue in
             config.advanced_settings = newValue
@@ -572,14 +557,6 @@ private enum ConfigControlMetrics {
     static let secretFieldMinWidth: CGFloat = 220
     static let portFieldWidth: CGFloat = 104
     static let stepperWidth: CGFloat = 132
-}
-
-private struct ConfigEditorScrollOffsetKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
 }
 
 private struct FlagGroup<Content: View>: View {
