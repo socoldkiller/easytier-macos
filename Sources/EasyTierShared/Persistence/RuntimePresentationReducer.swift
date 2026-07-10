@@ -29,6 +29,15 @@ struct RuntimeTrafficCounter {
     var timestamp: Date
     var txBytes: Int64
     var rxBytes: Int64
+    var sessionID: UUID
+    var pendingResumeEvent: TrafficResumeEvent?
+}
+
+struct RuntimeTrafficSamplingStatus: Equatable {
+    var activeSessionID: UUID
+    var phase: TrafficSamplingPhase
+    var resumeEvent: TrafficResumeEvent?
+    var lastObservedAt: Date
 }
 
 struct RuntimePresentationState {
@@ -37,6 +46,7 @@ struct RuntimePresentationState {
     var statusMetricsByInstance: [String: [String: RuntimeMemberStatusMetricsSnapshot]] = [:]
     var trafficSamplesByInstance: [String: [TrafficSample]] = [:]
     var trafficCountersByInstance: [String: RuntimeTrafficCounter] = [:]
+    var trafficSamplingStatusByInstance: [String: RuntimeTrafficSamplingStatus] = [:]
 }
 
 struct RuntimePresentationChange {
@@ -45,10 +55,13 @@ struct RuntimePresentationChange {
     var shouldPublishRuntimeDetails: Bool
     var shouldPublishStatusMetrics: Bool
     var shouldPublishTrafficSamples: Bool
+    var shouldPublishTrafficSamplingStatus: Bool
 }
 
 enum RuntimePresentationReducer {
     static let defaultTrafficSampleWindow = 60
+    static let trafficSampleDuration: TimeInterval = 60
+    static let trafficDiscontinuityThreshold: TimeInterval = 5
 
     static func reduce(
         running: [NetworkInstance],
@@ -78,6 +91,7 @@ enum RuntimePresentationReducer {
             from: runningSnapshots,
             previousSamples: previous.trafficSamplesByInstance,
             previousCounters: previous.trafficCountersByInstance,
+            previousStatuses: previous.trafficSamplingStatusByInstance,
             isActive: selectedTab == .view,
             now: now,
             sampleWindow: trafficSampleWindow
@@ -89,12 +103,14 @@ enum RuntimePresentationReducer {
                 runtimeDetails: nextRuntimeDetails,
                 statusMetricsByInstance: statusMetricsResult,
                 trafficSamplesByInstance: trafficSamplesResult.samples,
-                trafficCountersByInstance: trafficSamplesResult.counters
+                trafficCountersByInstance: trafficSamplesResult.counters,
+                trafficSamplingStatusByInstance: trafficSamplesResult.statuses
             ),
             shouldPublishInstances: !instancesUnchanged,
             shouldPublishRuntimeDetails: !runtimeDetailsUnchanged,
             shouldPublishStatusMetrics: statusMetricsResult != previous.statusMetricsByInstance,
-            shouldPublishTrafficSamples: trafficSamplesResult.samples != previous.trafficSamplesByInstance
+            shouldPublishTrafficSamples: trafficSamplesResult.samples != previous.trafficSamplesByInstance,
+            shouldPublishTrafficSamplingStatus: trafficSamplesResult.statuses != previous.trafficSamplingStatusByInstance
         )
     }
 
@@ -134,50 +150,138 @@ enum RuntimePresentationReducer {
         from running: [RuntimeInstancePresentationSnapshot],
         previousSamples: [String: [TrafficSample]],
         previousCounters: [String: RuntimeTrafficCounter],
+        previousStatuses: [String: RuntimeTrafficSamplingStatus],
         isActive: Bool,
         now: Date,
         sampleWindow: Int
-    ) -> (samples: [String: [TrafficSample]], counters: [String: RuntimeTrafficCounter]) {
-        guard isActive else { return (previousSamples, previousCounters) }
+    ) -> (
+        samples: [String: [TrafficSample]],
+        counters: [String: RuntimeTrafficCounter],
+        statuses: [String: RuntimeTrafficSamplingStatus]
+    ) {
+        guard isActive else { return (previousSamples, previousCounters, previousStatuses) }
 
         let activeNames = Set(running.map(\.instance.name))
         var nextSamples = previousSamples.filter { activeNames.contains($0.key) }
         var nextCounters = previousCounters.filter { activeNames.contains($0.key) }
+        var nextStatuses = previousStatuses.filter { activeNames.contains($0.key) }
+        let cutoff = now.addingTimeInterval(-trafficSampleDuration)
 
         for snapshot in running {
             guard snapshot.instance.detail != nil else { continue }
             let totals = snapshot.trafficTotals
             let instanceName = snapshot.instance.name
             let previous = nextCounters[instanceName]
+            var samples = (nextSamples[instanceName] ?? []).filter { $0.timestamp >= cutoff }
+
+            guard let previous else {
+                let sessionID = UUID()
+                let existingStatus = nextStatuses[instanceName]
+                let resumeEvent: TrafficResumeEvent? = if existingStatus?.phase == .collecting {
+                    existingStatus?.resumeEvent
+                } else if !samples.isEmpty || existingStatus != nil {
+                    TrafficResumeEvent(timestamp: now, reason: .counterReset)
+                } else {
+                    nil
+                }
+                nextCounters[instanceName] = RuntimeTrafficCounter(
+                    timestamp: now,
+                    txBytes: totals.txBytes,
+                    rxBytes: totals.rxBytes,
+                    sessionID: sessionID,
+                    pendingResumeEvent: resumeEvent
+                )
+                nextStatuses[instanceName] = RuntimeTrafficSamplingStatus(
+                    activeSessionID: sessionID,
+                    phase: .collecting,
+                    resumeEvent: resumeEvent,
+                    lastObservedAt: now
+                )
+                store(trimmed(samples, limit: sampleWindow), for: instanceName, in: &nextSamples)
+                continue
+            }
+
+            let interval = now.timeIntervalSince(previous.timestamp)
+            let clockAdjusted = !interval.isFinite || interval <= 0
+            let hasLongGap = interval > trafficDiscontinuityThreshold
+            let counterReset = totals.txBytes < previous.txBytes || totals.rxBytes < previous.rxBytes
+
+            if clockAdjusted || hasLongGap || counterReset {
+                let reason: TrafficResumeReason
+                let gapDuration: TimeInterval?
+                if clockAdjusted {
+                    reason = .clockAdjusted
+                    gapDuration = nil
+                    samples.removeAll()
+                } else if hasLongGap {
+                    reason = .gap
+                    gapDuration = interval
+                } else {
+                    reason = .counterReset
+                    gapDuration = nil
+                }
+
+                let sessionID = UUID()
+                let resumeEvent = TrafficResumeEvent(timestamp: now, gapDuration: gapDuration, reason: reason)
+                nextCounters[instanceName] = RuntimeTrafficCounter(
+                    timestamp: now,
+                    txBytes: totals.txBytes,
+                    rxBytes: totals.rxBytes,
+                    sessionID: sessionID,
+                    pendingResumeEvent: resumeEvent
+                )
+                nextStatuses[instanceName] = RuntimeTrafficSamplingStatus(
+                    activeSessionID: sessionID,
+                    phase: .collecting,
+                    resumeEvent: resumeEvent,
+                    lastObservedAt: now
+                )
+                store(trimmed(samples, limit: sampleWindow), for: instanceName, in: &nextSamples)
+                continue
+            }
+
+            let sample = TrafficSample(
+                timestamp: now,
+                txBytesPerSecond: Double(totals.txBytes - previous.txBytes) / interval,
+                rxBytesPerSecond: Double(totals.rxBytes - previous.rxBytes) / interval,
+                sessionID: previous.sessionID
+            )
+            samples.append(sample)
+            let resumeEvent = previous.pendingResumeEvent ?? nextStatuses[instanceName]?.resumeEvent
             nextCounters[instanceName] = RuntimeTrafficCounter(
                 timestamp: now,
                 txBytes: totals.txBytes,
-                rxBytes: totals.rxBytes
+                rxBytes: totals.rxBytes,
+                sessionID: previous.sessionID,
+                pendingResumeEvent: nil
             )
-
-            let sample: TrafficSample
-            if let previous {
-                let interval = max(now.timeIntervalSince(previous.timestamp), 0.001)
-                let txDelta = max(0, totals.txBytes - previous.txBytes)
-                let rxDelta = max(0, totals.rxBytes - previous.rxBytes)
-                sample = TrafficSample(
-                    timestamp: now,
-                    txBytesPerSecond: Double(txDelta) / interval,
-                    rxBytesPerSecond: Double(rxDelta) / interval
-                )
-            } else {
-                sample = TrafficSample(timestamp: now, txBytesPerSecond: 0, rxBytesPerSecond: 0)
-            }
-
-            var samples = nextSamples[instanceName] ?? []
-            samples.append(sample)
-            if samples.count > sampleWindow {
-                samples.removeFirst(samples.count - sampleWindow)
-            }
-            nextSamples[instanceName] = samples
+            nextStatuses[instanceName] = RuntimeTrafficSamplingStatus(
+                activeSessionID: previous.sessionID,
+                phase: .live,
+                resumeEvent: resumeEvent,
+                lastObservedAt: now
+            )
+            store(trimmed(samples, limit: sampleWindow), for: instanceName, in: &nextSamples)
         }
 
-        return (nextSamples, nextCounters)
+        return (nextSamples, nextCounters, nextStatuses)
+    }
+
+    private static func trimmed(_ samples: [TrafficSample], limit: Int) -> [TrafficSample] {
+        guard limit > 0, samples.count > limit else { return limit > 0 ? samples : [] }
+        return Array(samples.suffix(limit))
+    }
+
+    private static func store(
+        _ samples: [TrafficSample],
+        for instanceName: String,
+        in storage: inout [String: [TrafficSample]]
+    ) {
+        if samples.isEmpty {
+            storage.removeValue(forKey: instanceName)
+        } else {
+            storage[instanceName] = samples
+        }
     }
 
     private static func instancesStructureUnchanged(

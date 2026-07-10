@@ -50,6 +50,11 @@ final class RuntimeSessionController {
 
     func clearClientKind(for config: NetworkConfig) {
         instanceClientKind.removeValue(forKey: config.instance_id)
+        trafficCountersByInstance.removeValue(forKey: config.network_name)
+    }
+
+    func clearTrafficTracking(instanceName: String) {
+        trafficCountersByInstance.removeValue(forKey: instanceName)
     }
 
     func hasPrivilegedInstances(in instances: [NetworkInstance]) -> Bool {
@@ -65,6 +70,7 @@ final class RuntimeSessionController {
     func clearRuntimeTracking() {
         instanceClientKind.removeAll()
         pendingStarts.removeAll()
+        trafficCountersByInstance.removeAll()
     }
 
     func setPendingStartAfterApproval(_ config: NetworkConfig) {
@@ -92,6 +98,7 @@ final class RuntimeSessionController {
         currentRuntimeDetails: [String: NetworkInstanceRunningInfo],
         currentStatusMetrics: [String: [String: RuntimeMemberStatusMetricsSnapshot]],
         currentTrafficSamples: [String: [TrafficSample]],
+        currentTrafficSamplingStatus: [String: RuntimeTrafficSamplingStatus],
         selectedTab: WorkspaceTab
     ) async throws -> RuntimePresentationChange {
         // Merge runtime info from both the privileged daemon (TUN instances) and
@@ -130,7 +137,8 @@ final class RuntimeSessionController {
                 runtimeDetails: currentRuntimeDetails,
                 statusMetricsByInstance: currentStatusMetrics,
                 trafficSamplesByInstance: currentTrafficSamples,
-                trafficCountersByInstance: trafficCountersByInstance
+                trafficCountersByInstance: trafficCountersByInstance,
+                trafficSamplingStatusByInstance: currentTrafficSamplingStatus
             ),
             selectedTab: selectedTab
         )

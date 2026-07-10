@@ -1490,6 +1490,7 @@ import Testing
         currentRuntimeDetails: [:],
         currentStatusMetrics: [:],
         currentTrafficSamples: [:],
+        currentTrafficSamplingStatus: [:],
         selectedTab: .status
     )
 
@@ -1505,6 +1506,7 @@ import Testing
         currentRuntimeDetails: pendingChange.state.runtimeDetails,
         currentStatusMetrics: pendingChange.state.statusMetricsByInstance,
         currentTrafficSamples: pendingChange.state.trafficSamplesByInstance,
+        currentTrafficSamplingStatus: pendingChange.state.trafficSamplingStatusByInstance,
         selectedTab: .status
     )
 
@@ -1516,24 +1518,110 @@ import Testing
     let config = NetworkConfig(instance_id: "traffic-id", network_name: "traffic-network")
     let instance = NetworkInstance(instance_id: config.instance_id, name: config.network_name, running: true)
     let base = Date(timeIntervalSince1970: 1_000)
-    let earliest = TrafficSample(timestamp: base, txBytesPerSecond: 80, rxBytesPerSecond: 20)
-    let latest = TrafficSample(timestamp: base.addingTimeInterval(30), txBytesPerSecond: 120, rxBytesPerSecond: 40)
-    let invalid = TrafficSample(timestamp: base.addingTimeInterval(10), txBytesPerSecond: .nan, rxBytesPerSecond: 50)
+    let windowEnd = base.addingTimeInterval(60)
+    let activeSessionID = UUID()
+    let previousSessionID = UUID()
+    let outsideWindow = TrafficSample(
+        timestamp: base.addingTimeInterval(-1),
+        txBytesPerSecond: 80,
+        rxBytesPerSecond: 20,
+        sessionID: previousSessionID
+    )
+    let activeLatest = TrafficSample(
+        timestamp: base.addingTimeInterval(30),
+        txBytesPerSecond: 90,
+        rxBytesPerSecond: 40,
+        sessionID: activeSessionID
+    )
+    let newerPreviousSession = TrafficSample(
+        timestamp: base.addingTimeInterval(40),
+        txBytesPerSecond: 100,
+        rxBytesPerSecond: 30,
+        sessionID: previousSessionID
+    )
+    let invalid = TrafficSample(
+        timestamp: base.addingTimeInterval(50),
+        txBytesPerSecond: .nan,
+        rxBytesPerSecond: 50,
+        sessionID: activeSessionID
+    )
+    let resumeEvent = TrafficResumeEvent(
+        timestamp: base.addingTimeInterval(20),
+        gapDuration: 10,
+        reason: .gap
+    )
+    let samplingStatus = RuntimeTrafficSamplingStatus(
+        activeSessionID: activeSessionID,
+        phase: .live,
+        resumeEvent: resumeEvent,
+        lastObservedAt: windowEnd
+    )
 
     let snapshot = RuntimeTrafficSnapshot.build(
         selectedConfig: config,
         runningInstance: instance,
-        samples: [latest, invalid, earliest]
+        samples: [newerPreviousSession, invalid, outsideWindow, activeLatest],
+        samplingStatus: samplingStatus
     )
 
     #expect(snapshot.networkName == config.network_name)
-    #expect(snapshot.samples.count == 3)
-    #expect(snapshot.displaySamples.map(\.id) == [earliest.id, latest.id])
-    #expect(snapshot.latest?.id == latest.id)
+    #expect(snapshot.samples.count == 4)
+    #expect(snapshot.displaySamples.map(\.id) == [activeLatest.id, newerPreviousSession.id])
+    #expect(snapshot.latest?.id == activeLatest.id)
     #expect(snapshot.maxValue == 200)
-    #expect(snapshot.timeSpanLabel == "Last 30 sec")
+    #expect(snapshot.timeSpanLabel == "Live - Last 60 sec")
+    #expect(snapshot.samplingPhase == .live)
+    #expect(snapshot.activeSessionID == activeSessionID)
+    #expect(snapshot.resumeEvent == resumeEvent)
+    #expect(snapshot.windowStart == base)
+    #expect(snapshot.windowEnd == windowEnd)
     #expect(snapshot.accessibilitySummary.contains("Upload"))
     #expect(snapshot.accessibilitySummary.contains("Download"))
+}
+
+@Test func collectingTrafficSnapshotDoesNotExposeAnOldSessionAsLatest() {
+    let config = NetworkConfig(instance_id: "traffic-id", network_name: "traffic-network")
+    let instance = NetworkInstance(instance_id: config.instance_id, name: config.network_name, running: true)
+    let now = Date(timeIntervalSince1970: 2_000)
+    let activeSessionID = UUID()
+    let oldSample = TrafficSample(
+        timestamp: now.addingTimeInterval(-5),
+        txBytesPerSecond: 1_024,
+        rxBytesPerSecond: 2_048,
+        sessionID: UUID()
+    )
+    let resumeEvent = TrafficResumeEvent(timestamp: now, gapDuration: 86_400, reason: .gap)
+    let samplingStatus = RuntimeTrafficSamplingStatus(
+        activeSessionID: activeSessionID,
+        phase: .collecting,
+        resumeEvent: resumeEvent,
+        lastObservedAt: now
+    )
+
+    let snapshot = RuntimeTrafficSnapshot.build(
+        selectedConfig: config,
+        runningInstance: instance,
+        samples: [oldSample],
+        samplingStatus: samplingStatus
+    )
+
+    #expect(snapshot.displaySamples.map(\.id) == [oldSample.id])
+    #expect(snapshot.latest == nil)
+    #expect(snapshot.samplingPhase == .collecting)
+    #expect(snapshot.activeSessionID == activeSessionID)
+    #expect(snapshot.resumeEvent == resumeEvent)
+    #expect(snapshot.windowStart == now.addingTimeInterval(-60))
+    #expect(snapshot.windowEnd == now)
+    #expect(snapshot.timeSpanLabel == "Resuming after 1d pause...")
+    #expect(snapshot.accessibilitySummary.contains("1 day"))
+}
+
+@Test func emptyRuntimeTrafficSnapshotWaitsWithoutAChartWindow() {
+    #expect(RuntimeTrafficSnapshot.empty.samplingPhase == .waiting)
+    #expect(RuntimeTrafficSnapshot.empty.activeSessionID == nil)
+    #expect(RuntimeTrafficSnapshot.empty.windowStart == nil)
+    #expect(RuntimeTrafficSnapshot.empty.windowEnd == nil)
+    #expect(RuntimeTrafficSnapshot.empty.latest == nil)
 }
 
 @Test func runtimeStatusSnapshotAppliesMemberTrafficMetrics() throws {

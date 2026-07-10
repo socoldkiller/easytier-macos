@@ -863,16 +863,49 @@ public extension NetworkMemberStatus {
     }
 }
 
+public enum TrafficSamplingPhase: Equatable, Sendable {
+    case waiting
+    case collecting
+    case live
+}
+
+public enum TrafficResumeReason: Equatable, Sendable {
+    case gap
+    case counterReset
+    case clockAdjusted
+}
+
+public struct TrafficResumeEvent: Equatable, Sendable {
+    public var timestamp: Date
+    public var gapDuration: TimeInterval?
+    public var reason: TrafficResumeReason
+
+    public init(timestamp: Date, gapDuration: TimeInterval? = nil, reason: TrafficResumeReason) {
+        self.timestamp = timestamp
+        self.gapDuration = gapDuration
+        self.reason = reason
+    }
+}
+
 public struct TrafficSample: Identifiable, Equatable, Sendable {
+    public static let legacySessionID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+
     public var id = UUID()
     public var timestamp: Date
     public var txBytesPerSecond: Double
     public var rxBytesPerSecond: Double
+    public var sessionID: UUID
 
-    public init(timestamp: Date = Date(), txBytesPerSecond: Double, rxBytesPerSecond: Double) {
+    public init(
+        timestamp: Date = Date(),
+        txBytesPerSecond: Double,
+        rxBytesPerSecond: Double,
+        sessionID: UUID = Self.legacySessionID
+    ) {
         self.timestamp = timestamp
         self.txBytesPerSecond = txBytesPerSecond
         self.rxBytesPerSecond = rxBytesPerSecond
+        self.sessionID = sessionID
     }
 }
 

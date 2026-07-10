@@ -71,6 +71,7 @@ public final class EasyTierAppStore {
         }
     }
     private var statusMetricsByInstance: [String: [String: RuntimeMemberStatusMetricsSnapshot]] = [:]
+    @ObservationIgnored private var trafficSamplingStatusByInstance: [String: RuntimeTrafficSamplingStatus] = [:]
     public private(set) var selectedStatusSnapshot: RuntimeStatusSnapshot = .empty
     public private(set) var selectedTrafficSnapshot: RuntimeTrafficSnapshot = .empty
     public var runtimeIntents: [RuntimeIntent] = []
@@ -222,6 +223,7 @@ public final class EasyTierAppStore {
         let detail = instance.flatMap { runtimeDetails[$0.name] ?? $0.detail }
         let statusMetrics = instance.flatMap { statusMetricsByInstance[$0.name] }
         let trafficSamples = instance.flatMap { trafficSamplesByInstance[$0.name] } ?? []
+        let trafficSamplingStatus = instance.flatMap { trafficSamplingStatusByInstance[$0.name] }
 
         let statusSnapshot = RuntimeStatusSnapshot.build(
             selectedConfig: config,
@@ -236,7 +238,8 @@ public final class EasyTierAppStore {
         let trafficSnapshot = RuntimeTrafficSnapshot.build(
             selectedConfig: config,
             runningInstance: instance,
-            samples: trafficSamples
+            samples: trafficSamples,
+            samplingStatus: trafficSamplingStatus
         )
         if selectedTrafficSnapshot != trafficSnapshot {
             selectedTrafficSnapshot = trafficSnapshot
@@ -335,6 +338,7 @@ public final class EasyTierAppStore {
         if let runningInstance = runningInstance(matching: config) {
             do {
                 try await client(for: config).stop(instanceNames: [runningInstance.name])
+                runtimeSession.clearTrafficTracking(instanceName: runningInstance.name)
             } catch {
                 setLastError(error)
                 log("Delete canceled because \(config.network_name) could not be stopped: \(error.localizedDescription)")
@@ -451,6 +455,7 @@ public final class EasyTierAppStore {
             }
             persistRuntimeHostname(from: runningInstance, forConfigID: config.instance_id)
             try await client(for: config).stop(instanceNames: [runningInstance.name])
+            runtimeSession.clearTrafficTracking(instanceName: runningInstance.name)
             runtimeSession.clearPendingStart(for: config)
             runtimeSession.clearClientKind(for: config)
             log("Stopped \(config.network_name).")
@@ -468,6 +473,7 @@ public final class EasyTierAppStore {
             let targetClient = client(for: config)
             try await targetClient.validate(toml: try encodedTOML(for: cleanConfig))
             try await targetClient.stop(instanceNames: [instance.name])
+            runtimeSession.clearTrafficTracking(instanceName: instance.name)
             runtimeSession.clearPendingStart(for: config)
             if config.requiresTUN, let helperRegistration {
                 do {
@@ -932,6 +938,7 @@ public final class EasyTierAppStore {
         if let runningInstance {
             persistRuntimeHostname(from: runningInstance, forConfigID: config.instance_id)
             try await targetClient.stop(instanceNames: [runningInstance.name])
+            runtimeSession.clearTrafficTracking(instanceName: runningInstance.name)
             runtimeSession.clearPendingStart(for: config)
         }
         if config.requiresTUN, let helperRegistration {
@@ -954,6 +961,7 @@ public final class EasyTierAppStore {
             currentRuntimeDetails: runtimeDetails,
             currentStatusMetrics: statusMetricsByInstance,
             currentTrafficSamples: trafficSamplesByInstance,
+            currentTrafficSamplingStatus: trafficSamplingStatusByInstance,
             selectedTab: selectedTab
         )
         isPublishingRuntimePresentation = true
@@ -968,6 +976,9 @@ public final class EasyTierAppStore {
         }
         if presentationChange.shouldPublishTrafficSamples {
             trafficSamplesByInstance = presentationChange.state.trafficSamplesByInstance
+        }
+        if presentationChange.shouldPublishTrafficSamplingStatus {
+            trafficSamplingStatusByInstance = presentationChange.state.trafficSamplingStatusByInstance
         }
         isPublishingRuntimePresentation = false
         refreshSelectedRuntimeSnapshots()

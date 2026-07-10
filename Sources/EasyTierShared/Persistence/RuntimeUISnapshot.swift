@@ -68,6 +68,11 @@ public struct RuntimeTrafficSnapshot: Equatable, Sendable {
     public var samples: [TrafficSample]
     public var displaySamples: [TrafficSample]
     public var latest: TrafficSample?
+    public var samplingPhase: TrafficSamplingPhase
+    public var activeSessionID: UUID?
+    public var resumeEvent: TrafficResumeEvent?
+    public var windowStart: Date?
+    public var windowEnd: Date?
     public var maxValue: Double
     public var timeSpanLabel: String
     public var accessibilitySummary: String
@@ -78,6 +83,11 @@ public struct RuntimeTrafficSnapshot: Equatable, Sendable {
         samples: [],
         displaySamples: [],
         latest: nil,
+        samplingPhase: .waiting,
+        activeSessionID: nil,
+        resumeEvent: nil,
+        windowStart: nil,
+        windowEnd: nil,
         maxValue: 16,
         timeSpanLabel: "Waiting for samples",
         accessibilitySummary: "No data yet"
@@ -90,22 +100,66 @@ public struct RuntimeTrafficSnapshot: Equatable, Sendable {
     static func build(
         selectedConfig: NetworkConfig?,
         runningInstance: NetworkInstance?,
-        samples: [TrafficSample]
+        samples: [TrafficSample],
+        samplingStatus: RuntimeTrafficSamplingStatus? = nil
     ) -> RuntimeTrafficSnapshot {
         guard let selectedConfig else { return .empty }
+        guard let runningInstance else {
+            return RuntimeTrafficSnapshot(
+                instance: nil,
+                networkName: selectedConfig.network_name.nilIfEmpty ?? "-",
+                samples: samples,
+                displaySamples: [],
+                latest: nil,
+                samplingPhase: .waiting,
+                activeSessionID: nil,
+                resumeEvent: nil,
+                windowStart: nil,
+                windowEnd: nil,
+                maxValue: 16,
+                timeSpanLabel: "Waiting for samples",
+                accessibilitySummary: "No traffic data yet"
+            )
+        }
 
-        let displaySamples = Self.displaySamples(from: samples)
-        let latest = displaySamples.last
+        let sortedSamples = Self.validSamples(from: samples)
+        let activeSessionID = samplingStatus?.activeSessionID ?? sortedSamples.last?.sessionID
+        let samplingPhase = samplingStatus?.phase ?? (sortedSamples.isEmpty ? .collecting : .live)
+        let windowEnd = samplingStatus?.lastObservedAt ?? sortedSamples.last?.timestamp
+        let windowStart = windowEnd?.addingTimeInterval(-RuntimePresentationReducer.trafficSampleDuration)
+        let displaySamples = Self.displaySamples(
+            from: sortedSamples,
+            windowStart: windowStart,
+            windowEnd: windowEnd
+        )
+        let latest = activeSessionID.flatMap { sessionID in
+            displaySamples.last { $0.sessionID == sessionID }
+        }
+        let resumeEvent = samplingStatus?.resumeEvent
 
         return RuntimeTrafficSnapshot(
             instance: runningInstance,
-            networkName: runningInstance?.name ?? selectedConfig.network_name.nilIfEmpty ?? "-",
+            networkName: runningInstance.name,
             samples: samples,
             displaySamples: displaySamples,
             latest: latest,
+            samplingPhase: samplingPhase,
+            activeSessionID: activeSessionID,
+            resumeEvent: resumeEvent,
+            windowStart: windowStart,
+            windowEnd: windowEnd,
             maxValue: Self.maxChartValue(for: displaySamples),
-            timeSpanLabel: Self.timeSpanLabel(for: displaySamples),
-            accessibilitySummary: Self.accessibilitySummary(for: latest)
+            timeSpanLabel: Self.timeSpanLabel(
+                phase: samplingPhase,
+                resumeEvent: resumeEvent,
+                referenceDate: windowEnd
+            ),
+            accessibilitySummary: Self.accessibilitySummary(
+                latest: latest,
+                phase: samplingPhase,
+                resumeEvent: resumeEvent,
+                windowStart: windowStart
+            )
         )
     }
 
@@ -113,7 +167,7 @@ public struct RuntimeTrafficSnapshot: Equatable, Sendable {
         (0...4).map { maxValue * Double($0) / 4 }
     }
 
-    private static func displaySamples(from samples: [TrafficSample]) -> [TrafficSample] {
+    private static func validSamples(from samples: [TrafficSample]) -> [TrafficSample] {
         samples
             .filter { sample in
                 sample.timestamp.timeIntervalSinceReferenceDate.isFinite
@@ -123,9 +177,18 @@ public struct RuntimeTrafficSnapshot: Equatable, Sendable {
             .sorted { $0.timestamp < $1.timestamp }
     }
 
+    private static func displaySamples(
+        from samples: [TrafficSample],
+        windowStart: Date?,
+        windowEnd: Date?
+    ) -> [TrafficSample] {
+        guard let windowStart, let windowEnd else { return samples }
+        return samples.filter { $0.timestamp >= windowStart && $0.timestamp <= windowEnd }
+    }
+
     private static func maxChartValue(for samples: [TrafficSample]) -> Double {
         let maxSampleValue = samples.lazy.flatMap { [$0.txBytesPerSecond, $0.rxBytesPerSecond] }.max() ?? 0
-        return niceAxisMaximum(max(maxSampleValue, 16))
+        return niceAxisMaximum(max(maxSampleValue * 1.12, 16))
     }
 
     private static func niceAxisMaximum(_ value: Double) -> Double {
@@ -145,24 +208,91 @@ public struct RuntimeTrafficSnapshot: Equatable, Sendable {
         return niceNormalized * scale
     }
 
-    private static func timeSpanLabel(for samples: [TrafficSample]) -> String {
-        guard let first = samples.first?.timestamp, let last = samples.last?.timestamp else {
+    private static func timeSpanLabel(
+        phase: TrafficSamplingPhase,
+        resumeEvent: TrafficResumeEvent?,
+        referenceDate: Date?
+    ) -> String {
+        switch phase {
+        case .waiting:
             return "Waiting for samples"
+        case .collecting:
+            guard let resumeEvent else { return "Collecting new samples..." }
+            if let gapDuration = resumeEvent.gapDuration {
+                return "Resuming after \(compactDuration(gapDuration)) pause..."
+            }
+            return "Restarting sampling..."
+        case .live:
+            guard let resumeEvent,
+                  let referenceDate,
+                  referenceDate.timeIntervalSince(resumeEvent.timestamp) <= 8
+            else {
+                return "Live - Last 60 sec"
+            }
+            if let gapDuration = resumeEvent.gapDuration {
+                return "Live - Resumed after \(compactDuration(gapDuration)) pause"
+            }
+            return "Live - Sampling restarted"
         }
-        guard samples.count > 1 else {
-            return "Collecting samples"
-        }
-        let seconds = max(0, last.timeIntervalSince(first))
-        if seconds < 90 {
-            return "Last \(Int(seconds.rounded())) sec"
-        }
-        return "Last \(String(format: "%.1f", seconds / 60)) min"
     }
 
-    private static func accessibilitySummary(for latest: TrafficSample?) -> String {
-        guard let latest else { return "No data yet" }
+    private static func accessibilitySummary(
+        latest: TrafficSample?,
+        phase: TrafficSamplingPhase,
+        resumeEvent: TrafficResumeEvent?,
+        windowStart: Date?
+    ) -> String {
+        guard phase != .waiting else { return "No traffic data yet" }
+        guard let latest else {
+            if let gapDuration = resumeEvent?.gapDuration {
+                return "Collecting new traffic samples after a \(spokenDuration(gapDuration)) pause"
+            }
+            return "Collecting new traffic samples"
+        }
         let upload = ByteFormatter.formatRate(latest.txBytesPerSecond)
         let download = ByteFormatter.formatRate(latest.rxBytesPerSecond)
-        return "Upload \(upload), Download \(download)"
+        var summary = "Traffic over the last 60 seconds. Upload \(upload), Download \(download)"
+        if let resumeEvent,
+           windowStart.map({ resumeEvent.timestamp >= $0 }) ?? false
+        {
+            if let gapDuration = resumeEvent.gapDuration {
+                summary += ". Sampling resumed after a \(spokenDuration(gapDuration)) pause"
+            } else {
+                summary += ". Sampling restarted"
+            }
+        }
+        return summary
+    }
+
+    private static func compactDuration(_ duration: TimeInterval) -> String {
+        let duration = max(0, duration)
+        if duration < 60 {
+            return "\(max(1, Int(duration.rounded())))s"
+        }
+        if duration < 3_600 {
+            return "\(max(1, Int((duration / 60).rounded())))m"
+        }
+        if duration < 86_400 {
+            return "\(max(1, Int((duration / 3_600).rounded())))h"
+        }
+        return "\(max(1, Int((duration / 86_400).rounded())))d"
+    }
+
+    private static func spokenDuration(_ duration: TimeInterval) -> String {
+        let duration = max(0, duration)
+        if duration < 60 {
+            let value = max(1, Int(duration.rounded()))
+            return "\(value) second\(value == 1 ? "" : "s")"
+        }
+        if duration < 3_600 {
+            let value = max(1, Int((duration / 60).rounded()))
+            return "\(value) minute\(value == 1 ? "" : "s")"
+        }
+        if duration < 86_400 {
+            let value = max(1, Int((duration / 3_600).rounded()))
+            return "\(value) hour\(value == 1 ? "" : "s")"
+        }
+        let value = max(1, Int((duration / 86_400).rounded()))
+        return "\(value) day\(value == 1 ? "" : "s")"
     }
 }

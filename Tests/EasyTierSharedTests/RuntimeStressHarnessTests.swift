@@ -46,7 +46,10 @@ import Testing
     #expect(result.collectCount == profile.iterations)
     #expect(result.instanceCount == 1)
     #expect(result.selectedMemberCount == 11)
-    #expect(result.selectedTrafficSampleCount == 12)
+    #expect(
+        result.selectedTrafficSampleCount == 11,
+        "The first poll establishes the traffic baseline, so 12 polls produce 11 rate samples."
+    )
 }
 
 @MainActor
