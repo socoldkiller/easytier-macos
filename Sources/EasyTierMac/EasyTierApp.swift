@@ -25,7 +25,6 @@ struct EasyTierApp: App {
                 .environment(store)
                 .environment(updater)
                 .environment(appearanceSettings)
-                .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
                 .easyTierWindowBackground(glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
                 .hideScrollViewScrollers()
                 .background(
@@ -70,7 +69,7 @@ struct EasyTierApp: App {
             .hideScrollViewScrollers()
             .background(
                 WindowAccessor { window in
-                    configureSettingsWindow(window, glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
+                    configureMainWindow(window, glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
                 }
                 .frame(width: 0, height: 0)
             )
@@ -79,7 +78,33 @@ struct EasyTierApp: App {
         .windowResizability(.contentSize)
 
         .commands {
-            EasyTierCommands(store: store, updater: updater)
+            CommandGroup(replacing: .newItem) {
+                Button("New Network") { store.addConfig() }
+                    .keyboardShortcut("n")
+            }
+
+            CommandGroup(replacing: .saveItem) {
+                Button("Save") { store.save() }
+                    .keyboardShortcut("s")
+            }
+
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings...") { store.isShowingSettings = true }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
+
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates...") {
+                    updater.checkForUpdatesAndPresent()
+                }
+            }
+
+            CommandGroup(replacing: .appTermination) {
+                Button("Quit EasyTier") {
+                    EasyTierApplicationDelegate.quitEasyTier()
+                }
+                .keyboardShortcut("q")
+            }
         }
     }
 
@@ -93,24 +118,7 @@ struct EasyTierApp: App {
 
     private func configureMainWindow(_ window: NSWindow, glassEffectsEnabled: Bool) {
         let frame = window.frame
-
-        if window.styleMask.contains(.fullSizeContentView) {
-            window.styleMask.remove(.fullSizeContentView)
-        }
-        if window.titlebarAppearsTransparent {
-            window.titlebarAppearsTransparent = false
-        }
-        window.titleVisibility = .hidden
-
-        configureWindowBackground(window, glassEffectsEnabled: glassEffectsEnabled)
-
-        if window.frame != frame {
-            window.setFrame(frame, display: true)
-        }
-    }
-
-    private func configureSettingsWindow(_ window: NSWindow, glassEffectsEnabled: Bool) {
-        let frame = window.frame
+        let effectiveGlass = glassEffectsEnabled && !NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
 
         if !window.styleMask.contains(.fullSizeContentView) {
             window.styleMask.insert(.fullSizeContentView)
@@ -118,16 +126,6 @@ struct EasyTierApp: App {
         if !window.titlebarAppearsTransparent {
             window.titlebarAppearsTransparent = true
         }
-
-        configureWindowBackground(window, glassEffectsEnabled: glassEffectsEnabled)
-
-        if window.frame != frame {
-            window.setFrame(frame, display: true)
-        }
-    }
-
-    private func configureWindowBackground(_ window: NSWindow, glassEffectsEnabled: Bool) {
-        let effectiveGlass = glassEffectsEnabled && !NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
 
         let targetOpacity = !effectiveGlass
         if window.isOpaque != targetOpacity {
@@ -137,6 +135,10 @@ struct EasyTierApp: App {
         let targetBackgroundColor: NSColor = effectiveGlass ? .clear : .windowBackgroundColor
         if window.backgroundColor != targetBackgroundColor {
             window.backgroundColor = targetBackgroundColor
+        }
+
+        if window.frame != frame {
+            window.setFrame(frame, display: true)
         }
     }
 

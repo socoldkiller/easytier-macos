@@ -22,6 +22,7 @@ struct ContentView: View {
     @State private var selectedTabLocal: WorkspaceTab = .status
     @State private var selectedConfigIDLocal: String?
     @State private var showingDeleteRunningNetworkConfirmation = false
+    @State private var configEditorScrolledPastTop = false
 
     private static let tabTransitionDistance: CGFloat = 14
     private static let networkTransitionDistance: CGFloat = 7
@@ -43,9 +44,9 @@ struct ContentView: View {
                 workspaceContent
             }
         }
+            .navigationTitle(navigationTitle)
             .toolbar { toolbar }
         }
-        .focusedSceneValue(\.mainWindowCommandActions, mainWindowCommandActions)
         .task(id: store.selectedConfigID) {
             loadDraft(for: store.selectedConfigID)
         }
@@ -202,6 +203,10 @@ struct ContentView: View {
         }
     }
 
+    private var toolbarControlsHidden: Bool {
+        store.selectedTab == .config && configEditorScrolledPastTop
+    }
+
     private var remoteToolbarSession: RemoteConfigSession? {
         guard store.selectedTab == .config else { return nil }
         return store.remoteConfigSession
@@ -274,7 +279,8 @@ struct ContentView: View {
         .safeAreaInset(edge: .bottom) {
             HStack {
                 Button {
-                    addNetwork()
+                    commitDraft(saveImmediately: true)
+                    store.addConfig()
                 } label: {
                     Image(systemName: "plus")
                 }
@@ -305,25 +311,39 @@ struct ContentView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            networkContextMenu
-        }
-
         ToolbarItem(placement: .principal) {
             WorkspaceTabPicker(selection: $selectedTabLocal)
+                .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
         }
 
-        ToolbarItem(placement: .primaryAction) {
+        ToolbarItemGroup(placement: .primaryAction) {
             if let remoteSession = remoteToolbarSession {
                 Button {
                     Task { await applyRemoteToolbarPatch() }
                 } label: {
-                    Label("Apply", systemImage: "checkmark")
+                    Label("Apply Changes", systemImage: "gearshape")
                 }
                 .disabled(!remoteSession.hasUnsavedChanges || remoteSession.isLoading || remoteSession.loadError != nil || store.isBusy)
                 .help(remoteSession.hasUnsavedChanges ? "Apply remote changes with patch_config" : "No pending remote changes")
-                .labelStyle(.titleAndIcon)
+                .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
+
+                Button {
+                    Task { await restartLocalToolbarNetwork() }
+                } label: {
+                    Label("Restart Network", systemImage: store.isBusy ? "hourglass" : "arrow.clockwise")
+                }
+                .disabled(remoteSession.isLoading || remoteSession.loadError != nil || store.selectedRunningInstance == nil || store.isBusy)
+                .help(remoteSession.hasUnsavedChanges ? "Apply remote changes and restart selected local network" : "Restart selected local network")
+                .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
             } else {
+                Button {
+                    openSettings(tab: .general)
+                } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
+                .help("EasyTier Settings")
+                .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
+
                 Button {
                     let runningInstanceToRestart = draftIsDirty ? store.selectedRunningInstance : nil
                     commitDraft(saveImmediately: true)
@@ -344,131 +364,50 @@ struct ContentView: View {
                 }
                 .disabled(store.selectedConfig == nil || store.isBusy)
                 .help(connectionActionHelp)
-                .labelStyle(.titleAndIcon)
+                .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
             }
-        }
 
-        ToolbarItem(placement: .secondaryAction) {
-            if let remoteSession = remoteToolbarSession {
-                Button {
-                    Task { await restartLocalToolbarNetwork() }
-                } label: {
-                    Label("Restart Local Network", systemImage: store.isBusy ? "hourglass" : "arrow.clockwise")
+            Menu {
+                Button("Import TOML") {
+                    commitDraft(saveImmediately: true)
+                    openImportTOML()
                 }
-                .disabled(remoteSession.isLoading || remoteSession.loadError != nil || store.selectedRunningInstance == nil || store.isBusy)
-                .help(remoteSession.hasUnsavedChanges ? "Apply remote changes and restart selected local network" : "Restart selected local network")
-            }
-        }
-    }
-
-    private var networkContextMenu: some View {
-        Menu {
-            if store.configs.isEmpty {
-                Text("No networks")
-            } else {
-                ForEach(store.configs) { config in
-                    Button {
-                        selectedConfigIDLocal = config.id
-                    } label: {
-                        Label(
-                            networkMenuTitle(for: config),
-                            systemImage: networkMenuSystemImage(for: config)
-                        )
-                    }
+                Button("Export TOML") {
+                    commitDraft(saveImmediately: true)
+                    openExportTOML()
                 }
+                .disabled(store.selectedConfig == nil)
+            } label: {
+                Label("TOML", systemImage: "doc.text")
             }
+            .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
 
-            Divider()
-
-            Button("New Network", systemImage: "plus") {
-                addNetwork()
-            }
-            Button("Import TOML...", systemImage: "square.and.arrow.down") {
-                importTOML()
-            }
-            Button("Export TOML...", systemImage: "square.and.arrow.up") {
-                exportTOML()
-            }
-            .disabled(store.selectedConfig == nil)
-        } label: {
-            HStack(spacing: 6) {
-                if selectedToolbarConfig != nil {
-                    NetworkStatusGlyph(state: selectedNetworkState)
-                        .scaleEffect(0.82)
-                        .frame(width: 18, height: 18)
-                        .accessibilityHidden(true)
-                } else {
-                    Image(systemName: "network")
-                        .foregroundStyle(.secondary)
-                        .frame(width: 18, height: 18)
-                        .accessibilityHidden(true)
+            Menu {
+                Button("Install on Linux") {
+                    store.isShowingLinuxInstallGuide = true
                 }
-
-                Text(selectedNetworkName)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: 220, alignment: .leading)
+                Link("Online Docs", destination: URL(string: "https://easytier.cn") ?? URL(fileURLWithPath: "/"))
+                Link("Releases", destination: URL(string: "https://github.com/EasyTier/EasyTier/releases") ?? URL(fileURLWithPath: "/"))
+            } label: {
+                Label("Help", systemImage: "questionmark.circle")
             }
-            .contentShape(Rectangle())
-        }
-        .menuIndicator(.visible)
-        .help(selectedNetworkDescription)
-        .accessibilityLabel(Text(selectedNetworkDescription))
-    }
+            .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
 
-    private var selectedToolbarConfig: NetworkConfig? {
-        guard let selectedID = store.selectedConfigID else { return nil }
-        if draftConfigID == selectedID {
-            return draftConfig
-        }
-        return store.selectedConfig
-    }
-
-    private var selectedNetworkName: String {
-        guard let config = selectedToolbarConfig else { return "No Network" }
-        return config.network_name.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "Untitled Network"
-    }
-
-    private var selectedNetworkState: ConnectionGlyphState {
-        guard let config = selectedToolbarConfig else { return .idle }
-        return connectionState(for: config)
-    }
-
-    private var selectedNetworkDescription: String {
-        guard selectedToolbarConfig != nil else { return "No network selected" }
-        return "Current network, \(selectedNetworkName), \(selectedNetworkState.displayLabel)"
-    }
-
-    private func networkMenuTitle(for config: NetworkConfig) -> String {
-        let displayedConfig = config.id == draftConfigID ? draftConfig : config
-        let name = displayedConfig.network_name.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "Untitled Network"
-        return "\(name) - \(connectionState(for: displayedConfig).displayLabel)"
-    }
-
-    private func networkMenuSystemImage(for config: NetworkConfig) -> String {
-        if config.id == store.selectedConfigID {
-            return "checkmark.circle.fill"
-        }
-        switch connectionState(for: config) {
-        case .idle:
-            return "circle"
-        case .connecting:
-            return "circle.dotted"
-        case .connected:
-            return "bolt.horizontal.circle.fill"
-        case .error:
-            return "exclamationmark.triangle.fill"
+            Button {
+                store.isShowingAbout = true
+            } label: {
+                Label("About", systemImage: "info.circle")
+            }
+            .help("About EasyTier")
+            .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
         }
     }
 
-    private var mainWindowCommandActions: MainWindowCommandActions {
-        MainWindowCommandActions(
-            newNetwork: addNetwork,
-            save: { commitDraft(saveImmediately: true) },
-            importTOML: importTOML,
-            exportTOML: exportTOML,
-            canExportTOML: store.selectedConfig != nil
-        )
+    private var navigationTitle: String {
+        if draftConfigID == store.selectedConfigID {
+            return draftConfig.network_name.isEmpty ? "EasyTier" : draftConfig.network_name
+        }
+        return store.selectedConfig?.network_name ?? "EasyTier"
     }
 
     private var selectedConfigIsRunning: Bool {
@@ -506,21 +445,21 @@ struct ContentView: View {
         if store.isBusy { return "Working" }
         if selectedConfigNeedsRestart { return "Restart" }
         if selectedConfigHasRuntimeError { return "Stop" }
-        return selectedConfigIsRunning ? "Stop" : "Run"
+        return selectedConfigIsRunning ? "Pause" : "Run"
     }
 
     private var connectionActionSystemImage: String {
         if store.isBusy { return "hourglass" }
         if selectedConfigNeedsRestart { return "arrow.clockwise" }
         if selectedConfigHasRuntimeError { return "stop.fill" }
-        return selectedConfigIsRunning ? "stop.fill" : "play.fill"
+        return selectedConfigIsRunning ? "pause.fill" : "play.fill"
     }
 
     private var connectionActionHelp: String {
         if store.isBusy { return "Working" }
         if selectedConfigNeedsRestart { return "Restart selected network" }
         if selectedConfigHasRuntimeError { return "Stop selected network" }
-        return selectedConfigIsRunning ? "Stop selected network" : "Run selected network"
+        return selectedConfigIsRunning ? "Pause selected network" : "Run selected network"
     }
 
     private func applyRemoteToolbarPatch() async {
@@ -776,22 +715,6 @@ struct ContentView: View {
     private func openSettings(tab: EasyTierSettingsTab) {
         EasyTierSettingsTabRequest.set(tab)
         openWindow(id: "settings")
-    }
-
-    private func addNetwork() {
-        commitDraft(saveImmediately: true)
-        store.addConfig()
-    }
-
-    private func importTOML() {
-        commitDraft(saveImmediately: true)
-        openImportTOML()
-    }
-
-    private func exportTOML() {
-        guard store.selectedConfig != nil else { return }
-        commitDraft(saveImmediately: true)
-        openExportTOML()
     }
 
     private func highlightSearchResult(peerID: String) {
@@ -1055,8 +978,6 @@ struct ContentView: View {
     }
 
     private func commitDraft(saveImmediately: Bool) {
-        NSApp.keyWindow?.makeFirstResponder(nil)
-
         guard draftIsDirty, let draftConfigID else {
             if saveImmediately { store.save() }
             return
@@ -1091,47 +1012,22 @@ private struct TOMLPresentation: Identifiable {
 private struct WorkspaceTabPicker: View {
     @Binding var selection: WorkspaceTab
 
-    private static let expandedWidth: CGFloat = 430
-    private static let compactWidth: CGFloat = 300
+    private static let preferredWidth: CGFloat = 300
     private let tabs = WorkspaceTab.displayOrder
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            expandedPicker
-            compactPicker
+        Picker("Workspace", selection: $selection) {
+            ForEach(tabs) { tab in
+                Label(tab.displayTitle, systemImage: tab.systemImage)
+                    .tag(tab)
+            }
         }
+        .pickerStyle(.segmented)
+        .controlSize(.regular)
+        .labelsHidden()
+        .frame(width: Self.preferredWidth)
         .help("Switch workspace view")
         .accessibilityLabel(Text("Workspace"))
-    }
-
-    private var expandedPicker: some View {
-        Picker("Workspace", selection: $selection) {
-            ForEach(tabs) { tab in
-                HStack(spacing: 4) {
-                    Image(systemName: tab.systemImage)
-                    Text(tab.displayTitle)
-                }
-                    .tag(tab)
-            }
-        }
-        .pickerStyle(.segmented)
-        .controlSize(.regular)
-        .labelsHidden()
-        .frame(width: Self.expandedWidth)
-    }
-
-    private var compactPicker: some View {
-        Picker("Workspace", selection: $selection) {
-            ForEach(tabs) { tab in
-                Image(systemName: tab.systemImage)
-                    .accessibilityLabel(Text(tab.displayTitle))
-                    .tag(tab)
-            }
-        }
-        .pickerStyle(.segmented)
-        .controlSize(.regular)
-        .labelsHidden()
-        .frame(width: Self.compactWidth)
     }
 }
 
@@ -1408,11 +1304,10 @@ private struct NetworkStatusGlyph: View {
                 .foregroundStyle(iconColor)
                 .frame(width: 18, height: 18)
 
-            Image(systemName: statusSystemImage)
-                .font(.system(size: 7.5, weight: .bold))
-                .foregroundStyle(statusColor)
-                .frame(width: 8.5, height: 8.5)
-                .offset(x: 2, y: 2)
+            Circle()
+                .fill(statusColor)
+                .frame(width: 5.5, height: 5.5)
+                .offset(x: 1.5, y: 1.5)
         }
             .frame(width: 22, height: 22)
             .accessibilityLabel(accessibilityLabel)
@@ -1437,19 +1332,6 @@ private struct NetworkStatusGlyph: View {
             return .orange
         case .error:
             return .red
-        }
-    }
-
-    private var statusSystemImage: String {
-        switch state {
-        case .connected:
-            return "checkmark.circle.fill"
-        case .idle:
-            return "circle"
-        case .connecting:
-            return "ellipsis.circle.fill"
-        case .error:
-            return "exclamationmark.circle.fill"
         }
     }
 
