@@ -1314,7 +1314,6 @@ version = "0.1.0"
 dependencies = [
  "dashmap",
  "easytier",
- "once_cell",
  "serde_json",
  "tokio",
  "url",

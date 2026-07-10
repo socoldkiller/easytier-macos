@@ -2,33 +2,28 @@ import CEasyTierFFI
 import EasyTierShared
 import Foundation
 
-public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Sendable {
-    public init() {}
+package final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Sendable {
+    package init() {}
 
-    public func version() async throws -> String {
-        "EasyTier FFI (static)"
-    }
-
-    public func validate(toml: String) async throws {
+    package func validate(toml: String) async throws {
         try Self.validateDirect(toml: toml)
     }
 
-    public func run(toml: String) async throws {
-        try await validate(toml: toml)
+    package func run(toml: String) async throws {
         try runSync(toml: toml)
     }
 
-    public func runSync(toml: String) throws {
+    package func runSync(toml: String) throws {
         var error: UnsafePointer<CChar>?
         let result = toml.withCString { cfg in run_network_instance(cfg, &error) }
         try Self.throwOnError(result, error: error)
     }
 
-    public func stop(instanceNames: [String]) async throws {
+    package func stop(instanceNames: [String]) async throws {
         try stopSync(instanceNames: instanceNames)
     }
 
-    public func stopSync(instanceNames: [String]) throws {
+    package func stopSync(instanceNames: [String]) throws {
         guard !instanceNames.isEmpty else { return }
         try withCStringArray(instanceNames) { names in
             var error: UnsafePointer<CChar>?
@@ -37,11 +32,11 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
         }
     }
 
-    public func retain(instanceNames: [String]) async throws {
+    package func retain(instanceNames: [String]) async throws {
         try retainSync(instanceNames: instanceNames)
     }
 
-    public func retainSync(instanceNames: [String]) throws {
+    package func retainSync(instanceNames: [String]) throws {
         try withCStringArray(instanceNames) { names in
             var error: UnsafePointer<CChar>?
             let result = retain_network_instance(names.baseAddress, UInt(names.count), &error)
@@ -49,16 +44,7 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
         }
     }
 
-    public func listInstances() async throws -> [NetworkInstance] {
-        try listInstancesSync()
-    }
-
-    public func listInstancesSync() throws -> [NetworkInstance] {
-        let pairs = try collectNetworkInfoPayloadsSync()
-        return pairs.map { NetworkInstance(instance_id: $0.key, name: $0.key, running: true) }
-    }
-
-    public func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] {
+    package func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] {
         // The FFI call (`collect_network_infos` -> `RPC_RUNTIME.block_on`) and the
         // per-instance JSON decode are CPU/IO-bound and have no main-actor
         // dependencies (DashMap-backed manager, Sendable client). Move them off
@@ -69,7 +55,7 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
         }.value
     }
 
-    public func collectNetworkInfosSync() throws -> [String: NetworkInstanceRunningInfo] {
+    package func collectNetworkInfosSync() throws -> [String: NetworkInstanceRunningInfo] {
         let pairs = try collectNetworkInfoPayloadsSync()
         var output: [String: NetworkInstanceRunningInfo] = [:]
         let decoder = JSONDecoder()
@@ -84,15 +70,15 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
         return output
     }
 
-    public func collectNetworkInfoPayloadsSync() throws -> [(key: String, value: String)] {
+    package func collectNetworkInfoPayloadsSync() throws -> [(key: String, value: String)] {
         try readPairs(command: collect_network_infos)
     }
 
-    public func configureRPCPortal(_ rpcPortal: String?, whitelist: [String]?) async throws {
+    package func configureRPCPortal(_ rpcPortal: String?, whitelist: [String]?) async throws {
         try configureRPCPortalSync(rpcPortal, whitelist: whitelist)
     }
 
-    public func configureRPCPortalSync(_ rpcPortal: String?, whitelist: [String]? = nil) throws {
+    package func configureRPCPortalSync(_ rpcPortal: String?, whitelist: [String]? = nil) throws {
         var error: UnsafePointer<CChar>?
         let result: CInt
         if let rpcPortal {
@@ -121,11 +107,7 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
         return body(pointers)
     }
 
-    public func callJSONRPC(service: String, method: String, domain: String?, payload: String) async throws -> String {
-        try callJSONRPC(clientID: Self.defaultRPCClientID, service: service, method: method, domain: domain, payload: payload)
-    }
-
-    public func connectRPCClientSync(clientID: String, url: URL) throws {
+    private func connectRPCClientSync(clientID: String, url: URL) throws {
         var error: UnsafePointer<CChar>?
         let result = clientID.withCString { clientIDPointer in
             url.absoluteString.withCString { urlPointer in
@@ -135,23 +117,43 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
         try Self.throwOnError(result, error: error)
     }
 
-    public func disconnectRPCClientSync(clientID: String) throws {
-        var error: UnsafePointer<CChar>?
-        let result = clientID.withCString { clientIDPointer in
-            disconnect_rpc_client(clientIDPointer, &error)
-        }
-        try Self.throwOnError(result, error: error)
+    package func callJSONRPC(
+        clientID: String,
+        url: URL,
+        service: String,
+        method: String,
+        domain: String?,
+        payload: String
+    ) async throws -> String {
+        try callJSONRPCSync(
+            clientID: clientID,
+            url: url,
+            service: service,
+            method: method,
+            domain: domain,
+            payload: payload
+        )
     }
 
-    public func connectRPCClient(clientID: String, url: URL) async throws {
+    package func callJSONRPCSync(
+        clientID: String,
+        url: URL,
+        service: String,
+        method: String,
+        domain: String?,
+        payload: String
+    ) throws -> String {
         try connectRPCClientSync(clientID: clientID, url: url)
+        return try callConnectedJSONRPC(
+            clientID: clientID,
+            service: service,
+            method: method,
+            domain: domain,
+            payload: payload
+        )
     }
 
-    public func disconnectRPCClient(clientID: String) async throws {
-        try disconnectRPCClientSync(clientID: clientID)
-    }
-
-    public func callJSONRPC(clientID: String, service: String, method: String, domain: String?, payload: String) throws -> String {
+    private func callConnectedJSONRPC(clientID: String, service: String, method: String, domain: String?, payload: String) throws -> String {
         var output: UnsafePointer<CChar>?
         var error: UnsafePointer<CChar>?
         let result = withCStringTuple(clientID, service, method, payload) { cClientID, cService, cMethod, cPayload in
@@ -183,25 +185,11 @@ public final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Senda
         }
     }
 
-    public func startConfigServerClient(url: URL) async throws {
-        throw EasyTierCoreError.operationFailed("Config-server client mode is not available with EasyTier Core v2.6.4 FFI.")
-    }
-
-    public func stopConfigServerClient() async throws {
-        // EasyTier Core v2.6.4 FFI does not expose config-server client state.
-    }
-
-    public func isConfigServerClientConnected() async throws -> Bool {
-        throw EasyTierCoreError.operationFailed("Config-server client mode is not available with EasyTier Core v2.6.4 FFI.")
-    }
-
-    public static func validateDirect(toml: String) throws {
+    package static func validateDirect(toml: String) throws {
         var error: UnsafePointer<CChar>?
         let result = toml.withCString { cfg in parse_config(cfg, &error) }
         try throwOnError(result, error: error)
     }
-
-    private static let defaultRPCClientID = "default"
 
     /// Convert an FFI result + out-error pair into a thrown `EasyTierCoreError`.
     /// On success the error pointer is expected to be null and is left untouched.

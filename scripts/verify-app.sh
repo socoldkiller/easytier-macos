@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_PATH="${1:-}"
-FFI_LIBRARY="$ROOT_DIR/Vendor/Frameworks/static/libeasytier_ffi.a"
 GUI_BINARY=""
 HELPER_BINARY=""
 VERIFY_INSTALLABLE_HELPER="${EASYTIER_VERIFY_INSTALLABLE_HELPER:-0}"
@@ -11,16 +9,18 @@ REQUIRED_FFI_SYMBOLS=(
   parse_config
   run_network_instance
   retain_network_instance
+  stop_network_instance
   collect_network_infos
   free_string
+  connect_rpc_client
+  call_json_rpc
+  configure_rpc_portal
 )
 
 if [[ -z "$APP_PATH" ]]; then
   echo "Usage: scripts/verify-app.sh /path/to/EasyTier.app" >&2
   exit 2
 fi
-
-cd "$ROOT_DIR"
 
 fail() {
   echo "$1" >&2
@@ -73,74 +73,6 @@ verify_installable_helper_signature() {
   echo "Installable helper signing check passed with TeamIdentifier $app_team."
 }
 
-verify_static_ffi_library() {
-  [[ -f "$FFI_LIBRARY" ]] || fail "Static FFI library not found; run ./scripts/build-ffi.sh before building the app."
-
-  local archs
-  archs="$(archs_for "$FFI_LIBRARY")"
-  [[ -n "$archs" ]] || fail "Could not determine architectures for $FFI_LIBRARY."
-
-  for symbol in "${REQUIRED_FFI_SYMBOLS[@]}"; do
-    has_symbol "$FFI_LIBRARY" "$symbol" "$archs" || fail "Missing FFI symbol in static library: $symbol"
-  done
-  echo "Static FFI library found and required symbols are exported."
-}
-
-verify_target_graph() {
-  local package_json
-  package_json="$(mktemp)"
-  trap 'rm -f "$package_json"' RETURN
-
-  swift package describe --type json > "$package_json"
-  python3 - "$package_json" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], "r", encoding="utf-8") as handle:
-    package = json.load(handle)
-
-targets = {target["name"]: target for target in package["targets"]}
-
-def fail(message):
-    print(message, file=sys.stderr)
-    sys.exit(1)
-
-def deps(name):
-    target = targets.get(name)
-    if target is None:
-        fail(f"Missing SwiftPM target: {name}")
-    return set(target.get("target_dependencies", [])) | set(target.get("product_dependencies", []))
-
-if "EasyTierCore" in targets:
-    fail("EasyTierCore target must not exist after splitting shared/runtime modules.")
-
-mac_deps = deps("EasyTierMac")
-forbidden_mac_deps = {"CEasyTierFFI"}
-# EasyTierMac may depend on EasyTierRuntime so it can run no_tun instances in-process via StaticEasyTierFFIClient.
-forbidden_found = sorted(mac_deps & forbidden_mac_deps)
-if forbidden_found:
-    fail(f"EasyTierMac must not depend on FFI/runtime targets: {', '.join(forbidden_found)}")
-
-shared_deps = deps("EasyTierShared")
-forbidden_shared_deps = {"EasyTierRuntime", "CEasyTierFFI"}
-forbidden_found = sorted(shared_deps & forbidden_shared_deps)
-if forbidden_found:
-    fail(f"EasyTierShared must remain FFI-free: {', '.join(forbidden_found)}")
-
-runtime_deps = deps("EasyTierRuntime")
-if "CEasyTierFFI" not in runtime_deps:
-    fail("EasyTierRuntime must depend on CEasyTierFFI.")
-if "EasyTierShared" not in runtime_deps:
-    fail("EasyTierRuntime must depend on EasyTierShared.")
-
-helper_deps = deps("EasyTierPrivilegedHelper")
-if "EasyTierRuntime" not in helper_deps or "EasyTierShared" not in helper_deps:
-    fail("EasyTierPrivilegedHelper must depend on EasyTierShared and EasyTierRuntime.")
-
-print("SwiftPM target graph: EasyTierMac and EasyTierPrivilegedHelper both depend on EasyTierRuntime.")
-PY
-}
-
 verify_app_bundle() {
   [[ -d "$APP_PATH" ]] || fail "Packaged app not found: $APP_PATH"
 
@@ -162,9 +94,6 @@ verify_app_bundle() {
   [[ "$bundle_icon" == "EasyTier.icns" ]] || fail "Packaged app must use the official EasyTier dock icon: $bundle_icon"
   [[ -f "$APP_PATH/Contents/Resources/$bundle_icon" ]] || fail "Missing dock icon resource: Contents/Resources/$bundle_icon"
   [[ -f "$APP_PATH/Contents/Resources/easytier-icon.png" ]] || fail "Missing About icon resource: Contents/Resources/easytier-icon.png"
-  [[ -f "$APP_PATH/Contents/Resources/MenuBarConnectionGlyphTemplate.png" ]] || fail "Missing menu bar icon resource: Contents/Resources/MenuBarConnectionGlyphTemplate.png"
-  [[ -f "$APP_PATH/Contents/Resources/MenuBarConnectionGlyphTemplate@2x.png" ]] || fail "Missing menu bar icon resource: Contents/Resources/MenuBarConnectionGlyphTemplate@2x.png"
-  [[ -f "$APP_PATH/Contents/Resources/MenuBarConnectionGlyphTemplate@3x.png" ]] || fail "Missing menu bar icon resource: Contents/Resources/MenuBarConnectionGlyphTemplate@3x.png"
 
   local build_time
   build_time="$(/usr/libexec/PlistBuddy -c 'Print :EasyTierBuildTime' "$APP_PATH/Contents/Info.plist")" || fail "Packaged app must include EasyTierBuildTime."
@@ -205,8 +134,6 @@ verify_binary_symbols() {
   echo "Binary symbol checks passed: both GUI and helper contain EasyTier FFI."
 }
 
-verify_static_ffi_library
-verify_target_graph
 verify_app_bundle
 verify_binary_symbols
 

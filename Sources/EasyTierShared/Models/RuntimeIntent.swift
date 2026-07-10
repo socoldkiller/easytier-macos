@@ -1,9 +1,5 @@
 import Foundation
 
-public enum RuntimeIntentKind: String, Codable, Equatable, Sendable {
-    case hostname
-}
-
 public enum RuntimeIntentStatus: String, Codable, Equatable, Sendable {
     case pending
     case applied
@@ -46,74 +42,31 @@ public struct RuntimeIntentTarget: Codable, Equatable, Sendable {
     }
 }
 
-public struct RuntimeIntentDesired: Codable, Equatable, Sendable {
-    public var hostname: String?
-    public var portForwards: [PortForwardConfig]
-
-    public init(
-        hostname: String? = nil,
-        portForwards: [PortForwardConfig] = []
-    ) {
-        self.hostname = hostname
-        self.portForwards = portForwards
-    }
-}
-
-public struct RuntimeIntentBase: Codable, Equatable, Sendable {
-    public var hostname: String?
-
-    public init(hostname: String? = nil) {
-        self.hostname = hostname
-    }
-}
-
 public struct RuntimeIntent: Codable, Equatable, Identifiable, Sendable {
     public var id: String
     public var target: RuntimeIntentTarget
-    public var kind: RuntimeIntentKind
-    public var desired: RuntimeIntentDesired
-    public var base: RuntimeIntentBase
+    public var desiredHostname: String
+    public var baseHostname: String?
     public var status: RuntimeIntentStatus
     public var updatedAt: Date
 
     public init(
         id: String = UUID().uuidString.lowercased(),
         target: RuntimeIntentTarget,
-        kind: RuntimeIntentKind,
-        desired: RuntimeIntentDesired,
-        base: RuntimeIntentBase,
+        desiredHostname: String,
+        baseHostname: String?,
         status: RuntimeIntentStatus = .pending,
         updatedAt: Date = Date()
     ) {
         self.id = id
         self.target = target
-        self.kind = kind
-        self.desired = desired
-        self.base = base
+        self.desiredHostname = desiredHostname
+        self.baseHostname = baseHostname
         self.status = status
         self.updatedAt = updatedAt
     }
 
     var reconcileKey: String {
-        "\(kind.rawValue):\(target.identityKey)"
-    }
-}
-
-public extension PortForwardConfig {
-    static func fingerprint(_ portForwards: [PortForwardConfig]) -> String {
-        portForwards
-            .map(\.fingerprintKey)
-            .sorted()
-            .joined(separator: "\n")
-    }
-
-    var fingerprintKey: String {
-        [
-            proto.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-            bind_ip.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-            String(bind_port),
-            dst_ip.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-            String(dst_port),
-        ].joined(separator: "|")
+        "hostname:\(target.identityKey)"
     }
 }

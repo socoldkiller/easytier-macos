@@ -490,10 +490,10 @@ struct ContentView: View {
         }
     }
 
-    private func connectionState(for stored: StoredNetworkConfig) -> ConnectionGlyphState {
-        if store.lastError != nil, store.selectedConfigID == stored.id { return .error }
-        if store.isBusy, store.selectedConfigID == stored.id { return .connecting }
-        if let instance = store.runningInstance(matching: stored.config) {
+    private func connectionState(for config: NetworkConfig) -> ConnectionGlyphState {
+        if store.lastError != nil, store.selectedConfigID == config.id { return .error }
+        if store.isBusy, store.selectedConfigID == config.id { return .connecting }
+        if let instance = store.runningInstance(matching: config) {
             return store.instanceIsFullyConnected(instance) ? .connected : .connecting
         }
         return .idle
@@ -507,19 +507,18 @@ struct ContentView: View {
         let query = networkSearchQuery
         guard !query.isEmpty else { return [] }
 
-        return store.configs.flatMap { stored -> [NetworkSearchResult] in
-            let config = stored.config
+        return store.configs.flatMap { config -> [NetworkSearchResult] in
             let instance = store.runningInstance(matching: config)
             var results: [NetworkSearchResult] = []
 
-            let networkFields = networkDirectSearchFields(for: stored, instance: instance)
+            let networkFields = networkDirectSearchFields(for: config, instance: instance)
             if query.matches(networkFields.searchValues) {
                 results.append(.network(
-                    id: "network-\(stored.id)",
-                    networkID: stored.id,
+                    id: "network-\(config.id)",
+                    networkID: config.id,
                     title: config.network_name,
-                    subtitle: networkResultSubtitle(for: stored, instance: instance),
-                    state: connectionState(for: stored),
+                    subtitle: networkResultSubtitle(for: config, instance: instance),
+                    state: connectionState(for: config),
                     matchDescription: searchMatchDescription(in: networkFields, query: query)
                 ))
             }
@@ -529,8 +528,8 @@ struct ContentView: View {
                 guard query.matches(memberFields.searchValues) else { continue }
 
                 results.append(.device(
-                    id: "device-\(stored.id)-\(member.id)",
-                    networkID: stored.id,
+                    id: "device-\(config.id)-\(member.id)",
+                    networkID: config.id,
                     title: member.hostname,
                     subtitle: deviceResultSubtitle(for: member, networkName: config.network_name),
                     sourceLabel: "Device",
@@ -594,16 +593,14 @@ struct ContentView: View {
         selectSearchResult(result)
     }
 
-    private func networkDirectSearchFields(for stored: StoredNetworkConfig, instance: NetworkInstance?) -> [SearchResultField] {
-        let config = stored.config
+    private func networkDirectSearchFields(for config: NetworkConfig, instance: NetworkInstance?) -> [SearchResultField] {
         var fields: [SearchResultField] = [
             SearchResultField("Network", config.network_name),
             SearchResultField("Instance ID", config.instance_id),
-            SearchResultField("Source", stored.source.rawValue),
             SearchResultField(
                 "Status",
-                connectionState(for: stored).searchLabel,
-                displayValue: connectionState(for: stored).displayLabel
+                connectionState(for: config).searchLabel,
+                displayValue: connectionState(for: config).displayLabel
             ),
             SearchResultField("Runtime", instance?.name ?? ""),
             SearchResultField("Runtime ID", instance?.instance_id ?? ""),
@@ -686,10 +683,9 @@ struct ContentView: View {
         return "Matched \(summary)"
     }
 
-    private func networkResultSubtitle(for stored: StoredNetworkConfig, instance: NetworkInstance?) -> String {
+    private func networkResultSubtitle(for config: NetworkConfig, instance: NetworkInstance?) -> String {
         [
-            stored.source.rawValue.capitalized,
-            connectionState(for: stored).displayLabel,
+            connectionState(for: config).displayLabel,
             instance?.detail?.dev_name,
         ]
         .compactMap { $0?.nilIfEmpty }
@@ -843,7 +839,7 @@ struct ContentView: View {
 
     private func renameSelectedHostname(_ hostname: String) {
         guard let selectedID = store.selectedConfigID,
-            let storedConfig = store.configs.first(where: { $0.id == selectedID })?.config
+            let storedConfig = store.configs.first(where: { $0.id == selectedID })
         else { return }
 
         let trimmed = hostname.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -905,7 +901,7 @@ struct ContentView: View {
         )
 
         do {
-            try await EasyTierRemoteRPCClient.patchHostname(rpcURL: rpcURL, instanceID: instanceID, hostname: trimmed)
+            try await EasyTierRemoteRPCClient(rpcURL: rpcURL).patchHostname(instanceID: instanceID, hostname: trimmed)
         } catch {
             store.markRuntimeIntent(intent.id, status: .unreachable)
             store.lastError = error.localizedDescription
@@ -971,7 +967,7 @@ struct ContentView: View {
 
     private func loadDraft(for selectedID: String?) {
         guard let selectedID,
-            let config = store.configs.first(where: { $0.id == selectedID })?.config
+            let config = store.configs.first(where: { $0.id == selectedID })
         else {
             draftConfig = NetworkConfig()
             draftConfigID = nil
@@ -1278,16 +1274,16 @@ extension WorkspaceTab {
 }
 
 private struct NetworkRow: View {
-    var stored: StoredNetworkConfig
+    var stored: NetworkConfig
     var state: ConnectionGlyphState
 
     var body: some View {
         HStack(spacing: 10) {
             NetworkStatusGlyph(state: state)
             VStack(alignment: .leading, spacing: 2) {
-                Text(stored.config.network_name)
+                Text(stored.network_name)
                     .lineLimit(1)
-                if let hostname = stored.config.hostname?
+                if let hostname = stored.hostname?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                     .nilIfEmpty {
                     Text(hostname)

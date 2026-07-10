@@ -4,7 +4,6 @@ import Foundation
 
 final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unchecked Sendable {
     private let client = StaticEasyTierFFIClient()
-    private let encoder = JSONEncoder()
     private let magicDNSResolverConfigurator = MagicDNSSystemResolverConfigurator()
 
     func ping(reply: @escaping (String?, String?) -> Void) {
@@ -22,7 +21,6 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
 
     func run(configTOML: String, reply: @escaping (String?, String?) -> Void) {
         do {
-            try StaticEasyTierFFIClient.validateDirect(toml: configTOML)
             try client.runSync(toml: configTOML)
             try magicDNSResolverConfigurator.apply(from: configTOML)
             reply("ok", nil)
@@ -43,16 +41,6 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
         run(reply: reply) {
             try client.retainSync(instanceNames: instanceNames)
             try removeMagicDNSResolverFilesIfNoInstancesRemain()
-        }
-    }
-
-    func listInstances(reply: @escaping (String?, String?) -> Void) {
-        do {
-            let instances = try client.listInstancesSync()
-            reply(String(decoding: try encoder.encode(instances), as: UTF8.self), nil)
-        } catch {
-            fputs("helper listInstances error: \(error.localizedDescription)\n", stderr)
-            replyFailure(error, code: "listInstancesFailed", reply: reply)
         }
     }
 
@@ -88,30 +76,19 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
         }
     }
 
-    func connectRPCClient(clientID: String, url: String, reply: @escaping (String?, String?) -> Void) {
+    func callJSONRPC(clientID: String, url: String, service: String, method: String, domain: String?, payload: String, reply: @escaping (String?, String?) -> Void) {
         do {
             guard let url = URL(string: url) else {
                 throw EasyTierCoreError.operationFailed("Invalid EasyTier RPC URL.")
             }
-            try client.connectRPCClientSync(clientID: clientID, url: url)
-            reply("ok", nil)
-        } catch {
-            replyFailure(error, code: "connectRPCClientFailed", reply: reply)
-        }
-    }
-
-    func disconnectRPCClient(clientID: String, reply: @escaping (String?, String?) -> Void) {
-        do {
-            try client.disconnectRPCClientSync(clientID: clientID)
-            reply("ok", nil)
-        } catch {
-            replyFailure(error, code: "disconnectRPCClientFailed", reply: reply)
-        }
-    }
-
-    func callJSONRPC(clientID: String, service: String, method: String, domain: String?, payload: String, reply: @escaping (String?, String?) -> Void) {
-        do {
-            let response = try client.callJSONRPC(clientID: clientID, service: service, method: method, domain: domain, payload: payload)
+            let response = try client.callJSONRPCSync(
+                clientID: clientID,
+                url: url,
+                service: service,
+                method: method,
+                domain: domain,
+                payload: payload
+            )
             reply(response, nil)
         } catch {
             replyFailure(error, code: "callJSONRPCFailed", reply: reply)
@@ -127,7 +104,7 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
     }
 
     private func removeMagicDNSResolverFilesIfNoInstancesRemain() throws {
-        if try client.listInstancesSync().isEmpty {
+        if try client.collectNetworkInfoPayloadsSync().isEmpty {
             try magicDNSResolverConfigurator.removeManagedResolverFiles()
         }
     }
@@ -157,11 +134,11 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
             "Review the network config fields and try validating again."
         case "runFailed":
             "Check helper permissions and the EasyTier runtime error, then try starting the network again."
-        case "collectNetworkInfosFailed", "listInstancesFailed":
+        case "collectNetworkInfosFailed":
             "The network may still be starting. Refresh again in a few seconds."
         case "configureRPCPortalFailed":
             "Check that the selected RPC listen port is free, then try saving the mode again."
-        case "connectRPCClientFailed", "callJSONRPCFailed":
+        case "callJSONRPCFailed":
             "Check that the remote device has rpc_portal enabled and that the RPC URL uses a private EasyTier IP address."
         default:
             nil

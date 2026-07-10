@@ -41,8 +41,13 @@ fi
 
 STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/easytier-dmg.XXXXXX")"
 DMG_ROOT="$STAGING_DIR/$VOLUME_NAME"
+MOUNT_DIR="$STAGING_DIR/mount"
+DMG_ATTACHED=0
 
 cleanup() {
+  if [[ "$DMG_ATTACHED" == "1" ]]; then
+    hdiutil detach "$MOUNT_DIR" >/dev/null 2>&1 || true
+  fi
   rm -rf "$STAGING_DIR"
 }
 trap cleanup EXIT
@@ -64,5 +69,21 @@ hdiutil create \
   -format UDZO \
   -imagekey zlib-level=9 \
   "$OUTPUT_DMG" >/dev/null
+
+mkdir -p "$MOUNT_DIR"
+hdiutil attach "$OUTPUT_DMG" -readonly -nobrowse -mountpoint "$MOUNT_DIR" >/dev/null
+DMG_ATTACHED=1
+
+[[ -d "$MOUNT_DIR/$APP_NAME" ]] || {
+  echo "DMG verification failed: missing $APP_NAME" >&2
+  exit 1
+}
+[[ -e "$MOUNT_DIR/Applications" ]] || {
+  echo "DMG verification failed: missing Applications alias" >&2
+  exit 1
+}
+codesign --verify --deep --strict "$MOUNT_DIR/$APP_NAME"
+hdiutil detach "$MOUNT_DIR" >/dev/null
+DMG_ATTACHED=0
 
 echo "$OUTPUT_DMG"

@@ -8,7 +8,6 @@ let package = Package(
         .macOS(.v15),
     ],
     products: [
-        .library(name: "EasyTierShared", targets: ["EasyTierShared"]),
         .executable(name: "EasyTierMac", targets: ["EasyTierMac"]),
         .executable(name: "EasyTierPrivilegedHelper", targets: ["EasyTierPrivilegedHelper"]),
     ],

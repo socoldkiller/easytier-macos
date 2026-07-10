@@ -179,7 +179,7 @@ import Testing
 @Test func importTOMLGeneratesNewInstanceIDWhenImportedIDAlreadyExists() throws {
     let config = NetworkConfig(instance_id: "duplicate-id", network_name: "office")
     let store = EasyTierAppStore()
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
 
     store.importTOML(try NetworkConfigTOMLCodec.encode(config))
 
@@ -469,21 +469,22 @@ import Testing
         PortForwardConfig(bind_ip: "127.0.0.1", bind_port: 8_080, dst_ip: "10.144.144.2", dst_port: 80, proto: "tcp"),
     ]
     let snapshot = AppSnapshot(
-        configs: [StoredNetworkConfig(config: config)],
+        configIDs: [config.id],
         mode: .default,
         lastSelectedConfigID: "abc",
         vpnOnDemandEnabled: true
     )
 
-    try storage.save(snapshot)
+    try storage.save(snapshot, configs: [config])
 
     let state = try String(contentsOf: directory.appendingPathComponent("state.json"), encoding: .utf8)
     let tomlURL = directory.appendingPathComponent("configs/lab-id.toml")
     let toml = try String(contentsOf: tomlURL, encoding: .utf8)
     let stateObject = try #require(JSONSerialization.jsonObject(with: Data(state.utf8)) as? [String: Any])
-    let stateConfigs = try #require(stateObject["configs"] as? [[String: Any]])
+    let stateConfigIDs = try #require(stateObject["configIDs"] as? [String])
 
-    #expect(stateConfigs.first?["tomlPath"] as? String == "configs/lab-id.toml")
+    #expect(stateObject["schemaVersion"] as? Int == AppSnapshot.currentSchemaVersion)
+    #expect(stateConfigIDs == ["lab-id"])
     #expect(!state.contains("network_name"))
     #expect(!state.contains("network_secret"))
     #expect(!state.contains("port_forwards"))
@@ -492,10 +493,10 @@ import Testing
 
     let loaded = try storage.load()
 
-    #expect(loaded.configs.first?.config.network_name == "lab")
-    #expect(loaded.mode == .default)
-    #expect(loaded.lastSelectedConfigID == "abc")
-    #expect(loaded.vpnOnDemandEnabled)
+    #expect(loaded.configs.first?.network_name == "lab")
+    #expect(loaded.snapshot.mode == .default)
+    #expect(loaded.snapshot.lastSelectedConfigID == "abc")
+    #expect(loaded.snapshot.vpnOnDemandEnabled)
 }
 
 @MainActor
@@ -504,7 +505,7 @@ import Testing
     let config = NetworkConfig(instance_id: "quit-id", network_name: "office")
     let store = EasyTierAppStore(client: client)
 
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.selectedConfigID = config.instance_id
     store.instances = [NetworkInstance(instance_id: config.instance_id, name: config.network_name, running: true)]
 
@@ -520,7 +521,7 @@ import Testing
     let config = NetworkConfig(instance_id: "quit-ondemand-id", network_name: "office")
     let store = EasyTierAppStore(client: client)
 
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.selectedConfigID = config.instance_id
     store.instances = [NetworkInstance(instance_id: config.instance_id, name: config.network_name, running: true)]
     store.vpnOnDemandEnabled = true
@@ -537,7 +538,7 @@ import Testing
     let config = NetworkConfig(instance_id: "quit-notun-id", network_name: "office", no_tun: true)
     let store = EasyTierAppStore(client: client)
 
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.selectedConfigID = config.instance_id
     store.instances = [NetworkInstance(instance_id: config.instance_id, name: config.network_name, running: true)]
     store.vpnOnDemandEnabled = true
@@ -556,12 +557,12 @@ import Testing
     let secrets = MemoryNetworkSecretStore()
     let config = NetworkConfig(instance_id: "secret-id", network_name: "lab", network_secret: "super-secret")
     let store = EasyTierAppStore(
-        client: UnavailableEasyTierCoreClient(reason: "test"),
+        client: RecordingToggleClient(),
         storage: storage,
         networkSecretStore: secrets
     )
 
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.selectedConfigID = config.instance_id
     store.save()
 
@@ -569,7 +570,7 @@ import Testing
 
     #expect(secrets.secrets["lab"] == "super-secret")
     #expect(!toml.contains("super-secret"))
-    #expect(store.configs.first?.config.network_secret?.nilIfEmpty == nil)
+    #expect(store.configs.first?.network_secret?.nilIfEmpty == nil)
 }
 
 @MainActor
@@ -579,7 +580,7 @@ import Testing
     let config = NetworkConfig(instance_id: "run-id", network_name: "office", network_secret: nil)
     let store = EasyTierAppStore(client: client, networkSecretStore: secrets)
 
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.selectedConfigID = config.instance_id
 
     await store.runSelectedConfig()
@@ -594,7 +595,7 @@ import Testing
     let config = NetworkConfig(instance_id: "wake-id", network_name: "office", network_secret: nil)
     let store = EasyTierAppStore(client: client, networkSecretStore: secrets)
 
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.selectedConfigID = config.instance_id
     store.instances = [NetworkInstance(instance_id: config.instance_id, name: config.network_name, running: true)]
     client.networkInfos = [
@@ -615,7 +616,7 @@ import Testing
     let config = NetworkConfig(instance_id: "short-wake-id", network_name: "office")
     let store = EasyTierAppStore(client: client)
 
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.selectedConfigID = config.instance_id
     store.instances = [NetworkInstance(instance_id: config.instance_id, name: config.network_name, running: true)]
     client.networkInfos = [
@@ -669,11 +670,11 @@ import Testing
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "export-secret"])
     let config = NetworkConfig(instance_id: "export-id", network_name: "office", network_secret: nil)
     let store = EasyTierAppStore(
-        client: UnavailableEasyTierCoreClient(reason: "test"),
+        client: RecordingToggleClient(),
         networkSecretStore: secrets
     )
 
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.selectedConfigID = config.instance_id
 
     let toml = try await store.exportSelectedTOML()
@@ -685,8 +686,8 @@ import Testing
 @Test func exportSelectedTOMLAppliesMagicDNSSettingsOverlay() async throws {
     var config = NetworkConfig(instance_id: "dns-export-id", network_name: "office")
     config.enable_magic_dns = true
-    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"))
-    store.configs = [StoredNetworkConfig(config: config)]
+    let store = EasyTierAppStore(client: RecordingToggleClient())
+    store.configs = [config]
     store.selectedConfigID = config.instance_id
     store.magicDNSSettings = try MagicDNSSettings(dnsSuffix: "lab.internal")
 
@@ -703,7 +704,7 @@ import Testing
     config.enable_magic_dns = true
     config.no_tun = true
     let store = EasyTierAppStore(client: client)
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.selectedConfigID = config.instance_id
     store.magicDNSSettings = try MagicDNSSettings(dnsSuffix: "lab.internal")
 
@@ -725,7 +726,7 @@ import Testing
     store.importTOML(toml)
 
     #expect(store.magicDNSSettings.dnsSuffix == "imported.internal.")
-    #expect(store.configs.first?.config.enable_magic_dns == true)
+    #expect(store.configs.first?.enable_magic_dns == true)
     #expect(store.configs.count == 1)
 }
 
@@ -735,7 +736,7 @@ import Testing
     var config = NetworkConfig(instance_id: "dns-notice-id", network_name: "office")
     config.enable_magic_dns = true
     let store = EasyTierAppStore(client: client)
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.instances = [NetworkInstance(instance_id: config.instance_id, name: config.network_name, running: true)]
 
     await store.applyMode(.default, magicDNSSettings: try MagicDNSSettings(dnsSuffix: "lab.internal"))
@@ -749,19 +750,19 @@ import Testing
     var config = NetworkConfig(instance_id: "dns-storage-id", network_name: "office")
     config.enable_magic_dns = true
     let snapshot = AppSnapshot(
-        configs: [StoredNetworkConfig(config: config)],
+        configIDs: [config.id],
         mode: .default,
         lastSelectedConfigID: config.instance_id,
         magicDNSSettings: try MagicDNSSettings(dnsSuffix: "stored.internal")
     )
 
-    try storage.save(snapshot)
+    try storage.save(snapshot, configs: [config])
 
     let loaded = try storage.load()
     let tomlURL = directory.appendingPathComponent("configs/dns-storage-id.toml")
     let toml = try String(contentsOf: tomlURL, encoding: .utf8)
 
-    #expect(loaded.magicDNSSettings.dnsSuffix == "stored.internal.")
+    #expect(loaded.snapshot.magicDNSSettings.dnsSuffix == "stored.internal.")
     #expect(!toml.contains("tld_dns_zone"))
 }
 
@@ -770,7 +771,7 @@ import Testing
     let config = NetworkConfig(instance_id: "autofill-id", network_name: "office")
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"], canAutofill: true)
     let store = EasyTierAppStore(
-        client: UnavailableEasyTierCoreClient(reason: "test"),
+        client: RecordingToggleClient(),
         networkSecretStore: secrets
     )
 
@@ -788,7 +789,7 @@ import Testing
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"], canAutofill: true)
     secrets.readError = EasyTierCoreError.operationFailed("user canceled")
     let store = EasyTierAppStore(
-        client: UnavailableEasyTierCoreClient(reason: "test"),
+        client: RecordingToggleClient(),
         networkSecretStore: secrets
     )
 
@@ -805,7 +806,7 @@ import Testing
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"], canAutofill: true)
     secrets.readError = EasyTierCoreError.operationFailed("keychain failed")
     let store = EasyTierAppStore(
-        client: UnavailableEasyTierCoreClient(reason: "test"),
+        client: RecordingToggleClient(),
         networkSecretStore: secrets
     )
 
@@ -822,7 +823,7 @@ import Testing
     let config = NetworkConfig(instance_id: "cache-id", network_name: "office")
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "cached-secret"], canAutofill: true)
     let store = EasyTierAppStore(
-        client: UnavailableEasyTierCoreClient(reason: "test"),
+        client: RecordingToggleClient(),
         networkSecretStore: secrets
     )
 
@@ -840,7 +841,7 @@ import Testing
     let secrets = MemoryNetworkSecretStore()
     let config = NetworkConfig(instance_id: "import-id", network_name: "office", network_secret: "import-secret")
     let store = EasyTierAppStore(
-        client: UnavailableEasyTierCoreClient(reason: "test"),
+        client: RecordingToggleClient(),
         storage: storage,
         networkSecretStore: secrets
     )
@@ -851,7 +852,7 @@ import Testing
 
     #expect(secrets.secrets["office"] == "import-secret")
     #expect(!toml.contains("import-secret"))
-    #expect(store.configs.first?.config.network_secret?.nilIfEmpty == nil)
+    #expect(store.configs.first?.network_secret?.nilIfEmpty == nil)
 }
 
 @MainActor
@@ -879,7 +880,7 @@ import Testing
     let config = NetworkConfig(instance_id: "delete-id", network_name: "office")
     let store = EasyTierAppStore(client: RecordingToggleClient(), networkSecretStore: secrets)
 
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.selectedConfigID = config.instance_id
 
     await store.deleteSelectedConfig()
@@ -893,11 +894,11 @@ import Testing
     let first = NetworkConfig(instance_id: "first-id", network_name: "office", network_secret: "office-secret")
     let second = NetworkConfig(instance_id: "second-id", network_name: "lab", network_secret: "lab-secret")
     let store = EasyTierAppStore(
-        client: UnavailableEasyTierCoreClient(reason: "test"),
+        client: RecordingToggleClient(),
         networkSecretStore: secrets
     )
 
-    store.configs = [StoredNetworkConfig(config: first), StoredNetworkConfig(config: second)]
+    store.configs = [first, second]
     store.save()
 
     #expect(secrets.secrets["office"] == "office-secret")
@@ -909,11 +910,11 @@ import Testing
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "office-secret"])
     let original = NetworkConfig(instance_id: "rename-id", network_name: "office")
     let store = EasyTierAppStore(
-        client: UnavailableEasyTierCoreClient(reason: "test"),
+        client: RecordingToggleClient(),
         networkSecretStore: secrets
     )
 
-    store.configs = [StoredNetworkConfig(config: original)]
+    store.configs = [original]
     store.selectedConfigID = original.instance_id
 
     var updated = original
@@ -924,7 +925,7 @@ import Testing
     #expect(secrets.secrets["office"] == nil)
 }
 
-@Test func stateJsonWithoutRuntimeIntentsDefaultsToEmptyIntentList() throws {
+@Test func incompatibleStateIsBackedUpAndTomlFilesArePreserved() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let storage = EasyTierStorage(baseDirectory: directory)
     let config = NetworkConfig(instance_id: "legacy-id", network_name: "legacy")
@@ -947,8 +948,33 @@ import Testing
 
     let loaded = try storage.load()
 
-    #expect(loaded.runtimeIntents.isEmpty)
-    #expect(loaded.configs.first?.config.network_name == "legacy")
+    #expect(loaded.recoveryMessage?.contains("re-import") == true)
+    #expect(loaded.configs.count == 1)
+    #expect(loaded.configs.first?.instance_id != config.instance_id)
+    #expect(FileManager.default.fileExists(atPath: configURL.path))
+    let backupNames = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+    #expect(backupNames.contains { $0.hasPrefix("state.incompatible-") && $0.hasSuffix(".json") })
+}
+
+@Test func currentSchemaConfigFailureDoesNotResetState() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let storage = EasyTierStorage(baseDirectory: directory)
+    let config = NetworkConfig(instance_id: "current-id", network_name: "current")
+    let snapshot = AppSnapshot(configIDs: [config.id], lastSelectedConfigID: config.id)
+    try storage.save(snapshot, configs: [config])
+
+    let stateURL = directory.appendingPathComponent("state.json")
+    let originalState = try Data(contentsOf: stateURL)
+    try "invalid = [".write(to: storage.configURL(forID: config.id), atomically: true, encoding: .utf8)
+
+    do {
+        _ = try storage.load()
+        Issue.record("A current-schema state with invalid TOML should surface the config error.")
+    } catch {}
+
+    #expect(try Data(contentsOf: stateURL) == originalState)
+    let backupNames = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+    #expect(!backupNames.contains { $0.hasPrefix("state.incompatible-") && $0.hasSuffix(".json") })
 }
 
 @Test func runtimeIntentsRoundTripThroughStateJson() throws {
@@ -964,26 +990,25 @@ import Testing
             recentIPv4: "10.126.126.8",
             isLocal: false
         ),
-        kind: .hostname,
-        desired: RuntimeIntentDesired(hostname: "new-host"),
-        base: RuntimeIntentBase(hostname: "old-host"),
+        desiredHostname: "new-host",
+        baseHostname: "old-host",
         status: .pending
     )
     let snapshot = AppSnapshot(
-        configs: [StoredNetworkConfig(config: config)],
+        configIDs: [config.id],
         mode: .default,
         lastSelectedConfigID: config.instance_id,
         runtimeIntents: [intent]
     )
 
-    try storage.save(snapshot)
+    try storage.save(snapshot, configs: [config])
     let loaded = try storage.load()
 
-    #expect(loaded.runtimeIntents.count == 1)
-    #expect(loaded.runtimeIntents.first?.target.instanceID == "remote-id")
-    #expect(loaded.runtimeIntents.first?.desired.hostname == "new-host")
-    #expect(loaded.runtimeIntents.first?.base.hostname == "old-host")
-    #expect(loaded.runtimeIntents.first?.status == .pending)
+    #expect(loaded.snapshot.runtimeIntents.count == 1)
+    #expect(loaded.snapshot.runtimeIntents.first?.target.instanceID == "remote-id")
+    #expect(loaded.snapshot.runtimeIntents.first?.desiredHostname == "new-host")
+    #expect(loaded.snapshot.runtimeIntents.first?.baseHostname == "old-host")
+    #expect(loaded.snapshot.runtimeIntents.first?.status == .pending)
 }
 
 @Test func defaultStorageUsesBundleSpecificAppSupportDirectory() {
@@ -994,9 +1019,9 @@ import Testing
 @Test func selectedConfigDoesNotFallBackToFirstConfigWhenSelectionIsCleared() {
     let first = NetworkConfig(instance_id: "first-id", network_name: "first-network")
     let second = NetworkConfig(instance_id: "second-id", network_name: "second-network")
-    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"))
+    let store = EasyTierAppStore(client: RecordingToggleClient())
 
-    store.configs = [StoredNetworkConfig(config: first), StoredNetworkConfig(config: second)]
+    store.configs = [first, second]
     store.selectedConfigID = nil
     store.instances = [NetworkInstance(instance_id: first.instance_id, name: first.network_name, running: true)]
 
@@ -1011,15 +1036,15 @@ import Testing
     let storage = EasyTierStorage(baseDirectory: directory)
     let first = NetworkConfig(instance_id: "first-id", network_name: "first-network")
     let second = NetworkConfig(instance_id: "second-id", network_name: "second-network")
-    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"), storage: storage)
+    let store = EasyTierAppStore(client: RecordingToggleClient(), storage: storage)
 
-    store.configs = [StoredNetworkConfig(config: first), StoredNetworkConfig(config: second)]
+    store.configs = [first, second]
     store.selectedConfigID = first.instance_id
 
     store.selectNextConfig()
 
     #expect(store.selectedConfigID == second.instance_id)
-    #expect(try storage.load().lastSelectedConfigID == second.instance_id)
+    #expect(try storage.load().snapshot.lastSelectedConfigID == second.instance_id)
 
     store.selectNextConfig()
 
@@ -1032,9 +1057,9 @@ import Testing
     let storage = EasyTierStorage(baseDirectory: directory)
     let first = NetworkConfig(instance_id: "first-id", network_name: "first-network")
     let second = NetworkConfig(instance_id: "second-id", network_name: "second-network")
-    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"), storage: storage)
+    let store = EasyTierAppStore(client: RecordingToggleClient(), storage: storage)
 
-    store.configs = [StoredNetworkConfig(config: first), StoredNetworkConfig(config: second)]
+    store.configs = [first, second]
     store.selectedConfigID = first.instance_id
 
     store.selectPreviousConfig()
@@ -1048,9 +1073,9 @@ import Testing
     let storage = EasyTierStorage(baseDirectory: directory)
     let first = NetworkConfig(instance_id: "first-id", network_name: "first-network")
     let second = NetworkConfig(instance_id: "second-id", network_name: "second-network")
-    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"), storage: storage)
+    let store = EasyTierAppStore(client: RecordingToggleClient(), storage: storage)
 
-    store.configs = [StoredNetworkConfig(config: first), StoredNetworkConfig(config: second)]
+    store.configs = [first, second]
     store.selectedConfigID = nil
 
     store.selectNextConfig()
@@ -1068,10 +1093,10 @@ import Testing
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let storage = EasyTierStorage(baseDirectory: directory)
     let config = NetworkConfig(instance_id: "current-id", network_name: "current-network")
-    let snapshot = AppSnapshot(configs: [StoredNetworkConfig(config: config)], mode: .default, lastSelectedConfigID: "missing-id")
-    try storage.save(snapshot)
+    let snapshot = AppSnapshot(configIDs: [config.id], mode: .default, lastSelectedConfigID: "missing-id")
+    try storage.save(snapshot, configs: [config])
 
-    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"), storage: storage)
+    let store = EasyTierAppStore(client: RecordingToggleClient(), storage: storage)
 
     await store.load()
     store.stopPolling()
@@ -1084,9 +1109,9 @@ import Testing
 @Test func loadKeepsSavedEmptyConfigList() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let storage = EasyTierStorage(baseDirectory: directory)
-    try storage.save(AppSnapshot(configs: [], mode: .default, lastSelectedConfigID: nil))
+    try storage.save(AppSnapshot(configIDs: [], mode: .default, lastSelectedConfigID: nil), configs: [])
 
-    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"), storage: storage)
+    let store = EasyTierAppStore(client: RecordingToggleClient(), storage: storage)
 
     await store.load()
     store.stopPolling()
@@ -1100,19 +1125,15 @@ import Testing
     let client = RecordingToggleClient()
     let store = EasyTierAppStore(client: client)
 
-    await store.applyMode(.normal(
-        rpcPortal: "tcp://0.0.0.0:15998",
+    await store.applyMode(AppMode(
         rpcListenEnabled: true,
         rpcListenPort: 15_998,
-        rpcPortalWhitelist: ["127.0.0.0/8", "10.126.126.0/24"],
-        configServerURL: nil
+        rpcPortalWhitelist: ["127.0.0.0/8", "10.126.126.0/24"]
     ))
-    await store.applyMode(.normal(
-        rpcPortal: nil,
+    await store.applyMode(AppMode(
         rpcListenEnabled: false,
         rpcListenPort: 15_998,
-        rpcPortalWhitelist: ["127.0.0.0/8"],
-        configServerURL: nil
+        rpcPortalWhitelist: ["127.0.0.0/8"]
     ))
 
     #expect(client.configuredRPCPortals == ["tcp://0.0.0.0:15998", nil])
@@ -1123,9 +1144,9 @@ import Testing
 @Test func selectedRunningInstanceDoesNotFallBackToFirstInstance() {
     let first = NetworkConfig(instance_id: "first-id", network_name: "first-network")
     let second = NetworkConfig(instance_id: "second-id", network_name: "second-network")
-    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"))
+    let store = EasyTierAppStore(client: RecordingToggleClient())
 
-    store.configs = [StoredNetworkConfig(config: first), StoredNetworkConfig(config: second)]
+    store.configs = [first, second]
     store.selectedConfigID = second.instance_id
     store.instances = [NetworkInstance(instance_id: first.instance_id, name: first.network_name, running: true)]
 
@@ -1137,9 +1158,9 @@ import Testing
 @Test func selectedRunningInstancePrefersInstanceIDWhenNamesMatch() throws {
     let first = NetworkConfig(instance_id: "first-id", network_name: "shared-network")
     let second = NetworkConfig(instance_id: "second-id", network_name: "shared-network")
-    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"))
+    let store = EasyTierAppStore(client: RecordingToggleClient())
 
-    store.configs = [StoredNetworkConfig(config: first), StoredNetworkConfig(config: second)]
+    store.configs = [first, second]
     store.selectedConfigID = second.instance_id
     store.instances = [
         NetworkInstance(instance_id: first.instance_id, name: first.network_name, running: true),
@@ -1153,9 +1174,9 @@ import Testing
 @MainActor
 @Test func selectedRunningInstanceUsesLegacyRuntimeNameWhenConfigNameIsUnique() throws {
     let config = NetworkConfig(instance_id: "config-id", network_name: "legacy-runtime-name")
-    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"))
+    let store = EasyTierAppStore(client: RecordingToggleClient())
 
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.selectedConfigID = config.instance_id
     store.instances = [NetworkInstance(instance_id: config.network_name, name: config.network_name, running: true)]
 
@@ -1172,7 +1193,7 @@ import Testing
     let store = EasyTierAppStore(client: client)
     let runningInstance = NetworkInstance(instance_id: original.network_name, name: original.network_name, running: true)
 
-    store.configs = [StoredNetworkConfig(config: original)]
+    store.configs = [original]
     store.selectedConfigID = original.instance_id
     store.instances = [runningInstance]
     store.updateConfig(id: original.instance_id, with: updated)
@@ -1187,9 +1208,9 @@ import Testing
 @Test func selectedRunningInstanceDoesNotUseAmbiguousNameFallback() {
     let first = NetworkConfig(instance_id: "first-id", network_name: "shared-network")
     let second = NetworkConfig(instance_id: "second-id", network_name: "shared-network")
-    let store = EasyTierAppStore(client: UnavailableEasyTierCoreClient(reason: "test"))
+    let store = EasyTierAppStore(client: RecordingToggleClient())
 
-    store.configs = [StoredNetworkConfig(config: first), StoredNetworkConfig(config: second)]
+    store.configs = [first, second]
     store.selectedConfigID = second.instance_id
     store.instances = [NetworkInstance(instance_id: "shared-network", name: "shared-network", running: true)]
 
@@ -1205,7 +1226,7 @@ import Testing
     let client = RecordingToggleClient()
     let store = EasyTierAppStore(client: client)
 
-    store.configs = [StoredNetworkConfig(config: first), StoredNetworkConfig(config: second)]
+    store.configs = [first, second]
     store.selectedConfigID = second.instance_id
     store.instances = [NetworkInstance(instance_id: first.instance_id, name: first.network_name, running: true)]
 
@@ -1223,7 +1244,7 @@ import Testing
     let client = RecordingToggleClient()
     let store = EasyTierAppStore(client: client)
 
-    store.configs = [StoredNetworkConfig(config: first), StoredNetworkConfig(config: second)]
+    store.configs = [first, second]
     store.selectedConfigID = second.instance_id
     store.instances = [
         NetworkInstance(instance_id: first.instance_id, name: first.network_name, running: true),
@@ -1246,7 +1267,7 @@ import Testing
     let client = RecordingToggleClient()
     let store = EasyTierAppStore(client: client, storage: storage)
 
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.selectedConfigID = config.instance_id
     store.instances = [NetworkInstance(
         instance_id: config.instance_id,
@@ -1257,8 +1278,8 @@ import Testing
 
     await store.stopSelectedConfig()
 
-    #expect(store.configs.first?.config.hostname == "new-host")
-    #expect(try storage.load().configs.first?.config.hostname == "new-host")
+    #expect(store.configs.first?.hostname == "new-host")
+    #expect(try storage.load().configs.first?.hostname == "new-host")
     #expect(client.stoppedInstanceNames == [[config.network_name]])
 }
 
@@ -1268,7 +1289,7 @@ import Testing
     let client = RecordingToggleClient()
     let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
     let config = NetworkConfig(instance_id: "11111111-1111-1111-1111-111111111111", network_name: "office")
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.runtimeIntents = [hostnameIntent(instanceID: config.instance_id, networkName: config.network_name, base: "base", desired: "desired")]
     client.networkInfos = [
         config.instance_id: NetworkInstanceRunningInfo(my_node_info: NodeInfo(hostname: "base")),
@@ -1291,7 +1312,7 @@ import Testing
     let client = RecordingToggleClient()
     let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
     let config = NetworkConfig(instance_id: "11111111-1111-1111-1111-111111111111", network_name: "office")
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.runtimeIntents = [hostnameIntent(instanceID: config.instance_id, networkName: config.network_name, base: "base", desired: "desired")]
     client.networkInfos = [
         config.instance_id: NetworkInstanceRunningInfo(my_node_info: NodeInfo(hostname: "desired")),
@@ -1309,7 +1330,7 @@ import Testing
     let client = RecordingToggleClient()
     let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
     let config = NetworkConfig(instance_id: "11111111-1111-1111-1111-111111111111", network_name: "office")
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.runtimeIntents = [hostnameIntent(instanceID: config.instance_id, networkName: config.network_name, base: "base", desired: "desired")]
     client.networkInfos = [
         config.instance_id: NetworkInstanceRunningInfo(my_node_info: NodeInfo(hostname: "someone-else")),
@@ -1330,7 +1351,7 @@ import Testing
     let store = EasyTierAppStore(client: client, storage: storage)
     var config = NetworkConfig(instance_id: "11111111-1111-1111-1111-111111111111", hostname: "base", network_name: "office")
     config.listener_urls = ["tcp://0.0.0.0:11010", "udp://0.0.0.0:11010", "wg://0.0.0.0:11011"]
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.selectedConfigID = config.instance_id
     var updated = config
     updated.hostname = "desired"
@@ -1354,7 +1375,7 @@ import Testing
     #expect(client.stoppedInstanceNames.isEmpty)
     #expect(client.jsonRPCCalls.map(\.method) == ["patch_config"])
     #expect(store.runtimeIntents.first?.status == .unreachable)
-    #expect(try storage.load().configs.first?.config.hostname == "desired")
+    #expect(try storage.load().configs.first?.hostname == "desired")
 }
 
 @MainActor
@@ -1366,7 +1387,7 @@ import Testing
     let client = RecordingToggleClient()
     let store = EasyTierAppStore(client: client)
 
-    store.configs = [StoredNetworkConfig(config: running), StoredNetworkConfig(config: selected)]
+    store.configs = [running, selected]
     store.selectedConfigID = selected.instance_id
     store.instances = [NetworkInstance(instance_id: running.instance_id, name: running.network_name, running: true)]
 
@@ -1383,7 +1404,7 @@ import Testing
     client.stopError = EasyTierCoreError.operationFailed("stop failed")
     let store = EasyTierAppStore(client: client)
 
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.selectedConfigID = config.instance_id
     store.instances = [NetworkInstance(instance_id: config.instance_id, name: config.network_name, running: true)]
 
@@ -1400,61 +1421,13 @@ import Testing
     let config = NetworkConfig(instance_id: "last-id", network_name: "last-network")
     let store = EasyTierAppStore(client: RecordingToggleClient())
 
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.selectedConfigID = config.instance_id
 
     await store.deleteSelectedConfig()
 
     #expect(store.configs.isEmpty)
     #expect(store.selectedConfigID == nil)
-}
-
-@Test func unavailableClientReportsClearRuntimeFailure() async {
-    let client = UnavailableEasyTierCoreClient(reason: "missing dylib")
-
-    do {
-        try await client.validate(toml: "")
-        Issue.record("validate should fail when FFI is unavailable")
-    } catch let error as EasyTierCoreError {
-        #expect(error == .ffiUnavailable("missing dylib"))
-    } catch {
-        Issue.record("unexpected error: \(error)")
-    }
-
-    do {
-        _ = try await client.listInstances()
-        Issue.record("listInstances should fail when FFI is unavailable")
-    } catch let error as EasyTierCoreError {
-        #expect(error == .ffiUnavailable("missing dylib"))
-    } catch {
-        Issue.record("unexpected error: \(error)")
-    }
-
-    do {
-        _ = try await client.collectNetworkInfos()
-        Issue.record("collectNetworkInfos should fail when FFI is unavailable")
-    } catch let error as EasyTierCoreError {
-        #expect(error == .ffiUnavailable("missing dylib"))
-    } catch {
-        Issue.record("unexpected error: \(error)")
-    }
-
-    do {
-        _ = try await client.isConfigServerClientConnected()
-        Issue.record("isConfigServerClientConnected should fail when FFI is unavailable")
-    } catch let error as EasyTierCoreError {
-        #expect(error == .ffiUnavailable("missing dylib"))
-    } catch {
-        Issue.record("unexpected error: \(error)")
-    }
-}
-
-@Test func permissionStateRawValuesAreStable() {
-    #expect(PermissionState.notRegistered.rawValue == "notRegistered")
-    #expect(PermissionState.requiresApproval.rawValue == "requiresApproval")
-    #expect(PermissionState.enabled.rawValue == "enabled")
-    #expect(PermissionState.notFound.rawValue == "notFound")
-    #expect(PermissionState.error.rawValue == "error")
 }
 
 @Test func privilegedHelperUnavailableErrorIsActionable() {
@@ -1485,7 +1458,7 @@ import Testing
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
 
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.selectedConfigID = config.instance_id
 
     await store.runSelectedConfig()
@@ -1512,33 +1485,31 @@ import Testing
     let config = NetworkConfig(instance_id: "pending-id", network_name: "pending-network")
 
     controller.recordPendingStart(for: config)
-    let pendingResult = try await controller.refreshRuntime(
+    let pendingChange = try await controller.refreshRuntime(
         currentInstances: [],
         currentRuntimeDetails: [:],
         currentStatusMetrics: [:],
         currentTrafficSamples: [:],
-        selectedTab: .status,
-        mode: .default
+        selectedTab: .status
     )
 
-    #expect(pendingResult.presentationChange.state.instances.map(\.instance_id) == [config.instance_id])
-    #expect(pendingResult.presentationChange.state.instances.first?.detail?.running == true)
+    #expect(pendingChange.state.instances.map(\.instance_id) == [config.instance_id])
+    #expect(pendingChange.state.instances.first?.detail?.running == true)
     #expect(sleepPreventer.isPreventingSystemSleep)
 
     client.networkInfos = [
         config.network_name: NetworkInstanceRunningInfo(running: true, instance_id: config.instance_id),
     ]
-    let runningResult = try await controller.refreshRuntime(
-        currentInstances: pendingResult.presentationChange.state.instances,
-        currentRuntimeDetails: pendingResult.presentationChange.state.runtimeDetails,
-        currentStatusMetrics: pendingResult.presentationChange.state.statusMetricsByInstance,
-        currentTrafficSamples: pendingResult.presentationChange.state.trafficSamplesByInstance,
-        selectedTab: .status,
-        mode: .default
+    let runningChange = try await controller.refreshRuntime(
+        currentInstances: pendingChange.state.instances,
+        currentRuntimeDetails: pendingChange.state.runtimeDetails,
+        currentStatusMetrics: pendingChange.state.statusMetricsByInstance,
+        currentTrafficSamples: pendingChange.state.trafficSamplesByInstance,
+        selectedTab: .status
     )
 
-    #expect(runningResult.presentationChange.state.instances.map(\.instance_id) == [config.instance_id])
-    #expect(runningResult.presentationChange.state.instances.map(\.name) == [config.network_name])
+    #expect(runningChange.state.instances.map(\.instance_id) == [config.instance_id])
+    #expect(runningChange.state.instances.map(\.name) == [config.network_name])
 }
 
 @Test func runtimeTrafficSnapshotPrecomputesDisplaySamples() throws {
@@ -1647,8 +1618,8 @@ import Testing
     let secondSample = TrafficSample(timestamp: Date(timeIntervalSince1970: 2), txBytesPerSecond: 3, rxBytesPerSecond: 4)
 
     store.configs = [
-        StoredNetworkConfig(config: first),
-        StoredNetworkConfig(config: second),
+        first,
+        second,
     ]
     store.selectedConfigID = first.instance_id
     store.instances = [
@@ -1687,7 +1658,7 @@ import Testing
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
 
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.selectedConfigID = config.instance_id
 
     await store.runSelectedConfig()
@@ -1709,7 +1680,7 @@ import Testing
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
 
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.selectedConfigID = config.instance_id
 
     await store.runSelectedConfig()
@@ -1732,7 +1703,7 @@ import Testing
         storage: EasyTierStorage(baseDirectory: directory)
     )
 
-    store.configs = [StoredNetworkConfig(config: config)]
+    store.configs = [config]
     store.selectedConfigID = config.instance_id
 
     await store.runSelectedConfig()
@@ -2153,9 +2124,8 @@ private func hostnameIntent(instanceID: String, networkName: String, base: Strin
             recentHostname: base,
             isLocal: true
         ),
-        kind: .hostname,
-        desired: RuntimeIntentDesired(hostname: desired),
-        base: RuntimeIntentBase(hostname: base),
+        desiredHostname: desired,
+        baseHostname: base,
         status: .pending
     )
 }
@@ -2206,7 +2176,6 @@ private final class MemoryNetworkSecretStore: NetworkSecretStore, @unchecked Sen
 private final class PendingStartClient: EasyTierCoreClient, @unchecked Sendable {
     var didRun = false
 
-    func version() async throws -> String { "test" }
     func validate(toml _: String) async throws {}
 
     func run(toml _: String) async throws {
@@ -2215,28 +2184,14 @@ private final class PendingStartClient: EasyTierCoreClient, @unchecked Sendable 
 
     func stop(instanceNames _: [String]) async throws {}
     func retain(instanceNames _: [String]) async throws {}
-    func listInstances() async throws -> [NetworkInstance] { [] }
     func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] { [:] }
     func configureRPCPortal(_ rpcPortal: String?, whitelist _: [String]?) async throws {
         if rpcPortal != nil { throw EasyTierCoreError.operationFailed("unsupported") }
     }
 
-    func callJSONRPC(service _: String, method _: String, domain _: String?, payload _: String) async throws -> String {
+    func callJSONRPC(clientID _: String, url _: URL, service _: String, method _: String, domain _: String?, payload _: String) async throws -> String {
         throw EasyTierCoreError.operationFailed("unsupported")
     }
-
-    func connectRPCClient(clientID _: String, url _: URL) async throws {
-        throw EasyTierCoreError.operationFailed("unsupported")
-    }
-
-    func disconnectRPCClient(clientID _: String) async throws {}
-
-    func startConfigServerClient(url _: URL) async throws {
-        throw EasyTierCoreError.operationFailed("unsupported")
-    }
-
-    func stopConfigServerClient() async throws {}
-    func isConfigServerClientConnected() async throws -> Bool { false }
 }
 
 private final class RecordingToggleClient: EasyTierCoreClient, EasyTierHelperShutdownClient, @unchecked Sendable {
@@ -2244,17 +2199,14 @@ private final class RecordingToggleClient: EasyTierCoreClient, EasyTierHelperShu
     var runTOMLs: [String] = []
     var stoppedInstanceNames: [[String]] = []
     var retainedInstanceNames: [[String]] = []
-    var listedInstances: [NetworkInstance] = []
     var networkInfos: [String: NetworkInstanceRunningInfo] = [:]
     var configuredRPCPortals: [String?] = []
     var configuredRPCPortalWhitelists: [[String]?] = []
     var jsonRPCCalls: [EasyTierRPCRequest] = []
-    var connectedRPCClients: [(clientID: String, url: URL)] = []
     var shutdownCount = 0
     var stopError: Error?
     var jsonRPCError: Error?
 
-    func version() async throws -> String { "test" }
     func validate(toml _: String) async throws {}
 
     func run(toml: String) async throws {
@@ -2273,31 +2225,17 @@ private final class RecordingToggleClient: EasyTierCoreClient, EasyTierHelperShu
         retainedInstanceNames.append(instanceNames)
     }
 
-    func listInstances() async throws -> [NetworkInstance] { listedInstances }
     func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] { networkInfos }
     func configureRPCPortal(_ rpcPortal: String?, whitelist: [String]?) async throws {
         configuredRPCPortals.append(rpcPortal)
         configuredRPCPortalWhitelists.append(whitelist)
     }
 
-    func callJSONRPC(service: String, method: String, domain: String?, payload: String) async throws -> String {
+    func callJSONRPC(clientID _: String, url _: URL, service: String, method: String, domain: String?, payload: String) async throws -> String {
         jsonRPCCalls.append(EasyTierRPCRequest(service: service, method: method, domain: domain, payload: payload))
         if let jsonRPCError { throw jsonRPCError }
         return #"{"ok":true}"#
     }
-
-    func connectRPCClient(clientID: String, url: URL) async throws {
-        connectedRPCClients.append((clientID: clientID, url: url))
-    }
-
-    func disconnectRPCClient(clientID _: String) async throws {}
-
-    func startConfigServerClient(url _: URL) async throws {
-        throw EasyTierCoreError.operationFailed("unsupported")
-    }
-
-    func stopConfigServerClient() async throws {}
-    func isConfigServerClientConnected() async throws -> Bool { false }
 
     func shutdownHelper() async throws {
         shutdownCount += 1
@@ -2344,7 +2282,6 @@ private final class HelperRunErrorClient: EasyTierCoreClient, @unchecked Sendabl
         self.payload = payload
     }
 
-    func version() async throws -> String { "test" }
     func validate(toml _: String) async throws {}
 
     func run(toml _: String) async throws {
@@ -2353,13 +2290,7 @@ private final class HelperRunErrorClient: EasyTierCoreClient, @unchecked Sendabl
 
     func stop(instanceNames _: [String]) async throws {}
     func retain(instanceNames _: [String]) async throws {}
-    func listInstances() async throws -> [NetworkInstance] { [] }
     func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] { [:] }
     func configureRPCPortal(_: String?, whitelist _: [String]?) async throws {}
-    func callJSONRPC(service _: String, method _: String, domain _: String?, payload _: String) async throws -> String { "" }
-    func connectRPCClient(clientID _: String, url _: URL) async throws {}
-    func disconnectRPCClient(clientID _: String) async throws {}
-    func startConfigServerClient(url _: URL) async throws {}
-    func stopConfigServerClient() async throws {}
-    func isConfigServerClientConnected() async throws -> Bool { false }
+    func callJSONRPC(clientID _: String, url _: URL, service _: String, method _: String, domain _: String?, payload _: String) async throws -> String { "" }
 }

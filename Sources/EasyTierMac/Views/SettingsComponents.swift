@@ -1,10 +1,8 @@
 import SwiftUI
 
 enum SettingsTint {
-    static let mode = Color.blue
     static let magicDNS = Color.indigo
     static let rpcServer = Color.teal
-    static let remoteConfig = Color.purple
 }
 
 struct SectionIcon: View {
@@ -190,49 +188,6 @@ struct StatusDot: View {
             .fill(tone.color)
             .frame(width: 8, height: 8)
             .accessibilityLabel(Text(accessibilityLabel))
-    }
-}
-
-struct ModeOptionTile: View {
-    var title: String
-    var description: String
-    var systemImage: String
-    var tint: Color
-    var isSelected: Bool
-    var action: () -> Void
-
-    private let cornerRadius: CGFloat = 12
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                SectionIcon(systemImage: systemImage, tint: tint, size: 26)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.body.weight(.semibold))
-                    Text(description)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 6)
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.body)
-                    .foregroundStyle(isSelected ? tint : Color.secondary.opacity(0.3))
-            }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(.regularMaterial)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(isSelected ? tint : Color.primary.opacity(0.08), lineWidth: isSelected ? 2 : 0.5)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        }
-        .buttonStyle(.plain)
     }
 }
 

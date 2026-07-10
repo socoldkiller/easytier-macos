@@ -98,13 +98,13 @@ jobs:
           swift --version
 
       - name: Bootstrap toolchain
-        run: ./scripts/bootstrap.sh
+        run: make bootstrap
 
       - name: Build EasyTier FFI
-        run: ./scripts/build-ffi.sh
+        run: make ffi
 
-      - name: Test Swift package
-        run: swift test --configuration release
+      - name: Run automated tests
+        run: make test
 
       - name: Resolve macOS signing mode
         id: signing
@@ -118,7 +118,7 @@ jobs:
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
         run: |
           if [[ "$GITHUB_REF" != refs/tags/* ]]; then
-            echo "mode=local" >> "$GITHUB_OUTPUT"
+            echo "mode=adhoc" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -141,8 +141,8 @@ jobs:
             echo "mode=developer-id" >> "$GITHUB_OUTPUT"
             echo "Tag release will use Developer ID signing and Apple notarization."
           else
-            echo "mode=self-signed" >> "$GITHUB_OUTPUT"
-            printf 'Apple release secrets are not fully configured; publishing a self-signed, non-notarized DMG. Missing: %s\n' "${missing[*]}"
+            echo "mode=adhoc" >> "$GITHUB_OUTPUT"
+            printf 'Apple release secrets are not fully configured; publishing an ad-hoc, non-notarized DMG. Missing: %s\n' "${missing[*]}"
           fi
 
       - name: Import Developer ID certificate
@@ -158,24 +158,16 @@ jobs:
           EASYTIER_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
           EASYTIER_SIGNING_MODE: ${{ steps.signing.outputs.mode }}
         run: |
+          rm -rf .build/artifacts
           mkdir -p .build/artifacts
           if [[ "$EASYTIER_SIGNING_MODE" == "developer-id" ]]; then
             export EASYTIER_REQUIRE_DISTRIBUTION_SIGNING=1
           else
             export EASYTIER_CODESIGN_IDENTITY="-"
-            export EASYTIER_LOCAL_SIGNING_DIR="$RUNNER_TEMP/EasyTierLocalSigning"
-            export EASYTIER_EXPORT_CODESIGN_CERT_PATH="$GITHUB_WORKSPACE/.build/artifacts/EasyTierLocalCodeSigning.cer"
+            export EASYTIER_AUTO_CODESIGN_IDENTITY=0
+            export EASYTIER_ALLOW_UNINSTALLABLE_HELPER=1
           fi
           ./scripts/package-app.sh
-
-      - name: Verify app bundle
-        env:
-          EASYTIER_SIGNING_MODE: ${{ steps.signing.outputs.mode }}
-        run: |
-          if [[ "$EASYTIER_SIGNING_MODE" == "developer-id" ]]; then
-            export EASYTIER_VERIFY_INSTALLABLE_HELPER=1
-          fi
-          ./scripts/verify-app.sh "$EASYTIER_EXPORT_APP_DIR"
 
       - name: Notarize release app
         if: startsWith(github.ref, 'refs/tags/') && steps.signing.outputs.mode == 'developer-id'
@@ -204,37 +196,17 @@ jobs:
           xcrun stapler staple "$EASYTIER_EXPORT_APP_DIR"
           spctl -a -vvv -t exec "$EASYTIER_EXPORT_APP_DIR"
 
-      - name: Archive app
+      - name: Create single DMG artifact
+        env:
+          EASYTIER_SIGNING_MODE: ${{ steps.signing.outputs.mode }}
         run: |
           mkdir -p .build/artifacts
-          INSTALL_NOTES_PATH=".build/artifacts/SELF_SIGNED_INSTALL.txt"
-          if [[ -f .build/artifacts/EasyTierLocalCodeSigning.cer ]]; then
-            cat > "$INSTALL_NOTES_PATH" <<'EOF'
-          EasyTier self-signed developer-mode build
-
-          This artifact is not Developer ID signed or Apple notarized.
-
-          To try the privileged helper on macOS:
-          1. Import and trust EasyTierLocalCodeSigning.cer for Code Signing.
-          2. Quit EasyTier if it is running.
-          3. When replacing another self-signed test build, run `sfltool resetbtm` to clear stale ServiceManagement records.
-          4. Open EasyTier-macOS-*.dmg and drag EasyTier.app to Applications.
-          5. Run `xattr -cr /Applications/EasyTier.app` if macOS copied quarantine attributes.
-          6. Open EasyTier.app from Applications with Control-click > Open, or use Privacy & Security > Open Anyway if macOS blocks first launch.
-          7. In EasyTier, click Install Helper.
-          8. If macOS asks, allow EasyTier in System Settings > General > Login Items & Extensions.
-
-          Do not use this self-signed build as a production release.
-          EOF
-          else
-            INSTALL_NOTES_PATH=""
-          fi
-
-          EASYTIER_DMG_CODESIGN_CERT_PATH=".build/artifacts/EasyTierLocalCodeSigning.cer" \
-          EASYTIER_DMG_INSTALL_NOTES_PATH="$INSTALL_NOTES_PATH" \
-            ./scripts/create-dmg.sh \
-              "$EASYTIER_EXPORT_APP_DIR" \
-              ".build/artifacts/EasyTier-macOS-${{ runner.arch }}.dmg"
+          rm -f \
+            .build/artifacts/*.dmg \
+            .build/artifacts/*.metadata.json
+          ./scripts/create-dmg.sh \
+            "$EASYTIER_EXPORT_APP_DIR" \
+            ".build/artifacts/EasyTier-macOS-${{ runner.arch }}.dmg"
 
           BUNDLE_SHORT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$EASYTIER_EXPORT_APP_DIR/Contents/Info.plist")"
           BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EASYTIER_EXPORT_APP_DIR/Contents/Info.plist")"
@@ -242,20 +214,23 @@ jobs:
           {
             "architecture": "${{ runner.arch }}",
             "version": "$BUNDLE_SHORT_VERSION",
-            "build": "$BUNDLE_VERSION"
+            "build": "$BUNDLE_VERSION",
+            "signing": "$EASYTIER_SIGNING_MODE"
           }
           EOF
 
-          # Only upload the installable archive and helper files. Uploading the
-          # loose .app directory makes artifact installs ambiguous and can leave
+          # Only upload the DMG and metadata. Uploading the loose .app directory
+          # makes artifact installs ambiguous and can leave
           # ServiceManagement records pointing at the Downloads extraction path.
           rm -rf "$EASYTIER_EXPORT_APP_DIR"
 
-      - name: Upload app artifact
+      - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:
           name: EasyTier-macOS-${{ runner.arch }}
-          path: .build/artifacts/*
+          path: |
+            .build/artifacts/*.dmg
+            .build/artifacts/*.metadata.json
           if-no-files-found: error
           retention-days: 14
 
@@ -273,6 +248,9 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
+      - name: Prepare release artifact directory
+        run: rm -rf .build/release-artifacts
+
       - name: Download app artifact
         uses: actions/download-artifact@v4
         with:
@@ -293,26 +271,33 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           NOTES_PATH=".build/release-artifacts/RELEASE_NOTES.md"
-          if [[ -f .build/release-artifacts/SELF_SIGNED_INSTALL.txt ]]; then
+          shopt -s nullglob
+          dmg_files=(.build/release-artifacts/*.dmg)
+          metadata_files=(.build/release-artifacts/*.metadata.json)
+          if [[ "${#dmg_files[@]}" -ne 1 || "${#metadata_files[@]}" -ne 1 ]]; then
+            printf 'Expected one DMG and one metadata file; found %s DMG(s) and %s metadata file(s).\n' \
+              "${#dmg_files[@]}" "${#metadata_files[@]}" >&2
+            exit 1
+          fi
+          SIGNING_MODE="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["signing"])' "${metadata_files[0]}")"
+          if [[ "$SIGNING_MODE" == "developer-id" ]]; then
             cat > "$NOTES_PATH" <<'EOF'
           Automated EasyTier macOS app build.
 
-          This DMG is self-signed and not Apple-notarized because Apple Developer ID/notarization credentials are not configured for CI. macOS Gatekeeper may block first launch.
-
-          See SELF_SIGNED_INSTALL.txt inside the DMG for installation notes.
+          This DMG is Developer ID signed and Apple-notarized.
           EOF
           else
             cat > "$NOTES_PATH" <<'EOF'
           Automated EasyTier macOS app build.
 
-          This DMG is Developer ID signed and Apple-notarized.
+          This DMG is ad-hoc signed and not Apple-notarized because Apple release credentials are not configured. macOS Gatekeeper may block first launch, and privileged helper installation is unavailable.
           EOF
           fi
 
           gh release view "$TAG_NAME" --repo "$REPOSITORY" >/dev/null 2>&1 || \
             gh release create "$TAG_NAME" --repo "$REPOSITORY" --title "$TAG_NAME" --notes-file "$NOTES_PATH"
           gh release edit "$TAG_NAME" --repo "$REPOSITORY" --notes-file "$NOTES_PATH"
-          gh release upload "$TAG_NAME" .build/release-artifacts/*.dmg --repo "$REPOSITORY" --clobber
+          gh release upload "$TAG_NAME" "${dmg_files[0]}" --repo "$REPOSITORY" --clobber
 
       - name: Generate update feed
         env:
@@ -352,8 +337,13 @@ jobs:
               "x64": "x86_64",
               "x86_64": "x86_64",
           }
+          dmg_paths = sorted(glob.glob(".build/release-artifacts/*.dmg"))
+          if len(dmg_paths) != 1:
+              print(f"Expected exactly one DMG asset, found {len(dmg_paths)}.", file=sys.stderr)
+              sys.exit(1)
+
           assets = {}
-          for path in sorted(glob.glob(".build/release-artifacts/*.dmg")):
+          for path in dmg_paths:
               file_path = pathlib.Path(path)
               arch_token = file_path.stem.split("-")[-1]
               arch = arch_names.get(arch_token, arch_token)
@@ -366,10 +356,6 @@ jobs:
                   "sha256": hasher.hexdigest(),
                   "size": file_path.stat().st_size,
               }
-
-          if not assets:
-              print("No DMG assets found for update feed.", file=sys.stderr)
-              sys.exit(1)
 
           manifest = {
               "schemaVersion": 1,

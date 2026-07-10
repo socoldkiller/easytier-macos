@@ -8,11 +8,6 @@ final class RuntimeSessionController {
         case privileged
     }
 
-    struct RefreshResult {
-        var presentationChange: RuntimePresentationChange
-        var isConfigServerConnected: Bool
-    }
-
     private let privilegedClient: any EasyTierCoreClient
     private let inProcessClient: any EasyTierCoreClient
     private let helperRegistration: HelperRegistrationService?
@@ -97,9 +92,8 @@ final class RuntimeSessionController {
         currentRuntimeDetails: [String: NetworkInstanceRunningInfo],
         currentStatusMetrics: [String: [String: RuntimeMemberStatusMetricsSnapshot]],
         currentTrafficSamples: [String: [TrafficSample]],
-        selectedTab: WorkspaceTab,
-        mode: AppMode
-    ) async throws -> RefreshResult {
+        selectedTab: WorkspaceTab
+    ) async throws -> RuntimePresentationChange {
         // Merge runtime info from both the privileged daemon (TUN instances) and
         // the in-process client (no_tun instances). Failures from either side
         // are tolerated so a missing/unapproved helper does not break no_tun.
@@ -143,19 +137,7 @@ final class RuntimeSessionController {
         trafficCountersByInstance = presentationChange.state.trafficCountersByInstance
         updateSystemSleepAssertion(for: running)
 
-        let newConfigServerConnected: Bool
-        if mode.configServerURL == nil {
-            newConfigServerConnected = false
-        } else if helperRegistration?.state == .enabled {
-            newConfigServerConnected = try await privilegedClient.isConfigServerClientConnected()
-        } else {
-            newConfigServerConnected = false
-        }
-
-        return RefreshResult(
-            presentationChange: presentationChange,
-            isConfigServerConnected: newConfigServerConnected
-        )
+        return presentationChange
     }
 
     func startPolling(
@@ -200,14 +182,14 @@ final class RuntimeSessionController {
 
     func handleSystemWillSleep(
         now: Date = Date(),
-        configs: [StoredNetworkConfig],
+        configs: [NetworkConfig],
         runningInstance: (NetworkConfig) -> NetworkInstance?
     ) {
         wakeRecoveryTask?.cancel()
         wakeRecoveryTask = nil
         sleepStartedAt = now
         runningConfigIDsBeforeSleep = configs
-            .filter { runningInstance($0.config) != nil }
+            .filter { runningInstance($0) != nil }
             .map(\.id)
         pausePolling()
     }

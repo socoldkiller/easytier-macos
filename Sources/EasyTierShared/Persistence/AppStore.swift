@@ -15,7 +15,7 @@ public struct RemoteConfigSession: Sendable {
         config != originalConfig
     }
 
-    public init(
+    package init(
         rpcURL: URL,
         instanceID: String,
         member: NetworkMemberStatus,
@@ -37,7 +37,7 @@ public struct RemoteConfigSession: Sendable {
 @MainActor
 @Observable
 public final class EasyTierAppStore {
-    public var configs: [StoredNetworkConfig] = [] {
+    public var configs: [NetworkConfig] = [] {
         didSet { refreshSelectedRuntimeSnapshotsIfNeeded() }
     }
     public var selectedConfigID: String? {
@@ -64,9 +64,6 @@ public final class EasyTierAppStore {
     public var isShowingSettings = false
     public var isShowingAbout = false
     public var isShowingLinuxInstallGuide = false
-    public var isConfigServerConnected = false {
-        didSet { isConfigServerConnectedWriteCount += 1 }
-    }
     public var trafficSamplesByInstance: [String: [TrafficSample]] = [:] {
         didSet {
             trafficSamplesByInstanceWriteCount += 1
@@ -114,7 +111,6 @@ public final class EasyTierAppStore {
     @ObservationIgnored public private(set) var runtimeDetailsWriteCount = 0
     @ObservationIgnored public private(set) var instancesWriteCount = 0
     @ObservationIgnored public private(set) var trafficSamplesByInstanceWriteCount = 0
-    @ObservationIgnored public private(set) var isConfigServerConnectedWriteCount = 0
 
     private enum LastErrorKind { case helperPermission }
 
@@ -122,10 +118,9 @@ public final class EasyTierAppStore {
         runtimeDetailsWriteCount = 0
         instancesWriteCount = 0
         trafficSamplesByInstanceWriteCount = 0
-        isConfigServerConnectedWriteCount = 0
     }
 
-    public init(
+    package init(
         privilegedClient: any EasyTierCoreClient = PrivilegedEasyTierClient(),
         inProcessClient: (any EasyTierCoreClient)? = nil,
         helperRegistration: HelperRegistrationService? = nil,
@@ -141,8 +136,8 @@ public final class EasyTierAppStore {
         self.systemSleepPreventer = systemSleepPreventer
     }
 
-    /// Backwards-compatible single-client initializer (for tests).
-    public convenience init(
+    /// Convenience initializer for tests that use one runtime client.
+    package convenience init(
         client: any EasyTierCoreClient = PrivilegedEasyTierClient(),
         storage: EasyTierStorage = .default,
         networkSecretStore: any NetworkSecretStore = SystemNetworkSecretStore(),
@@ -169,12 +164,12 @@ public final class EasyTierAppStore {
     public var selectedConfig: NetworkConfig? {
         get {
             guard let selectedConfigID else { return nil }
-            return configs.first { $0.id == selectedConfigID }?.config
+            return configs.first { $0.id == selectedConfigID }
         }
         set {
             guard let newValue else { return }
             if let index = configs.firstIndex(where: { $0.id == newValue.instance_id }) {
-                configs[index].config = newValue
+                configs[index] = newValue
             }
         }
     }
@@ -200,7 +195,7 @@ public final class EasyTierAppStore {
         let instanceID = instance.instance_id
         let networkName = instance.name
 
-        if let byID = configs.first(where: { stored in stored.config.instance_id == instanceID })?.config { return byID }
+        if let byID = configs.first(where: { $0.instance_id == instanceID }) { return byID }
         return uniquelyMatchedConfig(named: networkName)
     }
 
@@ -214,10 +209,6 @@ public final class EasyTierAppStore {
 
     public var selectedMemberStatuses: [NetworkMemberStatus] {
         selectedStatusSnapshot.members
-    }
-
-    public var selectedTrafficSamples: [TrafficSample] {
-        selectedTrafficSnapshot.samples
     }
 
     private func refreshSelectedRuntimeSnapshotsIfNeeded() {
@@ -254,13 +245,14 @@ public final class EasyTierAppStore {
 
     public func load() async {
         do {
-            let snapshot = try storage.load()
-            configs = try configsWithSecretsStored(snapshot.configs)
+            let loaded = try storage.load()
+            let snapshot = loaded.snapshot
+            configs = try configsWithSecretsStored(loaded.configs)
             runtimeIntents = snapshot.runtimeIntents
             reversedPortForwardFingerprints = snapshot.reversedPortForwardFingerprints
             vpnOnDemandEnabled = snapshot.vpnOnDemandEnabled
             magicDNSSettings = snapshot.magicDNSSettings
-            mode = snapshot.mode ?? .default
+            mode = snapshot.mode
             peerSubscriptions = snapshot.peerSubscriptions
             if let lastSelectedConfigID = snapshot.lastSelectedConfigID,
                configs.contains(where: { $0.id == lastSelectedConfigID })
@@ -271,9 +263,13 @@ public final class EasyTierAppStore {
             }
             saveInBackground()
             log("Loaded \(configs.count) saved network config(s).")
+            if let recoveryMessage = loaded.recoveryMessage {
+                setLastError(recoveryMessage)
+                log(recoveryMessage)
+            }
         } catch {
             if configs.isEmpty {
-                configs = [StoredNetworkConfig(config: NetworkConfig())]
+                configs = [NetworkConfig()]
                 selectedConfigID = configs.first?.id
             }
             setLastError(error)
@@ -285,10 +281,10 @@ public final class EasyTierAppStore {
 
     public func save() {
         do {
-            let snapshot = try snapshotForStorage()
-            try storage.save(snapshot)
-            if snapshot.configs != configs {
-                configs = snapshot.configs
+            let state = try stateForStorage()
+            try storage.save(state.snapshot, configs: state.configs)
+            if state.configs != configs {
+                configs = state.configs
             }
         } catch {
             setLastError(error)
@@ -304,38 +300,38 @@ public final class EasyTierAppStore {
         let listeners = configs.isEmpty
             ? NetworkConfig().listener_urls
             : ListenerURLDefaults.autoPortListeners
-        let config = StoredNetworkConfig(config: NetworkConfig(
+        let config = NetworkConfig(
             network_name: uniqueNetworkName(),
             listener_urls: listeners
-        ))
+        )
         configs.append(config)
         selectedConfigID = config.id
         selectedTab = .config
         saveInBackground()
-        log("Added \(config.config.network_name).")
+        log("Added \(config.network_name).")
     }
 
     public func saveInBackground() {
-        let snapshot: AppSnapshot
+        let state: (snapshot: AppSnapshot, configs: [NetworkConfig])
         do {
-            snapshot = try snapshotForStorage()
+            state = try stateForStorage()
         } catch {
             setLastError(error)
             log("Save failed: \(error.localizedDescription)")
             return
         }
-        if snapshot.configs != configs {
-            configs = snapshot.configs
+        if state.configs != configs {
+            configs = state.configs
         }
         let storage = self.storage
         Task.detached(priority: .background) {
-            try? storage.save(snapshot)
+            try? storage.save(state.snapshot, configs: state.configs)
         }
     }
 
     public func deleteSelectedConfig() async {
         guard let selectedConfigID, let index = configs.firstIndex(where: { $0.id == selectedConfigID }) else { return }
-        let config = configs[index].config
+        let config = configs[index]
         if let runningInstance = runningInstance(matching: config) {
             do {
                 try await client(for: config).stop(instanceNames: [runningInstance.name])
@@ -352,10 +348,10 @@ public final class EasyTierAppStore {
         }
         reversedPortForwardFingerprints.removeValue(forKey: config.instance_id)
         secretCache.removeValue(forKey: config.network_name)
-        let removed = configs.remove(at: index)
+        let removedID = configs.remove(at: index).id
         let storage = self.storage
         Task.detached(priority: .background) {
-            try? storage.deleteConfig(removed)
+            try? storage.deleteConfig(id: removedID)
         }
         let nextIndex = min(index, configs.count - 1)
         self.selectedConfigID = configs.isEmpty ? nil : configs[nextIndex].id
@@ -363,18 +359,13 @@ public final class EasyTierAppStore {
         await refreshRuntime()
     }
 
-    public func updateSelectedConfig(_ config: NetworkConfig) {
-        guard let selectedConfigID else { return }
-        updateConfig(id: selectedConfigID, with: config, saveImmediately: true)
-    }
-
     public func updateConfig(id: String, with config: NetworkConfig, saveImmediately: Bool = false) {
         guard let index = configs.firstIndex(where: { $0.id == id }) else { return }
-        let oldConfig = configs[index].config
+        let oldConfig = configs[index]
         if oldConfig.network_name != config.network_name {
             migrateNetworkSecret(from: oldConfig, to: config)
         }
-        configs[index].config = config
+        configs[index] = config
         if saveImmediately {
             save()
         }
@@ -398,16 +389,6 @@ public final class EasyTierAppStore {
 
     public func selectNextConfig() {
         selectConfig(offset: 1)
-    }
-
-    public func validateSelectedConfig() async {
-        guard let config = selectedConfig else { return }
-        await busy {
-            try validateConfigForCurrentRuntime(config)
-            let keychainConfig = try await configWithKeychainSecret(config, reason: "Use the network secret for validation.")
-            try await client(for: config).validate(toml: try encodedTOML(for: keychainConfig))
-            log("Validated \(config.network_name).")
-        }
     }
 
     public func runSelectedConfig() async {
@@ -635,9 +616,8 @@ public final class EasyTierAppStore {
         let desiredHostname = desiredHostname.trimmingCharacters(in: .whitespacesAndNewlines)
         let intent = RuntimeIntent(
             target: target,
-            kind: .hostname,
-            desired: RuntimeIntentDesired(hostname: desiredHostname),
-            base: RuntimeIntentBase(hostname: nonEmptyTrimmed(baseHostname)),
+            desiredHostname: desiredHostname,
+            baseHostname: nonEmptyTrimmed(baseHostname),
             status: .pending
         )
 
@@ -677,7 +657,7 @@ public final class EasyTierAppStore {
         }
 
         updateRuntimeIntent(id: id) { intent in
-            intent.base.hostname = observation.hostname
+            intent.baseHostname = observation.hostname
             intent.status = .pending
             intent.updatedAt = Date()
         }
@@ -749,7 +729,7 @@ public final class EasyTierAppStore {
         )
 
         do {
-            let config = try await EasyTierRemoteRPCClient.getConfigParsed(rpcURL: rpcURL, instanceID: instanceID)
+            let config = try await EasyTierRemoteRPCClient(rpcURL: rpcURL).getConfigParsed(instanceID: instanceID)
             remoteConfigSession?.config = config
             remoteConfigSession?.originalConfig = config
             remoteConfigSession?.isLoading = false
@@ -770,8 +750,7 @@ public final class EasyTierAppStore {
         }
         guard session.hasUnsavedChanges else { return true }
         do {
-            _ = try await EasyTierRemoteRPCClient.applyConfigPatch(
-                rpcURL: session.rpcURL,
+            _ = try await EasyTierRemoteRPCClient(rpcURL: session.rpcURL).applyConfigPatch(
                 instanceID: session.instanceID,
                 config: session.config,
                 original: session.originalConfig
@@ -805,25 +784,14 @@ public final class EasyTierAppStore {
         )
     }
 
-    public func easyTierCoreVersion() async throws -> String {
-        // Prefer the privileged client when enabled (it tracks the canonical core build);
-        // fall back to the in-process client for no_tun-only sessions.
-        if helperRegistration?.state == .enabled {
-            return try await privilegedClient.version()
-        }
-        return try await inProcessClient.version()
-    }
-
     public func applyMode(_ mode: AppMode) async {
         self.mode = mode
         save()
 
-        // The RPC portal and config-server client are daemon-side concerns.
-        // Only route them through the privileged client when it is enabled.
-        // When helperRegistration is nil (e.g. testing), allow direct configuration.
+        // The RPC portal is daemon-side. Only route it through the privileged
+        // client when the helper is enabled; tests may configure it directly.
         if let helperRegistration, helperRegistration.state != .enabled {
             if mode.rpcPortal == nil { log("RPC portal disabled.") }
-            if mode.configServerURL == nil { isConfigServerConnected = false }
             return
         }
 
@@ -836,20 +804,6 @@ public final class EasyTierAppStore {
             }
         }
 
-        if let url = mode.configServerURL {
-            await busy {
-                try await privilegedClient.startConfigServerClient(url: url)
-                isConfigServerConnected = try await privilegedClient.isConfigServerClientConnected()
-                log("Config server client started: \(url.absoluteString)")
-            }
-        } else {
-            do {
-                try await privilegedClient.stopConfigServerClient()
-                isConfigServerConnected = false
-            } catch {
-                log("Config server stop failed: \(error.localizedDescription)")
-            }
-        }
     }
 
     public func applyMode(_ mode: AppMode, magicDNSSettings: MagicDNSSettings) async {
@@ -882,22 +836,17 @@ public final class EasyTierAppStore {
                     recordNotice("Detected custom Magic DNS suffix \(importedSettings.dnsSuffix); saved it as this Mac's Magic DNS suffix.")
                 }
             }
-            let stored = try configsWithSecretsStored([StoredNetworkConfig(config: config)])[0]
-            configs.append(stored)
-            selectedConfigID = stored.id
+            let imported = try configsWithSecretsStored([config])[0]
+            configs.append(imported)
+            selectedConfigID = imported.id
             selectedTab = .config
             save()
-            log("Imported \(stored.config.network_name).")
+            log("Imported \(imported.network_name).")
         } catch {
             let message = Self.errorMessage(for: error, toml: toml)
             setLastError(message, kind: Self.lastErrorKind(for: error))
             log("Import failed: \(message)")
         }
-    }
-
-    public func networkSecretIsSaved(for config: NetworkConfig) async -> Bool {
-        let store = networkSecretStore
-        return await Task.detached { @Sendable in store.containsSecret(for: config) }.value
     }
 
     public func networkSecretCanAutofill(for config: NetworkConfig) async -> Bool {
@@ -960,7 +909,7 @@ public final class EasyTierAppStore {
 
     private func recoverPreviouslyRunningConfigsAfterWake(configIDs: [String]) async {
         let configsToRecover = configIDs.compactMap { id in
-            configs.first { $0.id == id }?.config
+            configs.first { $0.id == id }
         }
         guard !configsToRecover.isEmpty else { return }
 
@@ -1000,15 +949,13 @@ public final class EasyTierAppStore {
     }
 
     private func refreshRuntimeThrowing() async throws {
-        let result = try await runtimeSession.refreshRuntime(
+        let presentationChange = try await runtimeSession.refreshRuntime(
             currentInstances: instances,
             currentRuntimeDetails: runtimeDetails,
             currentStatusMetrics: statusMetricsByInstance,
             currentTrafficSamples: trafficSamplesByInstance,
-            selectedTab: selectedTab,
-            mode: mode
+            selectedTab: selectedTab
         )
-        let presentationChange = result.presentationChange
         isPublishingRuntimePresentation = true
         if presentationChange.shouldPublishRuntimeDetails {
             runtimeDetails = presentationChange.state.runtimeDetails
@@ -1025,16 +972,10 @@ public final class EasyTierAppStore {
         isPublishingRuntimePresentation = false
         refreshSelectedRuntimeSnapshots()
         await reconcileRuntimeIntents()
-        let newConfigServerConnected = result.isConfigServerConnected
-        if isConfigServerConnected != newConfigServerConnected {
-            isConfigServerConnected = newConfigServerConnected
-        }
     }
 
     private func reconcileRuntimeIntents() async {
-        let ids = runtimeIntents
-            .filter { $0.kind == .hostname }
-            .map(\.id)
+        let ids = runtimeIntents.map(\.id)
         for id in ids {
             await reconcileHostnameIntent(id: id)
         }
@@ -1065,8 +1006,7 @@ public final class EasyTierAppStore {
 
     private func reconcileHostnameIntent(id: String, force: Bool = false) async {
         guard let intent = runtimeIntents.first(where: { $0.id == id }),
-              intent.kind == .hostname,
-              let desiredHostname = nonEmptyTrimmed(intent.desired.hostname)
+              let desiredHostname = nonEmptyTrimmed(intent.desiredHostname)
         else { return }
 
         guard let observation = runtimeObservation(for: intent.target) else {
@@ -1087,7 +1027,7 @@ public final class EasyTierAppStore {
 
         guard force || intent.status != .conflict else { return }
 
-        let baseHostname = nonEmptyTrimmed(intent.base.hostname)
+        let baseHostname = nonEmptyTrimmed(intent.baseHostname)
         guard force || currentHostname == baseHostname else {
             setRuntimeIntentStatus(id, .conflict)
             recordNotice("Runtime intent conflict for \(observation.label). Remote hostname is \(currentHostname ?? "-"), expected base \(baseHostname ?? "-").")
@@ -1119,9 +1059,8 @@ public final class EasyTierAppStore {
                 instanceID: instance.instance_id,
                 hostname: detail?.my_node_info?.hostname,
                 ipv4: detail?.my_node_info?.displayIPv4,
-                rpcURL: nil,
-                label: instance.name,
-                isLocal: true
+                rpcURL: mode.localRPCURL,
+                label: instance.name
             )
         }
 
@@ -1147,8 +1086,7 @@ public final class EasyTierAppStore {
                 hostname: member.hostname,
                 ipv4: member.copyableIPv4Address,
                 rpcURL: rpcURL,
-                label: member.hostname,
-                isLocal: false
+                label: member.hostname
             )
         }
 
@@ -1156,13 +1094,13 @@ public final class EasyTierAppStore {
     }
 
     private func applyHostname(_ hostname: String, to observation: RuntimeIntentObservation) async throws {
-        guard observation.isLocal || observation.rpcURL != nil else {
-            throw EasyTierCoreError.invalidResponse("remote runtime RPC URL is missing")
+        guard let rpcURL = observation.rpcURL else {
+            throw EasyTierCoreError.invalidResponse("runtime RPC URL is missing")
         }
         guard !observation.instanceID.isEmpty else {
             throw EasyTierCoreError.invalidResponse("runtime RPC target is missing")
         }
-        let transport = EasyTierCoreRPCTransport(client: privilegedClient, rpcURL: observation.rpcURL)
+        let transport = EasyTierCoreRPCTransport(client: privilegedClient, rpcURL: rpcURL)
         try await EasyTierRemoteRPCClient(transport: transport).patchHostname(
             instanceID: observation.instanceID,
             hostname: hostname
@@ -1188,19 +1126,20 @@ public final class EasyTierAppStore {
     private func persistRuntimeHostname(from instance: NetworkInstance, forConfigID configID: String) {
         guard let runtimeHostname = nonEmptyTrimmed(instance.detail?.my_node_info?.hostname) else { return }
         guard let index = configs.firstIndex(where: { $0.id == configID }) else { return }
-        let storedHostname = nonEmptyTrimmed(configs[index].config.hostname)
+        let storedHostname = nonEmptyTrimmed(configs[index].hostname)
         guard storedHostname != runtimeHostname else { return }
 
-        configs[index].config.hostname = runtimeHostname
+        configs[index].hostname = runtimeHostname
         if selectedConfigID == configID {
             selectedConfigID = configs[index].id
         }
         save()
     }
 
-    private func snapshotForStorage() throws -> AppSnapshot {
-        AppSnapshot(
-            configs: try configsWithSecretsStored(configs),
+    private func stateForStorage() throws -> (snapshot: AppSnapshot, configs: [NetworkConfig]) {
+        let configs = try configsWithSecretsStored(configs)
+        let snapshot = AppSnapshot(
+            configIDs: configs.map(\.id),
             mode: mode,
             lastSelectedConfigID: selectedConfigID,
             vpnOnDemandEnabled: vpnOnDemandEnabled,
@@ -1209,17 +1148,18 @@ public final class EasyTierAppStore {
             magicDNSSettings: magicDNSSettings,
             peerSubscriptions: peerSubscriptions
         )
+        return (snapshot, configs)
     }
 
-    private func configsWithSecretsStored(_ storedConfigs: [StoredNetworkConfig]) throws -> [StoredNetworkConfig] {
-        var storedConfigs = storedConfigs
-        for index in storedConfigs.indices {
-            guard let secret = storedConfigs[index].config.network_secret?.nilIfEmpty else { continue }
-            try networkSecretStore.save(secret, for: storedConfigs[index].config)
-            secretCache[storedConfigs[index].config.network_name] = secret
-            storedConfigs[index].config.network_secret = nil
+    private func configsWithSecretsStored(_ configs: [NetworkConfig]) throws -> [NetworkConfig] {
+        var configs = configs
+        for index in configs.indices {
+            guard let secret = configs[index].network_secret?.nilIfEmpty else { continue }
+            try networkSecretStore.save(secret, for: configs[index])
+            secretCache[configs[index].network_name] = secret
+            configs[index].network_secret = nil
         }
-        return storedConfigs
+        return configs
     }
 
     private func configWithKeychainSecret(_ config: NetworkConfig, reason: String) async throws -> NetworkConfig {
@@ -1247,7 +1187,7 @@ public final class EasyTierAppStore {
     }
 
     private func uniquelyMatchedInstance(named networkName: String) -> NetworkInstance? {
-        let matchingConfigs = configs.filter { $0.config.network_name == networkName }
+        let matchingConfigs = configs.filter { $0.network_name == networkName }
         guard matchingConfigs.count <= 1 else { return nil }
 
         let matches = instances.filter { instance in
@@ -1257,13 +1197,12 @@ public final class EasyTierAppStore {
     }
 
     private func uniquelyMatchedConfig(named networkName: String) -> NetworkConfig? {
-        let matches = configs.filter { $0.config.network_name == networkName }
-        return matches.count == 1 ? matches[0].config : nil
+        let matches = configs.filter { $0.network_name == networkName }
+        return matches.count == 1 ? matches[0] : nil
     }
 
     private func runningMagicDNSConfigNames() -> [String] {
         configs
-            .map(\.config)
             .filter { $0.enable_magic_dns == true && runningInstance(matching: $0) != nil }
             .map(\.network_name)
             .sorted()
@@ -1392,13 +1331,6 @@ public final class EasyTierAppStore {
         log("Added \(decoded.count) subscription(s) from pasted JSON.")
     }
 
-    public func deletePeerSubscription(id: String) {
-        guard let index = peerSubscriptions.firstIndex(where: { $0.id == id }) else { return }
-        let removed = peerSubscriptions.remove(at: index)
-        saveInBackground()
-        log("Removed subscription \(removed.name).")
-    }
-
     public func refreshPeerSubscriptions() async {
         let urls = peerSubscriptions.compactMap { $0.subscriptionURL }
         guard !urls.isEmpty else { return }
@@ -1467,7 +1399,7 @@ public final class EasyTierAppStore {
     /// Does NOT mutate state — the actual merge is performed by the view layer against its draft.
     public func previewPeerCardMerge(_ card: PeerCard) -> PeerCardMergeResult {
         guard let selectedID = selectedConfigID,
-              let config = configs.first(where: { $0.id == selectedID })?.config
+              let config = configs.first(where: { $0.id == selectedID })
         else {
             return .noSelectedConfig
         }
@@ -1476,33 +1408,12 @@ public final class EasyTierAppStore {
         guard !toAdd.isEmpty else {
             return .alreadyPresent
         }
-        return .added(count: toAdd.count)
-    }
-
-    @discardableResult
-    public func mergePeerCardIntoSelectedConfig(_ card: PeerCard) -> PeerCardMergeResult {
-        guard let selectedID = selectedConfigID,
-              let index = configs.firstIndex(where: { $0.id == selectedID })
-        else {
-            recordNotice("Select or create a network config before adding peers.")
-            return .noSelectedConfig
-        }
-        var config = configs[index].config
-        let existing = Set(config.peer_urls.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) })
-        let toAdd = card.urls.filter { !existing.contains($0) }
-        guard !toAdd.isEmpty else {
-            recordNotice("All peer URLs from \(card.name) are already in \(config.network_name).")
-            return .alreadyPresent
-        }
-        config.peer_urls.append(contentsOf: toAdd)
-        updateConfig(id: selectedID, with: config, saveImmediately: true)
-        recordNotice("Added \(toAdd.count) peer URL(s) from \(card.name) to \(config.network_name).")
         return .added(count: toAdd.count)
     }
 
     private func uniqueNetworkName() -> String {
         let base = "easytier"
-        let existing = Set(configs.map { $0.config.network_name })
+        let existing = Set(configs.map(\.network_name))
         if !existing.contains(base) { return base }
         for index in 2...999 where !existing.contains("\(base)-\(index)") {
             return "\(base)-\(index)"
@@ -1538,5 +1449,4 @@ private struct RuntimeIntentObservation {
     var ipv4: String?
     var rpcURL: URL?
     var label: String
-    var isLocal: Bool
 }

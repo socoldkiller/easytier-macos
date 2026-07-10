@@ -1,9 +1,6 @@
 .DS_Store
 .build/
 DerivedData/
-Vendor/Frameworks/*.dylib
-Vendor/Frameworks/EasyTierFFI.xcframework/
-Vendor/Frameworks/include/
 Vendor/Frameworks/static/
 *.xcuserstate
 *.xcuserdata/

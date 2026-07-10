@@ -23,37 +23,29 @@ enum EasyTierSettingsTab: String, CaseIterable, Identifiable, Hashable {
 }
 
 enum EasyTierSection: String, CaseIterable, Identifiable, Hashable {
-    case mode = "Mode"
     case magicDNS = "Magic DNS"
     case rpcServer = "RPC Server"
-    case remoteConfig = "Remote Config"
 
     var id: String { rawValue }
 
     var systemImage: String {
         switch self {
-        case .mode: "slider.horizontal.3"
         case .magicDNS: "globe"
         case .rpcServer: "server.rack"
-        case .remoteConfig: "cloud"
         }
     }
 
     var tint: Color {
         switch self {
-        case .mode: SettingsTint.mode
         case .magicDNS: SettingsTint.magicDNS
         case .rpcServer: SettingsTint.rpcServer
-        case .remoteConfig: SettingsTint.remoteConfig
         }
     }
 
     var subtitle: String {
         switch self {
-        case .mode: "Choose how this EasyTier instance is configured."
         case .magicDNS: "Resolve EasyTier network names through the built-in DNS."
         case .rpcServer: "Local control plane exposing EasyTier state to the GUI and peers."
-        case .remoteConfig: "Pull the network profile from a remote server on launch."
         }
     }
 }
@@ -65,12 +57,6 @@ enum SettingsSelection: Hashable {
 }
 
 struct EasyTierSettingsSheet: View {
-    enum ModeKind: String, CaseIterable, Identifiable {
-        case normal = "Normal"
-        case configServer = "Config Server"
-        var id: String { rawValue }
-    }
-
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(EasyTierAppStore.self) private var store
@@ -78,11 +64,9 @@ struct EasyTierSettingsSheet: View {
     @AppStorage(EasyTierSettingsTabRequest.key) private var requestedSettingsTab = EasyTierSettingsTab.general.rawValue
     @State private var loginItem = LoginItemController()
     @State private var selection: SettingsSelection
-    @State private var kind: ModeKind
     @State private var rpcListenEnabled: Bool
     @State private var rpcListenPort: Int
     @State private var rpcPortalWhitelist: [String]
-    @State private var configServerURL: String
     @State private var magicDNSSuffix: String
     @State private var settingsError: String?
     @State private var showingDisableRPCListenWarning = false
@@ -105,14 +89,9 @@ struct EasyTierSettingsSheet: View {
         }
         _magicDNSSuffix = State(initialValue: magicDNSSettings.dnsSuffix)
 
-        switch mode {
-        case let .normal(_, rpcListenEnabled, rpcListenPort, rpcPortalWhitelist, configServerURL):
-            _kind = State(initialValue: configServerURL == nil ? .normal : .configServer)
-            _rpcListenEnabled = State(initialValue: rpcListenEnabled)
-            _rpcListenPort = State(initialValue: rpcListenPort)
-            _rpcPortalWhitelist = State(initialValue: Self.initialRPCPortalWhitelist(from: rpcPortalWhitelist))
-            _configServerURL = State(initialValue: configServerURL?.absoluteString ?? "")
-        }
+        _rpcListenEnabled = State(initialValue: mode.rpcListenEnabled)
+        _rpcListenPort = State(initialValue: mode.rpcListenPort)
+        _rpcPortalWhitelist = State(initialValue: Self.initialRPCPortalWhitelist(from: mode.rpcPortalWhitelist))
     }
 
     var body: some View {
@@ -135,15 +114,6 @@ struct EasyTierSettingsSheet: View {
             }
             EasyTierSettingsTabRequest.set(tab)
         }
-        .onChange(of: kind) { _, newKind in
-            if case .easyTier(let section) = selection,
-               !Self.visibleEasyTierSections(for: newKind).contains(section) {
-                withAnimation(EasyTierMotion.selection(reduceMotion: reduceMotion)) {
-                    selection = .easyTier(.mode)
-                }
-            }
-            applySettings()
-        }
         .onChange(of: rpcListenEnabled) { _, _ in
             applySettings()
         }
@@ -151,9 +121,6 @@ struct EasyTierSettingsSheet: View {
             applySettings()
         }
         .onChange(of: rpcPortalWhitelist) { _, _ in
-            applySettings()
-        }
-        .onChange(of: configServerURL) { _, _ in
             applySettings()
         }
         .onChange(of: magicDNSSuffix) { _, _ in
@@ -261,10 +228,8 @@ struct EasyTierSettingsSheet: View {
                 paneHeader(title: section.rawValue, subtitle: section.subtitle)
 
                 switch section {
-                case .mode: modeSection
                 case .magicDNS: magicDNSSection
                 case .rpcServer: rpcServerSection
-                case .remoteConfig: remoteConfigSection
                 }
             }
             .padding(.horizontal, 20)
@@ -274,27 +239,6 @@ struct EasyTierSettingsSheet: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .scrollIndicators(.hidden, axes: .vertical)
         .hideScrollViewScrollers()
-    }
-
-    private var modeSection: some View {
-        VStack(spacing: 8) {
-            ModeOptionTile(
-                title: "Normal",
-                description: "Run a local EasyTier node with its own listeners and RPC server.",
-                systemImage: "desktopcomputer",
-                tint: SettingsTint.mode,
-                isSelected: kind == .normal,
-                action: { selectKind(.normal) }
-            )
-            ModeOptionTile(
-                title: "Config Server",
-                description: "Pull the network profile from a config server on launch.",
-                systemImage: "icloud.and.arrow.down",
-                tint: SettingsTint.remoteConfig,
-                isSelected: kind == .configServer,
-                action: { selectKind(.configServer) }
-            )
-        }
     }
 
     private var magicDNSSection: some View {
@@ -378,29 +322,9 @@ struct EasyTierSettingsSheet: View {
         }
     }
 
-    private var remoteConfigSection: some View {
-        CardSection(
-            "Config Server",
-            footer: "EasyTier fetches the network profile from this URL on launch."
-        ) {
-            SettingsInlineRow("Config Server") {
-                TextField("https://example.com/config", text: $configServerURL)
-                    .textFieldStyle(.glassField)
-                    .frame(maxWidth: 340)
-            }
-        }
-    }
-
     // MARK: Footer
 
     // MARK: Bindings
-
-    private func selectKind(_ newKind: ModeKind) {
-        guard newKind != kind else { return }
-        withAnimation(EasyTierMotion.selection(reduceMotion: reduceMotion)) {
-            kind = newKind
-        }
-    }
 
     private var rpcListenBinding: Binding<Bool> {
         Binding(
@@ -449,24 +373,11 @@ struct EasyTierSettingsSheet: View {
     }
 
     private func buildMode() -> AppMode {
-        switch kind {
-        case .normal:
-            .normal(
-                rpcPortal: rpcListenEnabled ? "tcp://0.0.0.0:\(rpcListenPort)" : nil,
-                rpcListenEnabled: rpcListenEnabled,
-                rpcListenPort: rpcListenPort,
-                rpcPortalWhitelist: normalizedRPCPortalWhitelist,
-                configServerURL: nil
-            )
-        case .configServer:
-            .normal(
-                rpcPortal: nil,
-                rpcListenEnabled: false,
-                rpcListenPort: AppMode.defaultRPCListenPort,
-                rpcPortalWhitelist: normalizedRPCPortalWhitelist,
-                configServerURL: URL(string: configServerURL.trimmingCharacters(in: .whitespacesAndNewlines))
-            )
-        }
+        AppMode(
+            rpcListenEnabled: rpcListenEnabled,
+            rpcListenPort: rpcListenPort,
+            rpcPortalWhitelist: normalizedRPCPortalWhitelist
+        )
     }
 
     private func selectSettingsTab(_ rawValue: String) {
@@ -479,7 +390,7 @@ struct EasyTierSettingsSheet: View {
             if case .easyTier(let current) = selection {
                 target = sanitizedSelection(.easyTier(current))
             } else {
-                target = .easyTier(.mode)
+                target = .easyTier(.magicDNS)
             }
         case .about:
             target = .about
@@ -504,21 +415,14 @@ struct EasyTierSettingsSheet: View {
     private func sanitizedSelection(_ candidate: SettingsSelection) -> SettingsSelection {
         switch candidate {
         case .easyTier(let section) where !visibleEasyTierSections.contains(section):
-            .easyTier(.mode)
+            .easyTier(.magicDNS)
         default:
             candidate
         }
     }
 
     private var visibleEasyTierSections: [EasyTierSection] {
-        Self.visibleEasyTierSections(for: kind)
-    }
-
-    private static func visibleEasyTierSections(for kind: ModeKind) -> [EasyTierSection] {
-        switch kind {
-        case .normal: [.mode, .magicDNS, .rpcServer]
-        case .configServer: [.mode, .magicDNS, .remoteConfig]
-        }
+        [.magicDNS, .rpcServer]
     }
 
     private var normalizedRPCPortalWhitelist: [String]? {

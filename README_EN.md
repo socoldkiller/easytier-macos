@@ -122,22 +122,22 @@ First launch:
 
 ### Prerequisites
 
-Xcode 16+, Swift 6, Rust nightly.
+Xcode 16+, Swift 6, Rust 1.95+ stable, and the Protocol Buffers compiler (`protoc`).
 
 ```bash
 git clone --recurse-submodules https://github.com/socoldkiller/easytier-macos.git
 cd easytier-macos
 make bootstrap   # verify toolchain
-make ffi         # build Rust FFI static lib
-make app-debug   # build debug app
-make dmg-local   # package locally-signed DMG
-make test        # run tests
+make ffi         # build the Rust FFI static lib for this Mac
+make app-debug   # package an ad-hoc debug app
+make dmg-adhoc   # package one ad-hoc DMG; helper installation is unavailable
+make test        # run Swift and Rust tests
 ```
 
 Output paths:
 - App bundle: `.build/artifacts/EasyTier.app`
 - DMG: `.build/artifacts/EasyTier-macOS-$(uname -m).dmg`
-- FFI lib: `Vendor/Frameworks/static/`
+- FFI lib: `Vendor/Frameworks/static/libeasytier_ffi.a`
 
 Developer ID signing:
 

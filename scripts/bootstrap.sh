@@ -3,32 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EASYTIER_DIR="$ROOT_DIR/Vendor/EasyTier"
-CORE_TAG="${EASYTIER_CORE_TAG:-v2.6.4}"
 cd "$ROOT_DIR"
-
-ensure_easytier_core_tag() {
-  if [[ -f "$EASYTIER_DIR/Cargo.toml" ]]; then
-    echo "Vendor/EasyTier already present."
-  else
-    git submodule update --init Vendor/EasyTier
-  fi
-
-  local current_tag
-  current_tag="$(git -C "$EASYTIER_DIR" describe --tags --exact-match HEAD 2>/dev/null || true)"
-
-  if [[ "$current_tag" != "$CORE_TAG" ]]; then
-    if [[ -n "$(git -C "$EASYTIER_DIR" status --short --untracked-files=no 2>/dev/null || true)" ]]; then
-      echo "Vendor/EasyTier has local tracked changes; refusing to switch Core tag." >&2
-      exit 1
-    fi
-    if ! git -C "$EASYTIER_DIR" rev-parse -q --verify "refs/tags/$CORE_TAG" >/dev/null; then
-      git -C "$EASYTIER_DIR" fetch --force --depth 1 origin "refs/tags/$CORE_TAG:refs/tags/$CORE_TAG"
-    fi
-    git -C "$EASYTIER_DIR" checkout --detach "$CORE_TAG"
-  fi
-
-  echo "EasyTier Core: $(git -C "$EASYTIER_DIR" describe --tags --always --dirty)"
-}
 
 if ! command -v swift >/dev/null 2>&1; then
   echo "swift is required" >&2
@@ -45,17 +20,31 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v rustc >/dev/null 2>&1; then
+  echo "rustc is required for EasyTier FFI builds" >&2
+  exit 1
+fi
+
 if ! command -v protoc >/dev/null 2>&1; then
   echo "protoc is required for EasyTier FFI builds; install protobuf first." >&2
   exit 1
 fi
 
-ensure_easytier_core_tag
+if [[ ! -f "$EASYTIER_DIR/Cargo.toml" ]]; then
+  echo "Vendor/EasyTier is not initialized; run: git submodule update --init --recursive" >&2
+  exit 1
+fi
 
-mkdir -p Vendor/Frameworks
+EXPECTED_CORE_REV="$(git ls-files --stage -- Vendor/EasyTier | awk '$1 == 160000 { print $2 }')"
+CURRENT_CORE_REV="$(git -C "$EASYTIER_DIR" rev-parse HEAD)"
+if [[ -z "$EXPECTED_CORE_REV" || "$CURRENT_CORE_REV" != "$EXPECTED_CORE_REV" ]]; then
+  echo "Vendor/EasyTier does not match the repository gitlink; run: git submodule update --init --recursive" >&2
+  exit 1
+fi
 
 echo "Swift: $(swift --version | head -n 1)"
 echo "Xcode: $(xcodebuild -version | tr '\n' ' ')"
-echo "Rust: $(cargo --version)"
+echo "Rust: $(rustc --version); $(cargo --version)"
 echo "protoc: $(protoc --version)"
+echo "EasyTier Core: $(git -C "$EASYTIER_DIR" describe --tags --always --dirty)"
 echo "Bootstrap complete."

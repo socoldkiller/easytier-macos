@@ -1,11 +1,11 @@
 import Foundation
 import ServiceManagement
 
-public final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelperShutdownClient, @unchecked Sendable {
+package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelperShutdownClient, @unchecked Sendable {
     private let connectionLock = NSLock()
     private var _connection: NSXPCConnection?
 
-    public init() {}
+    package init() {}
 
     deinit {
         let conn = _connection
@@ -48,57 +48,31 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelperS
         conn?.invalidate()
     }
 
-    public func version() async throws -> String {
-        let payload = try await helperPingPayload()
-        guard payload == EasyTierPrivilegedHelperConstants.pingPayload else {
-            throw PrivilegedHelperError.helperReported(
-                PrivilegedHelperErrorPayload(
-                    code: "protocolMismatch",
-                    message: "Privileged helper is registered but did not match this app version.",
-                    recoverySuggestion: "Reinstall the privileged helper from this EasyTier app."
-                )
-            )
-        }
-        return "EasyTier privileged helper"
-    }
-
-    public func validate(toml: String) async throws {
+    package func validate(toml: String) async throws {
         try await callHelper { service, reply in
             service.validate(toml: toml, reply: reply)
         }
     }
 
-    public func run(toml: String) async throws {
-        try await validate(toml: toml)
+    package func run(toml: String) async throws {
         try await callHelper { service, reply in
             service.run(configTOML: toml, reply: reply)
         }
     }
 
-    public func stop(instanceNames: [String]) async throws {
+    package func stop(instanceNames: [String]) async throws {
         try await callHelper { service, reply in
             service.stop(instanceNames: instanceNames, reply: reply)
         }
     }
 
-    public func retain(instanceNames: [String]) async throws {
+    package func retain(instanceNames: [String]) async throws {
         try await callHelper { service, reply in
             service.retain(instanceNames: instanceNames, reply: reply)
         }
     }
 
-    public func listInstances() async throws -> [NetworkInstance] {
-        do {
-            let payload = try await callHelperReturningPayload { service, reply in
-                service.listInstances(reply: reply)
-            }
-            return try Self.decoder.decode([NetworkInstance].self, from: Data(payload.utf8))
-        } catch let error as DecodingError {
-            throw PrivilegedHelperError.invalidPayload(String(describing: error))
-        }
-    }
-
-    public func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] {
+    package func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] {
         try await Task.detached(priority: .userInitiated) { [self] in
             do {
                 let payload = try await callHelperReturningPayload { service, reply in
@@ -111,55 +85,52 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelperS
         }.value
     }
 
-    public func configureRPCPortal(_ rpcPortal: String?, whitelist: [String]?) async throws {
+    package func configureRPCPortal(_ rpcPortal: String?, whitelist: [String]?) async throws {
         try await callHelper { service, reply in
             service.configureRPCPortal(rpcPortal: rpcPortal, whitelist: whitelist, reply: reply)
         }
     }
 
-    public func callJSONRPC(service: String, method: String, domain: String?, payload: String) async throws -> String {
-        try await callJSONRPC(clientID: "default", service: service, method: method, domain: domain, payload: payload)
-    }
-
-    public func connectRPCClient(clientID: String, url: URL) async throws {
-        try await callHelper { service, reply in
-            service.connectRPCClient(clientID: clientID, url: url.absoluteString, reply: reply)
-        }
-    }
-
-    public func disconnectRPCClient(clientID: String) async throws {
-        try await callHelper { service, reply in
-            service.disconnectRPCClient(clientID: clientID, reply: reply)
-        }
-    }
-
-    public func callJSONRPC(clientID: String, service: String, method: String, domain: String?, payload: String) async throws -> String {
+    package func callJSONRPC(
+        clientID: String,
+        url: URL,
+        service: String,
+        method: String,
+        domain: String?,
+        payload: String
+    ) async throws -> String {
         try await callHelperReturningPayload(timeoutError: Self.rpcTimeoutError) { helper, reply in
-            helper.callJSONRPC(clientID: clientID, service: service, method: method, domain: domain, payload: payload, reply: reply)
+            helper.callJSONRPC(
+                clientID: clientID,
+                url: url.absoluteString,
+                service: service,
+                method: method,
+                domain: domain,
+                payload: payload,
+                reply: reply
+            )
         }
     }
 
-    public func startConfigServerClient(url: URL) async throws {
-        throw unsupported("Config-server client mode")
-    }
-
-    public func stopConfigServerClient() async throws {
-        // Core v2.6.4 has no config-server client in this helper; stopping is a no-op.
-    }
-
-    public func isConfigServerClientConnected() async throws -> Bool {
-        throw unsupported("Config-server client mode")
-    }
-
-    public func helperPingPayload() async throws -> String {
+    package func helperPingPayload() async throws -> String {
         do {
-            return try await callHelperReturningPayload { service, reply in service.ping(reply: reply) }
+            let payload = try await callHelperReturningPayload { service, reply in service.ping(reply: reply) }
+            guard payload == EasyTierPrivilegedHelperConstants.pingPayload else {
+                throw PrivilegedHelperError.helperReported(
+                    PrivilegedHelperErrorPayload(
+                        code: "protocolMismatch",
+                        message: "Privileged helper is registered but does not match this app version.",
+                        recoverySuggestion: "Reinstall the privileged helper from this EasyTier app."
+                    )
+                )
+            }
+            return payload
         } catch PrivilegedHelperError.unavailable {
             throw PrivilegedHelperError.unavailable
         }
     }
 
-    public func shutdownHelper() async throws {
+    package func shutdownHelper() async throws {
         try await callHelper { service, reply in
             service.shutdown(reply: reply)
         }
@@ -202,40 +173,12 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelperS
             let proxy = connection.remoteObjectProxyWithErrorHandler { [weak self] _ in
                 timeoutWork.cancel()
                 self?.dropConnection()
-                if LegacyPrivilegedHelperService.shouldUseLegacyInstaller {
-                    if LegacyPrivilegedHelperService.isInstalled, !isRetry {
-                        state.finish(.failure(PrivilegedHelperError.unavailable))
-                    } else {
-                        state.finish(.failure(LegacyPrivilegedHelperService.isInstalled ? Self.helperUnavailableError() : Self.legacyNeedsInstallError()))
-                    }
-                    return
-                }
-
-                let status = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName).status
-                if status == .enabled, !isRetry {
-                    state.finish(.failure(PrivilegedHelperError.unavailable))
-                } else {
-                    state.finish(.failure(status == .enabled ? Self.helperUnavailableError() : Self.statusError(status)))
-                }
+                state.finish(.failure(Self.connectionFailure(isRetry: isRetry)))
             }
             guard let service = proxy as? EasyTierPrivilegedServiceProtocol else {
                 timeoutWork.cancel()
                 dropConnection()
-                if LegacyPrivilegedHelperService.shouldUseLegacyInstaller {
-                    if LegacyPrivilegedHelperService.isInstalled, !isRetry {
-                        state.finish(.failure(PrivilegedHelperError.unavailable))
-                    } else {
-                        state.finish(.failure(LegacyPrivilegedHelperService.isInstalled ? Self.helperUnavailableError() : Self.legacyNeedsInstallError()))
-                    }
-                    return
-                }
-
-                let status = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName).status
-                if status == .enabled, !isRetry {
-                    state.finish(.failure(PrivilegedHelperError.unavailable))
-                } else {
-                    state.finish(.failure(status == .enabled ? Self.helperUnavailableError() : Self.statusError(status)))
-                }
+                state.finish(.failure(Self.connectionFailure(isRetry: isRetry)))
                 return
             }
             body(service) { payload, error in
@@ -251,10 +194,19 @@ public final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelperS
         }
     }
 
-    private static let decoder = JSONDecoder()
+    private static func connectionFailure(isRetry: Bool) -> PrivilegedHelperError {
+        if LegacyPrivilegedHelperService.shouldUseLegacyInstaller {
+            if LegacyPrivilegedHelperService.isInstalled, !isRetry {
+                return .unavailable
+            }
+            return LegacyPrivilegedHelperService.isInstalled ? helperUnavailableError() : legacyNeedsInstallError()
+        }
 
-    private func unsupported(_ feature: String) -> EasyTierCoreError {
-        .operationFailed("\(feature) is not available through the privileged helper with EasyTier Core v2.6.4 FFI.")
+        let status = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName).status
+        if status == .enabled, !isRetry {
+            return .unavailable
+        }
+        return status == .enabled ? helperUnavailableError() : statusError(status)
     }
 
     private func ensureHelperIsEnabled() throws {

@@ -1725,15 +1725,12 @@ private struct RuntimeIntentConflictBanner: View {
     var keepPendingAction: () -> Void
 
     private var title: String {
-        switch intent.kind {
-        case .hostname:
-            "Hostname change conflict"
-        }
+        "Hostname change conflict"
     }
 
     private var detail: String {
         let target = intent.target.recentHostname ?? intent.target.instanceID ?? intent.target.peerID ?? intent.target.networkName
-        let desired = intent.desired.hostname ?? "saved value"
+        let desired = intent.desiredHostname
         return "\(target) changed elsewhere. Saved value: \(desired)"
     }
 

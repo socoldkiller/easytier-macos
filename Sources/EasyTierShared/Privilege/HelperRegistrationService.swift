@@ -10,7 +10,6 @@ public final class HelperRegistrationService {
     public private(set) var detail: String = ""
     public private(set) var isBusy = false
 
-    private let service: SMAppService
     private let backend: Backend
 
     public enum State: Equatable, Sendable {
@@ -24,13 +23,11 @@ public final class HelperRegistrationService {
 
     public init() {
         let service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
-        self.service = service
         self.backend = Self.liveBackend(service: service)
         Task { await refreshAsync() }
     }
 
     init(backend: Backend, refreshOnInit: Bool = true) {
-        self.service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
         self.backend = backend
         if refreshOnInit {
             Task { await refreshAsync() }

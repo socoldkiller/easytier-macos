@@ -46,6 +46,49 @@ private actor ThrowingRPCTransport: EasyTierRPCTransport {
     }
 }
 
+private actor SpyCoreClient: EasyTierCoreClient {
+    struct RPCCall: Equatable, Sendable {
+        var clientID: String
+        var url: URL
+        var service: String
+        var method: String
+        var domain: String?
+        var payload: String
+    }
+
+    private var rpcCalls: [RPCCall] = []
+
+    func validate(toml _: String) async throws {}
+    func run(toml _: String) async throws {}
+    func stop(instanceNames _: [String]) async throws {}
+    func retain(instanceNames _: [String]) async throws {}
+    func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] { [:] }
+    func configureRPCPortal(_: String?, whitelist _: [String]?) async throws {}
+
+    func callJSONRPC(
+        clientID: String,
+        url: URL,
+        service: String,
+        method: String,
+        domain: String?,
+        payload: String
+    ) async throws -> String {
+        rpcCalls.append(RPCCall(
+            clientID: clientID,
+            url: url,
+            service: service,
+            method: method,
+            domain: domain,
+            payload: payload
+        ))
+        return #"{"ok":true}"#
+    }
+
+    func allRPCCalls() -> [RPCCall] {
+        rpcCalls
+    }
+}
+
 @Test func remoteClientForwardsGenericRPCRequest() async throws {
     let transport = SpyRPCTransport(response: #"{"ok":1}"#)
     let client = EasyTierRemoteRPCClient(transport: transport)
@@ -55,6 +98,26 @@ private actor ThrowingRPCTransport: EasyTierRPCTransport {
 
     #expect(response == #"{"ok":1}"#)
     #expect(await transport.firstCall() == request)
+}
+
+@Test func coreRPCTransportForwardsURLAndUsesOneStableClientID() async throws {
+    let core = SpyCoreClient()
+    let url = try #require(URL(string: "tcp://127.0.0.1:15888"))
+    let transport = EasyTierCoreRPCTransport(client: core, rpcURL: url)
+    let request = EasyTierRPCRequest(service: "svc", method: "method", domain: "domain", payload: #"{"x":1}"#)
+
+    let response = try await transport.call(request)
+    let calls = await core.allRPCCalls()
+
+    #expect(response == #"{"ok":true}"#)
+    #expect(calls.count == 1)
+    #expect(calls.first?.url == url)
+    #expect(calls.first?.clientID == transport.clientID)
+    #expect(calls.first?.clientID.hasPrefix("rpc-") == true)
+    #expect(calls.first?.service == request.service)
+    #expect(calls.first?.method == request.method)
+    #expect(calls.first?.domain == request.domain)
+    #expect(calls.first?.payload == request.payload)
 }
 
 @Test func patchHostnameUsesRuntimePatchDirectly() async throws {
@@ -172,29 +235,6 @@ private actor ThrowingRPCTransport: EasyTierRPCTransport {
     #expect(id?["part2"] as? Int == 0xbbbbcccc)
     #expect(id?["part3"] as? Int == 0xddddeeee)
     #expect(id?["part4"] as? Int == 0xeeeeeeee)
-}
-
-@Test func runNetworkInstancePayloadStillBuildsPersistentReloadPayload() async throws {
-    let response = #"{"config":{"instance_id":"11111111-2222-3333-4444-555555555555","network_name":"office","hostname":"old-host","peer_urls":["tcp://10.0.0.1:11010"]}}"#
-    let payload = try EasyTierRemoteRPCClient.runNetworkInstancePayload(
-        instanceID: "11111111-2222-3333-4444-555555555555",
-        getConfigResponse: response
-    ) { config in
-        config["hostname"] = "new-host"
-    }
-
-    let object = try rpcPayloadObject(payload)
-    #expect(object["overwrite"] as? Bool == true)
-    #expect(object["source"] as? Int == 1)
-    let config = object["config"] as? [String: Any]
-    #expect(config?["hostname"] as? String == "new-host")
-    #expect(config?["network_name"] as? String == "office")
-    #expect(config?["peer_urls"] as? [String] == ["tcp://10.0.0.1:11010"])
-    let id = object["inst_id"] as? [String: Any]
-    #expect(id?["part1"] as? Int == 0x11111111)
-    #expect(id?["part2"] as? Int == 0x22223333)
-    #expect(id?["part3"] as? Int == 0x44445555)
-    #expect(id?["part4"] as? Int == 0x55555555)
 }
 
 @Test func patchPortForwardsUsesRuntimePatchDirectly() async throws {

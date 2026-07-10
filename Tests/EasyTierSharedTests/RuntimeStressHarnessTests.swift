@@ -148,27 +148,6 @@ import Testing
 }
 
 @MainActor
-@Test func isConfigServerConnectedStableWhenUnchanged() async {
-    let profile = RuntimeStressProfile(instanceCount: 1, peersPerInstance: 3, iterations: 30)
-    let client = StableConfigServerClient(profile: profile)
-    let store = EasyTierAppStore(client: client)
-    RuntimeStressHarness.seed(store, profile: profile)
-    store.mode = .default
-    store.resetWriteCounters()
-
-    let result = await RuntimeStressHarness.runCompressedPollingLoop(
-        store: store,
-        client: client,
-        profile: profile
-    )
-
-    #expect(
-        result.isConfigServerConnectedWrites <= 1,
-        "isConfigServerConnected should only publish when its value changes, got \(result.isConfigServerConnectedWrites)/\(profile.iterations)."
-    )
-}
-
-@MainActor
 @Test func instancesNotReassignedWhenOnlyStatsChange() async {
     let profile = RuntimeStressProfile(instanceCount: 1, peersPerInstance: 5, iterations: 50)
     let client = RuntimeStressClient(profile: profile)
@@ -227,17 +206,16 @@ private struct RuntimeStressResult: Sendable {
     var runtimeDetailsWrites: Int
     var instancesWrites: Int
     var trafficSamplesWrites: Int
-    var isConfigServerConnectedWrites: Int
 }
 
 private enum RuntimeStressHarness {
     @MainActor
     static func seed(_ store: EasyTierAppStore, profile: RuntimeStressProfile) {
         store.configs = (0..<profile.instanceCount).map { index in
-            StoredNetworkConfig(config: NetworkConfig(
+            NetworkConfig(
                 instance_id: profile.instanceID(for: index),
                 network_name: profile.networkName(for: index)
-            ))
+            )
         }
         store.selectedConfigID = store.configs.first?.id
         store.selectedTab = .status
@@ -262,14 +240,13 @@ private enum RuntimeStressHarness {
             elapsedSeconds: Date().timeIntervalSince(startedAt),
             instanceCount: store.instances.count,
             selectedMemberCount: store.selectedMemberStatuses.count,
-            selectedTrafficSampleCount: store.selectedTrafficSamples.count,
+            selectedTrafficSampleCount: store.selectedTrafficSnapshot.samples.count,
             selectedTxBytes: store.selectedMemberStatuses.reduce(0) { $0 + $1.txBytes },
             selectedRxBytes: store.selectedMemberStatuses.reduce(0) { $0 + $1.rxBytes },
             collectCount: client.collectCount,
             runtimeDetailsWrites: store.runtimeDetailsWriteCount,
             instancesWrites: store.instancesWriteCount,
-            trafficSamplesWrites: store.trafficSamplesByInstanceWriteCount,
-            isConfigServerConnectedWrites: store.isConfigServerConnectedWriteCount
+            trafficSamplesWrites: store.trafficSamplesByInstanceWriteCount
         )
     }
 }
@@ -294,12 +271,10 @@ private final class RuntimeStressClient: EasyTierCoreClient, @unchecked Sendable
         lock.withLock { tick }
     }
 
-    func version() async throws -> String { "stress" }
     func validate(toml _: String) async throws {}
     func run(toml _: String) async throws {}
     func stop(instanceNames _: [String]) async throws {}
     func retain(instanceNames _: [String]) async throws {}
-    func listInstances() async throws -> [NetworkInstance] { [] }
 
     func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] {
         let nextTick = lock.withLock {
@@ -316,15 +291,9 @@ private final class RuntimeStressClient: EasyTierCoreClient, @unchecked Sendable
         if rpcPortal != nil { throw EasyTierCoreError.operationFailed("stress client does not expose RPC portal") }
     }
 
-    func callJSONRPC(service _: String, method _: String, domain _: String?, payload _: String) async throws -> String {
+    func callJSONRPC(clientID _: String, url _: URL, service _: String, method _: String, domain _: String?, payload _: String) async throws -> String {
         #"{"ok":true}"#
     }
-
-    func connectRPCClient(clientID _: String, url _: URL) async throws {}
-    func disconnectRPCClient(clientID _: String) async throws {}
-    func startConfigServerClient(url _: URL) async throws {}
-    func stopConfigServerClient() async throws {}
-    func isConfigServerClientConnected() async throws -> Bool { true }
 
     private func networkInfo(instanceIndex: Int, tick: Int) -> NetworkInstanceRunningInfo {
         NetworkInstanceRunningInfo(
@@ -415,12 +384,10 @@ private class StaticRuntimeClient: EasyTierCoreClient, @unchecked Sendable {
         lock.withLock { tick }
     }
 
-    func version() async throws -> String { "static" }
     func validate(toml _: String) async throws {}
     func run(toml _: String) async throws {}
     func stop(instanceNames _: [String]) async throws {}
     func retain(instanceNames _: [String]) async throws {}
-    func listInstances() async throws -> [NetworkInstance] { [] }
 
     func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] {
         lock.withLock { tick += 1 }
@@ -431,15 +398,9 @@ private class StaticRuntimeClient: EasyTierCoreClient, @unchecked Sendable {
         if rpcPortal != nil { throw EasyTierCoreError.operationFailed("static client does not expose RPC portal") }
     }
 
-    func callJSONRPC(service _: String, method _: String, domain _: String?, payload _: String) async throws -> String {
+    func callJSONRPC(clientID _: String, url _: URL, service _: String, method _: String, domain _: String?, payload _: String) async throws -> String {
         #"{"ok":true}"#
     }
-
-    func connectRPCClient(clientID _: String, url _: URL) async throws {}
-    func disconnectRPCClient(clientID _: String) async throws {}
-    func startConfigServerClient(url _: URL) async throws {}
-    func stopConfigServerClient() async throws {}
-    func isConfigServerClientConnected() async throws -> Bool { true }
 
     private static func makeInfo(profile: RuntimeStressProfile, instanceIndex: Int) -> NetworkInstanceRunningInfo {
         NetworkInstanceRunningInfo(
@@ -500,8 +461,4 @@ private class StaticRuntimeClient: EasyTierCoreClient, @unchecked Sendable {
             instance_id: profile.instanceID(for: instanceIndex)
         )
     }
-}
-
-private final class StableConfigServerClient: StaticRuntimeClient, @unchecked Sendable {
-    override func isConfigServerClientConnected() async throws -> Bool { true }
 }

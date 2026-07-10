@@ -96,12 +96,9 @@
 
 EasyTier Core 的运行输出和 App 自身的操作记录都收在一个日志面板里。可以复制、搜索，出问题时起码知道从哪看起。
 
-### App 模式
+### 远程管理
 
-- **Normal**：本机启动 EasyTier 实例，自建网络
-- **Config Server**：从远端配置服务器拉取网络配置，便于统一管理多台设备
-
-> 此外，在设备表里双击任意远端节点可改其主机名，改名通过 RPC 实时同步到对端——这是 per-peer 的远程管理能力，不作为独立 App 模式存在。
+在设备表里双击任意远端节点可改其主机名，改名通过 RPC 实时同步到对端。
 
 ### 特权 Helper
 
@@ -120,30 +117,29 @@ macOS 15 及以上。
 
 ## 构建
 
-需要 Xcode 16+（带 Swift 6）、Rust 工具链（nightly）。
+需要 Xcode 16+（带 Swift 6）、Rust 1.95+ stable 工具链和 Protocol Buffers 编译器（`protoc`）。
 
 ```bash
 git clone --recurse-submodules https://github.com/socoldkiller/easytier-macos.git
 cd easytier-macos
 
-# 编译 Rust FFI 静态库
-make build-ffi
-
-# 编译 Swift App
-make build
-
-# 打包 DMG
-make dmg
-
-# 跑测试
-swift test
-cd Rust/EasyTierGuiFFI && cargo test
+make bootstrap   # 检查工具链
+make ffi         # 编译当前 Mac 架构的 Rust FFI 静态库
+make app-debug   # 打包 ad-hoc debug App
+make dmg-adhoc   # 打包单个 ad-hoc DMG（Helper 不可安装）
+make test        # 运行 Swift 和 Rust 测试
 ```
 
 产物路径：
-- App bundle：`.build/debug/EasyTierMac.app`
-- FFI 库：`Rust/EasyTierGuiFFI/target/`
-- DMG：`easytier-mac.dmg`
+- App bundle：`.build/artifacts/EasyTier.app`
+- FFI 库：`Vendor/Frameworks/static/libeasytier_ffi.a`
+- DMG：`.build/artifacts/EasyTier-macOS-$(uname -m).dmg`
+
+Developer ID 签名构建：
+
+```bash
+make dmg-signed CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)"
+```
 
 ## 架构
 

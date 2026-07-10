@@ -1,7 +1,7 @@
 use std::{
     ffi::{CStr, CString, c_char, c_int},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    sync::{Arc, Mutex},
+    sync::{Arc, LazyLock, Mutex},
     time::{Duration, Instant},
 };
 
@@ -12,11 +12,7 @@ use easytier::{
     proto::{
         api::{
             config::{ConfigRpc, ConfigRpcClientFactory},
-            instance::{
-                AclManageRpcClientFactory, PeerManageRpc, PeerManageRpcClientFactory,
-                PortForwardManageRpc, PortForwardManageRpcClientFactory, StatsRpcClientFactory,
-            },
-            manage::WebClientServiceClientFactory,
+            instance::{PortForwardManageRpc, PortForwardManageRpcClientFactory},
         },
         rpc_impl::standalone::StandAloneClient,
         rpc_types::controller::BaseController,
@@ -24,7 +20,6 @@ use easytier::{
     rpc_service::ApiRpcServer,
     tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener},
 };
-use once_cell::sync::Lazy;
 use serde_json::Value;
 use tokio::{
     runtime::Runtime,
@@ -35,17 +30,18 @@ use url::{Host, Url};
 
 type RpcPortalServer = ApiRpcServer<TcpTunnelListener>;
 
-static INSTANCE_NAME_ID_MAP: Lazy<DashMap<String, uuid::Uuid>> = Lazy::new(DashMap::new);
-static INSTANCE_MANAGER: Lazy<Arc<NetworkInstanceManager>> =
-    Lazy::new(|| Arc::new(NetworkInstanceManager::new()));
-static RPC_CLIENTS: Lazy<DashMap<String, Arc<RpcEndpoint>>> = Lazy::new(DashMap::new);
-static RPC_PORTAL_SERVER: Lazy<Mutex<Option<RpcPortalServer>>> = Lazy::new(|| Mutex::new(None));
-static RPC_RUNTIME: Lazy<Runtime> =
-    Lazy::new(|| Runtime::new().expect("failed to create EasyTier RPC runtime"));
-static RPC_TOTAL_LIMIT: Lazy<Arc<Semaphore>> =
-    Lazy::new(|| Arc::new(Semaphore::new(RPC_MAX_CONCURRENT_TOTAL)));
-static RPC_CONNECTING_LIMIT: Lazy<Arc<Semaphore>> =
-    Lazy::new(|| Arc::new(Semaphore::new(RPC_MAX_CONNECTING_TOTAL)));
+static INSTANCE_NAME_ID_MAP: LazyLock<DashMap<String, uuid::Uuid>> = LazyLock::new(DashMap::new);
+static INSTANCE_MANAGER: LazyLock<Arc<NetworkInstanceManager>> =
+    LazyLock::new(|| Arc::new(NetworkInstanceManager::new()));
+static RPC_CLIENTS: LazyLock<DashMap<String, Arc<RpcEndpoint>>> = LazyLock::new(DashMap::new);
+static RPC_PORTAL_SERVER: LazyLock<Mutex<Option<RpcPortalServer>>> =
+    LazyLock::new(|| Mutex::new(None));
+static RPC_RUNTIME: LazyLock<Runtime> =
+    LazyLock::new(|| Runtime::new().expect("failed to create EasyTier RPC runtime"));
+static RPC_TOTAL_LIMIT: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(RPC_MAX_CONCURRENT_TOTAL)));
+static RPC_CONNECTING_LIMIT: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(RPC_MAX_CONNECTING_TOTAL)));
 const RPC_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const RPC_CALL_TIMEOUT: Duration = Duration::from_secs(8);
 const RPC_QUEUE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -68,31 +64,6 @@ struct RpcEndpoint {
 struct RpcEndpointState {
     cooldown_until: Option<Instant>,
     last_error: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RpcFailureKind {
-    ConnectUnavailable,
-    ConnectTimeout,
-    QueueFull,
-    RequestTimeout,
-    RpcError,
-}
-
-#[derive(Debug)]
-struct RpcCallError {
-    #[allow(dead_code)]
-    kind: RpcFailureKind,
-    message: String,
-}
-
-impl RpcCallError {
-    fn new(kind: RpcFailureKind, message: impl Into<String>) -> Self {
-        Self {
-            kind,
-            message: message.into(),
-        }
-    }
 }
 
 impl RpcEndpoint {
@@ -164,8 +135,9 @@ pub struct KeyValuePair {
 unsafe fn write_error_out(out_error: *mut *const c_char, message: &str) {
     if !out_error.is_null() {
         let sanitized = message.replace('\0', "\\0");
-        let cstr = CString::new(sanitized.as_bytes())
-            .unwrap_or_else(|_| CString::new("EasyTier FFI error contained an invalid NUL byte").unwrap());
+        let cstr = CString::new(sanitized.as_bytes()).unwrap_or_else(|_| {
+            CString::new("EasyTier FFI error contained an invalid NUL byte").unwrap()
+        });
         // SAFETY: `out_error` was checked for null and points to caller-owned storage.
         unsafe {
             *out_error = cstr.into_raw();
@@ -196,6 +168,39 @@ unsafe fn cstr_arg(ptr: *const c_char, name: &str) -> Result<String, String> {
     cstr.to_str()
         .map(str::to_owned)
         .map_err(|e| format!("{name} must be valid UTF-8: {e}"))
+}
+
+/// Resolve caller-provided instance names to the UUIDs known by the instance manager.
+///
+/// # Safety
+/// When `length > 0`, `inst_names` must point to `length` valid C string pointers.
+unsafe fn instance_names_and_ids(
+    inst_names: *const *const c_char,
+    length: usize,
+) -> Result<(Vec<String>, Vec<uuid::Uuid>), String> {
+    if length == 0 {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    if inst_names.is_null() {
+        return Err("inst_names must not be null when length is greater than zero".to_string());
+    }
+
+    // SAFETY: `inst_names` is checked for null and the caller promises `length` valid entries.
+    let inst_names = unsafe { std::slice::from_raw_parts(inst_names, length) }
+        .iter()
+        .enumerate()
+        .map(|(index, &name)| {
+            // SAFETY: Each entry is a caller-owned C string pointer; null/UTF-8 are checked.
+            unsafe { cstr_arg(name, &format!("inst_names[{index}]")) }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut inst_ids = inst_names
+        .iter()
+        .filter_map(|name| INSTANCE_NAME_ID_MAP.get(name).map(|id| *id))
+        .collect::<Vec<_>>();
+    inst_ids.reverse();
+    Ok((inst_names, inst_ids))
 }
 
 fn write_cstring_out(value: String, out: *mut *const c_char) -> Result<(), String> {
@@ -323,43 +328,8 @@ fn is_allowed_ipv6(addr: Ipv6Addr) -> bool {
 
 fn is_allowed_service_method(service_name: &str, method_name: &str) -> bool {
     match service_name {
-        "api.config.ConfigRpcService" => matches!(
-            method_name,
-            "patch_config" | "PatchConfig" | "get_config" | "GetConfig"
-        ),
-        "api.instance.PeerManageRpcService" => matches!(
-            method_name,
-            "list_peer"
-                | "ListPeer"
-                | "list_public_ipv6_info"
-                | "ListPublicIpv6Info"
-                | "list_route"
-                | "ListRoute"
-                | "dump_route"
-                | "DumpRoute"
-                | "list_foreign_network"
-                | "ListForeignNetwork"
-                | "list_global_foreign_network"
-                | "ListGlobalForeignNetwork"
-                | "show_node_info"
-                | "ShowNodeInfo"
-                | "get_foreign_network_summary"
-                | "GetForeignNetworkSummary"
-        ),
-        "api.instance.StatsRpcService" => matches!(
-            method_name,
-            "get_stats" | "GetStats" | "get_prometheus_stats" | "GetPrometheusStats"
-        ),
-        "api.instance.AclManageRpcService" => matches!(
-            method_name,
-            "get_acl_stats" | "GetAclStats" | "get_whitelist" | "GetWhitelist"
-        ),
-        "api.instance.PortForwardManageRpcService" => {
-            matches!(method_name, "list_port_forward" | "ListPortForward")
-        }
-        "api.manage.WebClientService" => {
-            matches!(method_name, "run_network_instance" | "RunNetworkInstance")
-        }
+        "api.config.ConfigRpcService" => matches!(method_name, "patch_config" | "get_config"),
+        "api.instance.PortForwardManageRpcService" => method_name == "list_port_forward",
         _ => false,
     }
 }
@@ -368,21 +338,13 @@ async fn acquire_rpc_permit(
     semaphore: Arc<Semaphore>,
     label: &str,
     wait: Duration,
-) -> Result<OwnedSemaphorePermit, RpcCallError> {
+) -> Result<OwnedSemaphorePermit, String> {
     timeout(wait, semaphore.acquire_owned())
         .await
         .map_err(|_| {
-            RpcCallError::new(
-                RpcFailureKind::QueueFull,
-                format!("EasyTier RPC is busy waiting for {label} capacity. Try again shortly."),
-            )
+            format!("EasyTier RPC is busy waiting for {label} capacity. Try again shortly.")
         })?
-        .map_err(|_| {
-            RpcCallError::new(
-                RpcFailureKind::QueueFull,
-                format!("EasyTier RPC {label} limiter is closed."),
-            )
-        })
+        .map_err(|_| format!("EasyTier RPC {label} limiter is closed."))
 }
 
 async fn call_rpc_by_service(
@@ -391,10 +353,8 @@ async fn call_rpc_by_service(
     method_name: &str,
     domain: String,
     payload: Value,
-) -> Result<Value, RpcCallError> {
-    endpoint
-        .check_cooldown()
-        .map_err(|e| RpcCallError::new(RpcFailureKind::ConnectUnavailable, e))?;
+) -> Result<Value, String> {
+    endpoint.check_cooldown()?;
     let _global_permit =
         acquire_rpc_permit(RPC_TOTAL_LIMIT.clone(), "global RPC", RPC_QUEUE_TIMEOUT).await?;
     let _endpoint_permit =
@@ -428,10 +388,7 @@ async fn call_rpc_by_service(
                     drop(connect_permit);
                     let message = format!("Remote EasyTier RPC endpoint is unavailable: {e:#}");
                     endpoint.set_connect_cooldown(message.clone());
-                    return Err(RpcCallError::new(
-                        RpcFailureKind::ConnectUnavailable,
-                        message,
-                    ));
+                    return Err(message);
                 }
                 Err(_) => {
                     drop(connect_permit);
@@ -440,7 +397,7 @@ async fn call_rpc_by_service(
                         RPC_CONNECT_TIMEOUT.as_secs()
                     );
                     endpoint.set_connect_cooldown(message.clone());
-                    return Err(RpcCallError::new(RpcFailureKind::ConnectTimeout, message));
+                    return Err(message);
                 }
             };
 
@@ -451,16 +408,10 @@ async fn call_rpc_by_service(
             .await
             {
                 Ok(Ok(value)) => Ok(value),
-                Ok(Err(e)) => Err(RpcCallError::new(
-                    RpcFailureKind::RpcError,
-                    format!("RPC Error: {e:?}"),
-                )),
-                Err(_) => Err(RpcCallError::new(
-                    RpcFailureKind::RequestTimeout,
-                    format!(
-                        "EasyTier RPC request timed out after {} seconds.",
-                        RPC_CALL_TIMEOUT.as_secs()
-                    ),
+                Ok(Err(e)) => Err(format!("RPC Error: {e:?}")),
+                Err(_) => Err(format!(
+                    "EasyTier RPC request timed out after {} seconds.",
+                    RPC_CALL_TIMEOUT.as_secs()
                 )),
             }
         }};
@@ -470,30 +421,17 @@ async fn call_rpc_by_service(
         "api.config.ConfigRpcService" => {
             call_service!(ConfigRpcClientFactory<BaseController>)
         }
-        "api.instance.PeerManageRpcService" => {
-            call_service!(PeerManageRpcClientFactory<BaseController>)
-        }
-        "api.instance.StatsRpcService" => {
-            call_service!(StatsRpcClientFactory<BaseController>)
-        }
-        "api.instance.AclManageRpcService" => {
-            call_service!(AclManageRpcClientFactory<BaseController>)
-        }
         "api.instance.PortForwardManageRpcService" => {
             call_service!(PortForwardManageRpcClientFactory<BaseController>)
         }
-        "api.manage.WebClientService" => {
-            call_service!(WebClientServiceClientFactory<BaseController>)
-        }
-        _ => Err(RpcCallError::new(
-            RpcFailureKind::RpcError,
-            format!("Unknown service: {service_name}"),
-        )),
+        _ => Err(format!("Unknown service: {service_name}")),
     }
 }
 
+/// # Safety
+/// `s` must be null or a pointer returned by this library from `CString::into_raw`.
 #[unsafe(no_mangle)]
-pub extern "C" fn free_string(s: *const c_char) {
+pub unsafe extern "C" fn free_string(s: *const c_char) {
     if s.is_null() {
         return;
     }
@@ -546,8 +484,11 @@ pub unsafe extern "C" fn run_network_instance(
 
             let instance_id = RPC_RUNTIME
                 .block_on(async {
-                    INSTANCE_MANAGER
-                        .run_network_instance(cfg, true, ConfigFileControl::STATIC_CONFIG)
+                    INSTANCE_MANAGER.run_network_instance(
+                        cfg,
+                        true,
+                        ConfigFileControl::STATIC_CONFIG,
+                    )
                 })
                 .map_err(|e| format!("failed to start instance: {e}"))?;
 
@@ -569,32 +510,15 @@ pub unsafe extern "C" fn retain_network_instance(
     // SAFETY: `out_error` is caller-owned storage or null.
     unsafe {
         ffi_result_with_error(out_error, || {
-            if length == 0 {
+            // SAFETY: The C ABI caller owns the array and C string pointer validity.
+            let (inst_names, inst_ids) = instance_names_and_ids(inst_names, length)?;
+            if inst_names.is_empty() {
                 INSTANCE_MANAGER
                     .retain_network_instance(Vec::new())
                     .map_err(|e| format!("failed to retain instances: {e}"))?;
                 INSTANCE_NAME_ID_MAP.clear();
                 return Ok(());
             }
-
-            if inst_names.is_null() {
-                return Err("inst_names must not be null when length is greater than zero".to_string());
-            }
-            // SAFETY: `inst_names` is checked for null and caller promises `length` valid entries.
-            let inst_names = std::slice::from_raw_parts(inst_names, length)
-                .iter()
-                .enumerate()
-                .map(|(index, &name)| {
-                    // SAFETY: Each entry is a caller-owned C string pointer; null/UTF-8 are checked.
-                    cstr_arg(name, &format!("inst_names[{index}]"))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-
-            let mut inst_ids: Vec<uuid::Uuid> = inst_names
-                .iter()
-                .filter_map(|name| INSTANCE_NAME_ID_MAP.get(name).map(|id| *id))
-                .collect();
-            inst_ids.reverse();
 
             INSTANCE_MANAGER
                 .retain_network_instance(inst_ids)
@@ -617,27 +541,11 @@ pub unsafe extern "C" fn stop_network_instance(
     // SAFETY: `out_error` is caller-owned storage or null.
     unsafe {
         ffi_result_with_error(out_error, || {
-            if length == 0 {
+            // SAFETY: The C ABI caller owns the array and C string pointer validity.
+            let (inst_names, inst_ids) = instance_names_and_ids(inst_names, length)?;
+            if inst_names.is_empty() {
                 return Ok(());
             }
-            if inst_names.is_null() {
-                return Err("inst_names must not be null when length is greater than zero".to_string());
-            }
-            // SAFETY: `inst_names` is checked for null and caller promises `length` valid entries.
-            let inst_names = std::slice::from_raw_parts(inst_names, length)
-                .iter()
-                .enumerate()
-                .map(|(index, &name)| {
-                    // SAFETY: Each entry is a caller-owned C string pointer; null/UTF-8 are checked.
-                    cstr_arg(name, &format!("inst_names[{index}]"))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-
-            let mut inst_ids: Vec<uuid::Uuid> = inst_names
-                .iter()
-                .filter_map(|name| INSTANCE_NAME_ID_MAP.get(name).map(|id| *id))
-                .collect();
-            inst_ids.reverse();
 
             INSTANCE_MANAGER
                 .delete_network_instance(inst_ids)
@@ -672,9 +580,9 @@ pub unsafe extern "C" fn collect_network_infos(
             .block_on(INSTANCE_MANAGER.collect_network_infos())
             .map_err(|e| format!("failed to collect network infos: {e}"))?;
 
-        let mut index = 0;
+        let mut pending_pairs = Vec::with_capacity(max_length.min(collected_infos.len()));
         for (instance_id, value) in collected_infos.iter() {
-            if index >= max_length {
+            if pending_pairs.len() >= max_length {
                 break;
             }
             let Some(key) = INSTANCE_MANAGER.get_instance_name(instance_id) else {
@@ -686,23 +594,30 @@ pub unsafe extern "C" fn collect_network_infos(
             let mut json_value = serde_json::to_value(value)
                 .map_err(|e| format!("failed to serialize instance info: {e}"))?;
             if let Some(obj) = json_value.as_object_mut() {
-                obj.insert("instance_id".to_string(), serde_json::Value::String(instance_id.to_string()));
+                obj.insert(
+                    "instance_id".to_string(),
+                    serde_json::Value::String(instance_id.to_string()),
+                );
             }
             let value = serde_json::to_string(&json_value)
                 .map_err(|e| format!("failed to serialize instance info: {e}"))?;
 
-            infos[index] = KeyValuePair {
-                key: CString::new(key)
-                    .map_err(|e| format!("instance name contained a NUL byte: {e}"))?
-                    .into_raw(),
-                value: CString::new(value)
-                    .map_err(|e| format!("instance info contained a NUL byte: {e}"))?
-                    .into_raw(),
-            };
-            index += 1;
+            let key = CString::new(key)
+                .map_err(|e| format!("instance name contained a NUL byte: {e}"))?;
+            let value = CString::new(value)
+                .map_err(|e| format!("instance info contained a NUL byte: {e}"))?;
+            pending_pairs.push((key, value));
         }
 
-        Ok(index as c_int)
+        let count = pending_pairs.len();
+        for (slot, (key, value)) in infos.iter_mut().zip(pending_pairs) {
+            *slot = KeyValuePair {
+                key: key.into_raw(),
+                value: value.into_raw(),
+            };
+        }
+
+        Ok(count as c_int)
     };
 
     match result() {
@@ -749,7 +664,8 @@ pub unsafe extern "C" fn configure_rpc_portal(
 
             if whitelist_count > 0 && whitelist.is_null() {
                 return Err(
-                    "whitelist must not be null when whitelist_count is greater than zero".to_string(),
+                    "whitelist must not be null when whitelist_count is greater than zero"
+                        .to_string(),
                 );
             }
             let whitelist = if whitelist_count == 0 {
@@ -763,15 +679,18 @@ pub unsafe extern "C" fn configure_rpc_portal(
                         // SAFETY: Each entry is a caller-owned C string pointer; null/UTF-8 are checked.
                         cstr_arg(value, &format!("whitelist[{index}]"))?
                             .parse()
-                            .map_err(|e| format!("invalid RPC portal whitelist entry #{index}: {e}"))
+                            .map_err(|e| {
+                                format!("invalid RPC portal whitelist entry #{index}: {e}")
+                            })
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 Some(values)
             };
 
             let server = RPC_RUNTIME.block_on(async {
-                let server = ApiRpcServer::new(Some(listen_addr), whitelist, INSTANCE_MANAGER.clone())
-                    .map_err(|e| format!("failed to create RPC portal: {e}"))?;
+                let server =
+                    ApiRpcServer::new(Some(listen_addr), whitelist, INSTANCE_MANAGER.clone())
+                        .map_err(|e| format!("failed to create RPC portal: {e}"))?;
                 server
                     .serve()
                     .await
@@ -818,29 +737,6 @@ fn register_rpc_client(client_id: String, url_string: String) -> Result<(), Stri
 
     RPC_CLIENTS.insert(client_id, Arc::new(RpcEndpoint::new(url_string, url)));
     Ok(())
-}
-
-/// # Safety
-/// `client_id` must be a valid NUL-terminated C string pointer.
-/// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn disconnect_rpc_client(
-    client_id: *const c_char,
-    out_error: *mut *const c_char,
-) -> c_int {
-    // SAFETY: `out_error` is caller-owned storage or null.
-    unsafe {
-        ffi_result_with_error(out_error, || {
-            // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
-            let client_id = cstr_arg(client_id, "client_id")?;
-            disconnect_rpc_client_inner(&client_id);
-            Ok(())
-        })
-    }
-}
-
-fn disconnect_rpc_client_inner(client_id: &str) {
-    RPC_CLIENTS.remove(client_id);
 }
 
 /// # Safety
@@ -907,17 +803,14 @@ fn call_json_rpc_inner(
         .get(&client_id)
         .map(|entry| Arc::clone(entry.value()))
         .ok_or_else(|| format!("RPC client is not connected: {client_id}"))?;
-    endpoint.check_cooldown()?;
 
-    let response = RPC_RUNTIME
-        .block_on(call_rpc_by_service(
-            endpoint,
-            &service_name,
-            &method_name,
-            domain,
-            payload,
-        ))
-        .map_err(|e| e.message)?;
+    let response = RPC_RUNTIME.block_on(call_rpc_by_service(
+        endpoint,
+        &service_name,
+        &method_name,
+        domain,
+        payload,
+    ))?;
     serde_json::to_string(&response).map_err(|e| format!("failed to serialize RPC response: {e}"))
 }
 
@@ -925,9 +818,7 @@ fn call_json_rpc_inner(
 mod tests {
     use super::*;
     use easytier::proto::api::{
-        config::PatchConfigRequest,
-        instance::{ListPeerRequest, instance_identifier::Selector},
-        manage::RunNetworkInstanceRequest,
+        config::PatchConfigRequest, instance::instance_identifier::Selector,
     };
 
     #[test]
@@ -957,19 +848,19 @@ mod tests {
         ));
         assert!(is_allowed_service_method(
             "api.config.ConfigRpcService",
-            "GetConfig"
+            "get_config"
         ));
         assert!(is_allowed_service_method(
+            "api.instance.PortForwardManageRpcService",
+            "list_port_forward"
+        ));
+        assert!(!is_allowed_service_method(
             "api.instance.PeerManageRpcService",
             "list_peer"
         ));
-        assert!(is_allowed_service_method(
-            "api.manage.WebClientService",
-            "run_network_instance"
-        ));
         assert!(!is_allowed_service_method(
-            "api.manage.WebClientService",
-            "list_network_instance"
+            "api.config.ConfigRpcService",
+            "GetConfig"
         ));
         assert!(!is_allowed_service_method(
             "api.config.ConfigRpcService",
@@ -1020,7 +911,7 @@ mod tests {
             state.cooldown_until = Some(Instant::now() - Duration::from_secs(1));
         }
         assert!(register_rpc_client(client_id.clone(), url).is_ok());
-        disconnect_rpc_client_inner(&client_id);
+        RPC_CLIENTS.remove(&client_id);
     }
 
     #[test]
@@ -1034,7 +925,7 @@ mod tests {
                 .await
                 .unwrap_err();
 
-            assert_eq!(error.kind, RpcFailureKind::QueueFull);
+            assert!(error.contains("busy waiting for endpoint RPC capacity"));
         });
     }
 
@@ -1062,40 +953,20 @@ mod tests {
         assert!(!error.is_null());
         let message = unsafe { CStr::from_ptr(error) }.to_string_lossy();
         assert!(message.contains("cfg_str must not be null"));
-        free_string(error);
+        unsafe { free_string(error) };
 
         // Success path should clear the out-error slot.
         let valid_cfg = "instance_name = \"t\"\nnetwork_name = \"n\"\n";
         let mut error2: *const c_char = std::ptr::null();
         // SAFETY: `valid_cfg` is a valid NUL-terminated C string; `error2` is valid storage.
-        let result2 = unsafe {
-            parse_config(
-                CString::new(valid_cfg).unwrap().as_ptr(),
-                &mut error2,
-            )
-        };
+        let result2 =
+            unsafe { parse_config(CString::new(valid_cfg).unwrap().as_ptr(), &mut error2) };
         assert_eq!(result2, 0);
         assert!(error2.is_null());
     }
 
     #[test]
-    fn rpc_payload_shape_matches_easytier_generated_types() {
-        let payload = serde_json::json!({
-            "instance": {
-                "selector": {
-                    "Id": {
-                        "part1": 0x11111111u32,
-                        "part2": 0x22222222u32,
-                        "part3": 0x33333333u32,
-                        "part4": 0x44444444u32
-                    }
-                }
-            }
-        });
-        let request: ListPeerRequest = serde_json::from_value(payload).unwrap();
-        let selector = request.instance.unwrap().selector.unwrap();
-        assert!(matches!(selector, Selector::Id(_)));
-
+    fn patch_config_payload_shape_matches_easytier_generated_type() {
         let payload = serde_json::json!({
             "patch": {
                 "hostname": "edge-mac",
@@ -1121,26 +992,5 @@ mod tests {
         assert_eq!(request.patch.unwrap().hostname.as_deref(), Some("edge-mac"));
         let selector = request.instance.unwrap().selector.unwrap();
         assert!(matches!(selector, Selector::Id(_)));
-
-        let payload = serde_json::json!({
-            "inst_id": {
-                "part1": 0x11111111u32,
-                "part2": 0x22222222u32,
-                "part3": 0x33333333u32,
-                "part4": 0x44444444u32
-            },
-            "config": {
-                "hostname": "edge-mac",
-                "network_name": "office"
-            },
-            "overwrite": true,
-            "source": 1
-        });
-        let request: RunNetworkInstanceRequest = serde_json::from_value(payload).unwrap();
-        assert_eq!(
-            request.config.unwrap().hostname.as_deref(),
-            Some("edge-mac")
-        );
-        assert!(request.overwrite);
     }
 }

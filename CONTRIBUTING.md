@@ -4,37 +4,33 @@ Thanks for considering a contribution! This file is a short orientation for the 
 
 ## Build
 
-Requires **Xcode 16+** (Swift 6) and the **Rust nightly** toolchain.
+Requires **Xcode 16+** (Swift 6), **Rust 1.95+ stable**, and the Protocol Buffers compiler (`protoc`).
 
 ```bash
 git clone --recurse-submodules https://github.com/socoldkiller/easytier-macos.git
 cd easytier-macos
 
-# Build the Rust FFI static library
-make build-ffi
-
-# Build the Swift app
-make build
-
-# Package as DMG
-make dmg
+make bootstrap   # verify the toolchain
+make ffi         # build the current-architecture Rust FFI archive
+make app-debug   # package an ad-hoc debug app
+make dmg-adhoc   # package a single ad-hoc DMG
 ```
 
 Output paths:
-- App bundle: `.build/debug/EasyTierMac.app`
-- FFI library: `Rust/EasyTierGuiFFI/target/`
-- DMG: `easytier-mac.dmg`
+- App bundle: `.build/artifacts/EasyTier.app`
+- FFI library: `Vendor/Frameworks/static/libeasytier_ffi.a`
+- DMG: `.build/artifacts/EasyTier-macOS-$(uname -m).dmg`
 
 See the `Makefile` for the exact invocations.
 
 ## Test
 
 ```bash
-# Swift Testing suite (shared layer: config codec, RPC payloads, peer subscriptions, updater)
-swift test --configuration release
+make test-swift
+make test-rust
 
-# Rust FFI unit tests
-cd Rust/EasyTierGuiFFI && cargo test
+# Run both suites
+make test
 ```
 
 The Swift tests live under `Tests/EasyTierSharedTests/` and cover the platform-neutral `EasyTierShared` module. The GUI and privileged helper layers do not currently have automated tests — please exercise them manually before submitting a UI or daemon change.
@@ -65,9 +61,9 @@ Packaging/                  Entitlements and packaging metadata
 
 1. Open an issue describing the change before working on a non-trivial PR.
 2. Branch from `main`, keep commits focused.
-3. Make sure `swift test --configuration release` and `cargo test` pass locally.
-4. PRs that touch the privileged helper or the packaging scripts should be tested with a full `make dmg` + `spctl -a -vvv` dry run on your machine.
-5. Don't bump the version number in `Package.swift` or the update manifest yourself — the maintainers will tag the release.
+3. Make sure `make test` passes locally.
+4. PRs that touch the privileged helper or packaging scripts should run `make smoke`; Developer ID release changes also need a `make dmg-signed ...` dry run by a maintainer with signing credentials.
+5. Don't edit release version metadata or the update manifest yourself — the release tag supplies the version.
 
 ## Releasing
 

@@ -1,6 +1,18 @@
 import Darwin
 import Foundation
 
+public struct EasyTierStorageLoadResult: Sendable {
+    public var snapshot: AppSnapshot
+    public var configs: [NetworkConfig]
+    public var recoveryMessage: String?
+
+    public init(snapshot: AppSnapshot, configs: [NetworkConfig], recoveryMessage: String? = nil) {
+        self.snapshot = snapshot
+        self.configs = configs
+        self.recoveryMessage = recoveryMessage
+    }
+}
+
 public struct EasyTierStorage: Sendable {
     public var baseDirectory: URL
 
@@ -12,20 +24,37 @@ public struct EasyTierStorage: Sendable {
         self.baseDirectory = baseDirectory
     }
 
-    public func load() throws -> AppSnapshot {
+    public func load() throws -> EasyTierStorageLoadResult {
         let url = stateURL(in: baseDirectory)
-        if FileManager.default.fileExists(atPath: url.path) {
-            return try loadSnapshot(from: url)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            let state = makeDefaultState()
+            try save(state.snapshot, configs: state.configs)
+            return state
         }
-        let snapshot = AppSnapshot(configs: [StoredNetworkConfig(config: NetworkConfig())], mode: nil, lastSelectedConfigID: nil)
-        try save(snapshot)
-        return snapshot
+
+        let data = try Data(contentsOf: url)
+        let snapshot: AppSnapshot
+        do {
+            snapshot = try decoder.decode(AppSnapshot.self, from: data)
+        } catch {
+            let backupURL = try backUpIncompatibleState(at: url)
+            let state = makeDefaultState()
+            try save(state.snapshot, configs: state.configs)
+            return EasyTierStorageLoadResult(
+                snapshot: state.snapshot,
+                configs: state.configs,
+                recoveryMessage: "Saved state was incompatible and was backed up to \(backupURL.lastPathComponent). Existing TOML files were preserved; re-import them to restore configurations."
+            )
+        }
+
+        let configs = try snapshot.configIDs.map { try loadConfig(id: $0) }
+        return EasyTierStorageLoadResult(snapshot: snapshot, configs: configs)
     }
 
-    public func save(_ snapshot: AppSnapshot) throws {
+    public func save(_ snapshot: AppSnapshot, configs: [NetworkConfig]) throws {
         try FileManager.default.createDirectory(at: baseDirectory, withIntermediateDirectories: true)
-        for stored in snapshot.configs {
-            try saveConfig(stored.config, for: stored)
+        for config in configs {
+            try saveConfig(config)
         }
         let data = try encoder.encode(snapshot)
         let stateURL = stateURL(in: baseDirectory)
@@ -34,25 +63,25 @@ public struct EasyTierStorage: Sendable {
         repairOriginalUserOwnership(for: stateURL)
     }
 
-    public func configURL(for stored: StoredNetworkConfig) -> URL {
-        baseDirectory.appendingPathComponent(stored.tomlPath)
+    public func configURL(forID id: String) -> URL {
+        baseDirectory.appendingPathComponent("configs/\(id).toml")
     }
 
-    public func loadConfig(_ stored: StoredNetworkConfig) throws -> NetworkConfig {
-        let toml = try String(contentsOf: configURL(for: stored), encoding: .utf8)
+    public func loadConfig(id: String) throws -> NetworkConfig {
+        let toml = try String(contentsOf: configURL(forID: id), encoding: .utf8)
         return try NetworkConfigTOMLCodec.decode(toml)
     }
 
-    public func saveConfig(_ config: NetworkConfig, for stored: StoredNetworkConfig) throws {
-        let url = configURL(for: stored)
+    public func saveConfig(_ config: NetworkConfig) throws {
+        let url = configURL(forID: config.instance_id)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try NetworkConfigTOMLCodec.encode(config).write(to: url, atomically: true, encoding: .utf8)
         repairOriginalUserOwnership(for: url.deletingLastPathComponent())
         repairOriginalUserOwnership(for: url)
     }
 
-    public func deleteConfig(_ stored: StoredNetworkConfig) throws {
-        let url = configURL(for: stored)
+    public func deleteConfig(id: String) throws {
+        let url = configURL(forID: id)
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }
@@ -72,13 +101,18 @@ public struct EasyTierStorage: Sendable {
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     }
 
-    private func loadSnapshot(from url: URL) throws -> AppSnapshot {
-        let data = try Data(contentsOf: url)
-        var snapshot = try decoder.decode(AppSnapshot.self, from: data)
-        for index in snapshot.configs.indices {
-            snapshot.configs[index].config = try loadConfig(snapshot.configs[index])
-        }
-        return snapshot
+    private func makeDefaultState() -> EasyTierStorageLoadResult {
+        let config = NetworkConfig()
+        let snapshot = AppSnapshot(configIDs: [config.id], lastSelectedConfigID: config.id)
+        return EasyTierStorageLoadResult(snapshot: snapshot, configs: [config])
+    }
+
+    private func backUpIncompatibleState(at url: URL) throws -> URL {
+        let timestamp = Int(Date().timeIntervalSince1970 * 1_000)
+        let backupURL = baseDirectory.appendingPathComponent("state.incompatible-\(timestamp).json")
+        try FileManager.default.moveItem(at: url, to: backupURL)
+        repairOriginalUserOwnership(for: backupURL)
+        return backupURL
     }
 
     private func stateURL(in directory: URL) -> URL {

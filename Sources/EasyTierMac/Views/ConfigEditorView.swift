@@ -418,7 +418,7 @@ struct ConfigEditorView: View {
         let name = config.network_name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return false }
         return store.configs.contains { other in
-            other.id != config.instance_id && other.config.network_name == name
+            other.id != config.instance_id && other.network_name == name
         }
     }
 
@@ -469,24 +469,20 @@ struct ConfigEditorView: View {
         )
 
         do {
+            let rpcClient = EasyTierRemoteRPCClient(rpcURL: rpcURL)
             if isActive {
-                try await EasyTierRemoteRPCClient.patchPortForwardRemove(
-                    rpcURL: rpcURL,
+                try await rpcClient.patchPortForwardRemove(
                     instanceID: remoteInstanceID,
                     portForward: reverseRule
                 )
             } else {
-                try await EasyTierRemoteRPCClient.patchPortForwards(
-                    rpcURL: rpcURL,
+                try await rpcClient.patchPortForwards(
                     instanceID: remoteInstanceID,
                     portForwards: [reverseRule]
                 )
             }
 
-            let remoteList = try await EasyTierRemoteRPCClient.listPortForwardsParsed(
-                rpcURL: rpcURL,
-                instanceID: remoteInstanceID
-            )
+            let remoteList = try await rpcClient.listPortForwardsParsed(instanceID: remoteInstanceID)
             let found = remoteList.contains { existing in
                 existing.bind_ip == reverseRule.bind_ip
                     && existing.bind_port == reverseRule.bind_port
@@ -538,10 +534,8 @@ struct ConfigEditorView: View {
             )
 
             do {
-                let remotePortForwards = try await EasyTierRemoteRPCClient.listPortForwardsParsed(
-                    rpcURL: rpcURL,
-                    instanceID: remoteInstanceID
-                )
+                let remotePortForwards = try await EasyTierRemoteRPCClient(rpcURL: rpcURL)
+                    .listPortForwardsParsed(instanceID: remoteInstanceID)
                 let isActive = remotePortForwards.contains { existing in
                     existing.bind_ip == expectedReverse.bind_ip
                         && existing.bind_port == expectedReverse.bind_port

@@ -7,10 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Removed the unused Config Server and legacy Remote app-mode paths. EasyTier now keeps one local runtime mode, with per-peer hostname updates handled separately through RPC.
+- Simplified macOS packaging to publish one DMG. Releases use Developer ID signing when credentials are configured and otherwise fall back to an ad-hoc build without privileged-helper installation.
+- Replaced the generated XCFramework/header pipeline with one current-architecture Rust static library and the tracked C header.
+
 ### Fixed
 - Corrected the License string in the About pane: the app is MIT-licensed, not LGPL-3.0.
 - Unified the minimum supported macOS version to 15.0 across `Package.swift`, the generated `Info.plist` (`LSMinimumSystemVersion`), the README badges, and the update-feed `minimumSystemVersion`. Previously the badge/prose/Info.plist claimed macOS 14+ while `Package.swift` required macOS 15.
-- Aligned the README "App modes" section with the actual UI. The app now documents two modes — **Normal** and **Config Server** — instead of an unimplemented third "Remote" mode. Per-peer remote rename via RPC is described separately as a device-table capability.
 - The privileged helper `LaunchDaemon` now ships with `RunAtLoad=false` so the daemon only starts on demand when a TUN network is requested, matching the README's description of helper behavior. Previously the helper launched at every login.
 
 ## [1.0.0] — Unreleased
@@ -24,9 +28,7 @@ Initial production release of EasyTier for macOS.
 - **Multi-network configs**: each network saved as a separate TOML file with independent start/stop. Switch between configs with `Cmd+[` / `Cmd+]`. Import/export TOML — fully compatible with the CLI config format. Config validation covers listener conflicts and port-forward conflicts.
 - **Workspace tabs**: Status / Traffic / Config / Peers / Logs.
 - **Peers view**: per-peer state with outbound subscription import and protocol allowlist.
-- **App modes**: 
-  - **Normal** — run a local EasyTier node with its own listeners and RPC server.
-  - **Config Server** — pull the network profile from a remote server on launch, for fleet-style config distribution.
+- **Local runtime**: run local EasyTier nodes with their own listeners and an optional RPC portal.
 - **Privileged helper**: guided install of a `LaunchDaemon` (via `SMAppService`) for TUN. Non-TUN mode (`no_tun`) does not require the helper. Helper launches on demand only when a TUN network is requested.
 - **Software update**: manifest-driven update flow with SHA256 verification, DMG install, skip/remind-me controls, and auto-check on launch. CI publishes the signed update feed.
 - **Logging panel**: combined EasyTier Core output and app-level action log with search/filter, copy-to-clipboard, and export to file.
@@ -38,10 +40,9 @@ Initial production release of EasyTier for macOS.
 - **Global search**: fuzzy filter across networks and member list.
 - **Accessibility**: VoiceOver labels/hints across the menu bar, status, traffic, peers, and logs views; reduce-motion and reduce-transparency are respected throughout.
 - **Linux install guide**: in-app reference for installing EasyTier on remote Linux peers.
-- **Distribution**: CI-built, Developer-ID-signed, notarized, stapled DMG; updates served from a signed manifest JSON with `minimumSystemVersion: 15.0`.
+- **Distribution**: CI publishes one DMG, using Developer ID signing/notarization when configured and an ad-hoc fallback otherwise; updates are served from a manifest JSON with `minimumSystemVersion: 15.0`.
 
 ### Known limitations
-- No app sandbox: distributed via Developer ID only, not the Mac App Store.
+- No app sandbox: distributed outside the Mac App Store; ad-hoc fallback builds cannot install the privileged helper.
 - No bundled privacy manifest (`PrivacyInfo.xcprivacy`); planned for a future release.
 - English-only UI; localization is planned post-1.0.
-- The `AppMode.remote(remoteRPCAddress:)` case is defined for legacy compatibility but not currently produced by the UI; per-peer remote rename via RPC remains available from the device table.
