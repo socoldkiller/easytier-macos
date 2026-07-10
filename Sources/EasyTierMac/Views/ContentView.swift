@@ -44,7 +44,7 @@ struct ContentView: View {
                 workspaceContent
             }
         }
-            .navigationTitle(navigationTitle)
+            .navigationTitle("")
             .toolbar { toolbar }
         }
         .task(id: store.selectedConfigID) {
@@ -401,13 +401,6 @@ struct ContentView: View {
             .help("About EasyTier")
             .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
         }
-    }
-
-    private var navigationTitle: String {
-        if draftConfigID == store.selectedConfigID {
-            return draftConfig.network_name.isEmpty ? "EasyTier" : draftConfig.network_name
-        }
-        return store.selectedConfig?.network_name ?? "EasyTier"
     }
 
     private var selectedConfigIsRunning: Bool {

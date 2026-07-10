@@ -25,6 +25,7 @@ struct EasyTierApp: App {
                 .environment(store)
                 .environment(updater)
                 .environment(appearanceSettings)
+                .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
                 .easyTierWindowBackground(glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
                 .hideScrollViewScrollers()
                 .background(
