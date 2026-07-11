@@ -379,6 +379,13 @@ public enum HostProxyCIDR {
     }
 }
 
+public enum RuntimeReadinessPhase: Equatable, Sendable {
+    case stopped
+    case starting
+    case ready
+    case failed
+}
+
 public struct NetworkInstance: Codable, Identifiable, Equatable, Sendable {
     public var id: String { instance_id }
     public var instance_id: String
@@ -405,22 +412,48 @@ public extension NetworkInstance {
 
     var listenerErrorFromEvents: String? {
         guard let events = detail?.events, !events.isEmpty else { return nil }
+        var tunStateResolved = false
+        var resolvedListeners: [String] = []
+
+        // Core stores the newest event first. A newer ready/added event clears
+        // an older retryable failure for the same runtime resource.
         for eventJSON in events {
             guard let data = eventJSON.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { continue }
             guard let event = obj["event"] as? [String: Any] else { continue }
+
+            if !tunStateResolved {
+                if event["TunDeviceReady"] != nil {
+                    tunStateResolved = true
+                } else if let error = event["TunDeviceError"] as? String {
+                    return "TUN device error: \(error)"
+                }
+            }
+
+            if let listener = event["ListenerAdded"] as? String {
+                resolvedListeners.append(listener)
+            }
             if let failed = event["ListenerAddFailed"] as? [String], failed.count == 2 {
+                guard !resolvedListeners.contains(where: { Self.isSameListenerResource($0, failed[0]) }) else { continue }
                 return "Listener \(failed[0]) failed: \(failed[1])"
             }
             if let failed = event["ListenerAcceptFailed"] as? [String], failed.count == 2 {
+                guard !resolvedListeners.contains(where: { Self.isSameListenerResource($0, failed[0]) }) else { continue }
                 return "Listener \(failed[0]) accept failed: \(failed[1])"
-            }
-            if let error = event["TunDeviceError"] as? String {
-                return "TUN device error: \(error)"
             }
         }
         return nil
+    }
+
+    private static func isSameListenerResource(_ lhs: String, _ rhs: String) -> Bool {
+        if lhs == rhs { return true }
+        guard let lhsURL = URLComponents(string: lhs),
+              let rhsURL = URLComponents(string: rhs),
+              lhsURL.scheme?.lowercased() == rhsURL.scheme?.lowercased(),
+              lhsURL.host?.lowercased() == rhsURL.host?.lowercased()
+        else { return false }
+        return lhsURL.port == 0 || rhsURL.port == 0
     }
 
     var isFullyConnected: Bool {
@@ -430,6 +463,24 @@ public extension NetworkInstance {
     func isFullyConnected(expectRemotePeers: Bool) -> Bool {
         guard running, runtimeErrorMessage == nil else { return false }
         return detail?.isFullyConnected(expectRemotePeers: expectRemotePeers) == true
+    }
+
+    func runtimeReadinessPhase(
+        requiresTUN: Bool,
+        runtimeDetail: NetworkInstanceRunningInfo? = nil
+    ) -> RuntimeReadinessPhase {
+        var resolved = self
+        if let runtimeDetail {
+            resolved.detail = runtimeDetail
+        }
+
+        if resolved.runtimeErrorMessage != nil || resolved.listenerErrorFromEvents != nil {
+            return .failed
+        }
+        guard resolved.running, resolved.detail?.running != false else { return .failed }
+        guard let localNode = resolved.detail?.my_node_info else { return .starting }
+        guard !requiresTUN || localNode.assignedVirtualIPv4 != nil else { return .starting }
+        return .ready
     }
 }
 
@@ -1059,9 +1110,13 @@ public extension Route {
 }
 
 public extension NodeInfo {
-    var displayIPv4: String {
+    var assignedVirtualIPv4: String? {
         if let ipv4 = virtual_ipv4?.displayString.nilIfEmpty { return ipv4 }
-        return ipv4_addr?.nilIfEmpty ?? "-"
+        return ipv4_addr?.nilIfEmpty
+    }
+
+    var displayIPv4: String {
+        assignedVirtualIPv4 ?? "-"
     }
 }
 

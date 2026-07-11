@@ -7,6 +7,7 @@ public struct RuntimeStatusSnapshot: Equatable, Sendable {
     public var deviceName: String
     public var members: [NetworkMemberStatus]
     public var runtimeError: String?
+    public var runtimeReadinessPhase: RuntimeReadinessPhase
     public var isFullyConnected: Bool
 
     public static let empty = RuntimeStatusSnapshot(
@@ -16,6 +17,7 @@ public struct RuntimeStatusSnapshot: Equatable, Sendable {
         deviceName: "-",
         members: [],
         runtimeError: nil,
+        runtimeReadinessPhase: .stopped,
         isFullyConnected: false
     )
 
@@ -36,7 +38,22 @@ public struct RuntimeStatusSnapshot: Equatable, Sendable {
             instance?.detail = runtimeDetail
         }
 
-        let members = runtimeDetail?.memberStatuses ?? []
+        let runtimeReadinessPhase = instance?.runtimeReadinessPhase(
+            requiresTUN: selectedConfig.requiresTUN,
+            runtimeDetail: runtimeDetail
+        ) ?? .stopped
+        var members = runtimeDetail?.memberStatuses ?? instance?.detail?.memberStatuses ?? []
+        if runtimeReadinessPhase == .starting,
+           !selectedConfig.dhcp,
+           let configuredIPv4 = configuredIPv4Display(for: selectedConfig),
+           let localIndex = members.firstIndex(where: \.isLocal),
+           members[localIndex].copyableIPv4Address == nil
+        {
+            // During restart Core may publish the local node before echoing its
+            // static address. Keep the configured address visible while the
+            // runtime is still converging.
+            members[localIndex].virtualIPv4 = configuredIPv4
+        }
         let displayedMembers: [NetworkMemberStatus]
         if let memberStatusMetricsByID {
             displayedMembers = members.map { member in
@@ -46,9 +63,13 @@ public struct RuntimeStatusSnapshot: Equatable, Sendable {
             displayedMembers = members
         }
 
-        let isFullyConnected = instance?.isFullyConnected(
-            expectRemotePeers: selectedConfig.expectsRemotePeerConnection
-        ) == true
+        let runtimeError = instance?.runtimeErrorMessage
+            ?? instance?.listenerErrorFromEvents
+            ?? (runtimeReadinessPhase == .failed
+                ? "EasyTier reported that this network stopped unexpectedly."
+                : nil)
+        let isFullyConnected = runtimeReadinessPhase == .ready
+            && instance?.isFullyConnected(expectRemotePeers: selectedConfig.expectsRemotePeerConnection) == true
 
         return RuntimeStatusSnapshot(
             instance: instance,
@@ -56,9 +77,16 @@ public struct RuntimeStatusSnapshot: Equatable, Sendable {
             networkName: instance?.name ?? selectedConfig.network_name.nilIfEmpty ?? "-",
             deviceName: runtimeDetail?.dev_name ?? instance?.detail?.dev_name ?? "-",
             members: displayedMembers,
-            runtimeError: instance?.runtimeErrorMessage ?? instance?.listenerErrorFromEvents,
+            runtimeError: runtimeError,
+            runtimeReadinessPhase: runtimeReadinessPhase,
             isFullyConnected: isFullyConnected
         )
+    }
+
+    private static func configuredIPv4Display(for config: NetworkConfig) -> String? {
+        let address = config.virtual_ipv4.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !address.isEmpty else { return nil }
+        return address.contains("/") ? address : "\(address)/\(config.network_length)"
     }
 }
 

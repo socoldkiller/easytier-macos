@@ -55,6 +55,7 @@ struct ConfigEditorView: View {
         .onScrollPhaseChange { _, phase in
             store.isAnyViewScrolling = phase.isScrolling
         }
+        .onDisappear { store.isAnyViewScrolling = false }
         .onAppear {
             syncDisplayMode()
             if !isRemote {

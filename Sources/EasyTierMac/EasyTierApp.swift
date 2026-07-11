@@ -110,7 +110,7 @@ struct EasyTierApp: App {
     }
 
     private var menuBarConnectionState: ConnectionGlyphState {
-        if store.lastError != nil { return .error }
+        if store.lastError != nil || store.selectedRuntimeReadinessPhase == .failed { return .error }
         if store.isBusy || store.isQuitting { return .connecting }
         guard var instance = store.selectedRunningInstance else { return .idle }
         instance.detail = store.selectedRuntimeDetail
@@ -700,7 +700,7 @@ private struct MenuBarContent: View {
                 Spacer(minLength: 0)
 
                 Button(action: toggleConnection) {
-                    MenuBarConnectionSwitch(isOn: store.selectedConfigIsRunning, isBusy: store.isBusy)
+                    MenuBarConnectionSwitch(phase: store.selectedRuntimeReadinessPhase, isBusy: store.isBusy)
                         .padding(4)
                         .background(connectionSwitchBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
@@ -708,8 +708,8 @@ private struct MenuBarContent: View {
                 .disabled(store.isBusy || store.isQuitting || store.selectedConfig == nil)
                 .onHover { isConnectionSwitchHovering = $0 }
                 .accessibilityLabel(Text("Connection"))
-                .accessibilityValue(Text(store.selectedConfigIsRunning ? "On" : "Off"))
-                .accessibilityHint(Text("Toggles the selected network connection"))
+                .accessibilityValue(Text(connectionSwitchAccessibilityValue))
+                .accessibilityHint(Text(connectionSwitchAccessibilityHint))
                 .accessibilityAddTraits(.isButton)
             }
             .padding(.horizontal, 12)
@@ -792,7 +792,7 @@ private struct MenuBarContent: View {
     }
 
     private var selectedNetworkState: ConnectionGlyphState {
-        if store.lastError != nil { return .error }
+        if store.lastError != nil || store.selectedRuntimeReadinessPhase == .failed { return .error }
         if store.isBusy || store.isQuitting { return .connecting }
         guard var instance = selectedRunningInstance else { return .idle }
         instance.detail = store.selectedRuntimeDetail
@@ -835,7 +835,7 @@ private struct MenuBarContent: View {
     private var devicesTitle: String {
         let count = store.selectedMemberStatuses.count
         if count > 0 { return "\(count) Devices" }
-        return store.selectedConfigIsRunning ? "Loading Devices..." : "No Devices"
+        return store.selectedConfigCanStop ? "Loading Devices..." : "No Devices"
     }
 
     private var windowEffectTitle: String {
@@ -845,8 +845,9 @@ private struct MenuBarContent: View {
     private var connectionSubtitle: String {
         if store.isQuitting { return "Quitting" }
         if store.isBusy { return "Working" }
-        if store.lastError != nil { return "Needs Attention" }
+        if store.lastError != nil || store.selectedRuntimeReadinessPhase == .failed { return "Needs Attention" }
         guard store.selectedConfig != nil else { return "No Network" }
+        if store.selectedRuntimeReadinessPhase == .starting { return "Starting" }
         guard var instance = selectedRunningInstance else { return "Not Connected" }
         instance.detail = store.selectedRuntimeDetail
         return store.instanceIsFullyConnected(instance) ? "Connected" : "Connecting"
@@ -854,7 +855,7 @@ private struct MenuBarContent: View {
 
     private var connectionIndicatorColor: Color {
         if store.isQuitting { return .yellow.opacity(0.82) }
-        if store.lastError != nil { return .orange }
+        if store.lastError != nil || store.selectedRuntimeReadinessPhase == .failed { return .orange }
         if store.isBusy { return .yellow.opacity(0.82) }
         guard var instance = selectedRunningInstance else { return MenuBarPalette.mutedText }
         instance.detail = store.selectedRuntimeDetail
@@ -868,9 +869,27 @@ private struct MenuBarContent: View {
 
     private var selectedNetworkSubtitle: String {
         if store.selectedConfig == nil { return "Select a network" }
+        if store.selectedRuntimeReadinessPhase == .failed { return "Needs Attention" }
+        if store.selectedRuntimeReadinessPhase == .starting { return "Starting" }
         guard var instance = selectedRunningInstance else { return "Disconnected" }
         instance.detail = store.selectedRuntimeDetail
         return store.instanceIsFullyConnected(instance) ? "Connected" : "Connecting"
+    }
+
+    private var connectionSwitchAccessibilityValue: String {
+        if store.isBusy { return "Working" }
+        switch store.selectedRuntimeReadinessPhase {
+        case .stopped: return "Off"
+        case .starting: return "Starting"
+        case .ready: return "On"
+        case .failed: return "Needs Attention"
+        }
+    }
+
+    private var connectionSwitchAccessibilityHint: String {
+        store.selectedConfigCanStop
+            ? "Stops the selected network"
+            : "Starts the selected network"
     }
 
     private func openMainWindow() {
@@ -1198,7 +1217,7 @@ private struct MenuBarDivider: View {
 private struct MenuBarConnectionSwitch: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    var isOn: Bool
+    var phase: RuntimeReadinessPhase
     var isBusy: Bool
 
     var body: some View {
@@ -1221,16 +1240,34 @@ private struct MenuBarConnectionSwitch: View {
         }
         .frame(width: 40, height: 24)
         .opacity(isBusy ? 0.58 : 1)
-        .animation(EasyTierMotion.selection(reduceMotion: reduceMotion), value: isOn)
-        .accessibilityLabel(isOn ? Text("Disconnect") : Text("Connect"))
+        .animation(EasyTierMotion.selection(reduceMotion: reduceMotion), value: phase)
+        .accessibilityLabel(Text(accessibilityLabel))
+    }
+
+    private var isOn: Bool {
+        phase == .ready
     }
 
     private var trackColor: Color {
-        isOn ? MenuBarPalette.connected.opacity(0.82) : MenuBarPalette.rowHighlight
+        switch phase {
+        case .stopped: MenuBarPalette.rowHighlight
+        case .starting: Color.yellow.opacity(0.42)
+        case .ready: MenuBarPalette.connected.opacity(0.82)
+        case .failed: Color.orange.opacity(0.46)
+        }
     }
 
     private var knobColor: Color {
         Color.white.opacity(0.92)
+    }
+
+    private var accessibilityLabel: String {
+        switch phase {
+        case .stopped: "Connect"
+        case .starting: "Stop Connecting"
+        case .ready: "Disconnect"
+        case .failed: "Stop Network"
+        }
     }
 }
 

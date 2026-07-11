@@ -83,9 +83,8 @@ public final class EasyTierAppStore {
     public var isRefreshingPeerSubscriptions = false
     public var pendingPeerCardMerge: PeerCard?
 
-    /// Mirrors any in-app scroll phase. Polling briefly skips refresh while
-    /// this is true so the main-thread SwiftUI transaction pass does not
-    /// compete with scroll-driven layout work.
+    /// Presentation-only scroll state. Runtime collection must continue while
+    /// this is true so topology changes are not hidden behind a stale gesture.
     public var isAnyViewScrolling = false
 
     public static func portForwardFingerprint(for rule: PortForwardConfig) -> String {
@@ -108,6 +107,13 @@ public final class EasyTierAppStore {
         systemSleepPreventer: systemSleepPreventer
     )
     @ObservationIgnored private var isPublishingRuntimePresentation = false
+    @ObservationIgnored private var runtimeOperationGeneration: UInt64 = 0
+    @ObservationIgnored private var runtimeRefreshRevision: UInt64 = 0
+    @ObservationIgnored private var lastAppliedRuntimeRefreshRevision: UInt64 = 0
+    @ObservationIgnored private var runtimeMutationLocked = false
+    @ObservationIgnored private var runtimeMutationInProgress = false
+    @ObservationIgnored private var runtimeMutationWaiters: [CheckedContinuation<Void, Never>] = []
+    @ObservationIgnored private var busyOperationCount = 0
 
     @ObservationIgnored public private(set) var runtimeDetailsWriteCount = 0
     @ObservationIgnored public private(set) var instancesWriteCount = 0
@@ -162,6 +168,47 @@ public final class EasyTierAppStore {
         runtimeSession.setClientKind(for: config)
     }
 
+    private func withRuntimeMutation(
+        ifGeneration expectedGeneration: UInt64? = nil,
+        _ operation: () async -> Void
+    ) async {
+        if runtimeMutationLocked {
+            await withCheckedContinuation { continuation in
+                runtimeMutationWaiters.append(continuation)
+            }
+        } else {
+            runtimeMutationLocked = true
+            runtimeMutationInProgress = true
+        }
+
+        defer {
+            if runtimeMutationWaiters.isEmpty {
+                runtimeMutationInProgress = false
+                runtimeMutationLocked = false
+            } else {
+                runtimeMutationWaiters.removeFirst().resume()
+            }
+        }
+        if let expectedGeneration, runtimeOperationGeneration != expectedGeneration { return }
+        runtimeOperationGeneration &+= 1
+        busyOperationCount += 1
+        isBusy = true
+        defer {
+            busyOperationCount -= 1
+            isBusy = busyOperationCount > 0
+        }
+        await operation()
+        do {
+            try await refreshRuntimeThrowing(allowDuringRuntimeMutation: true)
+            if let runtimeError = selectedStatusSnapshot.runtimeError {
+                setLastError(runtimeError)
+            }
+        } catch {
+            setLastError(error)
+            log("Runtime refresh failed after operation: \(error.localizedDescription)")
+        }
+    }
+
     public var selectedConfig: NetworkConfig? {
         get {
             guard let selectedConfigID else { return nil }
@@ -180,8 +227,23 @@ public final class EasyTierAppStore {
         return runningInstance(matching: config)
     }
 
-    public var selectedConfigIsRunning: Bool {
+    /// A tracked instance includes a start request that has been accepted but
+    /// has not produced a ready runtime snapshot yet.
+    public var selectedConfigCanStop: Bool {
         selectedRunningInstance != nil
+    }
+
+    /// Compatibility alias for control flow; this does not mean the network is ready.
+    public var selectedConfigIsRunning: Bool {
+        selectedConfigCanStop
+    }
+
+    public var selectedRuntimeReadinessPhase: RuntimeReadinessPhase {
+        selectedStatusSnapshot.runtimeReadinessPhase
+    }
+
+    public var selectedConfigIsReady: Bool {
+        selectedRuntimeReadinessPhase == .ready
     }
 
     public func runningInstance(matching config: NetworkConfig) -> NetworkInstance? {
@@ -200,8 +262,23 @@ public final class EasyTierAppStore {
         return uniquelyMatchedConfig(named: networkName)
     }
 
+    public func runtimeReadinessPhase(matching config: NetworkConfig) -> RuntimeReadinessPhase {
+        guard let instance = runningInstance(matching: config) else { return .stopped }
+        return instance.runtimeReadinessPhase(
+            requiresTUN: config.requiresTUN,
+            runtimeDetail: runtimeDetails[instance.name] ?? instance.detail
+        )
+    }
+
     public func instanceIsFullyConnected(_ instance: NetworkInstance) -> Bool {
-        instance.isFullyConnected(expectRemotePeers: config(matching: instance)?.expectsRemotePeerConnection == true)
+        guard let config = config(matching: instance) else { return false }
+        let detail = runtimeDetails[instance.name] ?? instance.detail
+        guard instance.runtimeReadinessPhase(requiresTUN: config.requiresTUN, runtimeDetail: detail) == .ready else {
+            return false
+        }
+        var resolved = instance
+        resolved.detail = detail
+        return resolved.isFullyConnected(expectRemotePeers: config.expectsRemotePeerConnection)
     }
 
     public var selectedRuntimeDetail: NetworkInstanceRunningInfo? {
@@ -333,34 +410,35 @@ public final class EasyTierAppStore {
     }
 
     public func deleteSelectedConfig() async {
-        guard let selectedConfigID, let index = configs.firstIndex(where: { $0.id == selectedConfigID }) else { return }
-        let config = configs[index]
-        if let runningInstance = runningInstance(matching: config) {
-            do {
-                try await client(for: config).stop(instanceNames: [runningInstance.name])
-                runtimeSession.clearTrafficTracking(instanceName: runningInstance.name)
-            } catch {
-                setLastError(error)
-                log("Delete canceled because \(config.network_name) could not be stopped: \(error.localizedDescription)")
-                return
+        await withRuntimeMutation {
+            guard let selectedConfigID, let index = configs.firstIndex(where: { $0.id == selectedConfigID }) else { return }
+            let config = configs[index]
+            if let runningInstance = runningInstance(matching: config) {
+                do {
+                    try await client(for: config).stop(instanceNames: [runningInstance.name])
+                    runtimeSession.clearTrafficTracking(instanceName: runningInstance.name)
+                } catch {
+                    setLastError(error)
+                    log("Delete canceled because \(config.network_name) could not be stopped: \(error.localizedDescription)")
+                    return
+                }
             }
+            runtimeSession.clearClientKind(for: config)
+            runtimeSession.clearPendingStart(for: config)
+            runtimeIntents.removeAll { intent in
+                intent.target.isLocal && (intent.target.instanceID == config.instance_id || intent.target.networkName == config.network_name)
+            }
+            reversedPortForwardFingerprints.removeValue(forKey: config.instance_id)
+            secretCache.removeValue(forKey: config.network_name)
+            let removedID = configs.remove(at: index).id
+            let storage = self.storage
+            Task.detached(priority: .background) {
+                try? storage.deleteConfig(id: removedID)
+            }
+            let nextIndex = min(index, configs.count - 1)
+            self.selectedConfigID = configs.isEmpty ? nil : configs[nextIndex].id
+            saveInBackground()
         }
-        runtimeSession.clearClientKind(for: config)
-        runtimeSession.clearPendingStart(for: config)
-        runtimeIntents.removeAll { intent in
-            intent.target.isLocal && (intent.target.instanceID == config.instance_id || intent.target.networkName == config.network_name)
-        }
-        reversedPortForwardFingerprints.removeValue(forKey: config.instance_id)
-        secretCache.removeValue(forKey: config.network_name)
-        let removedID = configs.remove(at: index).id
-        let storage = self.storage
-        Task.detached(priority: .background) {
-            try? storage.deleteConfig(id: removedID)
-        }
-        let nextIndex = min(index, configs.count - 1)
-        self.selectedConfigID = configs.isEmpty ? nil : configs[nextIndex].id
-        saveInBackground()
-        await refreshRuntime()
     }
 
     public func updateConfig(id: String, with config: NetworkConfig, saveImmediately: Bool = false) {
@@ -396,7 +474,18 @@ public final class EasyTierAppStore {
     }
 
     public func runSelectedConfig() async {
+        await withRuntimeMutation {
+            await runSelectedConfigWithoutMutationLock()
+        }
+    }
+
+    private func runSelectedConfigWithoutMutationLock() async {
+        guard !isQuitting else { return }
         guard let config = selectedConfig else { return }
+        guard runningInstance(matching: config) == nil else {
+            log("Start skipped because \(config.network_name) is already tracked.")
+            return
+        }
         await busy {
             log("Starting \(config.network_name)...")
             try validateConfigForCurrentRuntime(config)
@@ -410,42 +499,47 @@ public final class EasyTierAppStore {
                     throw error
                 }
             }
+            guard !isQuitting else { return }
             try await client(for: config).run(toml: try encodedTOML(for: cleanConfig))
             setRuntimeClientKind(for: cleanConfig)
             runtimeSession.recordPendingStart(for: config)
-            log("Started \(config.network_name).")
-            try await refreshRuntimeThrowing()
-            if var instance = selectedRunningInstance {
-                instance.detail = selectedRuntimeDetail
-                if let error = instance.runtimeErrorMessage ?? instance.listenerErrorFromEvents {
-                    setLastError(error)
-                }
-            }
+            log("Start requested for \(config.network_name).")
         }
     }
 
     /// Retry the most recent start after the user approved the privileged helper.
     public func retryStartAfterHelperApproval() async {
+        guard !isQuitting else { return }
         guard let config = runtimeSession.takePendingStartAfterApproval() else { return }
         if let helperRegistration {
             await helperRegistration.refresh()
+            guard !isQuitting else { return }
             guard helperRegistration.state == .enabled else {
+                runtimeSession.restorePendingStartAfterApprovalIfEmpty(config)
                 setLastError("Privileged helper is still not enabled. Approve EasyTier in System Settings > Login Items & Extensions, then try again.", kind: .helperPermission)
                 return
             }
         }
-        await busy {
-            try await client(for: config).run(toml: try encodedTOML(for: config))
-            setRuntimeClientKind(for: config)
-            if let selectedConfig, selectedConfig.instance_id == config.instance_id {
-                runtimeSession.recordPendingStart(for: selectedConfig)
+        await withRuntimeMutation {
+            guard !isQuitting,
+                  configs.contains(where: { $0.instance_id == config.instance_id })
+            else { return }
+            await busy {
+                try await client(for: config).run(toml: try encodedTOML(for: config))
+                setRuntimeClientKind(for: config)
+                runtimeSession.recordPendingStart(for: config)
+                log("Start requested for \(config.network_name) after helper approval.")
             }
-            log("Started \(config.network_name) after helper approval.")
-            try await refreshRuntimeThrowing()
         }
     }
 
     public func stopSelectedConfig() async {
+        await withRuntimeMutation {
+            await stopSelectedConfigWithoutMutationLock()
+        }
+    }
+
+    private func stopSelectedConfigWithoutMutationLock() async {
         guard let config = selectedConfig else { return }
         await busy {
             log("Stopping \(config.network_name)...")
@@ -459,35 +553,43 @@ public final class EasyTierAppStore {
             runtimeSession.clearPendingStart(for: config)
             runtimeSession.clearClientKind(for: config)
             log("Stopped \(config.network_name).")
-            try await refreshRuntimeThrowing()
         }
     }
 
-    public func restartSelectedConfig(replacing instance: NetworkInstance) async {
-        guard let config = selectedConfig else { return }
-        await busy {
-            log("Restarting \(config.network_name)...")
-            try validateConfigForCurrentRuntime(config, replacing: instance)
-            let keychainConfig = try await configWithKeychainSecret(config, reason: "Use the network secret to restart \(config.network_name).")
-            let cleanConfig = Self.configWithoutReversedPortForwards(keychainConfig, fingerprints: reversedPortForwardFingerprints)
-            let targetClient = client(for: config)
-            try await targetClient.validate(toml: try encodedTOML(for: cleanConfig))
-            try await targetClient.stop(instanceNames: [instance.name])
-            runtimeSession.clearTrafficTracking(instanceName: instance.name)
-            runtimeSession.clearPendingStart(for: config)
-            if config.requiresTUN, let helperRegistration {
-                do {
-                    try await helperRegistration.ensureRegistered()
-                } catch {
-                    runtimeSession.setPendingStartAfterApproval(cleanConfig)
-                    throw error
+    public func restartSelectedConfig(
+        replacing instance: NetworkInstance,
+        configID targetConfigID: String? = nil
+    ) async {
+        guard let targetConfigID = targetConfigID ?? selectedConfigID else { return }
+        await withRuntimeMutation {
+            guard !isQuitting,
+                  let config = configs.first(where: { $0.id == targetConfigID })
+            else { return }
+            await busy {
+                log("Restarting \(config.network_name)...")
+                try validateConfigForCurrentRuntime(config, replacing: instance)
+                let keychainConfig = try await configWithKeychainSecret(config, reason: "Use the network secret to restart \(config.network_name).")
+                let cleanConfig = Self.configWithoutReversedPortForwards(keychainConfig, fingerprints: reversedPortForwardFingerprints)
+                let targetClient = client(for: config)
+                try await targetClient.validate(toml: try encodedTOML(for: cleanConfig))
+                guard !isQuitting else { return }
+                try await targetClient.stop(instanceNames: [instance.name])
+                runtimeSession.clearTrafficTracking(instanceName: instance.name)
+                runtimeSession.clearPendingStart(for: config)
+                if config.requiresTUN, let helperRegistration {
+                    do {
+                        try await helperRegistration.ensureRegistered()
+                    } catch {
+                        runtimeSession.setPendingStartAfterApproval(cleanConfig)
+                        throw error
+                    }
                 }
+                guard !isQuitting else { return }
+                try await targetClient.run(toml: try encodedTOML(for: cleanConfig))
+                setRuntimeClientKind(for: cleanConfig)
+                runtimeSession.recordPendingStart(for: config)
+                log("Restart requested for \(config.network_name).")
             }
-            try await targetClient.run(toml: try encodedTOML(for: cleanConfig))
-            setRuntimeClientKind(for: cleanConfig)
-            runtimeSession.recordPendingStart(for: config)
-            log("Restarted \(config.network_name).")
-            try await refreshRuntimeThrowing()
         }
     }
 
@@ -502,10 +604,12 @@ public final class EasyTierAppStore {
     }
 
     public func toggleSelectedConfigConnection() async {
-        if selectedConfigIsRunning {
-            await stopSelectedConfig()
-        } else {
-            await runSelectedConfig()
+        await withRuntimeMutation {
+            if selectedConfigCanStop {
+                await stopSelectedConfigWithoutMutationLock()
+            } else {
+                await runSelectedConfigWithoutMutationLock()
+            }
         }
     }
 
@@ -525,27 +629,28 @@ public final class EasyTierAppStore {
     }
 
     public func stopAll() async {
-        await busy {
-            // Stop privileged instances via the daemon's retain-by-allowlist call.
-            if runtimeSession.hasPrivilegedInstances(in: instances) {
-                do {
-                    try await privilegedClient.retain(instanceNames: [])
-                } catch {
-                    log("Failed to retain privileged instance allowlist during stopAll: \(error.localizedDescription)")
+        await withRuntimeMutation {
+            await busy {
+                // Stop privileged instances via the daemon's retain-by-allowlist call.
+                if runtimeSession.hasPrivilegedInstances(in: instances) {
+                    do {
+                        try await privilegedClient.retain(instanceNames: [])
+                    } catch {
+                        log("Failed to retain privileged instance allowlist during stopAll: \(error.localizedDescription)")
+                    }
                 }
-            }
-            // Stop in-process instances individually (no retain API).
-            let inProcessInstanceNames = runtimeSession.inProcessInstanceNames(in: instances)
-            if !inProcessInstanceNames.isEmpty {
-                do {
-                    try await inProcessClient.stop(instanceNames: inProcessInstanceNames)
-                } catch {
-                    log("Failed to stop in-process instances \(inProcessInstanceNames) during stopAll: \(error.localizedDescription)")
+                // Stop in-process instances individually (no retain API).
+                let inProcessInstanceNames = runtimeSession.inProcessInstanceNames(in: instances)
+                if !inProcessInstanceNames.isEmpty {
+                    do {
+                        try await inProcessClient.stop(instanceNames: inProcessInstanceNames)
+                    } catch {
+                        log("Failed to stop in-process instances \(inProcessInstanceNames) during stopAll: \(error.localizedDescription)")
+                    }
                 }
+                runtimeSession.clearRuntimeTracking()
+                log("Stopped all EasyTier instances.")
             }
-            runtimeSession.clearRuntimeTracking()
-            log("Stopped all EasyTier instances.")
-            try await refreshRuntimeThrowing()
         }
     }
 
@@ -554,7 +659,9 @@ public final class EasyTierAppStore {
         isQuitting = true
 
         if vpnOnDemandEnabled {
-            await stopInProcessInstancesBeforeQuit()
+            await withRuntimeMutation {
+                await stopInProcessInstancesBeforeQuit()
+            }
             log("Quit requested with VPN On Demand enabled; leaving EasyTier network running.")
             stopPolling()
             return
@@ -872,7 +979,6 @@ public final class EasyTierAppStore {
 
     public func startPolling() {
         runtimeSession.startPolling(
-            isScrolling: { [weak self] in self?.isAnyViewScrolling == true },
             refresh: { [weak self] in await self?.refreshRuntime() },
             clearSecretCache: { [weak self] in self?.clearSecretCache() },
             handleWillSleep: { [weak self] in self?.handleSystemWillSleep() },
@@ -893,37 +999,53 @@ public final class EasyTierAppStore {
     }
 
     func handleSystemWillSleep(now: Date = Date()) {
+        let shouldScheduleRecovery = !runtimeMutationInProgress && !isQuitting
+        let recoverableConfigIDs = shouldScheduleRecovery
+            ? configs.filter { runtimeReadinessPhase(matching: $0) == .ready }.map(\.id)
+            : []
         runtimeSession.handleSystemWillSleep(
             now: now,
-            configs: configs,
-            runningInstance: { [weak self] config in self?.runningInstance(matching: config) }
+            recoverableConfigIDs: recoverableConfigIDs,
+            operationGeneration: shouldScheduleRecovery ? runtimeOperationGeneration : nil
         )
     }
 
     func handleSystemDidWake(now: Date = Date()) async {
-        let configIDsToRecover = runtimeSession.wakeRecoveryConfigIDs(now: now)
+        let recoveryRequest = runtimeSession.wakeRecoveryRequest(now: now)
         await refreshRuntime()
 
-        guard !configIDsToRecover.isEmpty else { return }
+        guard let recoveryRequest,
+              runtimeOperationGeneration == recoveryRequest.expectedOperationGeneration,
+              !runtimeMutationInProgress,
+              !isQuitting
+        else { return }
 
-        await recoverPreviouslyRunningConfigsAfterWake(configIDs: configIDsToRecover)
+        await recoverPreviouslyRunningConfigsAfterWake(
+            configIDs: recoveryRequest.configIDs,
+            expectedGeneration: recoveryRequest.expectedOperationGeneration
+        )
     }
 
     private func clearSecretCache() {
         secretCache.removeAll()
     }
 
-    private func recoverPreviouslyRunningConfigsAfterWake(configIDs: [String]) async {
-        let configsToRecover = configIDs.compactMap { id in
-            configs.first { $0.id == id }
-        }
-        guard !configsToRecover.isEmpty else { return }
-
-        await busy {
-            for config in configsToRecover {
-                try await recoverConfigAfterWake(config)
+    private func recoverPreviouslyRunningConfigsAfterWake(
+        configIDs: [String],
+        expectedGeneration: UInt64
+    ) async {
+        await withRuntimeMutation(ifGeneration: expectedGeneration) {
+            guard !isQuitting else { return }
+            let configsToRecover = configIDs.compactMap { id in
+                configs.first { $0.id == id }
             }
-            try await refreshRuntimeThrowing()
+            guard !configsToRecover.isEmpty else { return }
+
+            await busy {
+                for config in configsToRecover {
+                    try await recoverConfigAfterWake(config)
+                }
+            }
         }
     }
 
@@ -949,21 +1071,37 @@ public final class EasyTierAppStore {
                 throw error
             }
         }
+        guard !isQuitting else { return }
         try await targetClient.run(toml: try encodedTOML(for: cleanConfig))
         setRuntimeClientKind(for: cleanConfig)
         runtimeSession.recordPendingStart(for: config)
-        log("Recovered \(config.network_name) after system wake.")
+        log("Recovery start requested for \(config.network_name) after system wake.")
     }
 
-    private func refreshRuntimeThrowing() async throws {
-        let presentationChange = try await runtimeSession.refreshRuntime(
+    private func refreshRuntimeThrowing(allowDuringRuntimeMutation: Bool = false) async throws {
+        guard allowDuringRuntimeMutation || !runtimeMutationInProgress else { return }
+        runtimeRefreshRevision &+= 1
+        let refreshRevision = runtimeRefreshRevision
+        let operationGeneration = runtimeOperationGeneration
+        guard let presentationChange = try await runtimeSession.refreshRuntime(
             currentInstances: instances,
             currentRuntimeDetails: runtimeDetails,
             currentStatusMetrics: statusMetricsByInstance,
             currentTrafficSamples: trafficSamplesByInstance,
             currentTrafficSamplingStatus: trafficSamplingStatusByInstance,
-            selectedTab: selectedTab
-        )
+            selectedTab: selectedTab,
+            shouldApply: { [weak self] in
+                guard let self else { return false }
+                return refreshRevision > self.lastAppliedRuntimeRefreshRevision
+                    && self.runtimeOperationGeneration == operationGeneration
+                    && (allowDuringRuntimeMutation || !self.runtimeMutationInProgress)
+            }
+        ) else { return }
+        guard refreshRevision > lastAppliedRuntimeRefreshRevision,
+              runtimeOperationGeneration == operationGeneration,
+              allowDuringRuntimeMutation || !runtimeMutationInProgress
+        else { return }
+        lastAppliedRuntimeRefreshRevision = refreshRevision
         isPublishingRuntimePresentation = true
         if presentationChange.shouldPublishRuntimeDetails {
             runtimeDetails = presentationChange.state.runtimeDetails
@@ -982,7 +1120,12 @@ public final class EasyTierAppStore {
         }
         isPublishingRuntimePresentation = false
         refreshSelectedRuntimeSnapshots()
-        await reconcileRuntimeIntents()
+        // A mutation's authoritative collect must not hold the control-plane
+        // FIFO while hostname intent RPCs are retried. Normal polling performs
+        // that reconciliation on the next refresh.
+        if !allowDuringRuntimeMutation {
+            await reconcileRuntimeIntents()
+        }
     }
 
     private func reconcileRuntimeIntents() async {
@@ -1239,8 +1382,12 @@ public final class EasyTierAppStore {
     }
 
     private func busy(_ operation: () async throws -> Void) async {
+        busyOperationCount += 1
         isBusy = true
-        defer { isBusy = false }
+        defer {
+            busyOperationCount -= 1
+            isBusy = busyOperationCount > 0
+        }
         do {
             try await operation()
         } catch {

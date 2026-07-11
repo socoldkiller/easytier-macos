@@ -384,6 +384,27 @@ import Testing
     #expect(!second.shouldPublishStatusMetrics)
 }
 
+@Test func readinessRecoveryEventPublishesRuntimeDetails() {
+    let failureEvent = #"{"event":{"TunDeviceError":"temporary failure"}}"#
+    let readyEvent = #"{"event":{"TunDeviceReady":"utun8"}}"#
+    let first = RuntimePresentationReducer.reduce(
+        running: [RuntimePresentationFixture.instance(txBytes: 10_000, rxBytes: 12_000, events: [failureEvent])],
+        previous: RuntimePresentationState(),
+        selectedTab: .status,
+        now: RuntimePresentationFixture.t0
+    )
+
+    let second = RuntimePresentationReducer.reduce(
+        running: [RuntimePresentationFixture.instance(txBytes: 10_000, rxBytes: 12_000, events: [readyEvent, failureEvent])],
+        previous: first.state,
+        selectedTab: .status,
+        now: RuntimePresentationFixture.t1
+    )
+
+    #expect(second.shouldPublishRuntimeDetails)
+    #expect(second.state.runtimeDetails["fixture-network"]?.events == [readyEvent, failureEvent])
+}
+
 private enum RuntimePresentationFixture {
     static let t0 = Date(timeIntervalSince1970: 1_000)
     static let t1 = Date(timeIntervalSince1970: 1_001)
@@ -410,7 +431,8 @@ private enum RuntimePresentationFixture {
         hostname: String = "peer-a",
         txBytes: Int,
         rxBytes: Int,
-        latencyUs: Int = 1_000
+        latencyUs: Int = 1_000,
+        events: [String]? = nil
     ) -> NetworkInstance {
         NetworkInstance(
             instance_id: "fixture-instance",
@@ -426,6 +448,7 @@ private enum RuntimePresentationFixture {
                     stun_info: StunInfo(udp_nat_type: 1),
                     feature_flag: PeerFeatureFlag(is_public_server: false)
                 ),
+                events: events,
                 peer_route_pairs: [
                     PeerRoutePair(
                         route: Route(

@@ -97,10 +97,11 @@ struct StatusView: View {
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if display.members.isEmpty {
+            let emptyState = emptyStateCopy(for: display.snapshot.runtimeReadinessPhase)
             ConnectionEmptyState(
-                "No Member Information",
+                emptyState.title,
                 state: display.connectionState,
-                description: Text(display.runtimeError ?? "EasyTier is running, but runtime member details have not arrived yet.")
+                description: Text(display.runtimeError ?? emptyState.description)
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if !display.memberSearchQuery.isEmpty, display.filteredMembers.isEmpty {
@@ -112,6 +113,17 @@ struct StatusView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             memberTable(display)
+        }
+    }
+
+    private func emptyStateCopy(for phase: RuntimeReadinessPhase) -> (title: String, description: String) {
+        switch phase {
+        case .failed:
+            ("Network Failed", "EasyTier could not keep the selected network running.")
+        case .starting:
+            ("Starting Network", "Waiting for EasyTier to finish preparing the local network.")
+        case .stopped, .ready:
+            ("No Member Information", "EasyTier is running, but runtime member details have not arrived yet.")
         }
     }
 
@@ -154,7 +166,7 @@ struct StatusView: View {
         let instance = snapshot.instance
         let runtimeError = snapshot.runtimeError
         let connectionState: ConnectionGlyphState
-        if runtimeError != nil {
+        if runtimeError != nil || snapshot.runtimeReadinessPhase == .failed {
             connectionState = .error
         } else if store.isBusy {
             connectionState = .connecting
@@ -368,6 +380,10 @@ private struct MemberGridTable: View {
             .defaultScrollAnchor(.topLeading)
             .trackScrollPhase(isScrolling: $isScrolling)
             .reflectScrollPhase(to: $globalScrolling)
+        }
+        .onDisappear {
+            isScrolling = false
+            globalScrolling = false
         }
     }
 }

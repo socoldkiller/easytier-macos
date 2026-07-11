@@ -293,7 +293,7 @@ struct ContentView: View {
                 }
                 .help("Delete selected network")
                 .accessibilityLabel(Text("Delete selected network"))
-                .disabled(store.selectedConfigID == nil)
+                .disabled(store.selectedConfigID == nil || store.isBusy || store.isQuitting)
                 Spacer()
                 Button {
                     Task { await store.refreshRuntime() }
@@ -346,11 +346,15 @@ struct ContentView: View {
 
                 Button {
                     let runningInstanceToRestart = draftIsDirty ? store.selectedRunningInstance : nil
+                    let configIDToRestart = runningInstanceToRestart == nil ? nil : store.selectedConfigID
                     commitDraft(saveImmediately: true)
                     Task {
-                        if let runningInstanceToRestart {
-                            await store.restartSelectedConfig(replacing: runningInstanceToRestart)
-                        } else if selectedConfigIsRunning {
+                        if let runningInstanceToRestart, let configIDToRestart {
+                            await store.restartSelectedConfig(
+                                replacing: runningInstanceToRestart,
+                                configID: configIDToRestart
+                            )
+                        } else if selectedConfigCanStop {
                             await store.stopSelectedConfig()
                         } else {
                             await store.runSelectedConfig()
@@ -403,8 +407,8 @@ struct ContentView: View {
         }
     }
 
-    private var selectedConfigIsRunning: Bool {
-        if draftIsDirty, store.selectedConfigIsRunning { return true }
+    private var selectedConfigCanStop: Bool {
+        if draftIsDirty, store.selectedConfigCanStop { return true }
         guard
             let config = draftConfigID == store.selectedConfigID
                 ? draftConfig : store.selectedConfig
@@ -413,7 +417,11 @@ struct ContentView: View {
     }
 
     private var selectedConfigNeedsRestart: Bool {
-        draftIsDirty && store.selectedConfigIsRunning
+        draftIsDirty && store.selectedConfigCanStop
+    }
+
+    private var selectedConfigIsReady: Bool {
+        selectedConfigCanStop && store.selectedRuntimeReadinessPhase == .ready
     }
 
     private var deleteConfirmationNetworkName: String {
@@ -438,21 +446,25 @@ struct ContentView: View {
         if store.isBusy { return "Working" }
         if selectedConfigNeedsRestart { return "Restart" }
         if selectedConfigHasRuntimeError { return "Stop" }
-        return selectedConfigIsRunning ? "Pause" : "Run"
+        if selectedConfigCanStop { return selectedConfigIsReady ? "Pause" : "Stop" }
+        return "Run"
     }
 
     private var connectionActionSystemImage: String {
         if store.isBusy { return "hourglass" }
         if selectedConfigNeedsRestart { return "arrow.clockwise" }
         if selectedConfigHasRuntimeError { return "stop.fill" }
-        return selectedConfigIsRunning ? "pause.fill" : "play.fill"
+        if selectedConfigCanStop { return selectedConfigIsReady ? "pause.fill" : "stop.fill" }
+        return "play.fill"
     }
 
     private var connectionActionHelp: String {
         if store.isBusy { return "Working" }
         if selectedConfigNeedsRestart { return "Restart selected network" }
         if selectedConfigHasRuntimeError { return "Stop selected network" }
-        return selectedConfigIsRunning ? "Pause selected network" : "Run selected network"
+        if selectedConfigIsReady { return "Pause selected network" }
+        if selectedConfigCanStop { return "Stop selected network while it is starting" }
+        return "Run selected network"
     }
 
     private func applyRemoteToolbarPatch() async {
@@ -468,14 +480,16 @@ struct ContentView: View {
         if store.remoteConfigSession?.hasUnsavedChanges == true {
             guard await store.applyRemoteConfigPatch() else { return }
         }
-        guard let runningInstance = store.selectedRunningInstance else { return }
-        await store.restartSelectedConfig(replacing: runningInstance)
+        guard let runningInstance = store.selectedRunningInstance,
+              let configID = store.selectedConfigID
+        else { return }
+        await store.restartSelectedConfig(replacing: runningInstance, configID: configID)
         if store.lastError == nil {
             let networkName = store.selectedConfig?.network_name ?? "selected network"
             if appliedRemoteChanges {
-                store.recordNotice("Applied remote changes and restarted \(networkName).")
+                store.recordNotice("Applied remote changes and requested a restart for \(networkName).")
             } else {
-                store.recordNotice("Restarted \(networkName).")
+                store.recordNotice("Restart requested for \(networkName).")
             }
         }
     }
@@ -483,10 +497,17 @@ struct ContentView: View {
     private func connectionState(for config: NetworkConfig) -> ConnectionGlyphState {
         if store.lastError != nil, store.selectedConfigID == config.id { return .error }
         if store.isBusy, store.selectedConfigID == config.id { return .connecting }
-        if let instance = store.runningInstance(matching: config) {
+        switch store.runtimeReadinessPhase(matching: config) {
+        case .stopped:
+            return .idle
+        case .starting:
+            return .connecting
+        case .ready:
+            guard let instance = store.runningInstance(matching: config) else { return .idle }
             return store.instanceIsFullyConnected(instance) ? .connected : .connecting
+        case .failed:
+            return .error
         }
-        return .idle
     }
 
     private var networkSearchQuery: SearchQuery {
@@ -773,7 +794,7 @@ struct ContentView: View {
     }
 
     private func requestDeleteSelectedConfig() {
-        if selectedConfigIsRunning {
+        if selectedConfigCanStop {
             showingDeleteRunningNetworkConfirmation = true
         } else {
             deleteSelectedConfig()

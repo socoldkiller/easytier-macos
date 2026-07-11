@@ -589,6 +589,44 @@ import Testing
 }
 
 @MainActor
+@Test func runSelectedConfigDoesNotStartAfterQuitBegins() async {
+    let client = RecordingToggleClient()
+    let config = NetworkConfig(instance_id: "quit-guard-id", network_name: "quit-guard-network")
+    let store = EasyTierAppStore(client: client)
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+    store.isQuitting = true
+
+    await store.runSelectedConfig()
+
+    #expect(client.runConfigs.isEmpty)
+}
+
+@MainActor
+@Test func restartTargetsConfigMatchingOriginalInstanceAfterSelectionChanges() async {
+    let client = RecordingToggleClient()
+    let originalConfig = NetworkConfig(instance_id: "restart-original-id", network_name: "restart-original")
+    let newlySelectedConfig = NetworkConfig(instance_id: "restart-selected-id", network_name: "restart-selected")
+    let originalInstance = NetworkInstance(
+        instance_id: originalConfig.instance_id,
+        name: originalConfig.network_name,
+        running: true
+    )
+    let store = EasyTierAppStore(client: client)
+    store.configs = [originalConfig, newlySelectedConfig]
+    store.selectedConfigID = newlySelectedConfig.instance_id
+    store.instances = [originalInstance]
+
+    await store.restartSelectedConfig(
+        replacing: originalInstance,
+        configID: originalConfig.instance_id
+    )
+
+    #expect(client.stoppedInstanceNames == [[originalConfig.network_name]])
+    #expect(client.runConfigs.map(\.instance_id) == [originalConfig.instance_id])
+}
+
+@MainActor
 @Test func longSystemSleepRestartsPreviouslyRunningConfig() async throws {
     let client = RecordingToggleClient()
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "wake-secret"])
@@ -597,9 +635,22 @@ import Testing
 
     store.configs = [config]
     store.selectedConfigID = config.instance_id
-    store.instances = [NetworkInstance(instance_id: config.instance_id, name: config.network_name, running: true)]
+    let readyDetail = NetworkInstanceRunningInfo(
+        my_node_info: NodeInfo(ipv4_addr: "10.0.64.1/24", hostname: "local", peer_id: 7),
+        running: true,
+        instance_id: config.instance_id
+    )
+    store.instances = [
+        NetworkInstance(
+            instance_id: config.instance_id,
+            name: config.network_name,
+            running: true,
+            detail: readyDetail
+        ),
+    ]
+    store.runtimeDetails = [config.network_name: readyDetail]
     client.networkInfos = [
-        config.network_name: NetworkInstanceRunningInfo(running: true, instance_id: config.instance_id),
+        config.network_name: readyDetail,
     ]
 
     store.handleSystemWillSleep(now: Date(timeIntervalSince1970: 100))
@@ -608,6 +659,30 @@ import Testing
     #expect(client.stoppedInstanceNames == [[config.network_name]])
     #expect(client.runConfigs.map(\.instance_id) == [config.instance_id])
     #expect(client.runConfigs.first?.network_secret == "wake-secret")
+}
+
+@MainActor
+@Test func longSystemSleepDoesNotRestartStartingConfig() async {
+    let client = RecordingToggleClient()
+    let config = NetworkConfig(instance_id: "starting-wake-id", network_name: "starting-office")
+    let store = EasyTierAppStore(client: client)
+
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+    store.instances = [
+        NetworkInstance(
+            instance_id: config.instance_id,
+            name: config.network_name,
+            running: true,
+            detail: NetworkInstanceRunningInfo(running: true, instance_id: config.instance_id)
+        ),
+    ]
+
+    store.handleSystemWillSleep(now: Date(timeIntervalSince1970: 100))
+    await store.handleSystemDidWake(now: Date(timeIntervalSince1970: 160))
+
+    #expect(client.stoppedInstanceNames.isEmpty)
+    #expect(client.runConfigs.isEmpty)
 }
 
 @MainActor
@@ -1121,6 +1196,25 @@ import Testing
 }
 
 @MainActor
+@Test func runtimePollingContinuesWhileAViewIsScrolling() async {
+    let client = BlockingRuntimeMutationClient()
+    let store = EasyTierAppStore(client: client)
+    store.isAnyViewScrolling = true
+
+    store.startPolling()
+    defer { store.stopPolling() }
+
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: .seconds(3))
+    var counts = await client.counts()
+    while counts.collects == 0, clock.now < deadline {
+        try? await Task.sleep(for: .milliseconds(50))
+        counts = await client.counts()
+    }
+    #expect(counts.collects >= 1)
+}
+
+@MainActor
 @Test func applyModeConfiguresRPCPortal() async throws {
     let client = RecordingToggleClient()
     let store = EasyTierAppStore(client: client)
@@ -1452,7 +1546,7 @@ import Testing
 }
 
 @MainActor
-@Test func runSelectedConfigKeepsPendingInstanceWhenRuntimeListIsInitiallyEmpty() async throws {
+@Test func runSelectedConfigKeepsPendingInstanceStartingWhenRuntimeListIsInitiallyEmpty() async throws {
     let client = PendingStartClient()
     let config = NetworkConfig(instance_id: "pending-id", network_name: "pending-network")
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -1469,6 +1563,10 @@ import Testing
     #expect(selected.name == config.network_name)
     #expect(selected.running)
     #expect(selected.detail?.running == true)
+    #expect(store.selectedConfigCanStop)
+    #expect(store.selectedConfigIsRunning)
+    #expect(!store.selectedConfigIsReady)
+    #expect(store.selectedRuntimeReadinessPhase == .starting)
     #expect(store.lastError == nil)
 }
 
@@ -1485,7 +1583,7 @@ import Testing
     let config = NetworkConfig(instance_id: "pending-id", network_name: "pending-network")
 
     controller.recordPendingStart(for: config)
-    let pendingChange = try await controller.refreshRuntime(
+    let pendingResult = try await controller.refreshRuntime(
         currentInstances: [],
         currentRuntimeDetails: [:],
         currentStatusMetrics: [:],
@@ -1493,15 +1591,21 @@ import Testing
         currentTrafficSamplingStatus: [:],
         selectedTab: .status
     )
+    let pendingChange = try #require(pendingResult)
 
     #expect(pendingChange.state.instances.map(\.instance_id) == [config.instance_id])
     #expect(pendingChange.state.instances.first?.detail?.running == true)
+    #expect(pendingChange.state.instances.first?.runtimeReadinessPhase(requiresTUN: true) == .starting)
     #expect(sleepPreventer.isPreventingSystemSleep)
 
     client.networkInfos = [
-        config.network_name: NetworkInstanceRunningInfo(running: true, instance_id: config.instance_id),
+        config.network_name: NetworkInstanceRunningInfo(
+            my_node_info: NodeInfo(hostname: "local", peer_id: 7),
+            running: true,
+            instance_id: config.instance_id
+        ),
     ]
-    let runningChange = try await controller.refreshRuntime(
+    let startingRuntimeResult = try await controller.refreshRuntime(
         currentInstances: pendingChange.state.instances,
         currentRuntimeDetails: pendingChange.state.runtimeDetails,
         currentStatusMetrics: pendingChange.state.statusMetricsByInstance,
@@ -1509,9 +1613,492 @@ import Testing
         currentTrafficSamplingStatus: pendingChange.state.trafficSamplingStatusByInstance,
         selectedTab: .status
     )
+    let startingRuntimeChange = try #require(startingRuntimeResult)
+
+    #expect(startingRuntimeChange.state.instances.first?.detail?.my_node_info != nil)
+    #expect(startingRuntimeChange.state.instances.first?.runtimeReadinessPhase(requiresTUN: true) == .starting)
+
+    client.collectError = EasyTierCoreError.operationFailed("temporary collect failure")
+    let failedCollectResult = try await controller.refreshRuntime(
+        currentInstances: startingRuntimeChange.state.instances,
+        currentRuntimeDetails: startingRuntimeChange.state.runtimeDetails,
+        currentStatusMetrics: startingRuntimeChange.state.statusMetricsByInstance,
+        currentTrafficSamples: startingRuntimeChange.state.trafficSamplesByInstance,
+        currentTrafficSamplingStatus: startingRuntimeChange.state.trafficSamplingStatusByInstance,
+        selectedTab: .status
+    )
+    let failedCollectChange = try #require(failedCollectResult)
+
+    #expect(failedCollectChange.state.instances.map(\.instance_id) == [config.instance_id])
+    #expect(failedCollectChange.state.instances.first?.runtimeReadinessPhase(requiresTUN: true) == .starting)
+    #expect(sleepPreventer.isPreventingSystemSleep)
+
+    client.collectError = nil
+    client.networkInfos = [
+        config.network_name: NetworkInstanceRunningInfo(
+            my_node_info: NodeInfo(ipv4_addr: "10.0.64.1/24", hostname: "local", peer_id: 7),
+            running: true,
+            instance_id: config.instance_id
+        ),
+    ]
+    let runningResult = try await controller.refreshRuntime(
+        currentInstances: failedCollectChange.state.instances,
+        currentRuntimeDetails: failedCollectChange.state.runtimeDetails,
+        currentStatusMetrics: failedCollectChange.state.statusMetricsByInstance,
+        currentTrafficSamples: failedCollectChange.state.trafficSamplesByInstance,
+        currentTrafficSamplingStatus: failedCollectChange.state.trafficSamplingStatusByInstance,
+        selectedTab: .status
+    )
+    let runningChange = try #require(runningResult)
 
     #expect(runningChange.state.instances.map(\.instance_id) == [config.instance_id])
     #expect(runningChange.state.instances.map(\.name) == [config.network_name])
+    #expect(runningChange.state.instances.first?.runtimeReadinessPhase(requiresTUN: true) == .ready)
+}
+
+@MainActor
+@Test func pendingStartCanBeStoppedWithoutStartingAgain() async {
+    let client = RecordingToggleClient()
+    let config = NetworkConfig(instance_id: "pending-id", network_name: "pending-network")
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+
+    await store.runSelectedConfig()
+    #expect(store.selectedRuntimeReadinessPhase == .starting)
+
+    await store.toggleSelectedConfigConnection()
+
+    #expect(client.runConfigs.map(\.instance_id) == [config.instance_id])
+    #expect(client.stoppedInstanceNames == [[config.network_name]])
+    #expect(!store.selectedConfigCanStop)
+    #expect(!store.selectedConfigIsRunning)
+    #expect(store.selectedRuntimeReadinessPhase == .stopped)
+}
+
+@MainActor
+@Test func newerRuntimeRefreshWinsWhenOlderRefreshCompletesLast() async {
+    let client = ControlledRuntimeRefreshClient()
+    let config = NetworkConfig(instance_id: "refresh-id", network_name: "refresh-network")
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+
+    let olderRefresh = Task { await store.refreshRuntime() }
+    await client.waitForRequest(0)
+    let newerRefresh = Task { await store.refreshRuntime() }
+    await client.waitForRequest(1)
+
+    let readyDetail = NetworkInstanceRunningInfo(
+        my_node_info: NodeInfo(ipv4_addr: "10.0.64.1/24", hostname: "local", peer_id: 7),
+        running: true,
+        instance_id: config.instance_id
+    )
+    await client.resolveRequest(1, with: [config.network_name: readyDetail])
+    await newerRefresh.value
+    await client.resolveRequest(0, with: [:])
+    await olderRefresh.value
+
+    #expect(store.selectedRuntimeReadinessPhase == .ready)
+    #expect(store.selectedConfigCanStop)
+    #expect(store.selectedRuntimeDetail == readyDetail)
+}
+
+@MainActor
+@Test func completedRuntimeRefreshCanPublishWhileNewerRefreshIsStillInFlight() async {
+    let client = ControlledRuntimeRefreshClient()
+    let config = NetworkConfig(instance_id: "completion-id", network_name: "completion-network")
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+
+    let firstRefresh = Task { await store.refreshRuntime() }
+    await client.waitForRequest(0)
+    let secondRefresh = Task { await store.refreshRuntime() }
+    await client.waitForRequest(1)
+
+    let readyDetail = NetworkInstanceRunningInfo(
+        my_node_info: NodeInfo(ipv4_addr: "10.0.64.1/24", hostname: "local", peer_id: 7),
+        running: true,
+        instance_id: config.instance_id
+    )
+    await client.resolveRequest(0, with: [config.network_name: readyDetail])
+    await firstRefresh.value
+
+    #expect(store.selectedRuntimeReadinessPhase == .ready)
+
+    await client.resolveRequest(1, with: [config.network_name: readyDetail])
+    await secondRefresh.value
+    #expect(store.selectedRuntimeReadinessPhase == .ready)
+}
+
+@MainActor
+@Test func staleRuntimeRefreshDoesNotClearNewPendingStart() async throws {
+    let client = RecordingToggleClient()
+    let controller = RuntimeSessionController(
+        privilegedClient: client,
+        inProcessClient: client,
+        helperRegistration: nil,
+        systemSleepPreventer: RecordingSystemSleepPreventer()
+    )
+    let config = NetworkConfig(instance_id: "pending-generation-id", network_name: "pending-generation-network")
+    controller.recordPendingStart(for: config)
+    client.networkInfos = [
+        config.network_name: NetworkInstanceRunningInfo(
+            my_node_info: NodeInfo(ipv4_addr: "10.0.64.1/24", hostname: "stale", peer_id: 7),
+            running: true,
+            instance_id: config.instance_id
+        ),
+    ]
+
+    let staleChange = try await controller.refreshRuntime(
+        currentInstances: [],
+        currentRuntimeDetails: [:],
+        currentStatusMetrics: [:],
+        currentTrafficSamples: [:],
+        currentTrafficSamplingStatus: [:],
+        selectedTab: .status,
+        shouldApply: { false }
+    )
+    #expect(staleChange == nil)
+
+    client.networkInfos = [:]
+    let currentResult = try await controller.refreshRuntime(
+        currentInstances: [],
+        currentRuntimeDetails: [:],
+        currentStatusMetrics: [:],
+        currentTrafficSamples: [:],
+        currentTrafficSamplingStatus: [:],
+        selectedTab: .status
+    )
+    let currentChange = try #require(currentResult)
+
+    #expect(currentChange.state.instances.map(\.instance_id) == [config.instance_id])
+    #expect(currentChange.state.instances.first?.runtimeReadinessPhase(requiresTUN: true) == .starting)
+}
+
+@MainActor
+@Test func noTunRuntimeClearsPendingWithoutWaitingForVirtualIPv4() async throws {
+    let client = RecordingToggleClient()
+    let controller = RuntimeSessionController(
+        privilegedClient: client,
+        inProcessClient: client,
+        helperRegistration: nil,
+        systemSleepPreventer: RecordingSystemSleepPreventer()
+    )
+    let config = NetworkConfig(
+        instance_id: "no-tun-pending-id",
+        network_name: "no-tun-pending-network",
+        no_tun: true
+    )
+    controller.recordPendingStart(for: config)
+    client.networkInfos = [
+        config.network_name: NetworkInstanceRunningInfo(
+            my_node_info: NodeInfo(hostname: "local", peer_id: 7),
+            running: true,
+            instance_id: config.instance_id
+        ),
+    ]
+
+    let readyResult = try await controller.refreshRuntime(
+        currentInstances: [],
+        currentRuntimeDetails: [:],
+        currentStatusMetrics: [:],
+        currentTrafficSamples: [:],
+        currentTrafficSamplingStatus: [:],
+        selectedTab: .status
+    )
+    let readyChange = try #require(readyResult)
+    #expect(readyChange.state.instances.first?.runtimeReadinessPhase(requiresTUN: false) == .ready)
+
+    client.networkInfos = [:]
+    let stoppedResult = try await controller.refreshRuntime(
+        currentInstances: readyChange.state.instances,
+        currentRuntimeDetails: readyChange.state.runtimeDetails,
+        currentStatusMetrics: readyChange.state.statusMetricsByInstance,
+        currentTrafficSamples: readyChange.state.trafficSamplesByInstance,
+        currentTrafficSamplingStatus: readyChange.state.trafficSamplingStatusByInstance,
+        selectedTab: .status
+    )
+    let stoppedChange = try #require(stoppedResult)
+    #expect(stoppedChange.state.instances.isEmpty)
+}
+
+@MainActor
+@Test func runtimeMutationInvalidatesRefreshThatStartedBeforeFailedStop() async {
+    let client = ControlledRuntimeRefreshClient()
+    let config = NetworkConfig(instance_id: "generation-id", network_name: "generation-network")
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+    let readyDetail = NetworkInstanceRunningInfo(
+        my_node_info: NodeInfo(ipv4_addr: "10.0.64.1/24", hostname: "local", peer_id: 7),
+        running: true,
+        instance_id: config.instance_id
+    )
+    let readyInstance = NetworkInstance(
+        instance_id: config.instance_id,
+        name: config.network_name,
+        running: true,
+        detail: readyDetail
+    )
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+    store.instances = [readyInstance]
+    store.runtimeDetails = [config.network_name: readyDetail]
+
+    let staleRefresh = Task { await store.refreshRuntime() }
+    await client.waitForRequest(0)
+    await client.setStopErrorMessage("stop failed")
+
+    let stopTask = Task { await store.stopSelectedConfig() }
+    await client.waitForRequest(1)
+    await client.resolveRequest(1, with: [config.network_name: readyDetail])
+    await stopTask.value
+    await client.resolveRequest(0, with: [:])
+    await staleRefresh.value
+
+    #expect(store.lastError?.contains("stop failed") == true)
+    #expect(store.selectedRuntimeReadinessPhase == .ready)
+    #expect(store.selectedRunningInstance == readyInstance)
+}
+
+@MainActor
+@Test func ambientRefreshDoesNotPublishWhileStopIsInProgress() async {
+    let config = NetworkConfig(instance_id: "stop-lock-id", network_name: "stop-lock-network")
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let readyDetail = NetworkInstanceRunningInfo(
+        my_node_info: NodeInfo(ipv4_addr: "10.0.64.1/24", hostname: "local", peer_id: 7),
+        running: true,
+        instance_id: config.instance_id
+    )
+    let client = BlockingRuntimeMutationClient(
+        blocksStop: true,
+        networkInfos: [config.network_name: readyDetail]
+    )
+    let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+    store.instances = [NetworkInstance(
+        instance_id: config.instance_id,
+        name: config.network_name,
+        running: true,
+        detail: readyDetail
+    )]
+    store.runtimeDetails = [config.network_name: readyDetail]
+
+    let stopTask = Task { await store.stopSelectedConfig() }
+    await client.waitForStopRequest()
+    await store.refreshRuntime()
+
+    let countsWhileStopping = await client.counts()
+    #expect(countsWhileStopping.collects == 0)
+    #expect(store.selectedRuntimeReadinessPhase == .ready)
+
+    await client.failStop(message: "stop failed")
+    await stopTask.value
+
+    #expect(store.lastError?.contains("stop failed") == true)
+    #expect(store.selectedRuntimeReadinessPhase == .ready)
+}
+
+@MainActor
+@Test func restartRunFailureAfterSuccessfulStopPublishesStoppedState() async {
+    let client = RecordingToggleClient()
+    client.runError = EasyTierCoreError.operationFailed("restart run failed")
+    let config = NetworkConfig(instance_id: "restart-failure-id", network_name: "restart-failure-network")
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+    let readyDetail = NetworkInstanceRunningInfo(
+        my_node_info: NodeInfo(ipv4_addr: "10.0.64.1/24", hostname: "local", peer_id: 7),
+        running: true,
+        instance_id: config.instance_id
+    )
+    let readyInstance = NetworkInstance(
+        instance_id: config.instance_id,
+        name: config.network_name,
+        running: true,
+        detail: readyDetail
+    )
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+    store.instances = [readyInstance]
+    store.runtimeDetails = [config.network_name: readyDetail]
+
+    await store.restartSelectedConfig(replacing: readyInstance)
+
+    #expect(client.stoppedInstanceNames == [[config.network_name]])
+    #expect(client.runConfigs.map(\.instance_id) == [config.instance_id])
+    #expect(store.lastError?.contains("restart run failed") == true)
+    #expect(!store.selectedConfigCanStop)
+    #expect(store.selectedRuntimeReadinessPhase == .stopped)
+}
+
+@MainActor
+@Test func quitWaitsForInFlightRunThenStopsTheStartedRuntime() async {
+    let client = BlockingRuntimeMutationClient(blocksRun: true)
+    let config = NetworkConfig(instance_id: "quit-lock-id", network_name: "quit-lock-network")
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+
+    let runTask = Task { await store.runSelectedConfig() }
+    await client.waitForRunRequest()
+    let quitTask = Task { await store.prepareForAppQuit() }
+    for _ in 0..<10 { await Task.yield() }
+    let countsBeforeRunCompletes = await client.counts()
+    #expect(countsBeforeRunCompletes.retains == 0)
+
+    await client.resumeRun()
+    await runTask.value
+    await quitTask.value
+
+    let counts = await client.counts()
+    #expect(counts.runs == 1)
+    #expect(counts.retains == 1)
+    #expect(store.isQuitting)
+    #expect(store.selectedRuntimeReadinessPhase == .stopped)
+}
+
+@MainActor
+@Test func queuedConnectionToggleReevaluatesStateAfterInFlightRun() async {
+    let client = BlockingRuntimeMutationClient(blocksRun: true)
+    let config = NetworkConfig(instance_id: "toggle-lock-id", network_name: "toggle-lock-network")
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+
+    let firstToggle = Task { await store.toggleSelectedConfigConnection() }
+    await client.waitForRunRequest()
+    let secondToggle = Task { await store.toggleSelectedConfigConnection() }
+    await client.resumeRun()
+    await firstToggle.value
+    await secondToggle.value
+
+    let counts = await client.counts()
+    #expect(counts.runs == 1)
+    #expect(counts.stops == 1)
+    #expect(store.selectedRuntimeReadinessPhase == .stopped)
+}
+
+@MainActor
+@Test func userStopDuringWakeRefreshCancelsAutomaticRecovery() async {
+    let client = ControlledRuntimeRefreshClient()
+    let config = NetworkConfig(instance_id: "wake-cancel-id", network_name: "wake-cancel-network")
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+    let readyDetail = NetworkInstanceRunningInfo(
+        my_node_info: NodeInfo(ipv4_addr: "10.0.64.1/24", hostname: "local", peer_id: 7),
+        running: true,
+        instance_id: config.instance_id
+    )
+    let readyInstance = NetworkInstance(
+        instance_id: config.instance_id,
+        name: config.network_name,
+        running: true,
+        detail: readyDetail
+    )
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+    store.instances = [readyInstance]
+    store.runtimeDetails = [config.network_name: readyDetail]
+
+    let sleepDate = Date(timeIntervalSince1970: 10_000)
+    store.handleSystemWillSleep(now: sleepDate)
+    let wakeTask = Task { await store.handleSystemDidWake(now: sleepDate.addingTimeInterval(31)) }
+    await client.waitForRequest(0)
+
+    let stopTask = Task { await store.stopSelectedConfig() }
+    await client.waitForRequest(1)
+    await client.resolveRequest(1, with: [:])
+    await stopTask.value
+    await client.resolveRequest(0, with: [config.network_name: readyDetail])
+    await wakeTask.value
+
+    let counts = await client.operationCounts()
+    #expect(counts.runs == 0)
+    #expect(counts.stops == 1)
+    #expect(store.selectedRuntimeReadinessPhase == .stopped)
+}
+
+@MainActor
+@Test func userStopAfterSleepBeginsCancelsAutomaticRecovery() async {
+    let client = RecordingToggleClient()
+    let config = NetworkConfig(instance_id: "sleep-generation-id", network_name: "sleep-generation-network")
+    let readyDetail = NetworkInstanceRunningInfo(
+        my_node_info: NodeInfo(ipv4_addr: "10.0.64.1/24", hostname: "local", peer_id: 7),
+        running: true,
+        instance_id: config.instance_id
+    )
+    let store = EasyTierAppStore(client: client)
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+    store.instances = [
+        NetworkInstance(
+            instance_id: config.instance_id,
+            name: config.network_name,
+            running: true,
+            detail: readyDetail
+        ),
+    ]
+    store.runtimeDetails = [config.network_name: readyDetail]
+    client.networkInfos = [config.network_name: readyDetail]
+
+    let sleepDate = Date(timeIntervalSince1970: 15_000)
+    store.handleSystemWillSleep(now: sleepDate)
+    client.networkInfos = [:]
+    await store.stopSelectedConfig()
+    await store.handleSystemDidWake(now: sleepDate.addingTimeInterval(31))
+
+    #expect(client.stoppedInstanceNames == [[config.network_name]])
+    #expect(client.runConfigs.isEmpty)
+    #expect(store.selectedRuntimeReadinessPhase == .stopped)
+}
+
+@MainActor
+@Test func stopInProgressWhenSleepBeginsIsNotAutomaticallyReversedAfterWake() async {
+    let config = NetworkConfig(instance_id: "sleep-stop-id", network_name: "sleep-stop-network")
+    let readyDetail = NetworkInstanceRunningInfo(
+        my_node_info: NodeInfo(ipv4_addr: "10.0.64.1/24", hostname: "local", peer_id: 7),
+        running: true,
+        instance_id: config.instance_id
+    )
+    let client = BlockingRuntimeMutationClient(
+        blocksStop: true,
+        networkInfos: [config.network_name: readyDetail]
+    )
+    let store = EasyTierAppStore(client: client)
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+    store.instances = [
+        NetworkInstance(
+            instance_id: config.instance_id,
+            name: config.network_name,
+            running: true,
+            detail: readyDetail
+        ),
+    ]
+    store.runtimeDetails = [config.network_name: readyDetail]
+
+    let stopTask = Task { await store.stopSelectedConfig() }
+    await client.waitForStopRequest()
+    let sleepDate = Date(timeIntervalSince1970: 20_000)
+    store.handleSystemWillSleep(now: sleepDate)
+    await client.setNetworkInfos([:])
+    await client.resumeStop()
+    await stopTask.value
+
+    await store.handleSystemDidWake(now: sleepDate.addingTimeInterval(31))
+
+    let counts = await client.counts()
+    #expect(counts.runs == 0)
+    #expect(counts.stops == 1)
+    #expect(store.selectedRuntimeReadinessPhase == .stopped)
 }
 
 @Test func runtimeTrafficSnapshotPrecomputesDisplaySamples() throws {
@@ -1622,6 +2209,308 @@ import Testing
     #expect(RuntimeTrafficSnapshot.empty.windowStart == nil)
     #expect(RuntimeTrafficSnapshot.empty.windowEnd == nil)
     #expect(RuntimeTrafficSnapshot.empty.latest == nil)
+}
+
+@Test func runtimeStatusSnapshotKeepsTUNRuntimeStartingUntilVirtualIPv4Appears() {
+    let config = NetworkConfig(instance_id: "dhcp-id", network_name: "dhcp-network")
+    let startingDetail = NetworkInstanceRunningInfo(
+        my_node_info: NodeInfo(hostname: "local", peer_id: 7),
+        running: true,
+        instance_id: config.instance_id
+    )
+    let instance = NetworkInstance(
+        instance_id: config.instance_id,
+        name: config.network_name,
+        running: true,
+        detail: startingDetail
+    )
+
+    let starting = RuntimeStatusSnapshot.build(
+        selectedConfig: config,
+        runningInstance: instance,
+        runtimeDetail: startingDetail,
+        memberStatusMetricsByID: nil
+    )
+
+    #expect(instance.isFullyConnected)
+    #expect(starting.runtimeReadinessPhase == .starting)
+    #expect(!starting.isFullyConnected)
+
+    let readyDetail = NetworkInstanceRunningInfo(
+        my_node_info: NodeInfo(
+            virtual_ipv4: IPv4InetValue(rawValue: "10.0.64.1/24"),
+            hostname: "local",
+            peer_id: 7
+        ),
+        running: true,
+        instance_id: config.instance_id
+    )
+    let ready = RuntimeStatusSnapshot.build(
+        selectedConfig: config,
+        runningInstance: instance,
+        runtimeDetail: readyDetail,
+        memberStatusMetricsByID: nil
+    )
+
+    #expect(ready.runtimeReadinessPhase == .ready)
+    #expect(ready.isFullyConnected)
+}
+
+@Test func runtimeStatusSnapshotShowsAvailableTopologyWhileStaticTUNIsStarting() {
+    let config = NetworkConfig(
+        instance_id: "static-starting-id",
+        dhcp: false,
+        virtual_ipv4: "10.0.64.7",
+        network_length: 24,
+        network_name: "static-starting-network"
+    )
+    let detail = NetworkInstanceRunningInfo(
+        my_node_info: NodeInfo(hostname: "local", peer_id: 7),
+        peer_route_pairs: [
+            PeerRoutePair(
+                route: Route(
+                    peer_id: 8,
+                    ipv4_addr: IPv4InetValue(rawValue: "10.0.64.8/24"),
+                    cost: 1,
+                    hostname: "peer"
+                ),
+                peer: PeerInfo(
+                    peer_id: 8,
+                    conns: [
+                        PeerConnInfo(
+                            conn_id: "peer-connection",
+                            peer_id: 8,
+                            tunnel: TunnelInfo(tunnel_type: "tcp")
+                        ),
+                    ]
+                )
+            ),
+        ],
+        running: true,
+        instance_id: config.instance_id
+    )
+    let instance = NetworkInstance(
+        instance_id: config.instance_id,
+        name: config.network_name,
+        running: true,
+        detail: detail
+    )
+
+    let snapshot = RuntimeStatusSnapshot.build(
+        selectedConfig: config,
+        runningInstance: instance,
+        runtimeDetail: nil,
+        memberStatusMetricsByID: nil
+    )
+
+    #expect(snapshot.runtimeReadinessPhase == .starting)
+    #expect(snapshot.members.map(\.hostname) == ["local", "peer"])
+    #expect(snapshot.members.first(where: \.isLocal)?.virtualIPv4 == "10.0.64.7/24")
+}
+
+@Test func runtimeStatusSnapshotDoesNotPresentConfiguredStaticIPv4AfterRuntimeFailure() throws {
+    let config = NetworkConfig(
+        instance_id: "failed-static-id",
+        dhcp: false,
+        virtual_ipv4: "10.0.64.7",
+        network_length: 24,
+        network_name: "failed-static-network"
+    )
+    let detail = NetworkInstanceRunningInfo(
+        my_node_info: NodeInfo(hostname: "local", peer_id: 7),
+        running: false,
+        instance_id: config.instance_id
+    )
+    let instance = NetworkInstance(
+        instance_id: config.instance_id,
+        name: config.network_name,
+        running: true,
+        detail: detail
+    )
+
+    let snapshot = RuntimeStatusSnapshot.build(
+        selectedConfig: config,
+        runningInstance: instance,
+        runtimeDetail: detail,
+        memberStatusMetricsByID: nil
+    )
+
+    #expect(snapshot.runtimeReadinessPhase == .failed)
+    let localMember = try #require(snapshot.members.first { $0.isLocal })
+    #expect(localMember.copyableIPv4Address == nil)
+}
+
+@Test func runtimeStatusSnapshotTreatsNoTunRuntimeAsReadyWithoutVirtualIPv4() {
+    let config = NetworkConfig(
+        instance_id: "no-tun-id",
+        network_name: "no-tun-network",
+        no_tun: true
+    )
+    let detail = NetworkInstanceRunningInfo(
+        my_node_info: NodeInfo(hostname: "local", peer_id: 7),
+        running: true,
+        instance_id: config.instance_id
+    )
+    let instance = NetworkInstance(
+        instance_id: config.instance_id,
+        name: config.network_name,
+        running: true,
+        detail: detail
+    )
+
+    let snapshot = RuntimeStatusSnapshot.build(
+        selectedConfig: config,
+        runningInstance: instance,
+        runtimeDetail: detail,
+        memberStatusMetricsByID: nil
+    )
+
+    #expect(snapshot.runtimeReadinessPhase == .ready)
+    #expect(snapshot.isFullyConnected)
+}
+
+@Test func runtimeStatusSnapshotReportsRuntimeFailureBeforeReadiness() {
+    let config = NetworkConfig(instance_id: "failed-id", network_name: "failed-network")
+    let detail = NetworkInstanceRunningInfo(
+        events: [
+            #"{"event":{"TunDeviceError":"permission denied"}}"#,
+            #"{"event":{"TunDeviceReady":"utun8"}}"#,
+        ],
+        running: true,
+        instance_id: config.instance_id
+    )
+    let instance = NetworkInstance(
+        instance_id: config.instance_id,
+        name: config.network_name,
+        running: true,
+        detail: detail
+    )
+
+    let snapshot = RuntimeStatusSnapshot.build(
+        selectedConfig: config,
+        runningInstance: instance,
+        runtimeDetail: detail,
+        memberStatusMetricsByID: nil
+    )
+
+    #expect(snapshot.runtimeReadinessPhase == .failed)
+    #expect(snapshot.runtimeError == "TUN device error: permission denied")
+    #expect(!snapshot.isFullyConnected)
+
+    let haltedDetail = NetworkInstanceRunningInfo(
+        my_node_info: NodeInfo(ipv4_addr: "10.0.64.1/24", hostname: "local", peer_id: 7),
+        running: false,
+        instance_id: config.instance_id
+    )
+    let halted = RuntimeStatusSnapshot.build(
+        selectedConfig: config,
+        runningInstance: instance,
+        runtimeDetail: haltedDetail,
+        memberStatusMetricsByID: nil
+    )
+
+    #expect(halted.runtimeReadinessPhase == .failed)
+    #expect(halted.runtimeError == "EasyTier reported that this network stopped unexpectedly.")
+    #expect(!halted.isFullyConnected)
+}
+
+@Test func runtimeStatusSnapshotIgnoresTunFailureSupersededByReadyEvent() {
+    let config = NetworkConfig(instance_id: "recovered-tun-id", network_name: "recovered-tun-network")
+    let detail = NetworkInstanceRunningInfo(
+        my_node_info: NodeInfo(ipv4_addr: "10.0.64.1/24", hostname: "local", peer_id: 7),
+        events: [
+            #"{"event":{"TunDeviceReady":"utun8"}}"#,
+            #"{"event":{"TunDeviceError":"temporary failure"}}"#,
+        ],
+        running: true,
+        instance_id: config.instance_id
+    )
+    let instance = NetworkInstance(
+        instance_id: config.instance_id,
+        name: config.network_name,
+        running: true,
+        detail: detail
+    )
+
+    let snapshot = RuntimeStatusSnapshot.build(
+        selectedConfig: config,
+        runningInstance: instance,
+        runtimeDetail: detail,
+        memberStatusMetricsByID: nil
+    )
+
+    #expect(snapshot.runtimeReadinessPhase == .ready)
+    #expect(snapshot.runtimeError == nil)
+}
+
+@Test func runtimeStatusSnapshotIgnoresListenerFailureSupersededByAddedEvent() {
+    let config = NetworkConfig(
+        instance_id: "recovered-listener-id",
+        network_name: "recovered-listener-network",
+        no_tun: true
+    )
+    let detail = NetworkInstanceRunningInfo(
+        my_node_info: NodeInfo(hostname: "local", peer_id: 7),
+        events: [
+            #"{"event":{"ListenerAdded":"tcp://0.0.0.0:54321"}}"#,
+            #"{"event":{"ListenerAddFailed":["tcp://0.0.0.0:0","address in use"]}}"#,
+        ],
+        running: true,
+        instance_id: config.instance_id
+    )
+    let instance = NetworkInstance(
+        instance_id: config.instance_id,
+        name: config.network_name,
+        running: true,
+        detail: detail
+    )
+
+    let snapshot = RuntimeStatusSnapshot.build(
+        selectedConfig: config,
+        runningInstance: instance,
+        runtimeDetail: detail,
+        memberStatusMetricsByID: nil
+    )
+
+    #expect(snapshot.runtimeReadinessPhase == .ready)
+    #expect(snapshot.runtimeError == nil)
+}
+
+@MainActor
+@Test func runSelectedConfigRemainsStartingUntilTUNAddressAppears() async {
+    let client = RecordingToggleClient()
+    let config = NetworkConfig(instance_id: "dhcp-id", network_name: "dhcp-network")
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+    client.networkInfos = [
+        config.network_name: NetworkInstanceRunningInfo(
+            my_node_info: NodeInfo(hostname: "local", peer_id: 7),
+            running: true,
+            instance_id: config.instance_id
+        ),
+    ]
+
+    await store.runSelectedConfig()
+
+    #expect(store.selectedConfigCanStop)
+    #expect(store.selectedConfigIsRunning)
+    #expect(!store.selectedConfigIsReady)
+    #expect(store.selectedRuntimeReadinessPhase == .starting)
+
+    client.networkInfos = [
+        config.network_name: NetworkInstanceRunningInfo(
+            my_node_info: NodeInfo(ipv4_addr: "10.0.64.1/24", hostname: "local", peer_id: 7),
+            running: true,
+            instance_id: config.instance_id
+        ),
+    ]
+    await store.refreshRuntime()
+
+    #expect(store.selectedConfigIsReady)
+    #expect(store.selectedRuntimeReadinessPhase == .ready)
 }
 
 @Test func runtimeStatusSnapshotAppliesMemberTrafficMetrics() throws {
@@ -1798,10 +2687,33 @@ import Testing
     #expect(client.runConfigs.isEmpty)
     #expect(store.lastErrorIsHelperPermission)
 
+    await store.retryStartAfterHelperApproval()
+    #expect(client.runConfigs.isEmpty)
+
     backend.status = .enabled
     await store.retryStartAfterHelperApproval()
 
     #expect(client.runConfigs.map(\.instance_id) == [config.instance_id])
+}
+
+@MainActor
+@Test func olderHelperApprovalRetryDoesNotOverwriteNewerPendingConfig() throws {
+    let client = RecordingToggleClient()
+    let controller = RuntimeSessionController(
+        privilegedClient: client,
+        inProcessClient: client,
+        helperRegistration: nil,
+        systemSleepPreventer: RecordingSystemSleepPreventer()
+    )
+    let older = NetworkConfig(instance_id: "older-approval-id", network_name: "older-approval")
+    let newer = NetworkConfig(instance_id: "newer-approval-id", network_name: "newer-approval")
+
+    controller.setPendingStartAfterApproval(older)
+    #expect(controller.takePendingStartAfterApproval() == older)
+    controller.setPendingStartAfterApproval(newer)
+    controller.restorePendingStartAfterApprovalIfEmpty(older)
+
+    #expect(controller.takePendingStartAfterApproval() == newer)
 }
 
 @MainActor
@@ -2292,7 +3204,9 @@ private final class RecordingToggleClient: EasyTierCoreClient, EasyTierHelperShu
     var configuredRPCPortalWhitelists: [[String]?] = []
     var jsonRPCCalls: [EasyTierRPCRequest] = []
     var shutdownCount = 0
+    var runError: Error?
     var stopError: Error?
+    var collectError: Error?
     var jsonRPCError: Error?
 
     func validate(toml _: String) async throws {}
@@ -2302,6 +3216,7 @@ private final class RecordingToggleClient: EasyTierCoreClient, EasyTierHelperShu
         if let config = try? NetworkConfigTOMLCodec.decode(toml) {
             runConfigs.append(config)
         }
+        if let runError { throw runError }
     }
 
     func stop(instanceNames: [String]) async throws {
@@ -2313,7 +3228,10 @@ private final class RecordingToggleClient: EasyTierCoreClient, EasyTierHelperShu
         retainedInstanceNames.append(instanceNames)
     }
 
-    func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] { networkInfos }
+    func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] {
+        if let collectError { throw collectError }
+        return networkInfos
+    }
     func configureRPCPortal(_ rpcPortal: String?, whitelist: [String]?) async throws {
         configuredRPCPortals.append(rpcPortal)
         configuredRPCPortalWhitelists.append(whitelist)
@@ -2327,6 +3245,167 @@ private final class RecordingToggleClient: EasyTierCoreClient, EasyTierHelperShu
 
     func shutdownHelper() async throws {
         shutdownCount += 1
+    }
+}
+
+private actor ControlledRuntimeRefreshClient: EasyTierCoreClient {
+    private var collectContinuations: [
+        Int: CheckedContinuation<[String: NetworkInstanceRunningInfo], Error>
+    ] = [:]
+    private var nextRequestID = 0
+    private var stopErrorMessage: String?
+    private var runCount = 0
+    private var stopCount = 0
+
+    func validate(toml _: String) async throws {}
+    func run(toml _: String) async throws {
+        runCount += 1
+    }
+
+    func stop(instanceNames _: [String]) async throws {
+        stopCount += 1
+        if let stopErrorMessage { throw EasyTierCoreError.operationFailed(stopErrorMessage) }
+    }
+
+    func retain(instanceNames _: [String]) async throws {}
+
+    func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] {
+        let requestID = nextRequestID
+        nextRequestID += 1
+        return try await withCheckedThrowingContinuation { continuation in
+            collectContinuations[requestID] = continuation
+        }
+    }
+
+    func configureRPCPortal(_: String?, whitelist _: [String]?) async throws {}
+
+    func callJSONRPC(
+        clientID _: String,
+        url _: URL,
+        service _: String,
+        method _: String,
+        domain _: String?,
+        payload _: String
+    ) async throws -> String {
+        throw EasyTierCoreError.operationFailed("unsupported")
+    }
+
+    func waitForRequest(_ requestID: Int) async {
+        while collectContinuations[requestID] == nil {
+            await Task.yield()
+        }
+    }
+
+    func resolveRequest(
+        _ requestID: Int,
+        with infos: [String: NetworkInstanceRunningInfo]
+    ) {
+        collectContinuations.removeValue(forKey: requestID)?.resume(returning: infos)
+    }
+
+    func setStopErrorMessage(_ message: String?) {
+        stopErrorMessage = message
+    }
+
+    func operationCounts() -> (runs: Int, stops: Int) {
+        (runCount, stopCount)
+    }
+}
+
+private actor BlockingRuntimeMutationClient: EasyTierCoreClient {
+    private let blocksRun: Bool
+    private let blocksStop: Bool
+    private var networkInfos: [String: NetworkInstanceRunningInfo]
+    private var runContinuation: CheckedContinuation<Void, Error>?
+    private var stopContinuation: CheckedContinuation<Void, Error>?
+    private var runCount = 0
+    private var stopCount = 0
+    private var retainCalls: [[String]] = []
+    private var collectCount = 0
+
+    init(
+        blocksRun: Bool = false,
+        blocksStop: Bool = false,
+        networkInfos: [String: NetworkInstanceRunningInfo] = [:]
+    ) {
+        self.blocksRun = blocksRun
+        self.blocksStop = blocksStop
+        self.networkInfos = networkInfos
+    }
+
+    func validate(toml _: String) async throws {}
+
+    func run(toml _: String) async throws {
+        runCount += 1
+        guard blocksRun else { return }
+        try await withCheckedThrowingContinuation { continuation in
+            runContinuation = continuation
+        }
+    }
+
+    func stop(instanceNames _: [String]) async throws {
+        stopCount += 1
+        guard blocksStop else { return }
+        try await withCheckedThrowingContinuation { continuation in
+            stopContinuation = continuation
+        }
+    }
+
+    func retain(instanceNames: [String]) async throws {
+        retainCalls.append(instanceNames)
+    }
+
+    func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] {
+        collectCount += 1
+        return networkInfos
+    }
+
+    func configureRPCPortal(_: String?, whitelist _: [String]?) async throws {}
+
+    func callJSONRPC(
+        clientID _: String,
+        url _: URL,
+        service _: String,
+        method _: String,
+        domain _: String?,
+        payload _: String
+    ) async throws -> String {
+        throw EasyTierCoreError.operationFailed("unsupported")
+    }
+
+    func waitForRunRequest() async {
+        while runContinuation == nil {
+            await Task.yield()
+        }
+    }
+
+    func waitForStopRequest() async {
+        while stopContinuation == nil {
+            await Task.yield()
+        }
+    }
+
+    func resumeRun() {
+        runContinuation?.resume()
+        runContinuation = nil
+    }
+
+    func failStop(message: String) {
+        stopContinuation?.resume(throwing: EasyTierCoreError.operationFailed(message))
+        stopContinuation = nil
+    }
+
+    func resumeStop() {
+        stopContinuation?.resume()
+        stopContinuation = nil
+    }
+
+    func setNetworkInfos(_ infos: [String: NetworkInstanceRunningInfo]) {
+        networkInfos = infos
+    }
+
+    func counts() -> (runs: Int, stops: Int, retains: Int, collects: Int) {
+        (runCount, stopCount, retainCalls.count, collectCount)
     }
 }
 

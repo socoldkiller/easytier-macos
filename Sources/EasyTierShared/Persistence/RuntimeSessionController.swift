@@ -21,6 +21,7 @@ final class RuntimeSessionController {
     private var pendingStartAfterApproval: NetworkConfig?
     private var sleepStartedAt: Date?
     private var runningConfigIDsBeforeSleep: [String] = []
+    private var runtimeOperationGenerationBeforeSleep: UInt64?
     private var notificationTasks: [Task<Void, Never>] = []
     private var wakeRecoveryTask: Task<Void, Never>?
 
@@ -77,6 +78,11 @@ final class RuntimeSessionController {
         pendingStartAfterApproval = config
     }
 
+    func restorePendingStartAfterApprovalIfEmpty(_ config: NetworkConfig) {
+        guard pendingStartAfterApproval == nil else { return }
+        pendingStartAfterApproval = config
+    }
+
     func takePendingStartAfterApproval() -> NetworkConfig? {
         defer { pendingStartAfterApproval = nil }
         return pendingStartAfterApproval
@@ -85,7 +91,8 @@ final class RuntimeSessionController {
     func recordPendingStart(for config: NetworkConfig) {
         pendingStarts[config.instance_id] = PendingNetworkStart(
             instanceID: config.instance_id,
-            name: config.network_name
+            name: config.network_name,
+            requiresTUN: config.requiresTUN
         )
     }
 
@@ -99,8 +106,9 @@ final class RuntimeSessionController {
         currentStatusMetrics: [String: [String: RuntimeMemberStatusMetricsSnapshot]],
         currentTrafficSamples: [String: [TrafficSample]],
         currentTrafficSamplingStatus: [String: RuntimeTrafficSamplingStatus],
-        selectedTab: WorkspaceTab
-    ) async throws -> RuntimePresentationChange {
+        selectedTab: WorkspaceTab,
+        shouldApply: @escaping @MainActor () -> Bool = { true }
+    ) async throws -> RuntimePresentationChange? {
         // Merge runtime info from both the privileged daemon (TUN instances) and
         // the in-process client (no_tun instances). Failures from either side
         // are tolerated so a missing/unapproved helper does not break no_tun.
@@ -113,6 +121,8 @@ final class RuntimeSessionController {
         if let inProcessInfos = try? await inProcessClient.collectNetworkInfos() {
             infos.merge(inProcessInfos) { _, new in new }
         }
+
+        guard shouldApply() else { return nil }
 
         let previousOrder = currentInstances.map(\.name)
         let newNames = infos.keys.filter { !previousOrder.contains($0) }
@@ -149,7 +159,6 @@ final class RuntimeSessionController {
     }
 
     func startPolling(
-        isScrolling: @escaping @MainActor () -> Bool,
         refresh: @escaping @MainActor () async -> Void,
         clearSecretCache: @escaping @MainActor () -> Void,
         handleWillSleep: @escaping @MainActor () -> Void,
@@ -160,7 +169,6 @@ final class RuntimeSessionController {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
                 guard let self, self.pollingEnabled else { continue }
-                if isScrolling() { continue }
                 await refresh()
             }
         }
@@ -190,27 +198,33 @@ final class RuntimeSessionController {
 
     func handleSystemWillSleep(
         now: Date = Date(),
-        configs: [NetworkConfig],
-        runningInstance: (NetworkConfig) -> NetworkInstance?
+        recoverableConfigIDs: [String],
+        operationGeneration: UInt64?
     ) {
         wakeRecoveryTask?.cancel()
         wakeRecoveryTask = nil
         sleepStartedAt = now
-        runningConfigIDsBeforeSleep = configs
-            .filter { runningInstance($0) != nil }
-            .map(\.id)
+        runningConfigIDsBeforeSleep = operationGeneration == nil ? [] : recoverableConfigIDs
+        runtimeOperationGenerationBeforeSleep = operationGeneration
         pausePolling()
     }
 
-    func wakeRecoveryConfigIDs(now: Date = Date()) -> [String] {
+    func wakeRecoveryRequest(
+        now: Date = Date()
+    ) -> (configIDs: [String], expectedOperationGeneration: UInt64)? {
         let sleepDuration = sleepStartedAt.map { now.timeIntervalSince($0) } ?? 0
         let configIDsToRecover = runningConfigIDsBeforeSleep
+        let expectedOperationGeneration = runtimeOperationGenerationBeforeSleep
         sleepStartedAt = nil
         runningConfigIDsBeforeSleep = []
+        runtimeOperationGenerationBeforeSleep = nil
         resumePolling()
 
-        guard sleepDuration >= Self.sleepRecoveryRestartThreshold else { return [] }
-        return configIDsToRecover
+        guard sleepDuration >= Self.sleepRecoveryRestartThreshold,
+              !configIDsToRecover.isEmpty,
+              let expectedOperationGeneration
+        else { return nil }
+        return (configIDsToRecover, expectedOperationGeneration)
     }
 
     private func registerSleepWakeNotifications(
@@ -263,14 +277,13 @@ final class RuntimeSessionController {
     }
 
     private func mergePendingStarts(into running: inout [NetworkInstance]) {
-        let runningIDs = Set(running.map(\.instance_id))
-        let runningNames = Set(running.map(\.name))
-
         pendingStarts = pendingStarts.filter { _, pending in
-            if runningIDs.contains(pending.instanceID) || runningNames.contains(pending.name) {
-                return false
-            }
-            return true
+            guard let instance = running.first(where: {
+                $0.instance_id == pending.instanceID || $0.name == pending.name
+            }) else { return true }
+
+            let phase = instance.runtimeReadinessPhase(requiresTUN: pending.requiresTUN)
+            return phase == .starting || phase == .stopped
         }
 
         for pending in pendingStarts.values.sorted(by: { $0.name < $1.name }) {
@@ -299,4 +312,5 @@ final class RuntimeSessionController {
 private struct PendingNetworkStart: Sendable {
     var instanceID: String
     var name: String
+    var requiresTUN: Bool
 }

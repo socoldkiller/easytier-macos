@@ -350,7 +350,7 @@ private struct RuntimeDetailPresentationSignature: Equatable {
     var instanceID: String?
     var localNode: RuntimeLocalNodeSignature?
     var memberStatuses: [RuntimeMemberSignature]
-    var listenerErrorEvents: [String]
+    var readinessEvents: [String]
     var fullyConnectedWithoutRemoteExpectation: Bool
     var fullyConnectedWithRemoteExpectation: Bool
 
@@ -361,7 +361,7 @@ private struct RuntimeDetailPresentationSignature: Equatable {
         instanceID = detail.instance_id
         localNode = detail.my_node_info.map(RuntimeLocalNodeSignature.init)
         self.memberStatuses = (memberStatuses ?? detail.memberStatuses).map(RuntimeMemberSignature.init)
-        listenerErrorEvents = (detail.events ?? []).filter(Self.isPresentationRelevantEvent)
+        readinessEvents = (detail.events ?? []).filter(Self.isPresentationRelevantEvent)
         fullyConnectedWithoutRemoteExpectation = detail.isFullyConnected(expectRemotePeers: false)
         fullyConnectedWithRemoteExpectation = detail.isFullyConnected(expectRemotePeers: true)
     }
@@ -369,7 +369,9 @@ private struct RuntimeDetailPresentationSignature: Equatable {
     private static func isPresentationRelevantEvent(_ event: String) -> Bool {
         event.contains("ListenerAddFailed")
             || event.contains("ListenerAcceptFailed")
+            || event.contains("ListenerAdded")
             || event.contains("TunDeviceError")
+            || event.contains("TunDeviceReady")
     }
 }
 
