@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var draftConfig = NetworkConfig()
     @State private var draftConfigID: String?
     @State private var draftIsDirty = false
+    @State private var configApplyCoordinator = ConfigApplyCoordinator()
     @State private var workspaceTransitionEdge: Edge = .trailing
     @State private var workspaceTransitionDistance: CGFloat = Self.tabTransitionDistance
     @State private var networkSearchText = ""
@@ -165,6 +166,9 @@ struct ContentView: View {
         } message: {
             Text("\(deleteConfirmationNetworkName) is running. Deleting it will stop the network first.")
         }
+        .onDisappear {
+            flushPendingLocalDraft()
+        }
     }
 
     @ViewBuilder
@@ -279,7 +283,7 @@ struct ContentView: View {
         .safeAreaInset(edge: .bottom) {
             HStack {
                 Button {
-                    commitDraft(saveImmediately: true)
+                    flushPendingLocalDraft()
                     store.addConfig()
                 } label: {
                     Image(systemName: "plus")
@@ -319,23 +323,16 @@ struct ContentView: View {
         ToolbarItemGroup(placement: .primaryAction) {
             if let remoteSession = remoteToolbarSession {
                 Button {
-                    Task { await applyRemoteToolbarPatch() }
+                    Task { await applyRemoteToolbarChanges() }
                 } label: {
-                    Label("Apply Changes", systemImage: "gearshape")
+                    remoteApplyButtonLabel(for: remoteSession)
                 }
-                .disabled(!remoteSession.hasUnsavedChanges || remoteSession.isLoading || remoteSession.loadError != nil || store.isBusy)
-                .help(remoteSession.hasUnsavedChanges ? "Apply remote changes with patch_config" : "No pending remote changes")
-                .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
-
-                Button {
-                    Task { await restartLocalToolbarNetwork() }
-                } label: {
-                    Label("Restart Network", systemImage: store.isBusy ? "hourglass" : "arrow.clockwise")
-                }
-                .disabled(remoteSession.isLoading || remoteSession.loadError != nil || store.selectedRunningInstance == nil || store.isBusy)
-                .help(remoteSession.hasUnsavedChanges ? "Apply remote changes and restart selected local network" : "Restart selected local network")
+                .disabled(remoteApplyButtonIsDisabled(for: remoteSession))
+                .help(remoteApplyButtonHelp(for: remoteSession))
                 .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
             } else {
+                localConfigApplyStatus
+
                 Button {
                     openSettings(tab: .general)
                 } label: {
@@ -345,21 +342,7 @@ struct ContentView: View {
                 .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
 
                 Button {
-                    let runningInstanceToRestart = draftIsDirty ? store.selectedRunningInstance : nil
-                    let configIDToRestart = runningInstanceToRestart == nil ? nil : store.selectedConfigID
-                    commitDraft(saveImmediately: true)
-                    Task {
-                        if let runningInstanceToRestart, let configIDToRestart {
-                            await store.restartSelectedConfig(
-                                replacing: runningInstanceToRestart,
-                                configID: configIDToRestart
-                            )
-                        } else if selectedConfigCanStop {
-                            await store.stopSelectedConfig()
-                        } else {
-                            await store.runSelectedConfig()
-                        }
-                    }
+                    performSelectedConnectionAction()
                 } label: {
                     Label(
                         connectionActionTitle,
@@ -372,17 +355,38 @@ struct ContentView: View {
             }
 
             Menu {
-                Button("Import TOML") {
-                    commitDraft(saveImmediately: true)
-                    openImportTOML()
+                if let remoteSession = remoteToolbarSession {
+                    Button("Restart \(remoteSession.member.hostname)") {
+                        Task { await store.applyRemoteConfigChanges(forceRestart: true) }
+                    }
+                    .disabled(
+                        remoteSession.isLoading
+                            || remoteSession.loadError != nil
+                            || remoteSession.applyState.isApplying
+                            || store.isBusy
+                    )
+                } else {
+                    Button("Restart Network") {
+                        restartSelectedNetworkManually()
+                    }
+                    .disabled(!selectedConfigCanStop || store.isBusy)
+
+                    Divider()
+
+                    Button("Import TOML") {
+                        flushPendingLocalDraft()
+                        openImportTOML()
+                    }
+                    Button("Export TOML") {
+                        Task {
+                            await configApplyCoordinator.flush()
+                            await openExportTOML()
+                        }
+                    }
+                    .disabled(store.selectedConfig == nil)
                 }
-                Button("Export TOML") {
-                    commitDraft(saveImmediately: true)
-                    openExportTOML()
-                }
-                .disabled(store.selectedConfig == nil)
             } label: {
-                Label("TOML", systemImage: "doc.text")
+                Label("More", systemImage: "ellipsis.circle")
             }
             .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
 
@@ -407,17 +411,44 @@ struct ContentView: View {
         }
     }
 
-    private var selectedConfigCanStop: Bool {
-        if draftIsDirty, store.selectedConfigCanStop { return true }
-        guard
-            let config = draftConfigID == store.selectedConfigID
-                ? draftConfig : store.selectedConfig
-        else { return false }
-        return store.runningInstance(matching: config) != nil
+    @ViewBuilder
+    private var localConfigApplyStatus: some View {
+        if store.selectedTab == .config,
+           configApplyCoordinator.targetConfigID == draftConfigID
+        {
+            switch configApplyCoordinator.phase {
+            case .idle:
+                EmptyView()
+            case .pending:
+                Label("Changes Pending", systemImage: "clock")
+                    .help("Configuration changes will be applied automatically")
+                    .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
+            case .applying:
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Applying Changes")
+                }
+                .help("Saving configuration and reconnecting the network")
+                .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
+            case .applied:
+                Label("Changes Applied", systemImage: "checkmark.circle.fill")
+                    .help("Configuration changes are active")
+                    .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
+            case let .failed(message):
+                Button {
+                    Task { await configApplyCoordinator.retry() }
+                } label: {
+                    Label("Retry Changes", systemImage: "exclamationmark.triangle.fill")
+                }
+                .help(message)
+                .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
+            }
+        }
     }
 
-    private var selectedConfigNeedsRestart: Bool {
-        draftIsDirty && store.selectedConfigCanStop
+    private var selectedConfigCanStop: Bool {
+        store.selectedConfigCanStop
     }
 
     private var selectedConfigIsReady: Bool {
@@ -429,7 +460,6 @@ struct ContentView: View {
     }
 
     private var selectedConfigHasRuntimeError: Bool {
-        guard !draftIsDirty else { return false }
         guard var instance = store.selectedRunningInstance else { return false }
         instance.detail = store.selectedRuntimeDetail
         return instance.runtimeErrorMessage != nil || instance.listenerErrorFromEvents != nil
@@ -444,7 +474,6 @@ struct ContentView: View {
 
     private var connectionActionTitle: String {
         if store.isBusy { return "Working" }
-        if selectedConfigNeedsRestart { return "Restart" }
         if selectedConfigHasRuntimeError { return "Stop" }
         if selectedConfigCanStop { return selectedConfigIsReady ? "Pause" : "Stop" }
         return "Run"
@@ -452,7 +481,6 @@ struct ContentView: View {
 
     private var connectionActionSystemImage: String {
         if store.isBusy { return "hourglass" }
-        if selectedConfigNeedsRestart { return "arrow.clockwise" }
         if selectedConfigHasRuntimeError { return "stop.fill" }
         if selectedConfigCanStop { return selectedConfigIsReady ? "pause.fill" : "stop.fill" }
         return "play.fill"
@@ -460,37 +488,66 @@ struct ContentView: View {
 
     private var connectionActionHelp: String {
         if store.isBusy { return "Working" }
-        if selectedConfigNeedsRestart { return "Restart selected network" }
         if selectedConfigHasRuntimeError { return "Stop selected network" }
         if selectedConfigIsReady { return "Pause selected network" }
         if selectedConfigCanStop { return "Stop selected network while it is starting" }
         return "Run selected network"
     }
 
-    private func applyRemoteToolbarPatch() async {
-        let hostname = store.remoteConfigSession?.member.hostname ?? "remote device"
-        let success = await store.applyRemoteConfigPatch()
-        if success {
-            store.recordNotice("Applied configuration changes to \(hostname).")
+    private func applyRemoteToolbarChanges() async {
+        guard let session = store.remoteConfigSession else { return }
+        let retryingManualRestart: Bool
+        if case .failed = session.applyState {
+            retryingManualRestart = !session.hasUnsavedChanges
+        } else {
+            retryingManualRestart = false
+        }
+        _ = await store.applyRemoteConfigChanges(forceRestart: retryingManualRestart)
+    }
+
+    @ViewBuilder
+    private func remoteApplyButtonLabel(for session: RemoteConfigSession) -> some View {
+        switch session.applyState {
+        case .idle:
+            Label("Apply Changes", systemImage: "gearshape")
+        case .applying:
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Applying Changes")
+            }
+        case .applied:
+            Label("Changes Applied", systemImage: "checkmark.circle.fill")
+        case .failed:
+            Label(
+                session.hasUnsavedChanges ? "Retry Changes" : "Retry Restart",
+                systemImage: "exclamationmark.triangle.fill"
+            )
         }
     }
 
-    private func restartLocalToolbarNetwork() async {
-        let appliedRemoteChanges = store.remoteConfigSession?.hasUnsavedChanges == true
-        if store.remoteConfigSession?.hasUnsavedChanges == true {
-            guard await store.applyRemoteConfigPatch() else { return }
+    private func remoteApplyButtonIsDisabled(for session: RemoteConfigSession) -> Bool {
+        if session.isLoading || session.loadError != nil || session.applyState.isApplying || store.isBusy {
+            return true
         }
-        guard let runningInstance = store.selectedRunningInstance,
-              let configID = store.selectedConfigID
-        else { return }
-        await store.restartSelectedConfig(replacing: runningInstance, configID: configID)
-        if store.lastError == nil {
-            let networkName = store.selectedConfig?.network_name ?? "selected network"
-            if appliedRemoteChanges {
-                store.recordNotice("Applied remote changes and requested a restart for \(networkName).")
-            } else {
-                store.recordNotice("Restart requested for \(networkName).")
-            }
+        if case .failed = session.applyState {
+            return false
+        }
+        return !session.hasUnsavedChanges
+    }
+
+    private func remoteApplyButtonHelp(for session: RemoteConfigSession) -> String {
+        switch session.applyState {
+        case .idle:
+            session.hasUnsavedChanges
+                ? "Apply changes and restart \(session.member.hostname)"
+                : "No pending remote changes"
+        case .applying:
+            "Applying changes and restarting \(session.member.hostname)"
+        case .applied:
+            "Changes applied to \(session.member.hostname)"
+        case let .failed(message):
+            message
         }
     }
 
@@ -515,44 +572,12 @@ struct ContentView: View {
     }
 
     private var networkSearchResults: [NetworkSearchResult] {
-        let query = networkSearchQuery
-        guard !query.isEmpty else { return [] }
-
-        return store.configs.flatMap { config -> [NetworkSearchResult] in
-            let instance = store.runningInstance(matching: config)
-            var results: [NetworkSearchResult] = []
-
-            let networkFields = networkDirectSearchFields(for: config, instance: instance)
-            if query.matches(networkFields.searchValues) {
-                results.append(.network(
-                    id: "network-\(config.id)",
-                    networkID: config.id,
-                    title: config.network_name,
-                    subtitle: networkResultSubtitle(for: config, instance: instance),
-                    state: connectionState(for: config),
-                    matchDescription: searchMatchDescription(in: networkFields, query: query)
-                ))
-            }
-
-            for member in instance?.detail?.memberStatuses ?? [] {
-                let memberFields = memberSearchResultFields(for: member)
-                guard query.matches(memberFields.searchValues) else { continue }
-
-                results.append(.device(
-                    id: "device-\(config.id)-\(member.id)",
-                    networkID: config.id,
-                    title: member.hostname,
-                    subtitle: deviceResultSubtitle(for: member, networkName: config.network_name),
-                    sourceLabel: "Device",
-                    matchDescription: searchMatchDescription(in: memberFields, query: query),
-                    systemImage: member.searchResultSystemImage,
-                    targetTab: .status,
-                    highlightedPeerID: member.peerID
-                ))
-            }
-
-            return results
-        }
+        NetworkSearchIndex.results(
+            matching: networkSearchQuery,
+            configs: store.configs,
+            instanceForConfig: store.runningInstance(matching:),
+            connectionStateForConfig: connectionState(for:)
+        )
     }
 
     private var networkSearchResultIDs: [String] {
@@ -604,125 +629,6 @@ struct ContentView: View {
         selectSearchResult(result)
     }
 
-    private func networkDirectSearchFields(for config: NetworkConfig, instance: NetworkInstance?) -> [SearchResultField] {
-        var fields: [SearchResultField] = [
-            SearchResultField("Network", config.network_name),
-            SearchResultField("Instance ID", config.instance_id),
-            SearchResultField(
-                "Status",
-                connectionState(for: config).searchLabel,
-                displayValue: connectionState(for: config).displayLabel
-            ),
-            SearchResultField("Runtime", instance?.name ?? ""),
-            SearchResultField("Runtime ID", instance?.instance_id ?? ""),
-            SearchResultField("Device", instance?.detail?.dev_name ?? ""),
-            SearchResultField("Error", instance?.detail?.error_msg ?? ""),
-        ]
-
-        fields.append(contentsOf: [
-            SearchResultField("Hostname", config.hostname ?? ""),
-            SearchResultField("Virtual IPv4", config.virtual_ipv4),
-            SearchResultField("Network Length", String(config.network_length)),
-            SearchResultField("Public Server", config.public_server_url),
-            SearchResultField("Device Name", config.dev_name),
-            SearchResultField("VPN Portal", config.vpn_portal_client_network_addr),
-            SearchResultField("VPN Portal Port", String(config.vpn_portal_listen_port)),
-            SearchResultField("VPN Portal Length", String(config.vpn_portal_client_network_len)),
-            SearchResultField("SOCKS5 Port", String(config.socks5_port)),
-            SearchResultField(
-                "Mode",
-                config.networking_method.searchLabel,
-                displayValue: config.networking_method.displayLabel
-            ),
-        ])
-        fields.append(contentsOf: config.peer_urls.map { SearchResultField("Peer URL", $0) })
-        fields.append(contentsOf: config.listener_urls.map { SearchResultField("Listener", $0) })
-        fields.append(contentsOf: config.proxy_cidrs.map { SearchResultField("Proxy CIDR", $0) })
-        fields.append(contentsOf: config.routes.map { SearchResultField("Route", $0) })
-        fields.append(contentsOf: config.exit_nodes.map { SearchResultField("Exit Node", $0) })
-        fields.append(contentsOf: config.mapped_listeners.map { SearchResultField("Mapped Listener", $0) })
-        fields.append(contentsOf: config.relay_network_whitelist.map { SearchResultField("Relay Whitelist", $0) })
-        fields.append(contentsOf: config.enabledSearchFeatureLabels.map { SearchResultField("Feature", $0) })
-        for portForward in config.port_forwards {
-            fields.append(contentsOf: [
-                SearchResultField("Port Forward Bind IP", portForward.bind_ip),
-                SearchResultField("Port Forward Bind Port", String(portForward.bind_port)),
-                SearchResultField("Port Forward Target IP", portForward.dst_ip),
-                SearchResultField("Port Forward Target Port", String(portForward.dst_port)),
-                SearchResultField("Port Forward Protocol", portForward.proto),
-                SearchResultField("Feature", "port forward forwarding", displayValue: "Port Forward"),
-            ])
-        }
-
-        return fields
-    }
-
-    private func memberSearchResultFields(for member: NetworkMemberStatus) -> [SearchResultField] {
-        var fields = [
-            SearchResultField("Hostname", member.hostname),
-            SearchResultField("Virtual IPv4", member.virtualIPv4),
-            SearchResultField("IPv4", member.copyableIPv4Address ?? ""),
-            SearchResultField("Version", member.version),
-            SearchResultField("Route Cost", member.routeCost),
-            SearchResultField("Protocol", member.tunnelProto),
-            SearchResultField("Latency", member.latency),
-            SearchResultField("Upload", member.uploadTotal),
-            SearchResultField("Download", member.downloadTotal),
-            SearchResultField("Loss", member.lossRate),
-            SearchResultField("NAT", member.natType),
-            SearchResultField(
-                "Role",
-                member.isLocal ? "local this device self" : "remote peer device",
-                displayValue: member.isLocal ? "This Device" : "Remote Device"
-            ),
-        ]
-
-        switch member.availability {
-        case .online:
-            fields.append(SearchResultField("Status", "online connected", displayValue: "Online"))
-        case .connecting:
-            fields.append(SearchResultField("Status", "connecting reconnecting loading", displayValue: "Connecting"))
-        case .assigningAddress:
-            fields.append(SearchResultField("Status", "assigning ip address loading starting", displayValue: "Assigning IP"))
-        }
-
-        if member.isPublicServer {
-            fields.append(SearchResultField("Role", "public server public servers server relay", displayValue: "Public Server"))
-        }
-
-        return fields
-    }
-
-    private func searchMatchDescription(in fields: [SearchResultField], query: SearchQuery) -> String? {
-        let matches = fields.matchingTokens(from: query)
-        guard !matches.isEmpty else { return nil }
-
-        let summary = matches.prefix(2)
-            .map { "\($0.label.lowercased()): \($0.displayValue)" }
-            .joined(separator: " · ")
-        return "Matched \(summary)"
-    }
-
-    private func networkResultSubtitle(for config: NetworkConfig, instance: NetworkInstance?) -> String {
-        [
-            connectionState(for: config).displayLabel,
-            instance?.detail?.dev_name,
-        ]
-        .compactMap { $0?.nilIfEmpty }
-        .joined(separator: " · ")
-    }
-
-    private func deviceResultSubtitle(for member: NetworkMemberStatus, networkName: String) -> String {
-        var parts = ["Network \(networkName)"]
-        if let ip = member.copyableIPv4Address {
-            parts.append("IPv4 \(ip)")
-        }
-        if member.isPublicServer {
-            parts.append("Public Server")
-        }
-        return parts.joined(separator: " · ")
-    }
-
     private func selectSearchResult(_ result: NetworkSearchResult) {
         selectConfig(id: result.networkID)
         if let targetTab = result.targetTab {
@@ -764,7 +670,7 @@ struct ContentView: View {
         if store.remoteConfigSession != nil {
             store.clearRemoteConfigSession()
         }
-        commitDraft(saveImmediately: false)
+        flushPendingLocalDraft()
         workspaceTransitionEdge = networkTransitionEdge(from: previousValue, to: newValue)
         workspaceTransitionDistance = Self.networkTransitionDistance
         store.selectedConfigID = newValue
@@ -773,7 +679,7 @@ struct ContentView: View {
 
     private func selectWorkspaceTab(_ tab: WorkspaceTab) {
         guard tab != store.selectedTab else { return }
-        commitDraft(saveImmediately: false)
+        flushPendingLocalDraft()
         workspaceTransitionEdge =
             tab.motionIndex > store.selectedTab.motionIndex ? .trailing : .leading
         workspaceTransitionDistance = Self.tabTransitionDistance
@@ -794,10 +700,7 @@ struct ContentView: View {
 
         draftConfig.peer_urls.append(contentsOf: toAdd)
         draftIsDirty = true
-
-        let config = draftConfig
-        store.updateConfig(id: selectedID, with: config, saveImmediately: true)
-        draftIsDirty = false
+        scheduleLocalConfigApply()
 
         selectWorkspaceTab(.config)
     }
@@ -811,6 +714,7 @@ struct ContentView: View {
     }
 
     private func deleteSelectedConfig() {
+        configApplyCoordinator.cancelPending()
         draftIsDirty = false
         Task { await store.deleteSelectedConfig() }
     }
@@ -854,6 +758,7 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let config = remoteConfigBinding() {
             ConfigEditorView(config: config, members: store.selectedLiveMemberStatuses, remoteSession: session)
+                .disabled(session.applyState.isApplying)
         }
     }
 
@@ -981,8 +886,97 @@ struct ContentView: View {
                 guard newValue != draftConfig else { return }
                 draftConfig = newValue
                 draftIsDirty = true
+                scheduleLocalConfigApply()
             }
         )
+    }
+
+    private func scheduleLocalConfigApply() {
+        guard draftIsDirty, let draftConfigID else { return }
+        let storedConfig = store.configs.first(where: { $0.id == draftConfigID })
+        let runningInstance = storedConfig.flatMap(store.runningInstance(matching:))
+        let request = LocalConfigApplyRequest(
+            configID: draftConfigID,
+            config: draftConfig,
+            replacing: runningInstance
+        )
+        configApplyCoordinator.schedule(request) { request in
+            await applyLocalConfigRequest(request)
+        }
+    }
+
+    private func applyLocalConfigRequest(_ request: LocalConfigApplyRequest) async -> ConfigApplyResult {
+        let result = await store.applyConfigDraft(
+            configID: request.configID,
+            draft: request.config,
+            replacing: request.replacing
+        )
+        if result.succeeded,
+           draftConfigID == request.configID,
+           draftConfig == request.config
+        {
+            draftIsDirty = false
+        }
+        return result
+    }
+
+    private func flushPendingLocalDraft() {
+        guard draftIsDirty else { return }
+        scheduleLocalConfigApply()
+        Task { await configApplyCoordinator.flush() }
+    }
+
+    private func performSelectedConnectionAction() {
+        let shouldStop = selectedConfigCanStop
+        let pendingDraft: LocalConfigApplyRequest?
+        if draftIsDirty, let draftConfigID {
+            pendingDraft = LocalConfigApplyRequest(
+                configID: draftConfigID,
+                config: draftConfig,
+                replacing: nil
+            )
+        } else {
+            pendingDraft = nil
+        }
+        configApplyCoordinator.cancelPending()
+        if pendingDraft != nil {
+            draftIsDirty = false
+        }
+
+        Task {
+            if shouldStop {
+                await store.stopSelectedConfig()
+                if let pendingDraft {
+                    store.updateConfig(
+                        id: pendingDraft.configID,
+                        with: pendingDraft.config,
+                        saveImmediately: true
+                    )
+                }
+            } else {
+                if let pendingDraft {
+                    store.updateConfig(
+                        id: pendingDraft.configID,
+                        with: pendingDraft.config,
+                        saveImmediately: true
+                    )
+                }
+                await store.runSelectedConfig()
+            }
+        }
+    }
+
+    private func restartSelectedNetworkManually() {
+        if draftIsDirty {
+            flushPendingLocalDraft()
+            return
+        }
+        guard let config = store.selectedConfig,
+              let instance = store.runningInstance(matching: config)
+        else { return }
+        Task {
+            await store.restartSelectedConfig(replacing: instance, configID: config.id)
+        }
     }
 
     private func loadDraft(for selectedID: String?) {
@@ -1000,374 +994,15 @@ struct ContentView: View {
         draftIsDirty = false
     }
 
-    private func commitDraft(saveImmediately: Bool) {
-        guard draftIsDirty, let draftConfigID else {
-            if saveImmediately { store.save() }
-            return
-        }
-        store.updateConfig(id: draftConfigID, with: draftConfig, saveImmediately: saveImmediately)
-        if !saveImmediately { store.saveInBackground() }
-        self.draftConfigID = store.selectedConfigID
-        draftIsDirty = false
-    }
-
     private func openImportTOML() {
         tomlPresentation = TOMLPresentation(mode: .import, text: "")
     }
 
-    private func openExportTOML() {
-        Task {
-            do {
-                tomlPresentation = TOMLPresentation(mode: .export, text: try await store.exportSelectedTOML())
-            } catch {
-                store.lastError = error.localizedDescription
-            }
-        }
-    }
-}
-
-private struct TOMLPresentation: Identifiable {
-    let id = UUID()
-    var mode: TOMLSheet.Mode
-    var text: String
-}
-
-private struct WorkspaceTabPicker: View {
-    @Binding var selection: WorkspaceTab
-
-    private static let preferredWidth: CGFloat = 300
-    private let tabs = WorkspaceTab.displayOrder
-
-    var body: some View {
-        Picker("Workspace", selection: $selection) {
-            ForEach(tabs) { tab in
-                Label(tab.displayTitle, systemImage: tab.systemImage)
-                    .tag(tab)
-            }
-        }
-        .pickerStyle(.segmented)
-        .controlSize(.regular)
-        .labelsHidden()
-        .frame(width: Self.preferredWidth)
-        .help("Switch workspace view")
-        .accessibilityLabel(Text("Workspace"))
-    }
-}
-
-private struct NetworkSearchResult: Identifiable {
-    var id: String
-    var networkID: String
-    var title: String
-    var subtitle: String
-    var sourceLabel: String
-    var matchDescription: String?
-    var systemImage: String
-    var state: ConnectionGlyphState?
-    var targetTab: WorkspaceTab?
-    var highlightedPeerID: String?
-
-    static func network(
-        id: String,
-        networkID: String,
-        title: String,
-        subtitle: String,
-        state: ConnectionGlyphState,
-        matchDescription: String?
-    ) -> NetworkSearchResult {
-        NetworkSearchResult(
-            id: id,
-            networkID: networkID,
-            title: title,
-            subtitle: subtitle,
-            sourceLabel: "Network",
-            matchDescription: matchDescription,
-            systemImage: "network",
-            state: state,
-            targetTab: nil,
-            highlightedPeerID: nil
-        )
-    }
-
-    static func device(
-        id: String,
-        networkID: String,
-        title: String,
-        subtitle: String,
-        sourceLabel: String,
-        matchDescription: String?,
-        systemImage: String,
-        targetTab: WorkspaceTab?,
-        highlightedPeerID: String?
-    ) -> NetworkSearchResult {
-        NetworkSearchResult(
-            id: id,
-            networkID: networkID,
-            title: title,
-            subtitle: subtitle,
-            sourceLabel: sourceLabel,
-            matchDescription: matchDescription,
-            systemImage: systemImage,
-            state: nil,
-            targetTab: targetTab,
-            highlightedPeerID: highlightedPeerID
-        )
-    }
-}
-
-private struct NetworkSearchResultRow: View {
-    var result: NetworkSearchResult
-
-    var body: some View {
-        HStack(spacing: 10) {
-            if let state = result.state {
-                NetworkStatusGlyph(state: state)
-            } else {
-                Image(systemName: result.systemImage)
-                    .font(.headline)
-                    .foregroundStyle(.tint)
-                    .frame(width: 22, height: 22)
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(result.title)
-                        .lineLimit(1)
-                    Text(result.sourceLabel)
-                        .font(.caption2)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background {
-                            Capsule(style: .continuous)
-                                .fill(.secondary.opacity(0.13))
-                        }
-                }
-                if let matchDescription = result.matchDescription {
-                    Text(matchDescription)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Text(result.subtitle)
-                    .font(result.matchDescription == nil ? .caption : .caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(result.matchDescription == nil ? 2 : 1)
-            }
-        }
-        .padding(.vertical, 4)
-    }
-}
-
-private struct SearchResultField: Equatable {
-    var label: String
-    var searchValue: String
-    var displayValue: String
-
-    init(_ label: String, _ searchValue: String, displayValue: String? = nil) {
-        self.label = label
-        self.searchValue = searchValue
-        self.displayValue = displayValue ?? searchValue
-    }
-}
-
-private extension Array where Element == SearchResultField {
-    var searchValues: [String] {
-        map(\.searchValue)
-    }
-
-    func matchingTokens(from query: SearchQuery) -> [SearchResultField] {
-        var seen = Set<String>()
-
-        return filter { field in
-            guard !field.searchValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-            let key = "\(field.label)\u{0}\(field.displayValue)"
-            guard seen.insert(key).inserted else { return false }
-
-            return query.tokens.contains { token in
-                SearchQuery(token).matches([field.searchValue])
-            }
-        }
-    }
-}
-
-private struct SearchKeyboardBridge: NSViewRepresentable {
-    nonisolated(unsafe) var isActive: Bool
-    nonisolated(unsafe) var onUp: () -> Void
-    nonisolated(unsafe) var onDown: () -> Void
-    nonisolated(unsafe) var onReturn: () -> Void
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
-        context.coordinator.view = view
-        context.coordinator.installMonitor()
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.parent = self
-        context.coordinator.view = nsView
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(parent: self)
-    }
-
-    final class Coordinator {
-        nonisolated(unsafe) var parent: SearchKeyboardBridge
-        nonisolated(unsafe) weak var view: NSView?
-        private var monitor: Any?
-
-        init(parent: SearchKeyboardBridge) {
-            self.parent = parent
-        }
-
-        deinit {
-            if let monitor {
-                NSEvent.removeMonitor(monitor)
-            }
-        }
-
-        func installMonitor() {
-            guard monitor == nil else { return }
-            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                self?.handle(event) ?? event
-            }
-        }
-
-        private func handle(_ event: NSEvent) -> NSEvent? {
-            guard parent.isActive else { return event }
-            guard !event.modifierFlags.containsAny(of: [.command, .option, .control]) else {
-                return event
-            }
-
-            switch event.keyCode {
-            case Self.upArrowKeyCode:
-                parent.onUp()
-                return nil
-            case Self.downArrowKeyCode:
-                parent.onDown()
-                return nil
-            case Self.returnKeyCode, Self.keypadEnterKeyCode:
-                parent.onReturn()
-                return nil
-            default:
-                return event
-            }
-        }
-
-        private static let returnKeyCode: UInt16 = 36
-        private static let keypadEnterKeyCode: UInt16 = 76
-        private static let downArrowKeyCode: UInt16 = 125
-        private static let upArrowKeyCode: UInt16 = 126
-    }
-}
-
-private extension NSEvent.ModifierFlags {
-    func containsAny(of flags: NSEvent.ModifierFlags) -> Bool {
-        !intersection(flags).isEmpty
-    }
-}
-
-extension WorkspaceTab {
-    fileprivate static let displayOrder: [WorkspaceTab] = [.status, .view, .config, .peers, .logs]
-
-    fileprivate var motionIndex: Int {
-        WorkspaceTab.displayOrder.firstIndex(where: { $0.id == id }) ?? 0
-    }
-
-    fileprivate var systemImage: String {
-        switch self {
-        case .status:
-            return "dot.radiowaves.left.and.right"
-        case .view:
-            return "chart.xyaxis.line"
-        case .config:
-            return "slider.horizontal.3"
-        case .logs:
-            return "doc.text.magnifyingglass"
-        case .peers:
-            return "wifi"
-        }
-    }
-}
-
-private struct NetworkRow: View {
-    var stored: NetworkConfig
-    var state: ConnectionGlyphState
-
-    var body: some View {
-        HStack(spacing: 10) {
-            NetworkStatusGlyph(state: state)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(stored.network_name)
-                    .lineLimit(1)
-                if let hostname = stored.hostname?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .nilIfEmpty {
-                    Text(hostname)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-        }
-        .padding(.vertical, 4)
-    }
-}
-
-private struct NetworkStatusGlyph: View {
-    var state: ConnectionGlyphState
-
-    var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            Image(systemName: "network")
-                .font(.headline)
-                .foregroundStyle(iconColor)
-                .frame(width: 18, height: 18)
-
-            Circle()
-                .fill(statusColor)
-                .frame(width: 5.5, height: 5.5)
-                .offset(x: 1.5, y: 1.5)
-        }
-            .frame(width: 22, height: 22)
-            .accessibilityLabel(accessibilityLabel)
-    }
-
-    private var iconColor: Color {
-        switch state {
-        case .connected, .connecting:
-            return .primary.opacity(0.82)
-        case .idle, .error:
-            return .secondary
-        }
-    }
-
-    private var statusColor: Color {
-        switch state {
-        case .connected:
-            return .green
-        case .idle:
-            return .secondary
-        case .connecting:
-            return .orange
-        case .error:
-            return .red
-        }
-    }
-
-    private var accessibilityLabel: Text {
-        switch state {
-        case .connected:
-            return Text("Running")
-        case .idle:
-            return Text("Stopped")
-        case .connecting:
-            return Text("Connecting")
-        case .error:
-            return Text("Connection error")
+    private func openExportTOML() async {
+        do {
+            tomlPresentation = TOMLPresentation(mode: .export, text: try await store.exportSelectedTOML())
+        } catch {
+            store.lastError = error.localizedDescription
         }
     }
 }

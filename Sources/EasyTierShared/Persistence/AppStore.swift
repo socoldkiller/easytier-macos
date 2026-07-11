@@ -2,38 +2,6 @@ import Foundation
 import Observation
 import TOML
 
-public struct RemoteConfigSession: Sendable {
-    public let rpcURL: URL
-    public let instanceID: String
-    public let member: NetworkMemberStatus
-    public var config: NetworkConfig
-    public var originalConfig: NetworkConfig
-    public var isLoading: Bool
-    public var loadError: String?
-
-    public var hasUnsavedChanges: Bool {
-        config != originalConfig
-    }
-
-    package init(
-        rpcURL: URL,
-        instanceID: String,
-        member: NetworkMemberStatus,
-        config: NetworkConfig,
-        originalConfig: NetworkConfig,
-        isLoading: Bool,
-        loadError: String?
-    ) {
-        self.rpcURL = rpcURL
-        self.instanceID = instanceID
-        self.member = member
-        self.config = config
-        self.originalConfig = originalConfig
-        self.isLoading = isLoading
-        self.loadError = loadError
-    }
-}
-
 @MainActor
 @Observable
 public final class EasyTierAppStore {
@@ -569,12 +537,43 @@ public final class EasyTierAppStore {
         replacing instance: NetworkInstance,
         configID targetConfigID: String? = nil
     ) async {
-        guard let targetConfigID = targetConfigID ?? selectedConfigID else { return }
+        _ = await restartConfig(replacing: instance, configID: targetConfigID)
+    }
+
+    public func applyConfigDraft(
+        configID: String,
+        draft: NetworkConfig,
+        replacing instance: NetworkInstance?
+    ) async -> ConfigApplyResult {
+        guard configs.contains(where: { $0.id == configID }) else {
+            return .failed("The network configuration no longer exists.")
+        }
+
+        updateConfig(id: configID, with: draft, saveImmediately: true)
+        guard let instance else { return .saved }
+        return await restartConfig(
+            replacing: instance,
+            configID: configID,
+            surfaceError: false
+        )
+    }
+
+    private func restartConfig(
+        replacing instance: NetworkInstance,
+        configID targetConfigID: String? = nil,
+        surfaceError: Bool = true
+    ) async -> ConfigApplyResult {
+        guard let targetConfigID = targetConfigID ?? selectedConfigID else {
+            return .failed("No network configuration is selected.")
+        }
+        var result: ConfigApplyResult = .failed("The network configuration is unavailable.")
         await withRuntimeMutation {
-            guard !isQuitting,
-                  let config = configs.first(where: { $0.id == targetConfigID })
-            else { return }
-            await busy {
+            guard !isQuitting else {
+                result = .failed("EasyTier is quitting.")
+                return
+            }
+            guard let config = configs.first(where: { $0.id == targetConfigID }) else { return }
+            let error = await busy(surfaceError: surfaceError) {
                 log("Restarting \(config.network_name)...")
                 try validateConfigForCurrentRuntime(config, replacing: instance)
                 let keychainConfig = try await configWithKeychainSecret(config, reason: "Use the network secret to restart \(config.network_name).")
@@ -599,7 +598,9 @@ public final class EasyTierAppStore {
                 runtimeSession.recordPendingStart(for: config)
                 log("Restart requested for \(config.network_name).")
             }
+            result = error.map { .failed(Self.errorMessage(for: $0)) } ?? .restarted
         }
+        return result
     }
 
     public static func configWithoutReversedPortForwards(_ config: NetworkConfig, fingerprints: [String: Set<String>]) -> NetworkConfig {
@@ -739,19 +740,13 @@ public final class EasyTierAppStore {
         let intent = RuntimeIntent(
             target: target,
             desiredHostname: desiredHostname,
-            baseHostname: nonEmptyTrimmed(baseHostname),
+            baseHostname: baseHostname?.trimmedNilIfEmpty,
             status: .pending
         )
 
-        if let index = runtimeIntents.firstIndex(where: { $0.reconcileKey == intent.reconcileKey }) {
-            var updated = intent
-            updated.id = runtimeIntents[index].id
-            runtimeIntents[index] = updated
-        } else {
-            runtimeIntents.append(intent)
-        }
+        let resolved = RuntimeIntentReconciler.upsert(intent, in: &runtimeIntents)
         save()
-        return runtimeIntents.first { $0.reconcileKey == intent.reconcileKey } ?? intent
+        return resolved
     }
 
     public func markRuntimeIntent(_ id: String, status: RuntimeIntentStatus) {
@@ -824,44 +819,16 @@ public final class EasyTierAppStore {
     // MARK: - Remote config editing session
 
     public func startRemoteConfigSession(member: NetworkMemberStatus) async {
-        guard member.isLive,
-              let instanceID = member.instanceID,
-              let ip = member.copyableIPv4Address,
-              let rpcURL = URL(string: "tcp://\(ip):\(AppMode.defaultRPCListenPort)")
-        else {
-            remoteConfigSession = RemoteConfigSession(
-                rpcURL: Self.placeholderRPCURL,
-                instanceID: member.instanceID ?? "",
-                member: member,
-                config: NetworkConfig(),
-                originalConfig: NetworkConfig(),
-                isLoading: false,
-                loadError: member.isLive
-                    ? "Remote instance ID or virtual IP is unavailable for \(member.hostname)."
-                    : "\(member.hostname) is still reconnecting. Try again after it is online."
-            )
-            return
-        }
+        let prepared = RemoteConfigSessionCoordinator.preparedSession(for: member)
+        remoteConfigSession = prepared
+        guard prepared.isLoading else { return }
 
-        remoteConfigSession = RemoteConfigSession(
-            rpcURL: rpcURL,
-            instanceID: instanceID,
-            member: member,
-            config: NetworkConfig(),
-            originalConfig: NetworkConfig(),
-            isLoading: true,
-            loadError: nil
+        let loaded = await RemoteConfigSessionCoordinator.load(
+            prepared,
+            client: EasyTierRemoteRPCClient(rpcURL: prepared.rpcURL, client: privilegedClient)
         )
-
-        do {
-            let config = try await EasyTierRemoteRPCClient(rpcURL: rpcURL).getConfigParsed(instanceID: instanceID)
-            remoteConfigSession?.config = config
-            remoteConfigSession?.originalConfig = config
-            remoteConfigSession?.isLoading = false
-        } catch {
-            remoteConfigSession?.isLoading = false
-            remoteConfigSession?.loadError = error.localizedDescription
-        }
+        guard remoteConfigSession?.requestID == prepared.requestID else { return }
+        remoteConfigSession = loaded
     }
 
     public func clearRemoteConfigSession() {
@@ -869,23 +836,101 @@ public final class EasyTierAppStore {
     }
 
     @discardableResult
-    public func applyRemoteConfigPatch() async -> Bool {
-        guard var session = remoteConfigSession, !session.isLoading, session.loadError == nil else {
+    public func applyRemoteConfigChanges(forceRestart: Bool = false) async -> Bool {
+        guard let session = remoteConfigSession, !session.isLoading, session.loadError == nil else {
             return false
         }
-        guard session.hasUnsavedChanges else { return true }
+        guard !session.applyState.isApplying else { return false }
+        guard forceRestart || session.hasUnsavedChanges else { return true }
+
+        var applying = session
+        applying.applyState = .applying
+        remoteConfigSession = applying
+        let rpcClient = EasyTierRemoteRPCClient(rpcURL: applying.rpcURL, client: privilegedClient)
+
         do {
-            _ = try await EasyTierRemoteRPCClient(rpcURL: session.rpcURL).applyConfigPatch(
-                instanceID: session.instanceID,
-                config: session.config,
-                original: session.originalConfig
-            )
-            session.originalConfig = session.config
-            remoteConfigSession = session
-            return true
+            try await RemoteConfigSessionCoordinator.validate(applying, client: rpcClient)
         } catch {
-            lastError = error.localizedDescription
+            failRemoteConfigApply(requestID: session.requestID, message: error.localizedDescription)
             return false
+        }
+
+        var restartError: Error?
+        do {
+            try await RemoteConfigSessionCoordinator.restart(applying, client: rpcClient)
+        } catch {
+            // A successful restart can close the RPC connection before its
+            // response arrives, so confirm the new runtime before failing.
+            restartError = error
+        }
+
+        if let confirmed = await verifyRemoteConfigRestart(applying) {
+            guard var current = remoteConfigSession, current.requestID == session.requestID else {
+                return false
+            }
+            current.originalConfig = confirmed.config
+            current.config = confirmed.config
+            current.originalConfigPayload = confirmed.rawConfig
+            current.applyState = .applied
+            remoteConfigSession = current
+            recordNotice("Applied configuration changes and restarted \(session.member.hostname).")
+            clearRemoteAppliedStateAfterDelay(requestID: session.requestID)
+            return true
+        }
+
+        let message = restartError?.localizedDescription
+            ?? "\(session.member.hostname) did not return with the updated configuration."
+        failRemoteConfigApply(requestID: session.requestID, message: message)
+        return false
+    }
+
+    private func verifyRemoteConfigRestart(_ session: RemoteConfigSession) async -> RemoteNetworkConfigDocument? {
+        for attempt in 0..<Self.remoteConfigConfirmationAttempts {
+            guard remoteConfigSession?.requestID == session.requestID else { return nil }
+            try? await refreshRuntimeThrowing()
+
+            var rpcURLs = [session.rpcURL]
+            if let member = selectedLiveMemberStatuses.first(where: { $0.instanceID == session.instanceID }),
+               let ip = member.copyableIPv4Address,
+               let currentURL = URL(string: "tcp://\(ip):\(AppMode.defaultRPCListenPort)"),
+               currentURL != session.rpcURL
+            {
+                rpcURLs.insert(currentURL, at: 0)
+            }
+
+            for rpcURL in rpcURLs {
+                if let document = try? await EasyTierRemoteRPCClient(rpcURL: rpcURL, client: privilegedClient)
+                    .getConfigDocument(instanceID: session.instanceID),
+                   document.config == session.config
+                {
+                    return document
+                }
+            }
+
+            if attempt + 1 < Self.remoteConfigConfirmationAttempts {
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+        return nil
+    }
+
+    private func failRemoteConfigApply(requestID: UUID, message: String) {
+        guard var current = remoteConfigSession, current.requestID == requestID else { return }
+        current.applyState = .failed(message)
+        remoteConfigSession = current
+        recordNotice("Remote configuration apply failed: \(message)")
+    }
+
+    private func clearRemoteAppliedStateAfterDelay(requestID: UUID) {
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            guard var current = remoteConfigSession,
+                  current.requestID == requestID,
+                  current.applyState == .applied,
+                  !current.hasUnsavedChanges
+            else { return }
+            current.applyState = .idle
+            remoteConfigSession = current
         }
     }
 
@@ -1153,68 +1198,45 @@ public final class EasyTierAppStore {
     }
 
     private func cleanupExpiredIntents() {
-        let now = Date()
-        let appliedExpiration = now.addingTimeInterval(-300)
-        let unreachableExpiration = now.addingTimeInterval(-600)
-        let maxIntents = 20
-
-        runtimeIntents.removeAll { intent in
-            if intent.status == .applied, intent.updatedAt < appliedExpiration {
-                return true
-            }
-            if intent.status == .unreachable, intent.updatedAt < unreachableExpiration {
-                return true
-            }
-            return false
-        }
-
-        if runtimeIntents.count > maxIntents {
-            runtimeIntents = Array(runtimeIntents.suffix(maxIntents))
+        if RuntimeIntentReconciler.removeExpired(from: &runtimeIntents) {
             saveInBackground()
         }
     }
 
     private func reconcileHostnameIntent(id: String, force: Bool = false) async {
-        guard let intent = runtimeIntents.first(where: { $0.id == id }),
-              let desiredHostname = nonEmptyTrimmed(intent.desiredHostname)
-        else { return }
-
-        guard let observation = runtimeObservation(for: intent.target) else {
-            setRuntimeIntentStatus(id, .unreachable)
+        guard let intent = runtimeIntents.first(where: { $0.id == id }) else { return }
+        let observation = runtimeObservation(for: intent.target)
+        switch RuntimeIntentReconciler.reconciliation(for: intent, observation: observation, force: force) {
+        case .ignore:
             return
-        }
-
-        let currentHostname = nonEmptyTrimmed(observation.hostname)
-        if currentHostname == desiredHostname {
+        case .unreachable:
+            setRuntimeIntentStatus(id, .unreachable)
+        case .applied:
+            guard let observation else { return }
             updateRuntimeIntent(id: id) { intent in
                 intent.target.recentHostname = observation.hostname
                 intent.target.recentIPv4 = observation.ipv4
                 intent.status = .applied
                 intent.updatedAt = Date()
             }
-            return
-        }
-
-        guard force || intent.status != .conflict else { return }
-
-        let baseHostname = nonEmptyTrimmed(intent.baseHostname)
-        guard force || currentHostname == baseHostname else {
+        case let .conflict(currentHostname, baseHostname):
+            guard let observation else { return }
             setRuntimeIntentStatus(id, .conflict)
             recordNotice("Runtime intent conflict for \(observation.label). Remote hostname is \(currentHostname ?? "-"), expected base \(baseHostname ?? "-").")
-            return
-        }
-
-        do {
-            try await applyHostname(desiredHostname, to: observation)
-            updateRuntimeIntent(id: id) { intent in
-                intent.target.recentHostname = observation.hostname
-                intent.target.recentIPv4 = observation.ipv4
-                intent.status = .pending
-                intent.updatedAt = Date()
+        case let .apply(desiredHostname):
+            guard let observation else { return }
+            do {
+                try await applyHostname(desiredHostname, to: observation)
+                updateRuntimeIntent(id: id) { intent in
+                    intent.target.recentHostname = observation.hostname
+                    intent.target.recentIPv4 = observation.ipv4
+                    intent.status = .pending
+                    intent.updatedAt = Date()
+                }
+            } catch {
+                setRuntimeIntentStatus(id, .unreachable)
+                recordNotice("Runtime intent replay failed for \(observation.label): \(error.localizedDescription)")
             }
-        } catch {
-            setRuntimeIntentStatus(id, .unreachable)
-            recordNotice("Runtime intent replay failed for \(observation.label): \(error.localizedDescription)")
         }
     }
 
@@ -1278,12 +1300,9 @@ public final class EasyTierAppStore {
     }
 
     private func updateRuntimeIntent(id: String, mutate: (inout RuntimeIntent) -> Void) {
-        guard let index = runtimeIntents.firstIndex(where: { $0.id == id }) else { return }
-        var updated = runtimeIntents[index]
-        mutate(&updated)
-        guard runtimeIntents[index] != updated else { return }
-        runtimeIntents[index] = updated
-        saveInBackground()
+        if RuntimeIntentReconciler.update(id: id, in: &runtimeIntents, mutate: mutate) {
+            saveInBackground()
+        }
     }
 
     private func setRuntimeIntentStatus(_ id: String, _ status: RuntimeIntentStatus) {
@@ -1294,9 +1313,9 @@ public final class EasyTierAppStore {
     }
 
     private func persistRuntimeHostname(from instance: NetworkInstance, forConfigID configID: String) {
-        guard let runtimeHostname = nonEmptyTrimmed(instance.detail?.my_node_info?.hostname) else { return }
+        guard let runtimeHostname = instance.detail?.my_node_info?.hostname?.trimmedNilIfEmpty else { return }
         guard let index = configs.firstIndex(where: { $0.id == configID }) else { return }
-        let storedHostname = nonEmptyTrimmed(configs[index].hostname)
+        let storedHostname = configs[index].hostname?.trimmedNilIfEmpty
         guard storedHostname != runtimeHostname else { return }
 
         configs[index].hostname = runtimeHostname
@@ -1352,10 +1371,6 @@ public final class EasyTierAppStore {
         try NetworkConfigTOMLCodec.encode(config, magicDNSSettings: magicDNSSettings)
     }
 
-    private func nonEmptyTrimmed(_ value: String?) -> String? {
-        value?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
-    }
-
     private func uniquelyMatchedInstance(named networkName: String) -> NetworkInstance? {
         let matchingConfigs = configs.filter { $0.network_name == networkName }
         guard matchingConfigs.count <= 1 else { return nil }
@@ -1397,7 +1412,11 @@ public final class EasyTierAppStore {
         save()
     }
 
-    private func busy(_ operation: () async throws -> Void) async {
+    @discardableResult
+    private func busy(
+        surfaceError: Bool = true,
+        _ operation: () async throws -> Void
+    ) async -> Error? {
         busyOperationCount += 1
         isBusy = true
         defer {
@@ -1406,10 +1425,13 @@ public final class EasyTierAppStore {
         }
         do {
             try await operation()
+            return nil
         } catch {
-            // Surface the error to the UI instead of suppressing helper-permission messages.
-            setLastError(error)
+            if surfaceError || Self.lastErrorKind(for: error) != nil {
+                setLastError(error)
+            }
             log("Error: \(Self.errorMessage(for: error))")
+            return error
         }
     }
 
@@ -1481,17 +1503,10 @@ public final class EasyTierAppStore {
 
     public func addPeerSubscription(url: URL) async {
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            let fetched = try PeerSubscriptionCodec.decode(data)
-            var merged: [PeerSubscription] = []
-            for var sub in fetched {
-                sub.subscriptionURL = url
-                sub.lastFetchedAt = Date()
-                merged.append(sub)
-            }
-            peerSubscriptions.append(contentsOf: merged)
+            let fetched = try await PeerSubscriptionLibrary.fetch(from: url)
+            peerSubscriptions.append(contentsOf: fetched)
             saveInBackground()
-            log("Added \(merged.count) subscription(s) from \(url.absoluteString).")
+            log("Added \(fetched.count) subscription(s) from \(url.absoluteString).")
         } catch {
             setLastError(error)
             log("Failed to fetch subscription from \(url.absoluteString): \(error.localizedDescription)")
@@ -1499,68 +1514,28 @@ public final class EasyTierAppStore {
     }
 
     public func addPeerSubscription(json: String) throws {
-        let decoded = try PeerSubscriptionCodec.decode(json)
+        let decoded = try PeerSubscriptionLibrary.decode(json)
         peerSubscriptions.append(contentsOf: decoded)
         saveInBackground()
         log("Added \(decoded.count) subscription(s) from pasted JSON.")
     }
 
     public func refreshPeerSubscriptions() async {
-        let urls = peerSubscriptions.compactMap { $0.subscriptionURL }
-        guard !urls.isEmpty else { return }
+        guard peerSubscriptions.contains(where: { $0.subscriptionURL != nil }) else { return }
         isRefreshingPeerSubscriptions = true
         defer { isRefreshingPeerSubscriptions = false }
 
-        for url in urls {
-            do {
-                let (data, _) = try await URLSession.shared.data(from: url)
-                let fetched = try PeerSubscriptionCodec.decode(data)
-                for var sub in fetched {
-                    sub.subscriptionURL = url
-                    sub.lastFetchedAt = Date()
-                    if let index = peerSubscriptions.firstIndex(where: { $0.id == sub.id }) {
-                        peerSubscriptions[index] = sub
-                    } else if let index = peerSubscriptions.firstIndex(where: { $0.subscriptionURL == url }) {
-                        var existing = peerSubscriptions[index]
-                        existing.cards = sub.cards
-                        existing.lastFetchedAt = sub.lastFetchedAt
-                        if !sub.name.isEmpty { existing.name = sub.name }
-                        peerSubscriptions[index] = existing
-                    }
-                }
-            } catch {
-                log("Failed to refresh subscription from \(url.absoluteString): \(error.localizedDescription)")
-            }
+        let result = await PeerSubscriptionLibrary.refresh(peerSubscriptions)
+        peerSubscriptions = result.subscriptions
+        for failure in result.failures {
+            log("Failed to refresh subscription from \(failure.url.absoluteString): \(failure.message)")
         }
         saveInBackground()
         log("Subscriptions refresh complete.")
     }
 
     public func peerCardLatency(for card: PeerCard) -> Int? {
-        guard !card.urls.isEmpty else { return nil }
-        for (_, detail) in runtimeDetails {
-            guard let pairs = detail.peer_route_pairs else { continue }
-            for pair in pairs {
-                guard let peer = pair.peer, let conns = peer.conns else { continue }
-                for conn in conns {
-                    if let tunnel = conn.tunnel,
-                       let local = tunnel.local_addr?.url,
-                       card.matchesRuntimePeerURL(local) {
-                        if let latencyUs = conn.stats?.latency_us {
-                            return max(1, Int((Double(latencyUs) / 1000.0).rounded()))
-                        }
-                    }
-                    if let tunnel = conn.tunnel,
-                       let remote = tunnel.remote_addr?.url,
-                       card.matchesRuntimePeerURL(remote) {
-                        if let latencyUs = conn.stats?.latency_us {
-                            return max(1, Int((Double(latencyUs) / 1000.0).rounded()))
-                        }
-                    }
-                }
-            }
-        }
-        return nil
+        PeerSubscriptionLibrary.latency(for: card, runtimeDetails: runtimeDetails)
     }
 
     public enum PeerCardMergeResult: Equatable {
@@ -1577,12 +1552,11 @@ public final class EasyTierAppStore {
         else {
             return .noSelectedConfig
         }
-        let existing = Set(config.peer_urls.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) })
-        let toAdd = card.urls.filter { !existing.contains($0) }
-        guard !toAdd.isEmpty else {
+        let count = PeerSubscriptionLibrary.additionalURLCount(for: card, in: config)
+        guard count > 0 else {
             return .alreadyPresent
         }
-        return .added(count: toAdd.count)
+        return .added(count: count)
     }
 
     private func uniqueNetworkName() -> String {
@@ -1600,11 +1574,7 @@ public final class EasyTierAppStore {
         formatter.dateFormat = "HH:mm:ss"
         return formatter
     }()
-    /// Sentinel RPC URL used when we cannot construct a real peer URL (e.g. the
-    /// member's instance ID or virtual IP is missing). It is structurally valid
-    /// so downstream code can pattern-match on `rpcURL` without crashing, and
-    /// the matching `loadError` surfaces the actual reason to the UI.
-    private static let placeholderRPCURL = URL(string: "tcp://0.0.0.0:0") ?? URL(fileURLWithPath: "/dev/null")
+    private static let remoteConfigConfirmationAttempts = 12
 }
 
 public struct LogEntry: Identifiable, Sendable, Equatable {
@@ -1615,12 +1585,4 @@ public struct LogEntry: Identifiable, Sendable, Equatable {
         self.id = id
         self.text = text
     }
-}
-
-private struct RuntimeIntentObservation {
-    var instanceID: String
-    var hostname: String?
-    var ipv4: String?
-    var rpcURL: URL?
-    var label: String
 }

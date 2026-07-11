@@ -5,6 +5,28 @@ struct PatchConfigRequestPayload: Encodable {
     var instance: InstanceIdentifierPayload
 }
 
+struct ValidateNetworkConfigRequestPayload: Encodable {
+    var config: NetworkConfig
+}
+
+struct RunNetworkInstanceRequestPayload: Encodable {
+    var instanceID: RPCUUID
+    var config: NetworkConfig
+    var overwrite: Bool
+    var source: ConfigSourcePayload
+
+    enum CodingKeys: String, CodingKey {
+        case instanceID = "inst_id"
+        case config
+        case overwrite
+        case source
+    }
+}
+
+enum ConfigSourcePayload: Int, Encodable {
+    case unspecified = 0
+}
+
 struct InstanceConfigPatchPayload: Encodable {
     var hostname: String?
     var ipv4: IPv4InetPayload?

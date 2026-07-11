@@ -244,7 +244,7 @@ private struct SubscriptionOutbound: Decodable {
     }
 
     var normalizedTag: String? {
-        tag?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        tag?.trimmedNilIfEmpty
     }
 
     var normalizedType: String {
@@ -252,7 +252,7 @@ private struct SubscriptionOutbound: Decodable {
     }
 
     var normalizedServer: String? {
-        server?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        server?.trimmedNilIfEmpty
     }
 
     var isImportable: Bool {
@@ -279,56 +279,3 @@ private struct IntOrString: Decodable {
         throw DecodingError.dataCorruptedError(in: container, debugDescription: "server_port must be an integer.")
     }
 }
-
-private struct AnyCodingKey: CodingKey {
-    var stringValue: String
-    var intValue: Int?
-
-    init(stringValue: String) {
-        self.stringValue = stringValue
-        self.intValue = nil
-    }
-
-    init(intValue: Int) {
-        self.stringValue = String(intValue)
-        self.intValue = intValue
-    }
-}
-
-private extension KeyedDecodingContainer where Key == AnyCodingKey {
-    func key(_ name: String) -> AnyCodingKey { AnyCodingKey(stringValue: name) }
-
-    func decodeStringIfPresent(_ keys: String...) throws -> String? {
-        for keyName in keys {
-            if let value = try decodeIfPresent(String.self, forKey: key(keyName)) { return value }
-        }
-        return nil
-    }
-
-    func decodeIfPresent<T: Decodable>(_ type: T.Type, forKeys keys: String...) throws -> T? {
-        for keyName in keys {
-            if let value = try decodeIfPresent(type, forKey: key(keyName)) { return value }
-        }
-        return nil
-    }
-
-    func decodeLossyArray<T: Decodable>(_ type: T.Type, forKeys keys: String...) throws -> [T]? {
-        for keyName in keys {
-            let k = key(keyName)
-            guard contains(k) else { continue }
-            var container = try nestedUnkeyedContainer(forKey: k)
-            var output: [T] = []
-            while !container.isAtEnd {
-                if let value = try? container.decode(T.self) {
-                    output.append(value)
-                } else {
-                    _ = try? container.decode(DiscardedDecodable.self)
-                }
-            }
-            return output
-        }
-        return nil
-    }
-}
-
-private struct DiscardedDecodable: Decodable {}

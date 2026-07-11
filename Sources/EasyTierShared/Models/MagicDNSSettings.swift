@@ -18,8 +18,8 @@ public struct MagicDNSSettings: Codable, Equatable, Sendable {
         try container.encode(dnsSuffix, forKey: .dnsSuffix)
     }
 
-    public static let `default` = try! MagicDNSSettings()
     public static let defaultDNSSuffix = "et.net."
+    public static let `default` = MagicDNSSettings(validatedDNSSuffix: defaultDNSSuffix)
 
     public static func normalizedDNSSuffix(_ value: String) throws -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -57,6 +57,10 @@ public struct MagicDNSSettings: Codable, Equatable, Sendable {
         return (65...90).contains(scalar.value)
             || (97...122).contains(scalar.value)
             || (48...57).contains(scalar.value)
+    }
+
+    private init(validatedDNSSuffix: String) {
+        dnsSuffix = validatedDNSSuffix
     }
 
     private enum CodingKeys: String, CodingKey {

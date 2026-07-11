@@ -627,6 +627,130 @@ import Testing
 }
 
 @MainActor
+@Test func applyConfigDraftSavesStoppedNetworkWithoutStartingIt() async {
+    let client = RecordingToggleClient()
+    let original = NetworkConfig(instance_id: "auto-save-id", network_name: "before")
+    var updated = original
+    updated.network_name = "after"
+    let store = EasyTierAppStore(client: client)
+    store.configs = [original]
+
+    let result = await store.applyConfigDraft(
+        configID: original.instance_id,
+        draft: updated,
+        replacing: nil
+    )
+
+    #expect(result == .saved)
+    #expect(store.configs.first?.network_name == "after")
+    #expect(client.stoppedInstanceNames.isEmpty)
+    #expect(client.runConfigs.isEmpty)
+}
+
+@MainActor
+@Test func applyConfigDraftRestartsCapturedRunningInstance() async {
+    let client = RecordingToggleClient()
+    let original = NetworkConfig(instance_id: "auto-restart-id", network_name: "before")
+    var updated = original
+    updated.hostname = "after-host"
+    let running = NetworkInstance(
+        instance_id: original.instance_id,
+        name: original.network_name,
+        running: true
+    )
+    let store = EasyTierAppStore(client: client)
+    store.configs = [original]
+    store.instances = [running]
+
+    let result = await store.applyConfigDraft(
+        configID: original.instance_id,
+        draft: updated,
+        replacing: running
+    )
+
+    #expect(result == .restarted)
+    #expect(client.stoppedInstanceNames == [[original.network_name]])
+    #expect(client.runConfigs.first?.hostname == "after-host")
+}
+
+@MainActor
+@Test func applyConfigDraftReturnsInlineFailureWithoutPresentingAGlobalError() async {
+    let client = RecordingToggleClient()
+    client.runError = EasyTierCoreError.operationFailed("automatic restart failed")
+    let config = NetworkConfig(instance_id: "auto-failure-id", network_name: "auto-failure")
+    let running = NetworkInstance(
+        instance_id: config.instance_id,
+        name: config.network_name,
+        running: true
+    )
+    let store = EasyTierAppStore(client: client)
+    store.configs = [config]
+    store.instances = [running]
+
+    let result = await store.applyConfigDraft(
+        configID: config.instance_id,
+        draft: config,
+        replacing: running
+    )
+
+    #expect(result == .failed("automatic restart failed"))
+    #expect(store.lastError == nil)
+}
+
+@MainActor
+@Test func applyRemoteConfigChangesValidatesRestartsAndConfirmsTheRemoteConfig() async throws {
+    let client = RecordingToggleClient()
+    let instanceID = "11111111-2222-3333-4444-555555555555"
+    let original = NetworkConfig(instance_id: instanceID, hostname: "before-host")
+    var updated = original
+    updated.hostname = "after-host"
+
+    let configObject = try #require(
+        JSONSerialization.jsonObject(with: JSONEncoder().encode(updated)) as? [String: Any]
+    )
+    let responseData = try JSONSerialization.data(withJSONObject: ["config": configObject])
+    client.jsonRPCResponsesByMethod["get_config"] = String(decoding: responseData, as: UTF8.self)
+
+    let member = NetworkMemberStatus(
+        id: "remote-peer",
+        isLocal: false,
+        peerID: "42",
+        instanceID: instanceID,
+        virtualIPv4: "10.126.126.9/24",
+        hostname: "remote-mac",
+        version: "2.6.4",
+        routeCost: "P2P",
+        tunnelProto: "tcp",
+        latency: "12 ms",
+        uploadTotal: "1 KiB",
+        downloadTotal: "2 KiB",
+        lossRate: "0%",
+        natType: "Open Internet",
+        isPublicServer: false,
+        txBytes: 1_024,
+        rxBytes: 2_048
+    )
+    let store = EasyTierAppStore(client: client)
+    store.remoteConfigSession = RemoteConfigSession(
+        rpcURL: try #require(URL(string: "tcp://10.126.126.9:15888")),
+        instanceID: instanceID,
+        member: member,
+        config: updated,
+        originalConfig: original,
+        isLoading: false,
+        loadError: nil
+    )
+
+    let success = await store.applyRemoteConfigChanges()
+
+    #expect(success)
+    #expect(store.remoteConfigSession?.originalConfig == updated)
+    #expect(store.remoteConfigSession?.originalConfigPayload != nil)
+    #expect(store.remoteConfigSession?.applyState == .applied)
+    #expect(client.jsonRPCCalls.map(\.method) == ["validate_config", "run_network_instance", "get_config"])
+}
+
+@MainActor
 @Test func longSystemSleepRestartsPreviouslyRunningConfig() async throws {
     let client = RecordingToggleClient()
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "wake-secret"])
@@ -3293,6 +3417,7 @@ private final class RecordingToggleClient: EasyTierCoreClient, EasyTierHelperShu
     var configuredRPCPortals: [String?] = []
     var configuredRPCPortalWhitelists: [[String]?] = []
     var jsonRPCCalls: [EasyTierRPCRequest] = []
+    var jsonRPCResponsesByMethod: [String: String] = [:]
     var shutdownCount = 0
     var runError: Error?
     var stopError: Error?
@@ -3330,7 +3455,7 @@ private final class RecordingToggleClient: EasyTierCoreClient, EasyTierHelperShu
     func callJSONRPC(clientID _: String, url _: URL, service: String, method: String, domain: String?, payload: String) async throws -> String {
         jsonRPCCalls.append(EasyTierRPCRequest(service: service, method: method, domain: domain, payload: payload))
         if let jsonRPCError { throw jsonRPCError }
-        return #"{"ok":true}"#
+        return jsonRPCResponsesByMethod[method] ?? #"{"ok":true}"#
     }
 
     func shutdownHelper() async throws {

@@ -178,6 +178,93 @@ private actor SpyCoreClient: EasyTierCoreClient {
     #expect(id?["part4"] as? Int == 0xeeeeeeee)
 }
 
+@Test func validateNetworkConfigUsesManageServiceAndFullConfig() async throws {
+    let transport = SpyRPCTransport(response: #"{"toml_config":"ok"}"#)
+    let client = EasyTierRemoteRPCClient(transport: transport)
+    let config = NetworkConfig(
+        instance_id: "11111111-2222-3333-4444-555555555555",
+        network_name: "remote-lab",
+        peer_urls: ["tcp://10.0.0.1:11010"]
+    )
+
+    _ = try await client.validateNetworkConfig(config)
+
+    let call = try #require(await transport.firstCall())
+    #expect(call.service == "api.manage.WebClientService")
+    #expect(call.method == "validate_config")
+    let object = try rpcPayloadObject(call.payload)
+    let encodedConfig = object["config"] as? [String: Any]
+    #expect(encodedConfig?["instance_id"] as? String == config.instance_id)
+    #expect(encodedConfig?["network_name"] as? String == "remote-lab")
+    #expect(encodedConfig?["peer_urls"] as? [String] == config.peer_urls)
+}
+
+@Test func restartNetworkInstanceReusesInstanceIDAndOverwritesInPlace() async throws {
+    let transport = SpyRPCTransport()
+    let client = EasyTierRemoteRPCClient(transport: transport)
+    let instanceID = "11111111-2222-3333-4444-555555555555"
+    let config = NetworkConfig(instance_id: instanceID, network_name: "remote-lab")
+
+    _ = try await client.restartNetworkInstance(instanceID: instanceID, config: config)
+
+    let call = try #require(await transport.firstCall())
+    #expect(call.service == "api.manage.WebClientService")
+    #expect(call.method == "run_network_instance")
+    let object = try rpcPayloadObject(call.payload)
+    #expect(object["overwrite"] as? Bool == true)
+    #expect(object["source"] as? Int == 0)
+    #expect((object["config"] as? [String: Any])?["instance_id"] as? String == instanceID)
+    let id = object["inst_id"] as? [String: Any]
+    #expect(id?["part1"] as? Int == 0x11111111)
+    #expect(id?["part2"] as? Int == 0x22223333)
+    #expect(id?["part3"] as? Int == 0x44445555)
+    #expect(id?["part4"] as? Int == 0x55555555)
+}
+
+@Test func fullRemoteRestartPreservesConfigFieldsOutsideTheSwiftEditorModel() async throws {
+    let transport = SpyRPCTransport(responses: [#"{"toml_config":"ok"}"#, #"{"ok":true}"#])
+    let client = EasyTierRemoteRPCClient(transport: transport)
+    let instanceID = "11111111-2222-3333-4444-555555555555"
+    let original = NetworkConfig(
+        instance_id: instanceID,
+        hostname: "before-host",
+        network_name: "remote-lab"
+    )
+    var updated = original
+    updated.hostname = "after-host"
+
+    var rawConfig = try jsonObject(from: JSONEncoder().encode(original))
+    rawConfig["data_compress_algo"] = 2
+    rawConfig["encryption_algorithm"] = "aes-gcm"
+    rawConfig["acl"] = ["rules": [["action": 1, "description": "keep-me"]]]
+    let rawConfigData = try JSONSerialization.data(withJSONObject: rawConfig, options: [.sortedKeys])
+
+    _ = try await client.validateNetworkConfig(
+        updated,
+        originalConfig: original,
+        preserving: rawConfigData
+    )
+    _ = try await client.restartNetworkInstance(
+        instanceID: instanceID,
+        config: updated,
+        originalConfig: original,
+        preserving: rawConfigData
+    )
+
+    let calls = await transport.allCalls()
+    #expect(calls.map(\.method) == ["validate_config", "run_network_instance"])
+    for call in calls {
+        let object = try rpcPayloadObject(call.payload)
+        let config = try #require(object["config"] as? [String: Any])
+        #expect(config["hostname"] as? String == "after-host")
+        #expect(config["data_compress_algo"] as? Int == 2)
+        #expect(config["encryption_algorithm"] as? String == "aes-gcm")
+        let acl = config["acl"] as? [String: Any]
+        let rules = acl?["rules"] as? [[String: Any]]
+        #expect(rules?.first?["description"] as? String == "keep-me")
+    }
+}
+
 @Test func getConfigParsedTreatsNullableRemoteConfigFieldsAsDefaults() async throws {
     let instanceID = "11111111-2222-3333-4444-555555555555"
     var encodedConfig = try jsonObject(from: JSONEncoder().encode(NetworkConfig(

@@ -38,11 +38,11 @@ struct ConfigEditorView: View {
                     }
                 }
                 .disabled(isRemote)
+                .help(isRemote ? "Network identity cannot be changed remotely because doing so can disconnect this device." : "")
 
                 CardSection("Peers") {
                     StringListEditor(title: "Initial nodes", placeholder: "tcp://host:11010", values: $config.peer_urls)
                 }
-                .disabled(isRemote)
 
                 advancedDisclosure
             }
@@ -67,9 +67,6 @@ struct ConfigEditorView: View {
         }
         .onPreferenceChange(ConfigEditorScrollOffsetKey.self) { minY in
             onScrolledPastTopChange(minY < -Self.toolbarHideThreshold)
-        }
-        .onChange(of: displayAdvanced) { _, newValue in
-            config.advanced_settings = newValue
         }
         .onChange(of: portForwardKeys) { oldKeys, newKeys in
             for (id, key) in oldKeys {
@@ -140,7 +137,6 @@ struct ConfigEditorView: View {
                 Toggle("DHCP virtual IPv4", isOn: $config.dhcp)
                     .labelsHidden()
             }
-            .disabled(isRemote)
             FieldRow("Virtual IPv4") {
                 HStack(spacing: 10) {
                     TextField("10.144.144.10", text: $config.virtual_ipv4)
@@ -158,22 +154,18 @@ struct ConfigEditorView: View {
                     .textFieldStyle(.glassField)
             }
             magicDNSRow
-                .disabled(isRemote)
             FieldRow("Device name") {
                 TextField("Auto", text: $config.dev_name)
                     .textFieldStyle(.glassField)
             }
-            .disabled(isRemote)
             FieldRow("MTU") {
                 TextField(String(NetworkConfig.defaultMTU), text: Binding($config.mtu))
                     .textFieldStyle(.glassField)
             }
-            .disabled(isRemote)
             FieldRow("Recv limit") {
                 TextField("Unlimited bytes/s", text: Binding($config.instance_recv_bps_limit))
                     .textFieldStyle(.glassField)
             }
-            .disabled(isRemote)
         }
 
         CardSection("Routing & Portal") {
@@ -185,24 +177,20 @@ struct ConfigEditorView: View {
                         values: $config.listener_urls,
                         defaultNewValue: ListenerURLDefaults.next
                     )
-                    .disabled(isRemote)
                     StringListEditor(
                         title: "Proxy CIDRs",
                         placeholder: "10.0.0.0/24",
                         values: $config.proxy_cidrs,
                         defaultNewValue: { HostProxyCIDR.first(excluding: $0) }
                     )
-                    .disabled(isRemote)
                     Toggle("Manual routes", isOn: $config.enable_manual_routes)
-                        .disabled(isRemote)
                     StringListEditor(title: "Routes", placeholder: "192.168.0.0/16", values: $config.routes)
                         .disabled(!config.enable_manual_routes)
                     StringListEditor(title: "Exit nodes", placeholder: "10.144.144.1", values: $config.exit_nodes)
                     StringListEditor(title: "Mapped listeners", placeholder: "tcp://0.0.0.0:8080", values: $config.mapped_listeners)
                     Toggle("Relay whitelist", isOn: optionalBool($config.enable_relay_network_whitelist, defaultValue: false))
-                        .disabled(isRemote)
                     StringListEditor(title: "Allowed networks", placeholder: "*", values: $config.relay_network_whitelist)
-                        .disabled(config.enable_relay_network_whitelist != true || isRemote)
+                        .disabled(config.enable_relay_network_whitelist != true)
                 }
             }
 
@@ -211,38 +199,35 @@ struct ConfigEditorView: View {
             ExpandableSettingsGroup("SOCKS5 and VPN portal") {
                 VStack(alignment: .leading, spacing: 12) {
                     Toggle("Enable SOCKS5", isOn: optionalBool($config.enable_socks5, defaultValue: false))
-                        .disabled(isRemote)
                     FieldRow("SOCKS5 port") {
                         TextField("1080", value: $config.socks5_port, format: .number)
                             .textFieldStyle(.glassField)
                             .monospacedDigit()
                             .frame(width: ConfigControlMetrics.portFieldWidth, alignment: .leading)
-                            .disabled(config.enable_socks5 != true || isRemote)
+                            .disabled(config.enable_socks5 != true)
                     }
                     Toggle("VPN portal", isOn: $config.enable_vpn_portal)
-                        .disabled(isRemote)
                     FieldRow("VPN portal port") {
                         TextField("22022", value: $config.vpn_portal_listen_port, format: .number)
                             .textFieldStyle(.glassField)
                             .monospacedDigit()
                             .frame(width: ConfigControlMetrics.portFieldWidth, alignment: .leading)
-                            .disabled(!config.enable_vpn_portal || isRemote)
+                            .disabled(!config.enable_vpn_portal)
                     }
                     FieldRow("VPN client network") {
                         TextField("10.0.0.0", text: $config.vpn_portal_client_network_addr)
                             .textFieldStyle(.glassField)
                             .frame(minWidth: ConfigControlMetrics.addressFieldMinWidth)
-                            .disabled(!config.enable_vpn_portal || isRemote)
+                            .disabled(!config.enable_vpn_portal)
                     }
                     FieldRow("VPN client prefix") {
                         Stepper("/\(config.vpn_portal_client_network_len)", value: $config.vpn_portal_client_network_len, in: 1...32)
                             .monospacedDigit()
                             .frame(minWidth: ConfigControlMetrics.stepperWidth, alignment: .leading)
-                            .disabled(!config.enable_vpn_portal || isRemote)
+                            .disabled(!config.enable_vpn_portal)
                     }
                 }
             }
-            .disabled(isRemote)
         }
 
         CardSection("Flags") {
@@ -255,21 +240,15 @@ struct ConfigEditorView: View {
                         FlagToggle("Bind device", isOn: optionalBool($config.bind_device, defaultValue: true), showsSeparator: false)
                     }
                 }
-                .disabled(isRemote)
 
                 FlagGroup("Transport", systemImage: "network") {
                     FlagList {
                         FlagToggle("Use smoltcp", isOn: optionalBool($config.use_smoltcp, defaultValue: false))
-                            .disabled(isRemote)
                         FlagToggle("Auto public IPv6", isOn: optionalBool($config.ipv6_public_addr_auto, defaultValue: false))
                         FlagToggle("KCP proxy", isOn: optionalBool($config.enable_kcp_proxy, defaultValue: false))
-                            .disabled(isRemote)
                         FlagToggle("Disable KCP input", isOn: optionalBool($config.disable_kcp_input, defaultValue: false))
-                            .disabled(isRemote)
                         FlagToggle("QUIC proxy", isOn: optionalBool($config.enable_quic_proxy, defaultValue: false))
-                            .disabled(isRemote)
                         FlagToggle("Disable QUIC input", isOn: optionalBool($config.disable_quic_input, defaultValue: false), showsSeparator: false)
-                            .disabled(isRemote)
                     }
                 }
 
@@ -285,7 +264,6 @@ struct ConfigEditorView: View {
                         FlagToggle("Disable UPnP", isOn: optionalBool($config.disable_upnp, defaultValue: false), showsSeparator: false)
                     }
                 }
-                .disabled(isRemote)
 
                 FlagGroup("Routing", systemImage: "route") {
                     FlagList {
@@ -295,7 +273,6 @@ struct ConfigEditorView: View {
                         FlagToggle("UDP broadcast relay", isOn: optionalBool($config.enable_udp_broadcast_relay, defaultValue: false), showsSeparator: false)
                     }
                 }
-                .disabled(isRemote)
 
                 FlagGroup("Security & DNS", systemImage: "lock.shield") {
                     FlagList {
@@ -304,7 +281,6 @@ struct ConfigEditorView: View {
                         FlagToggle("Disable encryption", isOn: optionalBool($config.disable_encryption, defaultValue: false), showsSeparator: false)
                     }
                 }
-                .disabled(isRemote)
             }
             .padding(.bottom, 2)
         }
@@ -336,12 +312,14 @@ struct ConfigEditorView: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
-                        Button("Change in Settings") {
-                            EasyTierSettingsTabRequest.set(.easyTier)
-                            openWindow(id: "settings")
+                        if !isRemote {
+                            Button("Change in Settings") {
+                                EasyTierSettingsTabRequest.set(.easyTier)
+                                openWindow(id: "settings")
+                            }
+                            .buttonStyle(.link)
+                            .font(.caption)
                         }
-                        .buttonStyle(.link)
-                        .font(.caption)
                     }
                 }
             }
@@ -350,6 +328,11 @@ struct ConfigEditorView: View {
 
     private var magicDNSPreview: String {
         let hostname = config.hostname?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if isRemote {
+            return hostname.isEmpty
+                ? "Uses the remote runtime hostname and DNS zone"
+                : "\(hostname) in the remote runtime's DNS zone"
+        }
         guard !hostname.isEmpty else {
             return "Uses this Mac's system hostname at runtime"
         }
@@ -564,521 +547,6 @@ struct ConfigEditorView: View {
         Binding(
             get: { binding.wrappedValue ?? defaultValue },
             set: { binding.wrappedValue = $0 }
-        )
-    }
-}
-
-private enum ConfigControlMetrics {
-    static let addressFieldMinWidth: CGFloat = 150
-    static let secretFieldMinWidth: CGFloat = 220
-    static let portFieldWidth: CGFloat = 104
-    static let stepperWidth: CGFloat = 132
-}
-
-private struct ConfigEditorScrollOffsetKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-private struct FlagGroup<Content: View>: View {
-    var title: String
-    var systemImage: String
-    @ViewBuilder var content: Content
-
-    init(_ title: String, systemImage: String, @ViewBuilder content: () -> Content) {
-        self.title = title
-        self.systemImage = systemImage
-        self.content = content()
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: systemImage)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.accentColor.opacity(0.72))
-                    .frame(width: 14, alignment: .center)
-                Text(title.uppercased())
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .tracking(0.4)
-            }
-            content
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.primary.opacity(0.035))
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
-        }
-    }
-}
-
-private struct FlagList<Content: View>: View {
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(spacing: 0) {
-            content
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private struct FlagRowSeparator: View {
-    var body: some View {
-        Rectangle()
-            .fill(Color.primary.opacity(0.06))
-            .frame(height: 0.5)
-            .padding(.leading, 30)
-    }
-}
-
-private struct FlagToggle: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var title: String
-    @Binding var isOn: Bool
-    var help: String?
-    var showsSeparator: Bool = true
-
-    init(_ title: String, isOn: Binding<Bool>, help: String? = nil, showsSeparator: Bool = true) {
-        self.title = title
-        self._isOn = isOn
-        self.help = help
-        self.showsSeparator = showsSeparator
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Toggle(isOn: animatedBinding) {
-                HStack(spacing: 9) {
-                    Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
-                        .font(.body.weight(isOn ? .semibold : .regular))
-                        .foregroundStyle(isOn ? Color.accentColor : Color.secondary.opacity(0.5))
-                        .frame(width: 16, alignment: .center)
-                        .accessibilityHidden(true)
-
-                    Text(title)
-                        .font(.body.weight(isOn ? .medium : .regular))
-                        .foregroundStyle(isOn ? .primary : .secondary)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    Spacer(minLength: 8)
-                }
-            }
-            .toggleStyle(.switch)
-            .controlSize(.mini)
-            .padding(.horizontal, 8)
-            .frame(minHeight: 28)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .help(help ?? title)
-            .accessibilityLabel(Text(title))
-            .accessibilityValue(Text(isOn ? "On" : "Off"))
-
-            if showsSeparator {
-                FlagRowSeparator()
-            }
-        }
-    }
-
-    private var animatedBinding: Binding<Bool> {
-        Binding(
-            get: { isOn },
-            set: { newValue in
-                withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
-                    isOn = newValue
-                }
-            }
-        )
-    }
-}
-
-private struct NetworkSecretField: View {
-    @Environment(EasyTierAppStore.self) private var store
-    @Binding var config: NetworkConfig
-    @State private var isRevealed = false
-    @State private var autofillAttemptedForInstanceID: String?
-    @FocusState private var isFocused: Bool
-
-    var body: some View {
-        HStack(spacing: 8) {
-            secretInput
-                .textFieldStyle(.glassField)
-                .frame(minWidth: ConfigControlMetrics.secretFieldMinWidth, maxWidth: .infinity)
-                .focused($isFocused)
-                .onChange(of: isFocused) { _, focused in
-                    guard focused else { return }
-                    autofillIfAvailable()
-                }
-
-            Button {
-                isRevealed.toggle()
-            } label: {
-                Image(systemName: isRevealed ? "eye.slash" : "eye")
-            }
-            .buttonStyle(.borderless)
-            .help(isRevealed ? "Hide secret" : "Show secret")
-            .accessibilityLabel(Text(isRevealed ? "Hide secret" : "Show secret"))
-
-            Button {
-                fillFromKeychain()
-            } label: {
-                Image(systemName: "key.fill")
-            }
-            .buttonStyle(.borderless)
-            .help("Fill from Keychain")
-            .accessibilityLabel(Text("Fill from Keychain"))
-        }
-    }
-
-    @ViewBuilder
-    private var secretInput: some View {
-        if isRevealed {
-            TextField("Optional shared secret", text: Binding($config.network_secret, replacingNilWith: ""))
-        } else {
-            SecureField("Optional shared secret", text: Binding($config.network_secret, replacingNilWith: ""))
-        }
-    }
-
-    private func autofillIfAvailable() {
-        guard config.network_secret?.nilIfEmpty == nil else { return }
-        guard autofillAttemptedForInstanceID != config.instance_id else { return }
-        autofillAttemptedForInstanceID = config.instance_id
-        Task {
-            guard await store.networkSecretCanAutofill(for: config) else { return }
-            guard let secret = await store.autofillNetworkSecret(for: config) else { return }
-            config.network_secret = secret
-        }
-    }
-
-    private func fillFromKeychain() {
-        Task {
-            do {
-                guard let secret = try await store.revealNetworkSecret(for: config) else { return }
-                config.network_secret = secret
-            } catch {
-                store.lastError = error.localizedDescription
-            }
-        }
-    }
-}
-
-private struct StringListEditor: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var title: String
-    var placeholder: String
-    @Binding var values: [String]
-    var defaultNewValue: ([String]) -> String = { _ in "" }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(title)
-                    .font(.body.weight(.medium))
-                Spacer()
-                Button {
-                    withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
-                        values.append(defaultNewValue(values))
-                    }
-                } label: { Image(systemName: "plus") }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel(Text("Add \(title)"))
-            }
-            ForEach(values.indices, id: \.self) { index in
-                HStack(spacing: 8) {
-                    TextField(placeholder, text: Binding(
-                        get: { values.indices.contains(index) ? values[index] : "" },
-                        set: { newValue in
-                            guard values.indices.contains(index) else { return }
-                            values[index] = newValue
-                        }
-                    ))
-                    Button(role: .destructive) {
-                        guard values.indices.contains(index) else { return }
-                        _ = withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
-                            values.remove(at: index)
-                        }
-                    } label: {
-                        Image(systemName: "minus.circle")
-                    }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel(Text("Remove entry \(index + 1)"))
-                }
-                .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 6))
-            }
-        }
-        .padding(.vertical, 3)
-        .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: values.count)
-    }
-}
-
-private struct PortForwardEditor: View {
-    @Binding var portForwards: [PortForwardConfig]
-    var members: [NetworkMemberStatus]
-    var reverseStatus: [UUID: Bool] = [:]
-    var reversePending: Set<UUID> = []
-    var allowsReverse: Bool = true
-    var onToggleReverse: (PortForwardConfig) -> Void = { _ in }
-
-    private var reversedRules: [PortForwardConfig] {
-        portForwards.filter { reverseStatus[$0.id] == true }
-    }
-
-    private func reverseAvailable(for rule: PortForwardConfig) -> (available: Bool, reason: String?) {
-        let localIP = members.first(where: \.isLocal)?.copyableIPv4Address
-        guard localIP?.isEmpty == false else { return (false, "No local IP") }
-        guard let dstMember = members.first(where: { $0.copyableIPv4Address == rule.dst_ip })
-        else { return (false, "Peer \(rule.dst_ip) not in network") }
-        guard dstMember.instanceID != nil else { return (false, "Peer has no instance ID") }
-        guard dstMember.copyableIPv4Address != nil else { return (false, "Peer has no IP") }
-        return (true, nil)
-    }
-
-    private var destinationOptions: [PortForwardDestinationOption] {
-        var seenAddresses = Set<String>()
-        return members.compactMap { member in
-            guard let address = member.copyableIPv4Address, seenAddresses.insert(address).inserted else { return nil }
-            return PortForwardDestinationOption(member: member, address: address)
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-            Text("Rules")
-                .font(.body.weight(.medium))
-                Spacer()
-                Button {
-                    portForwards.append(PortForwardConfig())
-                } label: { Image(systemName: "plus") }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel(Text("Add port forwarding rule"))
-            }
-
-            ForEach($portForwards) { $rule in
-                let isReversed = reverseStatus[$rule.wrappedValue.id] == true
-                if !isReversed {
-                    editableRow(ruleBinding: $rule)
-                }
-            }
-
-            if !reversedRules.isEmpty {
-                Text("Reversed")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.green)
-                    .padding(.top, 4)
-                ForEach(reversedRules) { rule in
-                    readonlyRow(for: rule)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func editableRow(ruleBinding: Binding<PortForwardConfig>) -> some View {
-        let rule = ruleBinding.wrappedValue
-        Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
-            GridRow {
-                Picker("Protocol", selection: ruleBinding.proto) {
-                    Text("tcp").tag("tcp")
-                    Text("udp").tag("udp")
-                }
-                .labelsHidden()
-                PortForwardBindField(address: ruleBinding.bind_ip)
-                TextField("Bind port", value: ruleBinding.bind_port, format: .number)
-                    .monospacedDigit()
-                    .frame(width: ConfigControlMetrics.portFieldWidth, alignment: .leading)
-                Text("->")
-                    .foregroundStyle(.secondary)
-                PortForwardDestinationField(address: ruleBinding.dst_ip, options: destinationOptions)
-                TextField("Port", value: ruleBinding.dst_port, format: .number)
-                    .monospacedDigit()
-                    .frame(width: ConfigControlMetrics.portFieldWidth, alignment: .leading)
-                if allowsReverse { reverseButton(for: rule) }
-                Button(role: .destructive) {
-                    portForwards.removeAll { $0.id == rule.id }
-                } label: {
-                    Image(systemName: "minus.circle")
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel(Text("Remove port forwarding rule"))
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func readonlyRow(for rule: PortForwardConfig) -> some View {
-        Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
-            GridRow {
-                Text(rule.proto).font(.body).foregroundStyle(.secondary)
-                Text(rule.bind_ip).font(.body).foregroundStyle(.secondary)
-                Text("\(rule.bind_port)").font(.body).foregroundStyle(.secondary)
-                Text("->").foregroundStyle(.secondary)
-                Text(rule.dst_ip).font(.body).foregroundStyle(.secondary)
-                Text("\(rule.dst_port)").font(.body).foregroundStyle(.secondary)
-                if allowsReverse { reverseButton(for: rule) }
-                Button(role: .destructive) {
-                    portForwards.removeAll { $0.id == rule.id }
-                } label: {
-                    Image(systemName: "minus.circle")
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel(Text("Remove port forwarding rule"))
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func reverseButton(for rule: PortForwardConfig) -> some View {
-        let isActive = reverseStatus[rule.id] == true
-        let isPending = reversePending.contains(rule.id)
-        let availability = reverseAvailable(for: rule)
-
-        Button {
-            onToggleReverse(rule)
-        } label: {
-            Image(systemName: "arrow.left.arrow.right")
-                .font(.caption.weight(isActive ? .semibold : .medium))
-                .foregroundStyle(isActive ? .green : .secondary)
-                .opacity(isPending ? 0.4 : (availability.available ? 1.0 : 0.28))
-        }
-        .buttonStyle(.borderless)
-        .disabled(isPending || !availability.available)
-        .help(reverseHelpText(isActive: isActive, isPending: isPending, availability: availability, dstIP: rule.dst_ip))
-        .accessibilityLabel(Text("Reverse port forward"))
-        .accessibilityValue(Text(isActive ? "Active" : "Inactive"))
-        .accessibilityHint(Text(reverseAccessibilityHint(isActive: isActive, isPending: isPending, availability: availability, dstIP: rule.dst_ip)))
-    }
-
-    private func reverseHelpText(isActive: Bool, isPending: Bool, availability: (available: Bool, reason: String?), dstIP: String) -> String {
-        if isPending { return "Sending reverse port forward..." }
-        if isActive { return "Reverse is active on remote peer — click to remove" }
-        if !availability.available, let reason = availability.reason { return "Reverse unavailable: \(reason)" }
-        return "Send reverse port forward to peer at \(dstIP)"
-    }
-
-    private func reverseAccessibilityHint(isActive: Bool, isPending: Bool, availability: (available: Bool, reason: String?), dstIP: String) -> String {
-        if isPending { return "Sending reverse port forward." }
-        if isActive { return "Removes the reverse rule from the remote peer." }
-        if !availability.available, let reason = availability.reason { return "Unavailable: \(reason)." }
-        return "Sends a reverse port forward rule to \(dstIP)."
-    }
-}
-
-private struct PortForwardBindField: View {
-    @Binding var address: String
-
-    private let options = [
-        PortForwardBindOption(address: "127.0.0.1", title: "Localhost", systemImage: "desktopcomputer"),
-        PortForwardBindOption(address: "0.0.0.0", title: "All interfaces", systemImage: "network"),
-    ]
-
-    var body: some View {
-        HStack(spacing: 6) {
-            TextField("Bind IP", text: $address)
-                .frame(minWidth: ConfigControlMetrics.addressFieldMinWidth)
-
-            Menu {
-                ForEach(options) { option in
-                    Button {
-                        address = option.address
-                    } label: {
-                        Label(option.menuTitle, systemImage: option.systemImage)
-                    }
-                }
-            } label: {
-                Image(systemName: "scope")
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Choose a common bind address")
-            .accessibilityLabel(Text("Choose bind address"))
-        }
-    }
-}
-
-private struct PortForwardBindOption: Identifiable, Equatable {
-    var address: String
-    var title: String
-    var systemImage: String
-
-    var id: String { address }
-    var menuTitle: String { "\(title) - \(address)" }
-}
-
-private struct PortForwardDestinationField: View {
-    @Binding var address: String
-    var options: [PortForwardDestinationOption]
-
-    var body: some View {
-        HStack(spacing: 6) {
-            TextField("Destination IP", text: $address)
-                .frame(minWidth: ConfigControlMetrics.addressFieldMinWidth)
-
-            if !options.isEmpty {
-                Menu {
-                    ForEach(options) { option in
-                        Button {
-                            address = option.address
-                        } label: {
-                            Label(option.menuTitle, systemImage: option.systemImage)
-                        }
-                    }
-                } label: {
-                    Image(systemName: "person.2")
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("Choose from current network members")
-                .accessibilityLabel(Text("Choose destination member"))
-            }
-        }
-    }
-}
-
-private struct PortForwardDestinationOption: Identifiable, Equatable {
-    var member: NetworkMemberStatus
-    var address: String
-
-    var id: String { address }
-
-    var menuTitle: String {
-        let hostname = member.hostname.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !hostname.isEmpty, hostname != "-" else { return address }
-        return "\(hostname) - \(address)"
-    }
-
-    var systemImage: String {
-        member.isLocal ? "desktopcomputer" : "network"
-    }
-}
-
-private extension Binding where Value == String {
-    init(_ source: Binding<String?>, replacingNilWith fallback: String) {
-        self.init(
-            get: { source.wrappedValue ?? fallback },
-            set: { source.wrappedValue = $0.isEmpty ? nil : $0 }
-        )
-    }
-
-    init(_ source: Binding<Int?>) {
-        self.init(
-            get: { source.wrappedValue.map(String.init) ?? "" },
-            set: { source.wrappedValue = Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
         )
     }
 }

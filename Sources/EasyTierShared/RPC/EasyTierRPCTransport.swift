@@ -18,6 +18,11 @@ package protocol EasyTierRPCTransport: Sendable {
     func call(_ request: EasyTierRPCRequest) async throws -> String
 }
 
+package struct RemoteNetworkConfigDocument: Equatable, Sendable {
+    package var config: NetworkConfig
+    package var rawConfig: Data
+}
+
 package struct EasyTierRemoteRPCClient: Sendable {
     private let transport: any EasyTierRPCTransport
 
@@ -37,7 +42,7 @@ package struct EasyTierRemoteRPCClient: Sendable {
     }
 
     package func getConfig(instanceID: String) async throws -> String {
-        try await call(EasyTierRPCRequest(
+        return try await call(EasyTierRPCRequest(
             service: Self.configService,
             method: "get_config",
             payload: try Self.instancePayload(instanceID: instanceID)
@@ -45,8 +50,66 @@ package struct EasyTierRemoteRPCClient: Sendable {
     }
 
     package func getConfigParsed(instanceID: String) async throws -> NetworkConfig {
+        try await getConfigDocument(instanceID: instanceID).config
+    }
+
+    package func getConfigDocument(instanceID: String) async throws -> RemoteNetworkConfigDocument {
         let response = try await getConfig(instanceID: instanceID)
-        return try Self.parseGetConfigResponse(response)
+        return try Self.parseGetConfigDocument(response)
+    }
+
+    @discardableResult
+    package func validateNetworkConfig(
+        _ config: NetworkConfig,
+        originalConfig: NetworkConfig? = nil,
+        preserving rawConfig: Data? = nil
+    ) async throws -> String {
+        let payload: String
+        if let originalConfig, let rawConfig {
+            payload = try Self.preservedConfigRequestPayload(
+                config: config,
+                originalConfig: originalConfig,
+                rawConfig: rawConfig
+            )
+        } else {
+            payload = try Self.encodePayload(ValidateNetworkConfigRequestPayload(config: config))
+        }
+        return try await call(EasyTierRPCRequest(
+            service: Self.manageService,
+            method: "validate_config",
+            payload: payload
+        ))
+    }
+
+    @discardableResult
+    package func restartNetworkInstance(
+        instanceID: String,
+        config: NetworkConfig,
+        originalConfig: NetworkConfig? = nil,
+        preserving rawConfig: Data? = nil
+    ) async throws -> String {
+        let rpcInstanceID = try Self.rpcUUID(instanceID: instanceID)
+        let payload: String
+        if let originalConfig, let rawConfig {
+            payload = try Self.preservedRestartRequestPayload(
+                instanceID: rpcInstanceID,
+                config: config,
+                originalConfig: originalConfig,
+                rawConfig: rawConfig
+            )
+        } else {
+            payload = try Self.encodePayload(RunNetworkInstanceRequestPayload(
+                instanceID: rpcInstanceID,
+                config: config,
+                overwrite: true,
+                source: .unspecified
+            ))
+        }
+        return try await call(EasyTierRPCRequest(
+            service: Self.manageService,
+            method: "run_network_instance",
+            payload: payload
+        ))
     }
 
     package func listPortForwards(instanceID: String) async throws -> String {
@@ -99,6 +162,7 @@ package struct EasyTierRemoteRPCClient: Sendable {
 }
 
 extension EasyTierRemoteRPCClient {
+    static let manageService = "api.manage.WebClientService"
     static let configService = "api.config.ConfigRpcService"
     static let portForwardService = "api.instance.PortForwardManageRpcService"
 
@@ -114,16 +178,110 @@ extension EasyTierRemoteRPCClient {
     }
 
     private static func instanceIdentifier(instanceID: String) throws -> InstanceIdentifierPayload {
+        InstanceIdentifierPayload(id: try rpcUUID(instanceID: instanceID))
+    }
+
+    private static func rpcUUID(instanceID: String) throws -> RPCUUID {
         guard let uuid = UUID(uuidString: instanceID) else {
             throw EasyTierRPCError.invalidInstanceID(instanceID)
         }
-        return InstanceIdentifierPayload(id: RPCUUID(uuid: uuid))
+        return RPCUUID(uuid: uuid)
     }
 
     private static func encodePayload(_ payload: some Encodable) throws -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(payload)
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw EasyTierCoreError.invalidResponse("failed to encode RPC payload as UTF-8")
+        }
+        return json
+    }
+
+    private static func preservedConfigRequestPayload(
+        config: NetworkConfig,
+        originalConfig: NetworkConfig,
+        rawConfig: Data
+    ) throws -> String {
+        try encodeJSONObject([
+            "config": mergedConfigObject(
+                config: config,
+                originalConfig: originalConfig,
+                rawConfig: rawConfig
+            ),
+        ])
+    }
+
+    private static func preservedRestartRequestPayload(
+        instanceID: RPCUUID,
+        config: NetworkConfig,
+        originalConfig: NetworkConfig,
+        rawConfig: Data
+    ) throws -> String {
+        try encodeJSONObject([
+            "inst_id": encodedJSONObject(instanceID),
+            "config": mergedConfigObject(
+                config: config,
+                originalConfig: originalConfig,
+                rawConfig: rawConfig
+            ),
+            "overwrite": true,
+            "source": ConfigSourcePayload.unspecified.rawValue,
+        ])
+    }
+
+    private static func mergedConfigObject(
+        config: NetworkConfig,
+        originalConfig: NetworkConfig,
+        rawConfig: Data
+    ) throws -> [String: Any] {
+        guard var merged = try JSONSerialization.jsonObject(with: rawConfig) as? [String: Any] else {
+            throw EasyTierCoreError.invalidResponse("remote config payload is not a JSON object")
+        }
+        let originalObject = try encodedJSONObject(originalConfig)
+        let editedObject = try encodedJSONObject(config)
+
+        // Overlay only editor-visible deltas so newer remote fields survive the restart.
+        for key in Set(originalObject.keys).union(editedObject.keys) {
+            let originalContainsKey = originalObject.keys.contains(key)
+            let editedContainsKey = editedObject.keys.contains(key)
+            let valueChanged: Bool
+            if originalContainsKey != editedContainsKey {
+                valueChanged = true
+            } else if let originalValue = originalObject[key], let editedValue = editedObject[key] {
+                valueChanged = try canonicalJSONData(originalValue) != canonicalJSONData(editedValue)
+            } else {
+                valueChanged = false
+            }
+
+            guard valueChanged else { continue }
+            if let editedValue = editedObject[key] {
+                merged[key] = editedValue
+            } else {
+                merged.removeValue(forKey: key)
+            }
+        }
+
+        return merged
+    }
+
+    private static func encodedJSONObject(_ value: some Encodable) throws -> [String: Any] {
+        let data = try JSONEncoder().encode(value)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw EasyTierCoreError.invalidResponse("encoded RPC value is not a JSON object")
+        }
+        return object
+    }
+
+    private static func canonicalJSONData(_ value: Any) throws -> Data {
+        try JSONSerialization.data(withJSONObject: ["value": value], options: [.sortedKeys])
+    }
+
+    private static func encodeJSONObject(_ object: [String: Any]) throws -> String {
+        guard JSONSerialization.isValidJSONObject(object) else {
+            throw EasyTierCoreError.invalidResponse("RPC payload is not valid JSON")
+        }
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         guard let json = String(data: data, encoding: .utf8) else {
             throw EasyTierCoreError.invalidResponse("failed to encode RPC payload as UTF-8")
         }
@@ -241,6 +399,10 @@ extension EasyTierRemoteRPCClient {
     // MARK: - get_config response parsing
 
     static func parseGetConfigResponse(_ response: String) throws -> NetworkConfig {
+        try parseGetConfigDocument(response).config
+    }
+
+    static func parseGetConfigDocument(_ response: String) throws -> RemoteNetworkConfigDocument {
         guard let data = response.data(using: .utf8) else {
             throw EasyTierCoreError.invalidResponse("get_config response is not valid UTF-8")
         }
@@ -253,12 +415,16 @@ extension EasyTierRemoteRPCClient {
         guard let object = root as? [String: Any] else {
             throw EasyTierCoreError.invalidResponse("get_config response root is not a JSON object")
         }
-        guard let configObj = object["config"] else {
+        guard let configObj = object["config"] as? [String: Any] else {
             throw EasyTierCoreError.invalidResponse("get_config response did not include a config object")
         }
+        let rawConfig = try JSONSerialization.data(withJSONObject: configObj, options: [.sortedKeys])
         let configData = try JSONSerialization.data(withJSONObject: normalizedGetConfigObject(configObj), options: [])
         do {
-            return try JSONDecoder().decode(NetworkConfig.self, from: configData)
+            return RemoteNetworkConfigDocument(
+                config: try JSONDecoder().decode(NetworkConfig.self, from: configData),
+                rawConfig: rawConfig
+            )
         } catch {
             throw EasyTierCoreError.invalidResponse("failed to decode remote config: \(error)")
         }

@@ -25,7 +25,7 @@ package final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Send
 
     package func stopSync(instanceNames: [String]) throws {
         guard !instanceNames.isEmpty else { return }
-        try withCStringArray(instanceNames) { names in
+        try Self.withCStringBuffer(instanceNames) { names in
             var error: UnsafePointer<CChar>?
             let result = stop_network_instance(names.baseAddress, UInt(names.count), &error)
             try Self.throwOnError(result, error: error)
@@ -37,7 +37,7 @@ package final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Send
     }
 
     package func retainSync(instanceNames: [String]) throws {
-        try withCStringArray(instanceNames) { names in
+        try Self.withCStringBuffer(instanceNames) { names in
             var error: UnsafePointer<CChar>?
             let result = retain_network_instance(names.baseAddress, UInt(names.count), &error)
             try Self.throwOnError(result, error: error)
@@ -87,11 +87,8 @@ package final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Send
                 guard let whitelist, !whitelist.isEmpty else {
                     return configure_rpc_portal(1, pointer, nil, 0, &error)
                 }
-                return Self.withCStringArray(whitelist) { pointers in
-                    var pointers = pointers
-                    return pointers.withUnsafeMutableBufferPointer { buffer in
-                        configure_rpc_portal(1, pointer, buffer.baseAddress, UInt(buffer.count), &error)
-                    }
+                return Self.withCStringBuffer(whitelist) { buffer in
+                    configure_rpc_portal(1, pointer, buffer.baseAddress, UInt(buffer.count), &error)
                 }
             }
         } else {
@@ -100,11 +97,16 @@ package final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Send
         try Self.throwOnError(result, error: error)
     }
 
-    private static func withCStringArray<Result>(_ strings: [String], _ body: ([UnsafePointer<CChar>?]) -> Result) -> Result {
+    private static func withCStringBuffer<Result>(
+        _ strings: [String],
+        _ body: (UnsafeMutableBufferPointer<UnsafePointer<CChar>?>) throws -> Result
+    ) rethrows -> Result {
         let cStrings = strings.map { strdup($0) }
         defer { cStrings.forEach { free($0) } }
-        let pointers = cStrings.map { UnsafePointer<CChar>($0) }
-        return body(pointers)
+        var pointers = cStrings.map { UnsafePointer<CChar>($0) }
+        return try pointers.withUnsafeMutableBufferPointer { buffer in
+            try body(buffer)
+        }
     }
 
     private func connectRPCClientSync(clientID: String, url: URL) throws {
@@ -245,15 +247,6 @@ package final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Send
                 free_string(pair.value)
             }
             capacity *= 2
-        }
-    }
-
-    private func withCStringArray<T>(_ strings: [String], _ body: (UnsafeMutableBufferPointer<UnsafePointer<CChar>?>) throws -> T) throws -> T {
-        let cStrings = strings.map { strdup($0) }
-        defer { cStrings.forEach { free($0) } }
-        var pointers = cStrings.map { UnsafePointer<CChar>($0) }
-        return try pointers.withUnsafeMutableBufferPointer { buffer in
-            try body(buffer)
         }
     }
 }

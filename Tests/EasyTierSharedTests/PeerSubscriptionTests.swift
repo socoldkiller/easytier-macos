@@ -224,3 +224,73 @@ func peerCardDecodesLossily(_ json: String) throws {
     #expect(reloaded.peerSubscriptions.count == 1)
     #expect(reloaded.peerSubscriptions[0].cards[0].urls == ["quic://persisted.example.com:11012"])
 }
+
+@Test func peerSubscriptionLibraryAnnotatesAndMergesFetchedSubscriptions() throws {
+    let sourceURL = URL(string: "https://example.com/easytier.json")!
+    let fetchedAt = Date(timeIntervalSince1970: 1_700_000_000)
+    let data = #"""
+    {
+      "outbounds": [
+        { "type": "tcp", "tag": "Updated", "server": "peer.example.com", "server_port": 11010 }
+      ]
+    }
+    """#.data(using: .utf8)!
+
+    let fetched = try PeerSubscriptionLibrary.decodedSubscriptions(
+        from: data,
+        sourceURL: sourceURL,
+        fetchedAt: fetchedAt
+    )
+    #expect(fetched[0].subscriptionURL == sourceURL)
+    #expect(fetched[0].lastFetchedAt == fetchedAt)
+
+    var existing = [PeerSubscription(
+        id: "stable-id",
+        name: "Old",
+        subscriptionURL: sourceURL,
+        cards: [PeerCard(name: "Old Peer")]
+    )]
+    PeerSubscriptionLibrary.merge(fetched, from: sourceURL, into: &existing)
+
+    #expect(existing.count == 1)
+    #expect(existing[0].id == "stable-id")
+    #expect(existing[0].name == "Node Subscription")
+    #expect(existing[0].cards[0].name == "Updated")
+    #expect(existing[0].lastFetchedAt == fetchedAt)
+}
+
+@Test func peerSubscriptionLibraryFindsLatencyAcrossTunnelEndpoints() {
+    let card = PeerCard(name: "Peer", urls: ["tcp://peer.example.com:11010"])
+    let details = [
+        "office": NetworkInstanceRunningInfo(
+            peer_route_pairs: [
+                PeerRoutePair(
+                    peer: PeerInfo(
+                        conns: [
+                            PeerConnInfo(
+                                tunnel: TunnelInfo(
+                                    local_addr: URLValue(url: "tcp://local.example.com:11010"),
+                                    remote_addr: URLValue(url: "tcp://peer.example.com:11010")
+                                ),
+                                stats: PeerConnStats(latency_us: 12_600)
+                            ),
+                        ]
+                    )
+                ),
+            ]
+        ),
+    ]
+
+    #expect(PeerSubscriptionLibrary.latency(for: card, runtimeDetails: details) == 13)
+}
+
+@Test func peerSubscriptionLibraryCountsOnlyNewPeerURLs() {
+    var config = NetworkConfig()
+    config.peer_urls = ["  tcp://one.example.com:11010  "]
+    let card = PeerCard(
+        name: "Peers",
+        urls: ["tcp://one.example.com:11010", "quic://two.example.com:11012"]
+    )
+
+    #expect(PeerSubscriptionLibrary.additionalURLCount(for: card, in: config) == 1)
+}
