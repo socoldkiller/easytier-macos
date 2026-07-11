@@ -184,7 +184,7 @@ struct ContentView: View {
             if let session = store.remoteConfigSession {
                 remoteConfigContent(session: session)
             } else if let config = draftConfigBinding() {
-                ConfigEditorView(config: config, members: store.selectedMemberStatuses)
+                ConfigEditorView(config: config, members: store.selectedLiveMemberStatuses)
             } else if store.selectedConfigID != nil {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -672,10 +672,19 @@ struct ContentView: View {
             SearchResultField("NAT", member.natType),
             SearchResultField(
                 "Role",
-                member.isLocal ? "local this device self" : "online remote peer device",
+                member.isLocal ? "local this device self" : "remote peer device",
                 displayValue: member.isLocal ? "This Device" : "Remote Device"
             ),
         ]
+
+        switch member.availability {
+        case .online:
+            fields.append(SearchResultField("Status", "online connected", displayValue: "Online"))
+        case .connecting:
+            fields.append(SearchResultField("Status", "connecting reconnecting loading", displayValue: "Connecting"))
+        case .assigningAddress:
+            fields.append(SearchResultField("Status", "assigning ip address loading starting", displayValue: "Assigning IP"))
+        }
 
         if member.isPublicServer {
             fields.append(SearchResultField("Role", "public server public servers server relay", displayValue: "Public Server"))
@@ -844,7 +853,7 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let config = remoteConfigBinding() {
-            ConfigEditorView(config: config, members: store.selectedMemberStatuses, remoteSession: session)
+            ConfigEditorView(config: config, members: store.selectedLiveMemberStatuses, remoteSession: session)
         }
     }
 
@@ -933,7 +942,7 @@ struct ContentView: View {
     private func waitForRemoteInstance(instanceID: String, matches: (NetworkMemberStatus) -> Bool) async -> Bool {
         for attempt in 0..<Self.remoteRenameConfirmationAttempts {
             await store.refreshRuntime()
-            if store.selectedMemberStatuses.contains(where: { $0.instanceID == instanceID && matches($0) }) {
+            if store.selectedLiveMemberStatuses.contains(where: { $0.instanceID == instanceID && matches($0) }) {
                 return true
             }
             if attempt + 1 < Self.remoteRenameConfirmationAttempts {

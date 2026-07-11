@@ -1090,6 +1090,13 @@ import Testing
     #expect(EasyTierStorage.default.baseDirectory.lastPathComponent == "com.kkrainbow.easytier.mac")
 }
 
+@Test func testStoreStorageIsIsolatedFromApplicationSupport() {
+    let storage = EasyTierStorage.isolatedForTesting()
+
+    #expect(storage.baseDirectory.path.hasPrefix(FileManager.default.temporaryDirectory.path))
+    #expect(storage.baseDirectory.lastPathComponent != "com.kkrainbow.easytier.mac")
+}
+
 @MainActor
 @Test func selectedConfigDoesNotFallBackToFirstConfigWhenSelectionIsCleared() {
     let first = NetworkConfig(instance_id: "first-id", network_name: "first-network")
@@ -2513,6 +2520,89 @@ import Testing
     #expect(store.selectedRuntimeReadinessPhase == .ready)
 }
 
+@MainActor
+@Test func pauseThenRunRetainsMembersAndReplacesThemIncrementally() async throws {
+    let client = RecordingToggleClient()
+    let config = NetworkConfig(instance_id: "restart-id", network_name: "restart-network")
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+    let fullDetail = NetworkInstanceRunningInfo(
+        dev_name: "utun-restart",
+        my_node_info: NodeInfo(
+            virtual_ipv4: IPv4InetValue(rawValue: "10.0.64.1/24"),
+            hostname: "local",
+            peer_id: 7
+        ),
+        peer_route_pairs: [
+            PeerRoutePair(
+                route: Route(
+                    peer_id: 8,
+                    ipv4_addr: IPv4InetValue(rawValue: "10.0.64.8/24"),
+                    cost: 1,
+                    hostname: "peer",
+                    inst_id: "remote-instance"
+                ),
+                peer: PeerInfo(
+                    peer_id: 8,
+                    conns: [
+                        PeerConnInfo(
+                            conn_id: "remote-connection",
+                            peer_id: 8,
+                            tunnel: TunnelInfo(tunnel_type: "tcp")
+                        ),
+                    ]
+                )
+            ),
+        ],
+        running: true,
+        instance_id: config.instance_id
+    )
+
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+    client.networkInfos = [config.network_name: fullDetail]
+
+    await store.runSelectedConfig()
+
+    #expect(store.selectedRuntimeReadinessPhase == .ready)
+    #expect(store.selectedMemberStatuses.map(\.hostname) == ["local", "peer"])
+    #expect(store.selectedMemberStatuses.allSatisfy { $0.isLive })
+
+    client.networkInfos = [:]
+    await store.stopSelectedConfig()
+
+    #expect(store.selectedRuntimeReadinessPhase == .stopped)
+    #expect(store.selectedMemberStatuses.isEmpty)
+
+    await store.runSelectedConfig()
+
+    #expect(store.selectedRuntimeReadinessPhase == .starting)
+    #expect(store.selectedMemberStatuses.map(\.hostname) == ["local", "peer"])
+    #expect(store.selectedMemberStatuses.first(where: { $0.isLocal })?.availability == .assigningAddress)
+    #expect(store.selectedMemberStatuses.first(where: { !$0.isLocal })?.availability == .connecting)
+
+    client.networkInfos = [
+        config.network_name: NetworkInstanceRunningInfo(
+            dev_name: "utun-restart",
+            my_node_info: NodeInfo(hostname: "local", peer_id: 7),
+            running: true,
+            instance_id: config.instance_id
+        ),
+    ]
+    await store.refreshRuntime()
+
+    #expect(store.selectedMemberStatuses.count == 2)
+    #expect(store.selectedMemberStatuses.first(where: { $0.isLocal })?.availability == .assigningAddress)
+    #expect(store.selectedMemberStatuses.first(where: { !$0.isLocal })?.availability == .connecting)
+
+    client.networkInfos = [config.network_name: fullDetail]
+    await store.refreshRuntime()
+
+    #expect(store.selectedRuntimeReadinessPhase == .ready)
+    #expect(store.selectedMemberStatuses.map(\.hostname) == ["local", "peer"])
+    #expect(store.selectedMemberStatuses.allSatisfy { $0.isLive })
+}
+
 @Test func runtimeStatusSnapshotAppliesMemberTrafficMetrics() throws {
     let config = NetworkConfig(instance_id: "status-id", network_name: "status-network")
     let detail = NetworkInstanceRunningInfo(
@@ -2581,7 +2671,7 @@ import Testing
         memberStatusMetricsByID: [member.id: RuntimeMemberStatusMetricsSnapshot(metricMember)]
     )
 
-    let displayedMember = try #require(snapshot.members.first)
+    let displayedMember = try #require(snapshot.members.first(where: { $0.id == member.id }))
     #expect(displayedMember.latency == "8 ms")
 }
 

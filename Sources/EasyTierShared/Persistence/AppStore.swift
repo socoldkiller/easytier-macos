@@ -72,6 +72,7 @@ public final class EasyTierAppStore {
     }
     private var statusMetricsByInstance: [String: [String: RuntimeMemberStatusMetricsSnapshot]] = [:]
     @ObservationIgnored private var trafficSamplingStatusByInstance: [String: RuntimeTrafficSamplingStatus] = [:]
+    @ObservationIgnored private var runtimeMemberPresentation = RuntimeMemberPresentationState()
     public private(set) var selectedStatusSnapshot: RuntimeStatusSnapshot = .empty
     public private(set) var selectedTrafficSnapshot: RuntimeTrafficSnapshot = .empty
     public var runtimeIntents: [RuntimeIntent] = []
@@ -146,7 +147,7 @@ public final class EasyTierAppStore {
     /// Convenience initializer for tests that use one runtime client.
     package convenience init(
         client: any EasyTierCoreClient = PrivilegedEasyTierClient(),
-        storage: EasyTierStorage = .default,
+        storage: EasyTierStorage = .isolatedForTesting(),
         networkSecretStore: any NetworkSecretStore = SystemNetworkSecretStore(),
         systemSleepPreventer: any SystemSleepPreventing = IOKitSystemSleepPreventer()
     ) {
@@ -289,6 +290,10 @@ public final class EasyTierAppStore {
         selectedStatusSnapshot.members
     }
 
+    public var selectedLiveMemberStatuses: [NetworkMemberStatus] {
+        selectedStatusSnapshot.members.filter(\.isLive)
+    }
+
     private func refreshSelectedRuntimeSnapshotsIfNeeded() {
         guard !isPublishingRuntimePresentation else { return }
         refreshSelectedRuntimeSnapshots()
@@ -299,6 +304,9 @@ public final class EasyTierAppStore {
         let instance = config.flatMap { runningInstance(matching: $0) }
         let detail = instance.flatMap { runtimeDetails[$0.name] ?? $0.detail }
         let statusMetrics = instance.flatMap { statusMetricsByInstance[$0.name] }
+        let presentedMembers = instance.flatMap {
+            runtimeMemberPresentation.visibleMembersByInstanceName[$0.name]
+        }
         let trafficSamples = instance.flatMap { trafficSamplesByInstance[$0.name] } ?? []
         let trafficSamplingStatus = instance.flatMap { trafficSamplingStatusByInstance[$0.name] }
 
@@ -306,7 +314,8 @@ public final class EasyTierAppStore {
             selectedConfig: config,
             runningInstance: instance,
             runtimeDetail: detail,
-            memberStatusMetricsByID: statusMetrics
+            memberStatusMetricsByID: statusMetrics,
+            presentedMembers: presentedMembers
         )
         if selectedStatusSnapshot != statusSnapshot {
             selectedStatusSnapshot = statusSnapshot
@@ -815,7 +824,8 @@ public final class EasyTierAppStore {
     // MARK: - Remote config editing session
 
     public func startRemoteConfigSession(member: NetworkMemberStatus) async {
-        guard let instanceID = member.instanceID,
+        guard member.isLive,
+              let instanceID = member.instanceID,
               let ip = member.copyableIPv4Address,
               let rpcURL = URL(string: "tcp://\(ip):\(AppMode.defaultRPCListenPort)")
         else {
@@ -826,7 +836,9 @@ public final class EasyTierAppStore {
                 config: NetworkConfig(),
                 originalConfig: NetworkConfig(),
                 isLoading: false,
-                loadError: "Remote instance ID or virtual IP is unavailable for \(member.hostname)."
+                loadError: member.isLive
+                    ? "Remote instance ID or virtual IP is unavailable for \(member.hostname)."
+                    : "\(member.hostname) is still reconnecting. Try again after it is online."
             )
             return
         }
@@ -1089,6 +1101,7 @@ public final class EasyTierAppStore {
             currentStatusMetrics: statusMetricsByInstance,
             currentTrafficSamples: trafficSamplesByInstance,
             currentTrafficSamplingStatus: trafficSamplingStatusByInstance,
+            currentMemberPresentation: runtimeMemberPresentation,
             selectedTab: selectedTab,
             shouldApply: { [weak self] in
                 guard let self else { return false }
@@ -1103,6 +1116,9 @@ public final class EasyTierAppStore {
         else { return }
         lastAppliedRuntimeRefreshRevision = refreshRevision
         isPublishingRuntimePresentation = true
+        if presentationChange.shouldPublishMemberPresentation {
+            runtimeMemberPresentation = presentationChange.state.memberPresentation
+        }
         if presentationChange.shouldPublishRuntimeDetails {
             runtimeDetails = presentationChange.state.runtimeDetails
         }

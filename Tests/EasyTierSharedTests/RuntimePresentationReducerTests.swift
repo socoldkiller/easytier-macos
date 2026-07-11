@@ -19,6 +19,7 @@ import Testing
 
     #expect(!second.shouldPublishInstances)
     #expect(!second.shouldPublishRuntimeDetails)
+    #expect(!second.shouldPublishMemberPresentation)
     #expect(second.shouldPublishStatusMetrics)
     #expect(!second.shouldPublishTrafficSamples)
     #expect(second.state.statusMetricsByInstance["fixture-network"]?["peer-200"]?.txBytes == 50_000)
@@ -42,6 +43,7 @@ import Testing
 
     #expect(!second.shouldPublishInstances)
     #expect(!second.shouldPublishRuntimeDetails)
+    #expect(!second.shouldPublishMemberPresentation)
     #expect(second.shouldPublishStatusMetrics)
     #expect(!second.shouldPublishTrafficSamples)
     #expect(second.state.statusMetricsByInstance["fixture-network"]?["peer-200"]?.latency == "8 ms")
@@ -381,6 +383,7 @@ import Testing
 
     #expect(second.shouldPublishInstances)
     #expect(second.shouldPublishRuntimeDetails)
+    #expect(second.shouldPublishMemberPresentation)
     #expect(!second.shouldPublishStatusMetrics)
 }
 
@@ -403,6 +406,154 @@ import Testing
 
     #expect(second.shouldPublishRuntimeDetails)
     #expect(second.state.runtimeDetails["fixture-network"]?.events == [readyEvent, failureEvent])
+}
+
+@Test func restartRetainsKnownMembersAfterAnExplicitStop() throws {
+    let ready = RuntimePresentationReducer.reduce(
+        running: [RuntimePresentationFixture.instance(txBytes: 10_000, rxBytes: 12_000)],
+        previous: RuntimePresentationState(),
+        selectedTab: .status,
+        now: RuntimePresentationFixture.t0
+    )
+    let stopped = RuntimePresentationReducer.reduce(
+        running: [],
+        previous: ready.state,
+        selectedTab: .status,
+        now: RuntimePresentationFixture.t1
+    )
+
+    #expect(stopped.state.memberPresentation.visibleMembersByInstanceName.isEmpty)
+
+    let restarting = RuntimePresentationReducer.reduce(
+        running: [RuntimePresentationFixture.pendingInstance()],
+        previous: stopped.state,
+        selectedTab: .status,
+        now: RuntimePresentationFixture.date(at: 2)
+    )
+    let members = try #require(
+        restarting.state.memberPresentation.visibleMembersByInstanceName["fixture-network"]
+    )
+
+    #expect(members.map(\.hostname) == ["local", "peer-a"])
+    #expect(members.allSatisfy { $0.availability == .connecting })
+    #expect(members.allSatisfy { $0.routeCost == "-" })
+    #expect(members.allSatisfy { $0.tunnelProto == "-" })
+    #expect(members.allSatisfy { $0.latency == "-" })
+}
+
+@Test func restartPublishesPartialTopologyWithoutDroppingMissingMembers() throws {
+    var fullInstance = RuntimePresentationFixture.instance(
+        hostname: "peer-a",
+        txBytes: 10_000,
+        rxBytes: 12_000
+    )
+    fullInstance.detail?.peer_route_pairs?.append(
+        RuntimePresentationFixture.peerRoutePair(
+            peerID: 300,
+            hostname: "peer-b",
+            txBytes: 20_000,
+            rxBytes: 24_000
+        )
+    )
+    let ready = RuntimePresentationReducer.reduce(
+        running: [fullInstance],
+        previous: RuntimePresentationState(),
+        selectedTab: .status,
+        now: RuntimePresentationFixture.t0
+    )
+
+    var partialInstance = fullInstance
+    var partialDetail = partialInstance.detail
+    let firstPair = Array((partialDetail?.peer_route_pairs ?? []).prefix(1))
+    partialDetail?.peer_route_pairs = firstPair
+    partialInstance.detail = partialDetail
+    let partial = RuntimePresentationReducer.reduce(
+        running: [partialInstance],
+        previous: ready.state,
+        selectedTab: .status,
+        now: RuntimePresentationFixture.t1
+    )
+    let partialMembers = try #require(
+        partial.state.memberPresentation.visibleMembersByInstanceName["fixture-network"]
+    )
+
+    #expect(partialMembers.map(\.hostname) == ["local", "peer-a", "peer-b"])
+    #expect(partialMembers.first(where: { $0.hostname == "local" })?.availability == .online)
+    #expect(partialMembers.first(where: { $0.hostname == "peer-a" })?.availability == .online)
+    #expect(partialMembers.first(where: { $0.hostname == "peer-b" })?.availability == .connecting)
+    #expect(partialMembers.first(where: { $0.hostname == "peer-b" })?.routeCost == "-")
+    #expect(partialMembers.first(where: { $0.hostname == "peer-b" })?.tunnelProto == "-")
+
+    let complete = RuntimePresentationReducer.reduce(
+        running: [fullInstance],
+        previous: partial.state,
+        selectedTab: .status,
+        now: RuntimePresentationFixture.date(at: 2)
+    )
+    let completeMembers = try #require(
+        complete.state.memberPresentation.visibleMembersByInstanceName["fixture-network"]
+    )
+    #expect(completeMembers.allSatisfy { $0.availability == .online })
+}
+
+@Test func dhcpRestartMarksTheRetainedLocalAddressAsAssigning() throws {
+    let config = NetworkConfig(instance_id: "fixture-instance", network_name: "fixture-network")
+    let ready = RuntimePresentationReducer.reduce(
+        running: [RuntimePresentationFixture.instance(txBytes: 10_000, rxBytes: 12_000)],
+        previous: RuntimePresentationState(),
+        selectedTab: .status,
+        now: RuntimePresentationFixture.t0
+    )
+    let stopped = RuntimePresentationReducer.reduce(
+        running: [],
+        previous: ready.state,
+        selectedTab: .status,
+        now: RuntimePresentationFixture.t1
+    )
+    let restarting = RuntimePresentationReducer.reduce(
+        running: [RuntimePresentationFixture.pendingInstance()],
+        previous: stopped.state,
+        selectedTab: .status,
+        now: RuntimePresentationFixture.date(at: 2)
+    )
+    let instance = try #require(restarting.state.instances.first)
+    let presentedMembers = try #require(
+        restarting.state.memberPresentation.visibleMembersByInstanceName[instance.name]
+    )
+
+    let snapshot = RuntimeStatusSnapshot.build(
+        selectedConfig: config,
+        runningInstance: instance,
+        runtimeDetail: restarting.state.runtimeDetails[instance.name],
+        memberStatusMetricsByID: nil,
+        presentedMembers: presentedMembers
+    )
+    let localMember = try #require(snapshot.members.first(where: { $0.isLocal }))
+
+    #expect(snapshot.runtimeReadinessPhase == .starting)
+    #expect(snapshot.members.count == 2)
+    #expect(localMember.availability == .assigningAddress)
+    #expect(localMember.virtualIPv4 == "-")
+}
+
+@Test func firstStartShowsALocalAssigningPlaceholderBeforeCoreReturnsNodeInfo() throws {
+    let config = NetworkConfig(instance_id: "fixture-instance", network_name: "fixture-network")
+    let instance = RuntimePresentationFixture.pendingInstance()
+
+    let snapshot = RuntimeStatusSnapshot.build(
+        selectedConfig: config,
+        runningInstance: instance,
+        runtimeDetail: instance.detail,
+        memberStatusMetricsByID: nil,
+        presentedMembers: []
+    )
+    let localMember = try #require(snapshot.members.first)
+
+    #expect(snapshot.runtimeReadinessPhase == .starting)
+    #expect(snapshot.members.count == 1)
+    #expect(localMember.isLocal)
+    #expect(localMember.availability == .assigningAddress)
+    #expect(localMember.virtualIPv4 == "-")
 }
 
 private enum RuntimePresentationFixture {
@@ -450,40 +601,65 @@ private enum RuntimePresentationFixture {
                 ),
                 events: events,
                 peer_route_pairs: [
-                    PeerRoutePair(
-                        route: Route(
-                            peer_id: 200,
-                            ipv4_addr: IPv4InetValue(rawValue: "10.0.0.2/24"),
-                            next_hop_peer_id: 200,
-                            cost: 1,
-                            hostname: hostname,
-                            stun_info: StunInfo(udp_nat_type: 2),
-                            inst_id: "remote-instance",
-                            version: "fixture",
-                            feature_flag: PeerFeatureFlag(is_public_server: false)
-                        ),
-                        peer: PeerInfo(
-                            peer_id: 200,
-                            conns: [
-                                PeerConnInfo(
-                                    conn_id: "conn",
-                                    peer_id: 200,
-                                    tunnel: TunnelInfo(tunnel_type: "udp"),
-                                    stats: PeerConnStats(
-                                        rx_bytes: rxBytes,
-                                        tx_bytes: txBytes,
-                                        rx_packets: rxBytes / 1200,
-                                        tx_packets: txBytes / 1200,
-                                        latency_us: latencyUs
-                                    )
-                                ),
-                            ],
-                            default_conn_id: "conn"
-                        )
+                    peerRoutePair(
+                        peerID: 200,
+                        hostname: hostname,
+                        txBytes: txBytes,
+                        rxBytes: rxBytes,
+                        latencyUs: latencyUs
                     ),
                 ],
                 running: true,
                 instance_id: "fixture-instance"
+            )
+        )
+    }
+
+    static func pendingInstance() -> NetworkInstance {
+        NetworkInstance(
+            instance_id: "fixture-instance",
+            name: "fixture-network",
+            running: true,
+            detail: NetworkInstanceRunningInfo(running: true, instance_id: "fixture-instance")
+        )
+    }
+
+    static func peerRoutePair(
+        peerID: Int,
+        hostname: String,
+        txBytes: Int,
+        rxBytes: Int,
+        latencyUs: Int = 1_000
+    ) -> PeerRoutePair {
+        PeerRoutePair(
+            route: Route(
+                peer_id: peerID,
+                ipv4_addr: IPv4InetValue(rawValue: "10.0.0.\(peerID / 100 + 1)/24"),
+                next_hop_peer_id: peerID,
+                cost: 1,
+                hostname: hostname,
+                stun_info: StunInfo(udp_nat_type: 2),
+                inst_id: "remote-instance-\(peerID)",
+                version: "fixture",
+                feature_flag: PeerFeatureFlag(is_public_server: false)
+            ),
+            peer: PeerInfo(
+                peer_id: peerID,
+                conns: [
+                    PeerConnInfo(
+                        conn_id: "conn-\(peerID)",
+                        peer_id: peerID,
+                        tunnel: TunnelInfo(tunnel_type: "udp"),
+                        stats: PeerConnStats(
+                            rx_bytes: rxBytes,
+                            tx_bytes: txBytes,
+                            rx_packets: rxBytes / 1200,
+                            tx_packets: txBytes / 1200,
+                            latency_us: latencyUs
+                        )
+                    ),
+                ],
+                default_conn_id: "conn-\(peerID)"
             )
         )
     }

@@ -882,6 +882,12 @@ public struct PeerRoutePair: Codable, Equatable, Sendable {
     }
 }
 
+public enum RuntimeMemberAvailability: Equatable, Sendable {
+    case online
+    case connecting
+    case assigningAddress
+}
+
 public struct NetworkMemberStatus: Identifiable, Equatable, Sendable {
     public var id: String
     public var isLocal: Bool
@@ -900,9 +906,14 @@ public struct NetworkMemberStatus: Identifiable, Equatable, Sendable {
     public var isPublicServer: Bool
     public var txBytes: Int64
     public var rxBytes: Int64
+    public var availability: RuntimeMemberAvailability = .online
 }
 
 public extension NetworkMemberStatus {
+    var isLive: Bool {
+        availability == .online
+    }
+
     var copyableIPv4Address: String? {
         let value = virtualIPv4.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty, value != "-" else { return nil }

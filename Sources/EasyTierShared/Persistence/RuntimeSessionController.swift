@@ -106,6 +106,7 @@ final class RuntimeSessionController {
         currentStatusMetrics: [String: [String: RuntimeMemberStatusMetricsSnapshot]],
         currentTrafficSamples: [String: [TrafficSample]],
         currentTrafficSamplingStatus: [String: RuntimeTrafficSamplingStatus],
+        currentMemberPresentation: RuntimeMemberPresentationState = RuntimeMemberPresentationState(),
         selectedTab: WorkspaceTab,
         shouldApply: @escaping @MainActor () -> Bool = { true }
     ) async throws -> RuntimePresentationChange? {
@@ -145,6 +146,7 @@ final class RuntimeSessionController {
             previous: RuntimePresentationState(
                 instances: currentInstances,
                 runtimeDetails: currentRuntimeDetails,
+                memberPresentation: currentMemberPresentation,
                 statusMetricsByInstance: currentStatusMetrics,
                 trafficSamplesByInstance: currentTrafficSamples,
                 trafficCountersByInstance: trafficCountersByInstance,

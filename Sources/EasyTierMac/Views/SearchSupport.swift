@@ -15,8 +15,17 @@ extension NetworkMemberStatus {
             downloadTotal,
             lossRate,
             natType,
-            isLocal ? "local this device self" : "online remote peer device",
+            isLocal ? "local this device self" : "remote peer device",
         ]
+
+        switch availability {
+        case .online:
+            fields.append("online connected")
+        case .connecting:
+            fields.append("connecting reconnecting loading")
+        case .assigningAddress:
+            fields.append("assigning ip address loading starting")
+        }
 
         if isPublicServer {
             fields.append("public server public servers server relay")

@@ -24,6 +24,14 @@ public struct EasyTierStorage: Sendable {
         self.baseDirectory = baseDirectory
     }
 
+    package static func isolatedForTesting() -> EasyTierStorage {
+        EasyTierStorage(
+            baseDirectory: FileManager.default.temporaryDirectory
+                .appendingPathComponent("easytier-macos-tests", isDirectory: true)
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        )
+    }
+
     public func load() throws -> EasyTierStorageLoadResult {
         let url = stateURL(in: baseDirectory)
         guard FileManager.default.fileExists(atPath: url.path) else {

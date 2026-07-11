@@ -43,16 +43,23 @@ struct RuntimeTrafficSamplingStatus: Equatable {
 struct RuntimePresentationState {
     var instances: [NetworkInstance] = []
     var runtimeDetails: [String: NetworkInstanceRunningInfo] = [:]
+    var memberPresentation = RuntimeMemberPresentationState()
     var statusMetricsByInstance: [String: [String: RuntimeMemberStatusMetricsSnapshot]] = [:]
     var trafficSamplesByInstance: [String: [TrafficSample]] = [:]
     var trafficCountersByInstance: [String: RuntimeTrafficCounter] = [:]
     var trafficSamplingStatusByInstance: [String: RuntimeTrafficSamplingStatus] = [:]
 }
 
+struct RuntimeMemberPresentationState: Equatable {
+    var lastKnownMembersByInstanceID: [String: [NetworkMemberStatus]] = [:]
+    var visibleMembersByInstanceName: [String: [NetworkMemberStatus]] = [:]
+}
+
 struct RuntimePresentationChange {
     var state: RuntimePresentationState
     var shouldPublishInstances: Bool
     var shouldPublishRuntimeDetails: Bool
+    var shouldPublishMemberPresentation: Bool
     var shouldPublishStatusMetrics: Bool
     var shouldPublishTrafficSamples: Bool
     var shouldPublishTrafficSamplingStatus: Bool
@@ -81,6 +88,10 @@ enum RuntimePresentationReducer {
         let nextInstances = instancesUnchanged
             ? previous.instances
             : running
+        let nextMemberPresentation = memberPresentation(
+            from: runningSnapshots,
+            previous: previous.memberPresentation
+        )
 
         let statusMetricsResult = statusMetrics(
             from: runningSnapshots,
@@ -101,6 +112,7 @@ enum RuntimePresentationReducer {
             state: RuntimePresentationState(
                 instances: nextInstances,
                 runtimeDetails: nextRuntimeDetails,
+                memberPresentation: nextMemberPresentation,
                 statusMetricsByInstance: statusMetricsResult,
                 trafficSamplesByInstance: trafficSamplesResult.samples,
                 trafficCountersByInstance: trafficSamplesResult.counters,
@@ -108,6 +120,7 @@ enum RuntimePresentationReducer {
             ),
             shouldPublishInstances: !instancesUnchanged,
             shouldPublishRuntimeDetails: !runtimeDetailsUnchanged,
+            shouldPublishMemberPresentation: nextMemberPresentation != previous.memberPresentation,
             shouldPublishStatusMetrics: statusMetricsResult != previous.statusMetricsByInstance,
             shouldPublishTrafficSamples: trafficSamplesResult.samples != previous.trafficSamplesByInstance,
             shouldPublishTrafficSamplingStatus: trafficSamplesResult.statuses != previous.trafficSamplingStatusByInstance
@@ -122,6 +135,112 @@ enum RuntimePresentationReducer {
             }
         }
         return details
+    }
+
+    private static func memberPresentation(
+        from running: [RuntimeInstancePresentationSnapshot],
+        previous: RuntimeMemberPresentationState
+    ) -> RuntimeMemberPresentationState {
+        var next = previous
+        next.visibleMembersByInstanceName = [:]
+
+        for snapshot in running {
+            let instance = snapshot.instance
+            let liveMembers = snapshot.memberStatuses.map(markedOnline)
+            let previousKnown = next.lastKnownMembersByInstanceID[instance.instance_id] ?? []
+            let merged = mergeMembers(live: liveMembers, lastKnown: previousKnown)
+
+            if !liveMembers.isEmpty {
+                next.lastKnownMembersByInstanceID[instance.instance_id] = merged.lastKnown
+            }
+
+            let canRetainMissingMembers = instance.running
+                && instance.detail?.running != false
+                && instance.runtimeErrorMessage == nil
+                && instance.listenerErrorFromEvents == nil
+            next.visibleMembersByInstanceName[instance.name] = canRetainMissingMembers
+                ? merged.visible
+                : liveMembers
+        }
+
+        return next
+    }
+
+    private static func mergeMembers(
+        live: [NetworkMemberStatus],
+        lastKnown: [NetworkMemberStatus]
+    ) -> (visible: [NetworkMemberStatus], lastKnown: [NetworkMemberStatus]) {
+        var liveByIdentity: [String: NetworkMemberStatus] = [:]
+        var liveOrder: [String] = []
+        for member in live {
+            let identity = memberIdentity(member)
+            if liveByIdentity[identity] == nil {
+                liveOrder.append(identity)
+            }
+            liveByIdentity[identity] = markedOnline(member)
+        }
+
+        var visible: [NetworkMemberStatus] = []
+        var updatedKnown: [NetworkMemberStatus] = []
+        var consumed = Set<String>()
+        visible.reserveCapacity(max(live.count, lastKnown.count))
+        updatedKnown.reserveCapacity(max(live.count, lastKnown.count))
+
+        for knownMember in lastKnown {
+            let identity = memberIdentity(knownMember)
+            guard consumed.insert(identity).inserted else { continue }
+            if let current = liveByIdentity[identity] {
+                visible.append(current)
+                updatedKnown.append(current)
+            } else {
+                let known = markedOnline(knownMember)
+                visible.append(markedConnecting(known))
+                updatedKnown.append(known)
+            }
+        }
+
+        for identity in liveOrder where consumed.insert(identity).inserted {
+            guard let current = liveByIdentity[identity] else { continue }
+            visible.append(current)
+            updatedKnown.append(current)
+        }
+
+        return (visible, updatedKnown)
+    }
+
+    private static func memberIdentity(_ member: NetworkMemberStatus) -> String {
+        if member.isLocal { return "local" }
+        if let instanceID = member.instanceID?.nilIfEmpty { return "instance:\(instanceID)" }
+        if let peerID = member.peerID.nilIfEmpty, peerID != "-" { return "peer:\(peerID)" }
+        return "member:\(member.id)"
+    }
+
+    private static func markedOnline(_ member: NetworkMemberStatus) -> NetworkMemberStatus {
+        var member = member
+        member.availability = .online
+        // Dynamic counters are published through statusMetricsByInstance so
+        // retained-member bookkeeping does not re-render the table every poll.
+        member.latency = "-"
+        member.uploadTotal = "-"
+        member.downloadTotal = "-"
+        member.lossRate = "-"
+        member.txBytes = 0
+        member.rxBytes = 0
+        return member
+    }
+
+    private static func markedConnecting(_ member: NetworkMemberStatus) -> NetworkMemberStatus {
+        var member = member
+        member.availability = .connecting
+        member.routeCost = "-"
+        member.tunnelProto = "-"
+        member.latency = "-"
+        member.uploadTotal = "-"
+        member.downloadTotal = "-"
+        member.lossRate = "-"
+        member.txBytes = 0
+        member.rxBytes = 0
+        return member
     }
 
     private static func statusMetrics(

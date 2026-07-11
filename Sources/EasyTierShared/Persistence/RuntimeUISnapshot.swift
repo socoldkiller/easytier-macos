@@ -29,7 +29,8 @@ public struct RuntimeStatusSnapshot: Equatable, Sendable {
         selectedConfig: NetworkConfig?,
         runningInstance: NetworkInstance?,
         runtimeDetail: NetworkInstanceRunningInfo?,
-        memberStatusMetricsByID: [String: RuntimeMemberStatusMetricsSnapshot]?
+        memberStatusMetricsByID: [String: RuntimeMemberStatusMetricsSnapshot]?,
+        presentedMembers: [NetworkMemberStatus]? = nil
     ) -> RuntimeStatusSnapshot {
         guard let selectedConfig else { return .empty }
 
@@ -42,22 +43,36 @@ public struct RuntimeStatusSnapshot: Equatable, Sendable {
             requiresTUN: selectedConfig.requiresTUN,
             runtimeDetail: runtimeDetail
         ) ?? .stopped
-        var members = runtimeDetail?.memberStatuses ?? instance?.detail?.memberStatuses ?? []
-        if runtimeReadinessPhase == .starting,
-           !selectedConfig.dhcp,
-           let configuredIPv4 = configuredIPv4Display(for: selectedConfig),
-           let localIndex = members.firstIndex(where: \.isLocal),
-           members[localIndex].copyableIPv4Address == nil
-        {
-            // During restart Core may publish the local node before echoing its
-            // static address. Keep the configured address visible while the
-            // runtime is still converging.
-            members[localIndex].virtualIPv4 = configuredIPv4
+        var members = presentedMembers
+            ?? runtimeDetail?.memberStatuses
+            ?? instance?.detail?.memberStatuses
+            ?? []
+        if runtimeReadinessPhase == .starting, instance != nil {
+            if !members.contains(where: \.isLocal) {
+                members.insert(pendingLocalMember(for: selectedConfig), at: 0)
+            }
+            if let localIndex = members.firstIndex(where: \.isLocal) {
+                if selectedConfig.requiresTUN,
+                   selectedConfig.dhcp,
+                   (!members[localIndex].isLive || members[localIndex].copyableIPv4Address == nil)
+                {
+                    members[localIndex].availability = .assigningAddress
+                    members[localIndex].virtualIPv4 = "-"
+                } else if !selectedConfig.dhcp,
+                          let configuredIPv4 = configuredIPv4Display(for: selectedConfig),
+                          members[localIndex].copyableIPv4Address == nil
+                {
+                    // During restart Core may publish the local node before
+                    // echoing its static address.
+                    members[localIndex].virtualIPv4 = configuredIPv4
+                }
+            }
         }
         let displayedMembers: [NetworkMemberStatus]
         if let memberStatusMetricsByID {
             displayedMembers = members.map { member in
-                memberStatusMetricsByID[member.id]?.applied(to: member) ?? member
+                guard member.isLive else { return member }
+                return memberStatusMetricsByID[member.id]?.applied(to: member) ?? member
             }
         } else {
             displayedMembers = members
@@ -87,6 +102,30 @@ public struct RuntimeStatusSnapshot: Equatable, Sendable {
         let address = config.virtual_ipv4.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !address.isEmpty else { return nil }
         return address.contains("/") ? address : "\(address)/\(config.network_length)"
+    }
+
+    private static func pendingLocalMember(for config: NetworkConfig) -> NetworkMemberStatus {
+        let isAssigningAddress = config.requiresTUN && config.dhcp
+        return NetworkMemberStatus(
+            id: "local-pending-\(config.instance_id)",
+            isLocal: true,
+            peerID: "-",
+            instanceID: nil,
+            virtualIPv4: isAssigningAddress ? "-" : configuredIPv4Display(for: config) ?? "-",
+            hostname: config.hostname?.nilIfEmpty ?? "This Device",
+            version: "unknown",
+            routeCost: "-",
+            tunnelProto: "-",
+            latency: "-",
+            uploadTotal: "-",
+            downloadTotal: "-",
+            lossRate: "-",
+            natType: "-",
+            isPublicServer: false,
+            txBytes: 0,
+            rxBytes: 0,
+            availability: isAssigningAddress ? .assigningAddress : .connecting
+        )
     }
 }
 

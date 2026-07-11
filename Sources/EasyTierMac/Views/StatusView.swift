@@ -317,7 +317,7 @@ private struct StatusDisplayModel {
             return visibleMembers.map(MemberTableRow.member)
         }
 
-        let publicServers = visibleMembers.filter { !$0.isLocal && $0.isPublicServer }
+        let publicServers = visibleMembers.filter { !$0.isLocal && $0.isPublicServer && $0.isLive }
         guard publicServers.count > 1 else {
             return visibleMembers.map(MemberTableRow.member)
         }
@@ -573,6 +573,7 @@ private struct MemberGridRowView: View {
     private var accessibilitySummary: String {
         [
             "Member: \(row.accessibilityMemberTitle)",
+            "Status: \(row.accessibilityStatus)",
             "IPv4: \(row.accessibilityIPv4)",
             "Route: \(row.accessibilityRoute)",
             "Tunnel: \(row.tunnelProto)",
@@ -877,6 +878,19 @@ private extension MemberTableRow {
         }
     }
 
+    var accessibilityStatus: String {
+        switch kind {
+        case .member(let member):
+            switch member.availability {
+            case .online: "Online"
+            case .connecting: "Connecting"
+            case .assigningAddress: "Assigning a virtual IPv4 address"
+            }
+        case .publicServerGroup:
+            "Online"
+        }
+    }
+
     var accessibilityIPv4: String {
         switch kind {
         case .member(let member): member.displayedIPv4Address
@@ -951,13 +965,16 @@ private struct MemberIdentityCell: View {
     var body: some View {
         switch row.kind {
         case .member(let member):
+            let canInteract = member.isLive
             MemberStatusIdentity(
                 member: member,
                 isHighlighted: isHighlighted,
-                renameAction: { onRenameHostname(member) },
-                configureAction: member.isLocal
-                    ? onConfigureLocalMember
-                    : { onConfigureRemoteMember(member) }
+                renameAction: canInteract ? { onRenameHostname(member) } : nil,
+                configureAction: canInteract
+                    ? (member.isLocal
+                        ? onConfigureLocalMember
+                        : { onConfigureRemoteMember(member) })
+                    : nil
             )
         case .publicServerGroup(let group):
             PublicServerGroupIdentity(group: group, isHighlighted: isHighlighted)
@@ -1002,13 +1019,7 @@ private struct MemberStatusIdentity: View {
                 Image(systemName: member.memberSystemImage)
                     .foregroundStyle(member.memberIconColor)
                     .frame(width: 20)
-                Circle()
-                    .fill(member.memberStateColor)
-                    .frame(width: 7, height: 7)
-                    .overlay {
-                        Circle()
-                            .stroke(.background, lineWidth: 1.5)
-                    }
+                memberStatusIndicator
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(member.hostname)
@@ -1020,6 +1031,22 @@ private struct MemberStatusIdentity: View {
             }
         }
         .memberIdentityHighlight(isHighlighted: isHighlighted)
+    }
+
+    @ViewBuilder
+    private var memberStatusIndicator: some View {
+        if member.availability == .connecting {
+            MemberProgressIndicator(accessibilityLabel: "Connecting")
+                .frame(width: 11, height: 11)
+        } else {
+            Circle()
+                .fill(member.memberStateColor)
+                .frame(width: 7, height: 7)
+                .overlay {
+                    Circle()
+                        .stroke(.background, lineWidth: 1.5)
+                }
+        }
     }
 
     @ViewBuilder
@@ -1492,7 +1519,16 @@ private struct CopyableIPv4Cell: View {
     @State private var copyFeedbackToken = 0
 
     var body: some View {
-        if let ip = member.copyableIPv4Address {
+        if member.availability == .assigningAddress {
+            MemberProgressIndicator(accessibilityLabel: "Assigning a virtual IPv4 address")
+                .help("Assigning a virtual IPv4 address")
+        } else if member.availability == .connecting {
+            Text(member.displayedIPv4Address)
+                .monospacedDigit()
+                .lineLimit(1)
+                .foregroundStyle(.secondary)
+                .help("Last known IPv4 address while reconnecting")
+        } else if let ip = member.copyableIPv4Address {
             Button {
                 copy(ip)
             } label: {
@@ -1680,6 +1716,7 @@ private extension NetworkMemberStatus {
     }
 
     var memberIconColor: Color {
+        if !isLive { return .secondary }
         if isLocal { return Color.accentColor }
         return memberStateColor
     }
@@ -1697,10 +1734,16 @@ private extension NetworkMemberStatus {
     }
 
     var memberStateColor: Color {
-        isLocal ? Color.accentColor : EasyTierColors.statusConnected
+        switch availability {
+        case .online:
+            return isLocal ? Color.accentColor : EasyTierColors.statusConnected
+        case .connecting, .assigningAddress:
+            return EasyTierColors.statusConnecting
+        }
     }
 
     var routeCostColor: Color {
+        if !isLive { return EasyTierColors.statusConnecting }
         if routeCost == "Local" { return Color.accentColor }
         if routeCost == "P2P" { return EasyTierColors.statusConnected }
         if routeCost.hasPrefix("Relay") { return EasyTierColors.statusConnecting }
@@ -1711,13 +1754,30 @@ private extension NetworkMemberStatus {
 private struct RouteCostBadge: View {
     var member: NetworkMemberStatus
 
+    @ViewBuilder
     var body: some View {
-        Text(member.routeCost)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(member.routeCostColor)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(member.routeCostColor.opacity(0.13), in: Capsule())
+        if member.isLive {
+            Text(member.routeCost)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(member.routeCostColor)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(member.routeCostColor.opacity(0.13), in: Capsule())
+        } else {
+            Text("-")
+                .foregroundStyle(.tertiary)
+        }
+    }
+}
+
+private struct MemberProgressIndicator: View {
+    var accessibilityLabel: String
+
+    var body: some View {
+        ProgressView()
+            .controlSize(.mini)
+            .tint(EasyTierColors.statusConnecting)
+            .accessibilityLabel(Text(accessibilityLabel))
     }
 }
 
