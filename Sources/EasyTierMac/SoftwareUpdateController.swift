@@ -9,8 +9,6 @@ import ServiceManagement
 final class SoftwareUpdateController {
     var state: SoftwareUpdateState = .idle
 
-    var isPresentingUpdateSheet = false
-
     var autoCheckOnLaunch: Bool {
         didSet {
             userDefaults.set(autoCheckOnLaunch, forKey: Self.autoCheckKey)
@@ -36,19 +34,31 @@ final class SoftwareUpdateController {
     }
 
     private(set) var hasUnacknowledgedUpdate = false
+    private(set) var hasUnacknowledgedUpdateIssue = false
+    private(set) var isSoftwareUpdateWindowVisible = false
 
-    @ObservationIgnored private var activeTask: Task<Void, Never>?
+    @ObservationIgnored private var checkTask: Task<Void, Never>?
+    @ObservationIgnored private var checkOperationID: UUID?
+    @ObservationIgnored private var stateBeforeCheck: SoftwareUpdateState?
+    @ObservationIgnored private var downloadTask: Task<Void, Never>?
+    @ObservationIgnored private var downloadOperationID: UUID?
     @ObservationIgnored private var didAutoCheckThisLaunch = false
 
-    private let service: GitHubReleaseUpdateService
+    private let service: any SoftwareUpdateServicing
+    private let workspace: any SoftwareUpdateWorkspaceClient
     private let userDefaults: UserDefaults
+    private let prepareForOpeningUpdate: @MainActor @Sendable () async -> Void
 
     init(
-        service: GitHubReleaseUpdateService = .default,
-        userDefaults: UserDefaults = .standard
+        service: any SoftwareUpdateServicing = GitHubReleaseUpdateService.default,
+        workspace: any SoftwareUpdateWorkspaceClient = AppKitSoftwareUpdateWorkspaceClient(),
+        userDefaults: UserDefaults = .standard,
+        prepareForOpeningUpdate: @escaping @MainActor @Sendable () async -> Void = SoftwareUpdateController.livePrepareForOpeningUpdate
     ) {
         self.service = service
+        self.workspace = workspace
         self.userDefaults = userDefaults
+        self.prepareForOpeningUpdate = prepareForOpeningUpdate
         autoCheckOnLaunch = userDefaults.object(forKey: Self.autoCheckKey) as? Bool ?? true
     }
 
@@ -62,79 +72,139 @@ final class SoftwareUpdateController {
         return false
     }
 
-    func checkForUpdates() {
-        activeTask?.cancel()
-        activeTask = Task { await runUpdateCheck() }
+    @discardableResult
+    func checkForUpdates(origin: SoftwareUpdateCheckOrigin = .manual) -> Task<Void, Never> {
+        guard !isDownloading else { return Task {} }
+
+        if origin == .manual {
+            hasUnacknowledgedUpdate = false
+            hasUnacknowledgedUpdateIssue = false
+        }
+
+        let previousState = state == .checking ? stateBeforeCheck ?? .idle : state
+        checkOperationID = nil
+        checkTask?.cancel()
+
+        let operationID = UUID()
+        stateBeforeCheck = previousState
+        checkOperationID = operationID
+        state = .checking
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.runUpdateCheck(origin: origin, operationID: operationID)
+        }
+        checkTask = task
+        return task
     }
 
-    func presentUpdateSheet() {
-        isPresentingUpdateSheet = true
-    }
-
-    func dismissUpdateSheet() {
-        isPresentingUpdateSheet = false
-    }
-
-    func checkForUpdatesAndPresent() {
-        presentUpdateSheet()
-        checkForUpdates()
-    }
-
-    func scheduleAutomaticCheckIfNeeded() {
-        guard autoCheckOnLaunch, !didAutoCheckThisLaunch else { return }
+    @discardableResult
+    func scheduleAutomaticCheckIfNeeded() -> Task<Void, Never>? {
+        guard autoCheckOnLaunch, !didAutoCheckThisLaunch, !isDownloading, !isChecking else { return nil }
         didAutoCheckThisLaunch = true
 
-        guard shouldAutoCheckNow() else { return }
-
-        activeTask?.cancel()
-        activeTask = Task { await runUpdateCheck(autoPresentSheetOnUpdate: true) }
+        guard shouldAutoCheckNow() else { return nil }
+        return checkForUpdates(origin: .automatic)
     }
 
-    func downloadAvailableUpdate() {
-        guard let update = state.downloadableUpdate else { return }
-        activeTask?.cancel()
-        activeTask = Task { await download(update) }
+    func cancelCheck() {
+        guard checkOperationID != nil else { return }
+        let restoredState = stateBeforeCheck ?? .idle
+        checkOperationID = nil
+        checkTask?.cancel()
+        checkTask = nil
+        stateBeforeCheck = nil
+        state = restoredState
+    }
+
+    @discardableResult
+    func downloadAvailableUpdate() -> Task<Void, Never>? {
+        guard let update = state.downloadableUpdate else { return nil }
+        if userDefaults.string(forKey: Self.skippedVersionKey) == update.version {
+            userDefaults.removeObject(forKey: Self.skippedVersionKey)
+        }
+
+        acknowledgeAvailableUpdate()
+        acknowledgeUpdateIssue()
+        downloadOperationID = nil
+        downloadTask?.cancel()
+
+        let operationID = UUID()
+        downloadOperationID = operationID
+        state = .downloading(update, progress: 0)
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.download(update, operationID: operationID)
+        }
+        downloadTask = task
+        return task
     }
 
     func cancelDownload() {
-        guard isDownloading else { return }
-        activeTask?.cancel()
-        if let update = state.visibleUpdate {
-            state = .available(update, currentVersion: AppVersionInfo.current.version)
-        }
+        guard case .downloading(let update, _) = state else { return }
+        downloadOperationID = nil
+        downloadTask?.cancel()
+        downloadTask = nil
+        hasUnacknowledgedUpdateIssue = false
+        state = .available(update, currentVersion: AppVersionInfo.current.version, wasPreviouslySkipped: false)
     }
 
     func skipAvailableUpdate() {
-        guard let update = state.availableUpdate else { return }
+        guard case .available(let update, let currentVersion, _) = state else { return }
         userDefaults.set(update.version, forKey: Self.skippedVersionKey)
         hasUnacknowledgedUpdate = false
-        state = .noUpdate(currentVersion: AppVersionInfo.current.version)
+        state = .available(update, currentVersion: currentVersion, wasPreviouslySkipped: true)
     }
 
     func remindLater() {
         guard state.availableUpdate != nil else { return }
         hasUnacknowledgedUpdate = false
-        dismissUpdateSheet()
+    }
+
+    func acknowledgeAvailableUpdate() {
+        hasUnacknowledgedUpdate = false
+    }
+
+    func acknowledgeUpdateIssue() {
+        hasUnacknowledgedUpdateIssue = false
+    }
+
+    func setSoftwareUpdateWindowVisible(_ isVisible: Bool) {
+        isSoftwareUpdateWindowVisible = isVisible
+        if isVisible {
+            acknowledgeAvailableUpdate()
+            acknowledgeUpdateIssue()
+        }
     }
 
     func openReleaseNotes() {
         guard let update = state.visibleUpdate else { return }
-        NSWorkspace.shared.open(update.releaseNotesURL)
+        workspace.open(update.releaseNotesURL)
+    }
+
+    func openIssueTracker() {
+        guard let url = URL(string: "https://github.com/socoldkiller/easytier-macos/issues") else { return }
+        workspace.open(url)
     }
 
     func revealDownloadedInFinder() {
-        guard case .readyToInstall(_, let fileURL) = state else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+        guard case .downloadComplete(_, let fileURL) = state else { return }
+        workspace.reveal([fileURL])
     }
 
     func quitEasyTier() {
         EasyTierApplicationDelegate.quitEasyTier()
     }
 
-    private func runUpdateCheck(autoPresentSheetOnUpdate: Bool = false) async {
-        state = .checking
+    private func runUpdateCheck(origin: SoftwareUpdateCheckOrigin, operationID: UUID) async {
+        defer { finishCheck(operationID: operationID) }
+
         do {
             let manifest = try await service.fetchManifest()
+            try Task.checkCancellation()
+            guard checkOperationID == operationID else { return }
+
             let appInfo = AppVersionInfo.current
             let update = try EasyTierUpdateSelector.availableUpdate(
                 in: manifest,
@@ -144,49 +214,86 @@ final class SoftwareUpdateController {
                 architecture: Self.currentArchitecture
             )
             if let update {
-                if wasSkipped(update) {
-                    state = .noUpdate(currentVersion: appInfo.version)
-                } else {
-                    state = .available(update, currentVersion: appInfo.version)
-                    hasUnacknowledgedUpdate = true
-                    if autoPresentSheetOnUpdate {
-                        presentUpdateSheet()
-                    }
-                }
+                let wasPreviouslySkipped = wasSkipped(update)
+                state = .available(
+                    update,
+                    currentVersion: appInfo.version,
+                    wasPreviouslySkipped: wasPreviouslySkipped
+                )
+                hasUnacknowledgedUpdate = !wasPreviouslySkipped && !isSoftwareUpdateWindowVisible
+                hasUnacknowledgedUpdateIssue = false
             } else {
                 state = .noUpdate(currentVersion: appInfo.version)
+                hasUnacknowledgedUpdate = false
+                hasUnacknowledgedUpdateIssue = false
             }
             recordSuccessfulCheckDate()
-        } catch is CancellationError {
-            return
         } catch {
-            state = .failed(message: Self.message(for: error))
+            guard checkOperationID == operationID else { return }
+            if Self.isCancellation(error) {
+                state = stateBeforeCheck ?? .idle
+            } else if origin == .manual {
+                state = .failed(message: Self.message(for: error))
+                hasUnacknowledgedUpdateIssue = !isSoftwareUpdateWindowVisible
+            } else {
+                state = stateBeforeCheck ?? .idle
+            }
         }
     }
 
-    private func download(_ update: EasyTierAvailableUpdate) async {
-        state = .downloading(update, progress: 0)
+    private func download(_ update: EasyTierAvailableUpdate, operationID: UUID) async {
+        defer { finishDownload(operationID: operationID) }
+
         do {
             let fileURL = try await service.download(update: update) { [weak self] progress in
-                guard let self, case .downloading(let downloadingUpdate, _) = self.state,
+                guard let self, self.downloadOperationID == operationID,
+                      case .downloading(let downloadingUpdate, _) = self.state,
                       downloadingUpdate == update else { return }
                 self.state = .downloading(update, progress: progress)
             }
+            try Task.checkCancellation()
+            guard downloadOperationID == operationID else { return }
+
             guard try EasyTierSHA256.file(fileURL, matches: update.asset.sha256) else {
                 state = .verificationFailed(update, message: "The downloaded DMG did not match the published checksum.")
+                hasUnacknowledgedUpdateIssue = !isSoftwareUpdateWindowVisible
                 return
             }
-            await unregisterHelperBeforeOpeningUpdate()
-            guard NSWorkspace.shared.open(fileURL) else {
+
+            await prepareForOpeningUpdate()
+            try Task.checkCancellation()
+            guard downloadOperationID == operationID else { return }
+
+            guard workspace.open(fileURL) else {
                 state = .downloadFailed(update, message: "The DMG was downloaded, but macOS could not open it.")
+                hasUnacknowledgedUpdateIssue = !isSoftwareUpdateWindowVisible
                 return
             }
-            state = .readyToInstall(update, fileURL: fileURL)
-        } catch is CancellationError {
-            state = .available(update, currentVersion: AppVersionInfo.current.version)
+            state = .downloadComplete(update, fileURL: fileURL)
+            hasUnacknowledgedUpdateIssue = false
         } catch {
-            state = .downloadFailed(update, message: Self.message(for: error))
+            guard downloadOperationID == operationID else { return }
+            if Self.isCancellation(error) {
+                state = .available(update, currentVersion: AppVersionInfo.current.version, wasPreviouslySkipped: false)
+                hasUnacknowledgedUpdateIssue = false
+            } else {
+                state = .downloadFailed(update, message: Self.message(for: error))
+                hasUnacknowledgedUpdateIssue = !isSoftwareUpdateWindowVisible
+            }
         }
+    }
+
+    private func finishCheck(operationID: UUID) {
+        guard checkOperationID == operationID else { return }
+        checkOperationID = nil
+        checkTask = nil
+        stateBeforeCheck = nil
+    }
+
+    private func finishDownload(operationID: UUID) {
+        guard downloadOperationID == operationID else { return }
+        downloadOperationID = nil
+        downloadTask = nil
     }
 
     private static func message(for error: Error) -> String {
@@ -196,6 +303,10 @@ final class SoftwareUpdateController {
             return description
         }
         return error.localizedDescription
+    }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled || Task.isCancelled
     }
 
     private static var currentSystemVersion: String {
@@ -237,31 +348,36 @@ final class SoftwareUpdateController {
         userDefaults.set(Date(), forKey: Self.lastCheckDateKey)
     }
 
-    private func unregisterHelperBeforeOpeningUpdate() async {
+    private static func livePrepareForOpeningUpdate() async {
         let service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
         try? await service.unregister()
     }
+}
+
+enum SoftwareUpdateCheckOrigin {
+    case manual
+    case automatic
 }
 
 enum SoftwareUpdateState: Equatable {
     case idle
     case checking
     case noUpdate(currentVersion: String)
-    case available(EasyTierAvailableUpdate, currentVersion: String)
+    case available(EasyTierAvailableUpdate, currentVersion: String, wasPreviouslySkipped: Bool)
     case downloading(EasyTierAvailableUpdate, progress: Double?)
     case failed(message: String)
     case downloadFailed(EasyTierAvailableUpdate, message: String)
     case verificationFailed(EasyTierAvailableUpdate, message: String)
-    case readyToInstall(EasyTierAvailableUpdate, fileURL: URL)
+    case downloadComplete(EasyTierAvailableUpdate, fileURL: URL)
 
     var availableUpdate: EasyTierAvailableUpdate? {
-        if case .available(let update, _) = self { return update }
+        if case .available(let update, _, _) = self { return update }
         return nil
     }
 
     var downloadableUpdate: EasyTierAvailableUpdate? {
         switch self {
-        case .available(let update, _), .downloadFailed(let update, _), .verificationFailed(let update, _):
+        case .available(let update, _, _), .downloadFailed(let update, _), .verificationFailed(let update, _):
             return update
         default:
             return nil
@@ -270,16 +386,53 @@ enum SoftwareUpdateState: Equatable {
 
     var visibleUpdate: EasyTierAvailableUpdate? {
         switch self {
-        case .available(let update, _), .downloading(let update, _), .downloadFailed(let update, _),
-             .verificationFailed(let update, _), .readyToInstall(let update, _):
+        case .available(let update, _, _), .downloading(let update, _), .downloadFailed(let update, _),
+             .verificationFailed(let update, _), .downloadComplete(let update, _):
             return update
         default:
             return nil
         }
     }
+
+    var needsAttention: Bool {
+        switch self {
+        case .failed, .downloadFailed, .verificationFailed:
+            true
+        default:
+            false
+        }
+    }
 }
 
-struct GitHubReleaseUpdateService {
+protocol SoftwareUpdateServicing: Sendable {
+    func fetchManifest() async throws -> EasyTierUpdateManifest
+
+    func download(
+        update: EasyTierAvailableUpdate,
+        progress: @escaping @MainActor @Sendable (Double?) -> Void
+    ) async throws -> URL
+}
+
+@MainActor
+protocol SoftwareUpdateWorkspaceClient: AnyObject {
+    @discardableResult
+    func open(_ url: URL) -> Bool
+
+    func reveal(_ urls: [URL])
+}
+
+@MainActor
+final class AppKitSoftwareUpdateWorkspaceClient: SoftwareUpdateWorkspaceClient {
+    func open(_ url: URL) -> Bool {
+        NSWorkspace.shared.open(url)
+    }
+
+    func reveal(_ urls: [URL]) {
+        NSWorkspace.shared.activateFileViewerSelecting(urls)
+    }
+}
+
+struct GitHubReleaseUpdateService: SoftwareUpdateServicing, Sendable {
     var manifestURL: URL
 
     static var `default`: GitHubReleaseUpdateService {

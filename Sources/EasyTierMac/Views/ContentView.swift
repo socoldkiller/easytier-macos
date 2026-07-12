@@ -8,7 +8,6 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(EasyTierAppStore.self) private var store
     @Environment(AppAppearanceSettings.self) private var appearanceSettings
-    @Environment(SoftwareUpdateController.self) private var updater
     @State private var tomlPresentation: TOMLPresentation?
     @State private var draftConfig = NetworkConfig()
     @State private var draftConfigID: String?
@@ -109,12 +108,6 @@ struct ContentView: View {
         }
         .sheet(isPresented: $store.isShowingLinuxInstallGuide) {
             LinuxInstallGuideView()
-        }
-        .sheet(isPresented: Binding(
-            get: { updater.isPresentingUpdateSheet },
-            set: { updater.isPresentingUpdateSheet = $0 }
-        )) {
-            UpdateSheet()
         }
         .alert(
             "EasyTier",
@@ -643,7 +636,7 @@ struct ContentView: View {
 
     private func openSettings(tab: EasyTierSettingsTab) {
         EasyTierSettingsTabRequest.set(tab)
-        openWindow(id: "settings")
+        openWindow(id: EasyTierWindowID.settings)
     }
 
     private func highlightSearchResult(peerID: String) {

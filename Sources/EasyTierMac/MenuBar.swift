@@ -21,7 +21,8 @@ struct MenuBarStatusItemBridge: NSViewRepresentable {
             appearanceSettings: appearanceSettings,
             connectionState: connectionState,
             configureOpenWindows: configureOpenWindows,
-            openMainWindow: openMainWindow
+            openMainWindow: openMainWindow,
+            openSoftwareUpdateWindow: openSoftwareUpdateWindow
         )
         return view
     }
@@ -33,19 +34,26 @@ struct MenuBarStatusItemBridge: NSViewRepresentable {
             appearanceSettings: appearanceSettings,
             connectionState: connectionState,
             configureOpenWindows: configureOpenWindows,
-            openMainWindow: openMainWindow
+            openMainWindow: openMainWindow,
+            openSoftwareUpdateWindow: openSoftwareUpdateWindow
         )
     }
 
     private func openMainWindow() {
         NSApp.unhide(nil)
-        openWindow(id: "main")
+        openWindow(id: EasyTierWindowID.main)
         NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.async {
             configureOpenWindows()
             DispatchQueue.main.async {
                 configureOpenWindows()
             }
+        }
+    }
+
+    private func openSoftwareUpdateWindow() {
+        openOrRaiseSoftwareUpdateWindow {
+            openWindow(id: EasyTierWindowID.softwareUpdate)
         }
     }
 
@@ -69,6 +77,7 @@ final class MenuBarStatusItemController: NSObject {
     private var resignActiveTask: Task<Void, Never>?
     private var configureOpenWindowsAction: (() -> Void)?
     private var openMainWindowAction: (() -> Void)?
+    private var openSoftwareUpdateWindowAction: (() -> Void)?
 
     private static let popoverSize = NSSize(width: 292, height: 370)
     private static let counterclockwiseNodeIndexes = [0, 1, 2]
@@ -88,11 +97,13 @@ final class MenuBarStatusItemController: NSObject {
         appearanceSettings: AppAppearanceSettings,
         connectionState: ConnectionGlyphState,
         configureOpenWindows: @escaping () -> Void,
-        openMainWindow: @escaping () -> Void
+        openMainWindow: @escaping () -> Void,
+        openSoftwareUpdateWindow: @escaping () -> Void
     ) {
         installStatusItemIfNeeded()
         configureOpenWindowsAction = configureOpenWindows
         openMainWindowAction = openMainWindow
+        openSoftwareUpdateWindowAction = openSoftwareUpdateWindow
 
         if self.connectionState != connectionState {
             self.connectionState = connectionState
@@ -135,6 +146,7 @@ final class MenuBarStatusItemController: NSObject {
 
         let content = MenuBarContent(
             openMainWindowAction: { [weak self] in self?.openMainWindowAction?() },
+            openSoftwareUpdateWindowAction: { [weak self] in self?.openSoftwareUpdateWindowAction?() },
             dismissMenuBarAction: { [weak self] in self?.closePopover() }
         )
         .environment(store)

@@ -315,7 +315,7 @@ struct ConfigEditorView: View {
                         if !isRemote {
                             Button("Change in Settings") {
                                 EasyTierSettingsTabRequest.set(.easyTier)
-                                openWindow(id: "settings")
+                                openWindow(id: EasyTierWindowID.settings)
                             }
                             .buttonStyle(.link)
                             .font(.caption)

@@ -11,6 +11,7 @@ struct MenuBarContent: View {
     @Environment(\.dismiss) private var dismiss
 
     var openMainWindowAction: (() -> Void)?
+    var openSoftwareUpdateWindowAction: (() -> Void)?
     var dismissMenuBarAction: (() -> Void)?
 
     @State private var copiedDeviceAddress = false
@@ -78,11 +79,26 @@ struct MenuBarContent: View {
                 MenuBarDivider()
             }
 
-            if updater.hasUnacknowledgedUpdate {
-                MenuBarUpdateBanner {
-                    openMainWindow()
-                    updater.checkForUpdatesAndPresent()
+            if updater.hasUnacknowledgedUpdate, updater.state.availableUpdate != nil {
+                MenuBarUpdateBanner(
+                    title: "Update Available",
+                    systemImage: "arrow.up.circle.fill",
+                    accessibilityLabel: "Update available"
+                ) {
+                    updater.acknowledgeAvailableUpdate()
                     dismissMenuBar()
+                    openSoftwareUpdateWindow()
+                }
+                MenuBarDivider()
+            } else if updater.hasUnacknowledgedUpdateIssue, updater.state.needsAttention {
+                MenuBarUpdateBanner(
+                    title: "Update Needs Attention",
+                    systemImage: "exclamationmark.triangle.fill",
+                    accessibilityLabel: "Software update needs attention"
+                ) {
+                    updater.acknowledgeUpdateIssue()
+                    dismissMenuBar()
+                    openSoftwareUpdateWindow()
                 }
                 MenuBarDivider()
             }
@@ -238,8 +254,19 @@ struct MenuBarContent: View {
         }
 
         NSApp.unhide(nil)
-        openWindow(id: "main")
+        openWindow(id: EasyTierWindowID.main)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func openSoftwareUpdateWindow() {
+        if let openSoftwareUpdateWindowAction {
+            openSoftwareUpdateWindowAction()
+            return
+        }
+
+        openOrRaiseSoftwareUpdateWindow {
+            openWindow(id: EasyTierWindowID.softwareUpdate)
+        }
     }
 
     private func openMainWindowAndDismiss() {
@@ -651,6 +678,9 @@ private struct MenuBarListButton: View {
 private struct MenuBarUpdateBanner: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    var title: String
+    var systemImage: String
+    var accessibilityLabel: String
     var action: () -> Void
 
     @State private var isHovering = false
@@ -658,10 +688,10 @@ private struct MenuBarUpdateBanner: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 8) {
-                Image(systemName: "arrow.up.circle.fill")
+                Image(systemName: systemImage)
                     .font(.body)
                     .foregroundStyle(.orange)
-                Text("Update Available")
+                Text(title)
                     .font(.body.weight(.medium))
                     .foregroundStyle(.primary)
                 Spacer(minLength: 0)
@@ -679,8 +709,8 @@ private struct MenuBarUpdateBanner: View {
         .buttonStyle(QuietPressButtonStyle(pressedScale: 0.985, pressedOpacity: 0.82))
         .onHover { isHovering = $0 }
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: isHovering)
-        .accessibilityLabel(Text("Update available"))
-        .accessibilityHint(Text("Opens the software update sheet"))
+        .accessibilityLabel(Text(accessibilityLabel))
+        .accessibilityHint(Text("Opens the Software Update window"))
     }
 
     private var rowBackground: Color {

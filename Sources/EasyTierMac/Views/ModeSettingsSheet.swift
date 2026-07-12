@@ -58,9 +58,11 @@ enum SettingsSelection: Hashable {
 
 struct EasyTierSettingsSheet: View {
     @Environment(\.dismissWindow) private var dismissWindow
+    @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(EasyTierAppStore.self) private var store
     @Environment(AppAppearanceSettings.self) private var appearance
+    @Environment(SoftwareUpdateController.self) private var updater
     @AppStorage(EasyTierSettingsTabRequest.key) private var requestedSettingsTab = EasyTierSettingsTab.general.rawValue
     @State private var loginItem = LoginItemController()
     @State private var selection: SettingsSelection
@@ -166,7 +168,7 @@ struct EasyTierSettingsSheet: View {
     private var generalSettings: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
-                paneHeader(title: "General", subtitle: "Appearance, launch, and quit behavior for the EasyTier GUI.")
+                paneHeader(title: "General", subtitle: "Appearance, launch, updates, and quit behavior for the EasyTier GUI.")
 
                 CardSection(
                     "Appearance",
@@ -184,6 +186,24 @@ struct EasyTierSettingsSheet: View {
                 ) {
                     Toggle("Launch at Login", isOn: $loginItem.isEnabled)
                         .onChange(of: loginItem.isEnabled) { _, _ in loginItem.apply() }
+                }
+
+                CardSection(
+                    "Software Update",
+                    footer: "EasyTier checks stable releases at most once every 24 hours."
+                ) {
+                    Toggle("Check for Updates Automatically", isOn: autoCheckUpdatesBinding)
+                    SettingsRowDivider()
+                    SettingsInlineRow("Status") {
+                        Text(generalUpdateSummaryText)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    SettingsRowDivider()
+                    SettingsInlineRow("Updates") {
+                        Button(updater.state.settingsActionTitle, action: performUpdateAction)
+                            .controlSize(.small)
+                    }
                 }
 
                 CardSection(
@@ -348,6 +368,47 @@ struct EasyTierSettingsSheet: View {
                 store.saveInBackground()
             }
         )
+    }
+
+    private var autoCheckUpdatesBinding: Binding<Bool> {
+        Binding {
+            updater.autoCheckOnLaunch
+        } set: { isEnabled in
+            updater.autoCheckOnLaunch = isEnabled
+            if isEnabled {
+                updater.scheduleAutomaticCheckIfNeeded()
+            }
+        }
+    }
+
+    private var generalUpdateSummaryText: String {
+        switch updater.state {
+        case .available(let update, _, let wasPreviouslySkipped):
+            wasPreviouslySkipped ? "Version \(update.version) was skipped" : "Version \(update.version) available"
+        case .downloading:
+            "Downloading"
+        case .downloadComplete:
+            "Download complete"
+        case .failed, .downloadFailed, .verificationFailed:
+            "Needs attention"
+        case .checking:
+            "Checking"
+        case .noUpdate:
+            "Up to date"
+        case .idle:
+            "Stable releases"
+        }
+    }
+
+    private func performUpdateAction() {
+        openOrRaiseSoftwareUpdateWindow {
+            openWindow(id: EasyTierWindowID.softwareUpdate)
+        }
+        if updater.state.shouldStartCheckFromSettings {
+            updater.checkForUpdates(origin: .manual)
+        } else {
+            updater.acknowledgeAvailableUpdate()
+        }
     }
 
     private var settingsErrorPresented: Binding<Bool> {
@@ -553,6 +614,7 @@ private struct SettingsSidebar: View {
 
 private struct SettingsAboutView: View {
     @Environment(SoftwareUpdateController.self) private var updater
+    @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let appInfo = AppVersionInfo.current
@@ -581,6 +643,30 @@ private struct SettingsAboutView: View {
             .padding(.bottom, 4)
 
             Form {
+                Section("Software Update") {
+                    LabeledContent {
+                        HStack(spacing: 10) {
+                            if case .available(_, _, let wasPreviouslySkipped) = updater.state {
+                                StatusPill(
+                                    wasPreviouslySkipped ? "Previously skipped" : "Update available",
+                                    tone: wasPreviouslySkipped ? .neutral : .warning
+                                )
+                            }
+                            Spacer(minLength: 0)
+                            Button(updater.state.settingsActionTitle, action: performUpdateAction)
+                                .controlSize(.small)
+                        }
+                    } label: {
+                        Text(updateSummaryText)
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let lastCheck = updater.lastCheckFormatted {
+                        LabeledContent("Last check", value: lastCheck)
+                    }
+                }
+
                 Section("Version") {
                     SettingsMetadataRow(label: "GUI", value: "\(appInfo.version) · \(revisions.guiCommit)")
                     SettingsMetadataRow(label: "Core", value: revisions.coreVersion)
@@ -598,30 +684,6 @@ private struct SettingsAboutView: View {
                     SettingsMetadataRow(label: "License", value: "MIT © 2026 contributors")
                 }
 
-                Section("Software Update") {
-                    Toggle("Check for Updates Automatically", isOn: autoCheckUpdatesBinding)
-                        .toggleStyle(.checkbox)
-
-                    LabeledContent {
-                        HStack(spacing: 10) {
-                            if case .available = updater.state {
-                                StatusPill("Update available", tone: .warning)
-                            }
-                            Spacer(minLength: 0)
-                            Button("Check for Updates…") { updater.checkForUpdatesAndPresent() }
-                                .controlSize(.small)
-                        }
-                    } label: {
-                        Text(updateSummaryText)
-                            .font(.body)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    if let lastCheck = updater.lastCheckFormatted {
-                        LabeledContent("Last check", value: lastCheck)
-                    }
-                }
             }
             .formStyle(.grouped)
             .scrollContentBackground(.hidden)
@@ -640,12 +702,14 @@ private struct SettingsAboutView: View {
             "Checking stable releases…"
         case .noUpdate:
             "EasyTier is up to date."
-        case .available(let update, _):
-            "EasyTier \(update.version) is available."
+        case .available(let update, _, let wasPreviouslySkipped):
+            wasPreviouslySkipped
+                ? "EasyTier \(update.version) is available and was previously skipped."
+                : "EasyTier \(update.version) is available."
         case .downloading:
             "Downloading update…"
-        case .readyToInstall:
-            "Update ready to install."
+        case .downloadComplete:
+            "Update download complete."
         case .failed, .downloadFailed, .verificationFailed:
             "Updater needs attention."
         case .idle:
@@ -653,15 +717,30 @@ private struct SettingsAboutView: View {
         }
     }
 
-    private var autoCheckUpdatesBinding: Binding<Bool> {
-        Binding {
-            updater.autoCheckOnLaunch
-        } set: { isEnabled in
-            updater.autoCheckOnLaunch = isEnabled
-            if isEnabled {
-                updater.scheduleAutomaticCheckIfNeeded()
-            }
+    private func performUpdateAction() {
+        openOrRaiseSoftwareUpdateWindow {
+            openWindow(id: EasyTierWindowID.softwareUpdate)
         }
+        if updater.state.shouldStartCheckFromSettings {
+            updater.checkForUpdates(origin: .manual)
+        } else {
+            updater.acknowledgeAvailableUpdate()
+        }
+    }
+}
+
+private extension SoftwareUpdateState {
+    var shouldStartCheckFromSettings: Bool {
+        switch self {
+        case .idle, .noUpdate:
+            true
+        case .checking, .available, .downloading, .failed, .downloadFailed, .verificationFailed, .downloadComplete:
+            false
+        }
+    }
+
+    var settingsActionTitle: String {
+        shouldStartCheckFromSettings ? "Check for Updates…" : "Open Software Update…"
     }
 }
 

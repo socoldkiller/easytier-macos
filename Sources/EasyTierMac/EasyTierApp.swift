@@ -4,6 +4,30 @@ import AppKit
 import ServiceManagement
 import SwiftUI
 
+enum EasyTierWindowID {
+    static let main = "main"
+    static let settings = "settings"
+    static let softwareUpdate = "software-update"
+}
+
+@MainActor
+func openOrRaiseSoftwareUpdateWindow(openWindow: () -> Void) {
+    NSApp.unhide(nil)
+
+    if let window = NSApp.windows.first(where: { window in
+        window.identifier?.rawValue == EasyTierWindowID.softwareUpdate || window.title == "Software Update"
+    }) {
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
+        }
+        window.makeKeyAndOrderFront(nil)
+    } else {
+        openWindow()
+    }
+
+    NSApp.activate(ignoringOtherApps: true)
+}
+
 @main
 struct EasyTierApp: App {
     @NSApplicationDelegateAdaptor(EasyTierApplicationDelegate.self) private var appDelegate
@@ -20,7 +44,7 @@ struct EasyTierApp: App {
     }
 
     var body: some Scene {
-        Window("EasyTier", id: "main") {
+        Window("EasyTier", id: EasyTierWindowID.main) {
             ContentView()
                 .environment(store)
                 .environment(updater)
@@ -58,7 +82,7 @@ struct EasyTierApp: App {
         }
         .windowToolbarStyle(.unified)
 
-        Window("EasyTier", id: "settings") {
+        Window("EasyTier", id: EasyTierWindowID.settings) {
             EasyTierSettingsSheet(initialTab: .general, mode: store.mode, magicDNSSettings: store.magicDNSSettings) { mode, magicDNSSettings in
                 Task { await store.applyMode(mode, magicDNSSettings: magicDNSSettings) }
             }
@@ -94,11 +118,7 @@ struct EasyTierApp: App {
                     .keyboardShortcut(",", modifiers: .command)
             }
 
-            CommandGroup(after: .appInfo) {
-                Button("Check for Updates...") {
-                    updater.checkForUpdatesAndPresent()
-                }
-            }
+            SoftwareUpdateCommands(updater: updater)
 
             CommandGroup(replacing: .appTermination) {
                 Button("Quit EasyTier") {
@@ -107,6 +127,24 @@ struct EasyTierApp: App {
                 .keyboardShortcut("q")
             }
         }
+
+        Window("Software Update", id: EasyTierWindowID.softwareUpdate) {
+            SoftwareUpdateView()
+                .environment(updater)
+                .environment(appearanceSettings)
+                .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+                .easyTierWindowBackground(glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
+                .hideScrollViewScrollers()
+                .background(
+                    WindowAccessor { window in
+                        window.identifier = NSUserInterfaceItemIdentifier(EasyTierWindowID.softwareUpdate)
+                        configureMainWindow(window, glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
+                    }
+                    .frame(width: 0, height: 0)
+                )
+        }
+        .windowToolbarStyle(.unified)
+        .windowResizability(.contentSize)
     }
 
     private var menuBarConnectionState: ConnectionGlyphState {
@@ -236,5 +274,23 @@ struct EasyTierApp: App {
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 30))
         fputs("helper command timed out\n", stderr)
         Foundation.exit(EXIT_FAILURE)
+    }
+}
+
+@MainActor
+private struct SoftwareUpdateCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+
+    var updater: SoftwareUpdateController
+
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") {
+                openOrRaiseSoftwareUpdateWindow {
+                    openWindow(id: EasyTierWindowID.softwareUpdate)
+                }
+                updater.checkForUpdates(origin: .manual)
+            }
+        }
     }
 }
