@@ -114,7 +114,7 @@ macOS 15 or later.
 Grab the DMG from [Releases](https://github.com/socoldkiller/easytier-macos/releases) and drop it into Applications.
 
 First launch:
-1. macOS may flag it as unidentified → System Settings → Privacy & Security → Open Anyway
+1. Release DMGs are Developer ID signed and Apple-notarized. If macOS cannot verify the developer, do not bypass Gatekeeper; download the DMG again and report the release issue.
 2. TUN mode prompts for the privileged helper → follow the dialogs
 3. If your firewall is on → allow incoming connections for EasyTier
 
@@ -122,15 +122,13 @@ First launch:
 
 ### Prerequisites
 
-Xcode 16+, Swift 6, Rust 1.95+ stable, and the Protocol Buffers compiler (`protoc`).
+Xcode 16+, Swift 6, Rust 1.95+ stable, and the Protocol Buffers compiler (`protoc`). Tests do not require a signing certificate; packaging an app or DMG requires an installed Developer ID Application certificate.
 
 ```bash
 git clone --recurse-submodules https://github.com/socoldkiller/easytier-macos.git
 cd easytier-macos
 make bootstrap   # verify toolchain
 make ffi         # build the Rust FFI static lib for this Mac
-make app-debug   # package an ad-hoc debug app
-make dmg-adhoc   # package one ad-hoc DMG; helper installation is unavailable
 make test        # run Swift and Rust tests
 ```
 
@@ -139,11 +137,15 @@ Output paths:
 - DMG: `.build/artifacts/EasyTier-macOS-$(uname -m).dmg`
 - FFI lib: `Vendor/Frameworks/static/libeasytier_ffi.a`
 
-Developer ID signing:
+Developer ID packaging:
 
 ```bash
-make dmg-signed CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)"
+export CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)"
+make app-debug CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
+make dmg CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 ```
+
+Every packaging entry point requires Developer ID signing, a secure timestamp, and the hardened runtime. Packaging fails instead of producing a downgraded build when the identity is missing or invalid.
 
 ### Call path
 

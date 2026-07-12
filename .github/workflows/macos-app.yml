@@ -31,7 +31,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build EasyTier.app
+    name: Build and test EasyTier
     # Push/tag builds use the shared self-hosted macOS runner pool. Any online
     # runner with the easytier-macos label is eligible, so CI can continue when
     # one machine is offline or asleep.
@@ -106,8 +106,8 @@ jobs:
       - name: Run automated tests
         run: make test
 
-      - name: Resolve macOS signing mode
-        id: signing
+      - name: Require release signing credentials
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           APPLE_DEVELOPER_ID_APPLICATION_CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERTIFICATE_BASE64 }}
           APPLE_DEVELOPER_ID_APPLICATION_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERTIFICATE_PASSWORD }}
@@ -117,11 +117,6 @@ jobs:
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
         run: |
-          if [[ "$GITHUB_REF" != refs/tags/* ]]; then
-            echo "mode=adhoc" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
           missing=()
           for name in \
             APPLE_DEVELOPER_ID_APPLICATION_CERTIFICATE_BASE64 \
@@ -137,16 +132,16 @@ jobs:
             fi
           done
 
-          if [[ "${#missing[@]}" -eq 0 ]]; then
-            echo "mode=developer-id" >> "$GITHUB_OUTPUT"
-            echo "Tag release will use Developer ID signing and Apple notarization."
-          else
-            echo "mode=adhoc" >> "$GITHUB_OUTPUT"
-            printf 'Apple release secrets are not fully configured; publishing an ad-hoc, non-notarized DMG. Missing: %s\n' "${missing[*]}"
+          if [[ "${#missing[@]}" -ne 0 ]]; then
+            printf 'Tag releases require Developer ID signing and Apple notarization. Missing secrets: %s\n' \
+              "${missing[*]}" >&2
+            exit 1
           fi
 
+          echo "Tag release will use Developer ID signing and Apple notarization."
+
       - name: Import Developer ID certificate
-        if: startsWith(github.ref, 'refs/tags/') && steps.signing.outputs.mode == 'developer-id'
+        if: startsWith(github.ref, 'refs/tags/')
         uses: Apple-Actions/import-codesign-certs@v7
         with:
           p12-file-base64: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERTIFICATE_BASE64 }}
@@ -154,23 +149,16 @@ jobs:
           keychain-password: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
 
       - name: Package app
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           EASYTIER_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
-          EASYTIER_SIGNING_MODE: ${{ steps.signing.outputs.mode }}
         run: |
           rm -rf .build/artifacts
           mkdir -p .build/artifacts
-          if [[ "$EASYTIER_SIGNING_MODE" == "developer-id" ]]; then
-            export EASYTIER_REQUIRE_DISTRIBUTION_SIGNING=1
-          else
-            export EASYTIER_CODESIGN_IDENTITY="-"
-            export EASYTIER_AUTO_CODESIGN_IDENTITY=0
-            export EASYTIER_ALLOW_UNINSTALLABLE_HELPER=1
-          fi
           ./scripts/package-app.sh
 
       - name: Notarize release app
-        if: startsWith(github.ref, 'refs/tags/') && steps.signing.outputs.mode == 'developer-id'
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           APPLE_NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
@@ -181,9 +169,11 @@ jobs:
             exit 1
           fi
 
+          umask 077
           mkdir -p .build/artifacts "$RUNNER_TEMP/notary"
           NOTARY_KEY_PATH="$RUNNER_TEMP/notary/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
-          NOTARY_ZIP_PATH="$RUNNER_TEMP/EasyTier-notary.zip"
+          NOTARY_ZIP_PATH="$RUNNER_TEMP/notary/EasyTier-app.zip"
+          NOTARY_RESULT_PATH="$RUNNER_TEMP/notary/EasyTier-app-result.json"
           printf '%s' "$APPLE_NOTARY_KEY" > "$NOTARY_KEY_PATH"
           ditto -c -k --keepParent --sequesterRsrc --zlibCompressionLevel 9 \
             "$EASYTIER_EXPORT_APP_DIR" \
@@ -192,13 +182,26 @@ jobs:
             --key "$NOTARY_KEY_PATH" \
             --key-id "$APPLE_NOTARY_KEY_ID" \
             --issuer "$APPLE_NOTARY_ISSUER_ID" \
-            --wait
+            --wait \
+            --output-format json > "$NOTARY_RESULT_PATH"
+          cat "$NOTARY_RESULT_PATH"
+          python3 - "$NOTARY_RESULT_PATH" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], "r", encoding="utf-8") as handle:
+              result = json.load(handle)
+          if result.get("status") != "Accepted":
+              print(f"App notarization was not accepted: {result}", file=sys.stderr)
+              sys.exit(1)
+          PY
           xcrun stapler staple "$EASYTIER_EXPORT_APP_DIR"
+          xcrun stapler validate "$EASYTIER_EXPORT_APP_DIR"
+          codesign --verify --deep --strict --verbose=2 "$EASYTIER_EXPORT_APP_DIR"
           spctl -a -vvv -t exec "$EASYTIER_EXPORT_APP_DIR"
 
-      - name: Create single DMG artifact
-        env:
-          EASYTIER_SIGNING_MODE: ${{ steps.signing.outputs.mode }}
+      - name: Create DMG from packaged app
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           mkdir -p .build/artifacts
           rm -f \
@@ -208,6 +211,43 @@ jobs:
             "$EASYTIER_EXPORT_APP_DIR" \
             ".build/artifacts/EasyTier-macOS-${{ runner.arch }}.dmg"
 
+      - name: Notarize and validate release DMG
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          DMG_PATH=".build/artifacts/EasyTier-macOS-${{ runner.arch }}.dmg"
+          NOTARY_KEY_PATH="$RUNNER_TEMP/notary/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
+          NOTARY_RESULT_PATH="$RUNNER_TEMP/notary/EasyTier-dmg-result.json"
+          if [[ ! -s "$NOTARY_KEY_PATH" ]]; then
+            echo "App Store Connect API key is unavailable for DMG notarization." >&2
+            exit 1
+          fi
+
+          xcrun notarytool submit "$DMG_PATH" \
+            --key "$NOTARY_KEY_PATH" \
+            --key-id "$APPLE_NOTARY_KEY_ID" \
+            --issuer "$APPLE_NOTARY_ISSUER_ID" \
+            --wait \
+            --output-format json > "$NOTARY_RESULT_PATH"
+          cat "$NOTARY_RESULT_PATH"
+          python3 - "$NOTARY_RESULT_PATH" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], "r", encoding="utf-8") as handle:
+              result = json.load(handle)
+          if result.get("status") != "Accepted":
+              print(f"DMG notarization was not accepted: {result}", file=sys.stderr)
+              sys.exit(1)
+          PY
+          xcrun stapler staple "$DMG_PATH"
+          ./scripts/verify-release-dmg.sh "$DMG_PATH"
+
+      - name: Write artifact metadata
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
           BUNDLE_SHORT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$EASYTIER_EXPORT_APP_DIR/Contents/Info.plist")"
           BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EASYTIER_EXPORT_APP_DIR/Contents/Info.plist")"
           cat > ".build/artifacts/EasyTier-macOS-${{ runner.arch }}.metadata.json" <<EOF
@@ -215,7 +255,8 @@ jobs:
             "architecture": "${{ runner.arch }}",
             "version": "$BUNDLE_SHORT_VERSION",
             "build": "$BUNDLE_VERSION",
-            "signing": "$EASYTIER_SIGNING_MODE"
+            "signing": "developer-id",
+            "notarized": true
           }
           EOF
 
@@ -224,7 +265,12 @@ jobs:
           # ServiceManagement records pointing at the Downloads extraction path.
           rm -rf "$EASYTIER_EXPORT_APP_DIR"
 
+      - name: Remove temporary notarization credentials
+        if: always() && startsWith(github.ref, 'refs/tags/')
+        run: rm -rf "$RUNNER_TEMP/notary"
+
       - name: Upload DMG artifact
+        if: startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-artifact@v4
         with:
           name: EasyTier-macOS-${{ runner.arch }}
@@ -248,15 +294,43 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
+      - name: Checkout release verification scripts
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - name: Prepare release artifact directory
         run: rm -rf .build/release-artifacts
 
-      - name: Download app artifact
+      - name: Download notarized DMG artifact
         uses: actions/download-artifact@v4
         with:
           pattern: EasyTier-macOS-*
           path: .build/release-artifacts
           merge-multiple: true
+
+      - name: Validate notarized release asset
+        run: |
+          shopt -s nullglob
+          dmg_files=(.build/release-artifacts/*.dmg)
+          metadata_files=(.build/release-artifacts/*.metadata.json)
+          if [[ "${#dmg_files[@]}" -ne 1 || "${#metadata_files[@]}" -ne 1 ]]; then
+            printf 'Expected one DMG and one metadata file; found %s DMG(s) and %s metadata file(s).\n' \
+              "${#dmg_files[@]}" "${#metadata_files[@]}" >&2
+            exit 1
+          fi
+
+          python3 - "${metadata_files[0]}" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], "r", encoding="utf-8") as handle:
+              metadata = json.load(handle)
+          if metadata.get("signing") != "developer-id" or metadata.get("notarized") is not True:
+              print(f"Refusing to publish an unsigned or unnotarized release: {metadata}", file=sys.stderr)
+              sys.exit(1)
+          PY
+          ./scripts/verify-release-dmg.sh "${dmg_files[0]}"
 
       - name: Ensure GitHub CLI
         run: |
@@ -279,20 +353,11 @@ jobs:
               "${#dmg_files[@]}" "${#metadata_files[@]}" >&2
             exit 1
           fi
-          SIGNING_MODE="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["signing"])' "${metadata_files[0]}")"
-          if [[ "$SIGNING_MODE" == "developer-id" ]]; then
-            cat > "$NOTES_PATH" <<'EOF'
+          cat > "$NOTES_PATH" <<'EOF'
           Automated EasyTier macOS app build.
 
-          This DMG is Developer ID signed and Apple-notarized.
+          This DMG is Developer ID signed, Apple-notarized, stapled, and verified with macOS Gatekeeper before publication.
           EOF
-          else
-            cat > "$NOTES_PATH" <<'EOF'
-          Automated EasyTier macOS app build.
-
-          This DMG is ad-hoc signed and not Apple-notarized because Apple release credentials are not configured. macOS Gatekeeper may block first launch, and privileged helper installation is unavailable.
-          EOF
-          fi
 
           gh release view "$TAG_NAME" --repo "$REPOSITORY" >/dev/null 2>&1 || \
             gh release create "$TAG_NAME" --repo "$REPOSITORY" --title "$TAG_NAME" --notes-file "$NOTES_PATH"

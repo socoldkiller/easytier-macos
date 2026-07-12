@@ -4,7 +4,6 @@ set -euo pipefail
 APP_PATH="${1:-}"
 GUI_BINARY=""
 HELPER_BINARY=""
-VERIFY_INSTALLABLE_HELPER="${EASYTIER_VERIFY_INSTALLABLE_HELPER:-0}"
 REQUIRED_FFI_SYMBOLS=(
   parse_config
   run_network_instance
@@ -57,20 +56,32 @@ signature_field() {
   codesign -dv --verbose=4 "$path" 2>&1 | sed -n "s/^$field=//p" | tail -n 1
 }
 
-verify_installable_helper_signature() {
-  if [[ "$VERIFY_INSTALLABLE_HELPER" != "1" ]]; then
-    return
-  fi
+signing_authority() {
+  local path="$1"
+  codesign -dv --verbose=4 "$path" 2>&1 \
+    | awk '/^Authority=/ && !found {sub(/^Authority=/, ""); print; found=1}'
+}
 
-  local app_team helper_team
+verify_developer_id_signatures() {
+  local app_authority helper_authority app_team helper_team app_details helper_details
+  app_details="$(codesign -dv --verbose=4 "$APP_PATH" 2>&1)"
+  helper_details="$(codesign -dv --verbose=4 "$HELPER_BINARY" 2>&1)"
+  app_authority="$(signing_authority "$APP_PATH")"
+  helper_authority="$(signing_authority "$HELPER_BINARY")"
   app_team="$(signature_field "$APP_PATH" TeamIdentifier)"
   helper_team="$(signature_field "$HELPER_BINARY" TeamIdentifier)"
 
-  [[ -n "$app_team" && "$app_team" != "not set" ]] || fail "Installable helper verification requires an Apple Team ID on EasyTier.app."
-  [[ -n "$helper_team" && "$helper_team" != "not set" ]] || fail "Installable helper verification requires an Apple Team ID on EasyTierPrivilegedHelper."
+  [[ "$app_authority" == "Developer ID Application:"* ]] || fail "EasyTier.app must be signed with a Developer ID Application identity: $app_authority"
+  [[ "$helper_authority" == "Developer ID Application:"* ]] || fail "EasyTierPrivilegedHelper must be signed with a Developer ID Application identity: $helper_authority"
+  [[ -n "$app_team" && "$app_team" != "not set" ]] || fail "Developer ID verification requires an Apple Team ID on EasyTier.app."
+  [[ -n "$helper_team" && "$helper_team" != "not set" ]] || fail "Developer ID verification requires an Apple Team ID on EasyTierPrivilegedHelper."
   [[ "$app_team" == "$helper_team" ]] || fail "App/helper TeamIdentifier mismatch: app=$app_team helper=$helper_team"
+  [[ "$app_details" == *"(runtime)"* ]] || fail "EasyTier.app must enable the hardened runtime."
+  [[ "$helper_details" == *"(runtime)"* ]] || fail "EasyTierPrivilegedHelper must enable the hardened runtime."
+  [[ "$app_details" == *"Timestamp="* ]] || fail "EasyTier.app must include a secure signing timestamp."
+  [[ "$helper_details" == *"Timestamp="* ]] || fail "EasyTierPrivilegedHelper must include a secure signing timestamp."
 
-  echo "Installable helper signing check passed with TeamIdentifier $app_team."
+  echo "Developer ID signing, hardened runtime, and timestamp checks passed with TeamIdentifier $app_team."
 }
 
 verify_app_bundle() {
@@ -116,7 +127,7 @@ verify_app_bundle() {
   [[ "$helper_bundle_identifier" == "com.kkrainbow.easytier.mac.helper" ]] || fail "Unexpected helper bundle identifier: $helper_bundle_identifier"
 
   codesign --verify --deep --strict --verbose=2 "$APP_PATH" >/dev/null
-  verify_installable_helper_signature
+  verify_developer_id_signatures
 }
 
 verify_binary_symbols() {

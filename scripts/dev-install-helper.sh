@@ -7,6 +7,7 @@ PACKAGE_FIRST="${EASYTIER_PACKAGE_FIRST:-1}"
 OPEN_APP="${EASYTIER_OPEN_APP:-0}"
 APP_BINARY="$APP_PATH/Contents/MacOS/EasyTierMac"
 RESET_BTM_STATE="${EASYTIER_RESET_BTM:-1}"
+CODE_SIGN_IDENTITY="${EASYTIER_CODESIGN_IDENTITY:-}"
 
 open_login_items_settings() {
   echo "Opening Login Items & Extensions. Allow EasyTier there, then rerun this script." >&2
@@ -31,7 +32,17 @@ needs_user_approval() {
 cd "$ROOT_DIR"
 
 if [[ "$PACKAGE_FIRST" == "1" ]]; then
-  APP_PATH="$(EASYTIER_CLEAN_HELPER_STATE=1 EASYTIER_RESET_BTM="$RESET_BTM_STATE" EASYTIER_EXPORT_APP_DIR="$APP_PATH" ./scripts/package-app.sh | tail -n 1)"
+  if [[ "$CODE_SIGN_IDENTITY" != "Developer ID Application:"* ]]; then
+    echo "EASYTIER_CODESIGN_IDENTITY must name a Developer ID Application identity when packaging first." >&2
+    exit 1
+  fi
+  APP_PATH="$(
+    EASYTIER_CODESIGN_IDENTITY="$CODE_SIGN_IDENTITY" \
+    EASYTIER_CLEAN_HELPER_STATE=1 \
+    EASYTIER_RESET_BTM="$RESET_BTM_STATE" \
+    EASYTIER_EXPORT_APP_DIR="$APP_PATH" \
+      ./scripts/package-app.sh | tail -n 1
+  )"
   APP_BINARY="$APP_PATH/Contents/MacOS/EasyTierMac"
 fi
 
@@ -40,6 +51,8 @@ if [[ ! -x "$APP_BINARY" ]]; then
   echo "Run ./scripts/package-app.sh first, or leave EASYTIER_PACKAGE_FIRST=1." >&2
   exit 1
 fi
+
+"$ROOT_DIR/scripts/verify-app.sh" "$APP_PATH"
 
 echo "Using app: $APP_PATH"
 

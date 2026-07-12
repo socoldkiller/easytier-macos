@@ -111,13 +111,13 @@ macOS 15 及以上。
 去 [Releases](https://github.com/socoldkiller/easytier-macos/releases) 下载最新 DMG，拖进 Applications。
 
 首次启动：
-1. macOS 可能提示「无法验证开发者」，去系统设置 → 隐私与安全性 → 仍要打开
+1. Release DMG 已经过 Developer ID 签名和 Apple 公证；如果 macOS 提示无法验证开发者，请不要绕过 Gatekeeper，重新下载并提交 Issue
 2. 启动后会提示安装 Helper，按 macOS 弹窗操作
 3. 如果开了防火墙，允许 EasyTier 的入站连接
 
 ## 构建
 
-需要 Xcode 16+（带 Swift 6）、Rust 1.95+ stable 工具链和 Protocol Buffers 编译器（`protoc`）。
+需要 Xcode 16+（带 Swift 6）、Rust 1.95+ stable 工具链和 Protocol Buffers 编译器（`protoc`）。运行测试不需要签名证书；打包 App 或 DMG 必须安装 Developer ID Application 证书。
 
 ```bash
 git clone --recurse-submodules https://github.com/socoldkiller/easytier-macos.git
@@ -125,8 +125,6 @@ cd easytier-macos
 
 make bootstrap   # 检查工具链
 make ffi         # 编译当前 Mac 架构的 Rust FFI 静态库
-make app-debug   # 打包 ad-hoc debug App
-make dmg-adhoc   # 打包单个 ad-hoc DMG（Helper 不可安装）
 make test        # 运行 Swift 和 Rust 测试
 ```
 
@@ -135,11 +133,15 @@ make test        # 运行 Swift 和 Rust 测试
 - FFI 库：`Vendor/Frameworks/static/libeasytier_ffi.a`
 - DMG：`.build/artifacts/EasyTier-macOS-$(uname -m).dmg`
 
-Developer ID 签名构建：
+Developer ID 打包：
 
 ```bash
-make dmg-signed CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)"
+export CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)"
+make app-debug CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
+make dmg CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 ```
+
+所有打包入口都强制使用 Developer ID、secure timestamp 和 hardened runtime。缺少正确签名身份时会直接失败，不会生成降级包。
 
 ## 架构
 

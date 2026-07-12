@@ -39,6 +39,8 @@ if [[ ! -f "$DMG_DS_STORE_TEMPLATE" ]]; then
   exit 1
 fi
 
+"$ROOT_DIR/scripts/verify-app.sh" "$APP_PATH"
+
 STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/easytier-dmg.XXXXXX")"
 DMG_ROOT="$STAGING_DIR/$VOLUME_NAME"
 MOUNT_DIR="$STAGING_DIR/mount"
@@ -82,7 +84,7 @@ DMG_ATTACHED=1
   echo "DMG verification failed: missing Applications alias" >&2
   exit 1
 }
-codesign --verify --deep --strict "$MOUNT_DIR/$APP_NAME"
+"$ROOT_DIR/scripts/verify-app.sh" "$MOUNT_DIR/$APP_NAME"
 hdiutil detach "$MOUNT_DIR" >/dev/null
 DMG_ATTACHED=0
 

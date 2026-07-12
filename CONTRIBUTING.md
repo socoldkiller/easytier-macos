@@ -4,7 +4,7 @@ Thanks for considering a contribution! This file is a short orientation for the 
 
 ## Build
 
-Requires **Xcode 16+** (Swift 6), **Rust 1.95+ stable**, and the Protocol Buffers compiler (`protoc`).
+Requires **Xcode 16+** (Swift 6), **Rust 1.95+ stable**, and the Protocol Buffers compiler (`protoc`). Packaging also requires a Developer ID Application certificate; building the FFI and running tests do not.
 
 ```bash
 git clone --recurse-submodules https://github.com/socoldkiller/easytier-macos.git
@@ -12,8 +12,11 @@ cd easytier-macos
 
 make bootstrap   # verify the toolchain
 make ffi         # build the current-architecture Rust FFI archive
-make app-debug   # package an ad-hoc debug app
-make dmg-adhoc   # package a single ad-hoc DMG
+make test        # run the Swift and Rust test suites
+
+export CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)"
+make app-debug CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
+make dmg CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 ```
 
 Output paths:
@@ -62,7 +65,7 @@ Packaging/                  Entitlements and packaging metadata
 1. Open an issue describing the change before working on a non-trivial PR.
 2. Branch from `main`, keep commits focused.
 3. Make sure `make test` passes locally.
-4. PRs that touch the privileged helper or packaging scripts should run `make smoke`; Developer ID release changes also need a `make dmg-signed ...` dry run by a maintainer with signing credentials.
+4. PRs that touch the privileged helper or packaging scripts should be validated by a maintainer with signing credentials using `make smoke CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)"` and `make dmg CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)"`.
 5. Don't edit release version metadata or the update manifest yourself — the release tag supplies the version.
 
 ## Releasing

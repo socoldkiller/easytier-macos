@@ -20,8 +20,8 @@ RUST_CODEGEN_UNITS ?= 1
 
 .PHONY: help bootstrap ffi test-swift test-rust test smoke clean clean-cache \
 	require-codesign-identity \
-	app-debug app-release-adhoc app-release-signed \
-	dmg dmg-adhoc dmg-signed dmg-from-app verify-app install-helper
+	app-debug app-release-signed \
+	dmg dmg-signed dmg-from-app verify-app install-helper
 
 help:
 	@printf '%s\n' 'EasyTier macOS build targets:'
@@ -31,16 +31,14 @@ help:
 	@printf '%-24s %s\n' 'make test-swift' 'Run Swift package tests.'
 	@printf '%-24s %s\n' 'make test-rust' 'Run Rust FFI tests.'
 	@printf '%-24s %s\n' 'make test' 'Run all automated tests.'
-	@printf '%-24s %s\n' 'make smoke' 'Run tests and package an ad-hoc release app.'
+	@printf '%-24s %s\n' 'make smoke' 'Run tests and package a Developer ID release app. Requires CODESIGN_IDENTITY=...'
 	@printf '%s\n' ''
-	@printf '%-24s %s\n' 'make app-debug' 'Build an ad-hoc debug .app for local development.'
-	@printf '%-24s %s\n' 'make app-release-adhoc' 'Build an ad-hoc release .app; helper installation is unavailable.'
+	@printf '%-24s %s\n' 'make app-debug' 'Build a Developer ID signed debug .app. Requires CODESIGN_IDENTITY=...'
 	@printf '%-24s %s\n' 'make app-release-signed' 'Build a Developer ID signed release .app. Requires CODESIGN_IDENTITY=...'
 	@printf '%s\n' ''
-	@printf '%-24s %s\n' 'make dmg' 'Build the default ad-hoc DMG.'
-	@printf '%-24s %s\n' 'make dmg-adhoc' 'Build an ad-hoc DMG; helper installation is unavailable.'
+	@printf '%-24s %s\n' 'make dmg' 'Build the Developer ID signed release DMG. Requires CODESIGN_IDENTITY=...'
 	@printf '%-24s %s\n' 'make dmg-signed' 'Build optimized Developer ID release DMG. Requires CODESIGN_IDENTITY=...'
-	@printf '%-24s %s\n' 'make dmg-from-app' 'Package existing APP_PATH into DMG_PATH.'
+	@printf '%-24s %s\n' 'make dmg-from-app' 'Package an existing Developer ID signed APP_PATH into DMG_PATH.'
 	@printf '%-24s %s\n' 'make verify-app' 'Run bundle/signature/linkage verification on APP_PATH.'
 	@printf '%-24s %s\n' 'make install-helper' 'Package, install/check privileged helper, then open the app.'
 	@printf '%-24s %s\n' 'make clean' 'Remove project build artifacts.'
@@ -69,7 +67,7 @@ test-rust:
 
 test: test-swift test-rust
 
-smoke: test app-release-adhoc
+smoke: test app-release-signed
 
 clean:
 	rm -rf \
@@ -84,29 +82,21 @@ clean-cache: clean
 		"$(FFI_CACHE_DIR)"
 
 require-codesign-identity:
-	@if [[ -z "$(CODESIGN_IDENTITY)" ]]; then \
-		echo 'CODESIGN_IDENTITY is required, for example:' >&2; \
-		echo '  make dmg-signed CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)"' >&2; \
-		exit 1; \
-	fi
+	@case "$(CODESIGN_IDENTITY)" in \
+		'Developer ID Application:'*) ;; \
+		*) \
+			echo 'CODESIGN_IDENTITY must be a Developer ID Application identity, for example:' >&2; \
+			echo '  make dmg CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)"' >&2; \
+			exit 1; \
+			;; \
+	esac
 
-app-debug: ffi
+app-debug: require-codesign-identity ffi
 	mkdir -p "$(ARTIFACTS_DIR)"
 	EASYTIER_BUILD_CONFIGURATION=debug \
 	EASYTIER_APP_PRODUCTS_DIR="$(APP_PRODUCTS_DIR)" \
 	EASYTIER_SWIFT_BUILD_DIR="$(SWIFT_BUILD_DIR)" \
-	EASYTIER_AUTO_CODESIGN_IDENTITY=0 \
-	EASYTIER_ALLOW_UNINSTALLABLE_HELPER=1 \
-	EASYTIER_EXPORT_APP_DIR="$(APP_PATH)" \
-	./scripts/package-app.sh
-
-app-release-adhoc: ffi
-	mkdir -p "$(ARTIFACTS_DIR)"
-	EASYTIER_BUILD_CONFIGURATION=release \
-	EASYTIER_APP_PRODUCTS_DIR="$(APP_PRODUCTS_DIR)" \
-	EASYTIER_SWIFT_BUILD_DIR="$(SWIFT_BUILD_DIR)" \
-	EASYTIER_AUTO_CODESIGN_IDENTITY=0 \
-	EASYTIER_ALLOW_UNINSTALLABLE_HELPER=1 \
+	EASYTIER_CODESIGN_IDENTITY="$(CODESIGN_IDENTITY)" \
 	EASYTIER_EXPORT_APP_DIR="$(APP_PATH)" \
 	./scripts/package-app.sh
 
@@ -115,15 +105,11 @@ app-release-signed: require-codesign-identity ffi
 	EASYTIER_BUILD_CONFIGURATION=release \
 	EASYTIER_APP_PRODUCTS_DIR="$(APP_PRODUCTS_DIR)" \
 	EASYTIER_SWIFT_BUILD_DIR="$(SWIFT_BUILD_DIR)" \
-	EASYTIER_REQUIRE_DISTRIBUTION_SIGNING=1 \
 	EASYTIER_CODESIGN_IDENTITY="$(CODESIGN_IDENTITY)" \
 	EASYTIER_EXPORT_APP_DIR="$(APP_PATH)" \
 	./scripts/package-app.sh
 
-dmg: dmg-adhoc
-
-dmg-adhoc: app-release-adhoc
-	./scripts/create-dmg.sh "$(APP_PATH)" "$(DMG_PATH)"
+dmg: dmg-signed
 
 dmg-signed: app-release-signed
 	./scripts/create-dmg.sh "$(APP_PATH)" "$(DMG_PATH)"
@@ -134,10 +120,10 @@ dmg-from-app:
 verify-app:
 	./scripts/verify-app.sh "$(APP_PATH)"
 
-install-helper: ffi
+install-helper: require-codesign-identity ffi
 	EASYTIER_APP_PRODUCTS_DIR="$(APP_PRODUCTS_DIR)" \
 	EASYTIER_SWIFT_BUILD_DIR="$(SWIFT_BUILD_DIR)" \
-	EASYTIER_ALLOW_UNINSTALLABLE_HELPER=0 \
+	EASYTIER_CODESIGN_IDENTITY="$(CODESIGN_IDENTITY)" \
 	EASYTIER_EXPORT_APP_DIR="$(INSTALL_APP_PATH)" \
 	EASYTIER_OPEN_APP=1 \
 	./scripts/dev-install-helper.sh

@@ -7,7 +7,7 @@ APP_PATH="${EASYTIER_TRACE_APP_PATH:-$ARTIFACTS_DIR/EasyTier-debug.app}"
 DMG_PATH="${EASYTIER_TRACE_DMG_PATH:-$ARTIFACTS_DIR/EasyTier-debug-trace.dmg}"
 DSYM_DIR="${EASYTIER_TRACE_DSYM_DIR:-$ARTIFACTS_DIR/dSYMs}"
 DSYM_ZIP="${EASYTIER_TRACE_DSYM_ZIP:-$ARTIFACTS_DIR/EasyTier-debug-trace-dSYMs.zip}"
-CERT_PATH="${EASYTIER_TRACE_CERT_PATH:-$ARTIFACTS_DIR/EasyTierLocalCodeSigning.cer}"
+CODE_SIGN_IDENTITY="${EASYTIER_CODESIGN_IDENTITY:-}"
 
 cd "$ROOT_DIR"
 
@@ -36,6 +36,11 @@ require_command swift
 require_command xcrun
 require_command zip
 
+if [[ "$CODE_SIGN_IDENTITY" != "Developer ID Application:"* ]]; then
+  echo "EASYTIER_CODESIGN_IDENTITY must name a Developer ID Application identity." >&2
+  exit 1
+fi
+
 mkdir -p "$ARTIFACTS_DIR"
 
 echo "Building Rust FFI with symbols preserved for trace analysis." >&2
@@ -50,7 +55,7 @@ EASYTIER_USE_FFI_CACHE="${EASYTIER_USE_FFI_CACHE:-1}" \
 echo "Packaging Swift debug app." >&2
 EASYTIER_BUILD_CONFIGURATION=debug \
 EASYTIER_EXPORT_APP_DIR="$APP_PATH" \
-EASYTIER_EXPORT_CODESIGN_CERT_PATH="$CERT_PATH" \
+EASYTIER_CODESIGN_IDENTITY="$CODE_SIGN_IDENTITY" \
 EASYTIER_DEAD_STRIP_RELEASE=0 \
 EASYTIER_STRIP_RELEASE_BINARIES=0 \
 "$ROOT_DIR/scripts/package-app.sh" >/dev/null
@@ -74,5 +79,5 @@ cat <<EOF
 App: $APP_PATH
 DMG: $DMG_PATH
 dSYM: $DSYM_ZIP
-Local signing cert: $CERT_PATH
+Signing identity: $CODE_SIGN_IDENTITY
 EOF

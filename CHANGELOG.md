@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Removed the unused Config Server and legacy Remote app-mode paths. EasyTier now keeps one local runtime mode, with per-peer hostname updates handled separately through RPC.
-- Simplified macOS packaging to publish one DMG. Releases use Developer ID signing when credentials are configured and otherwise fall back to an ad-hoc build without privileged-helper installation.
+- Simplified macOS packaging to publish one DMG and require Developer ID signing and Apple notarization for every release.
+- Removed non-Developer-ID packaging fallbacks; local App and DMG packaging now require a Developer ID Application identity, secure timestamp, hardened runtime, and an installable privileged helper.
 - Replaced the generated XCFramework/header pipeline with one current-architecture Rust static library and the tracked C header.
 
 ### Fixed
@@ -40,9 +41,9 @@ Initial production release of EasyTier for macOS.
 - **Global search**: fuzzy filter across networks and member list.
 - **Accessibility**: VoiceOver labels/hints across the menu bar, status, traffic, peers, and logs views; reduce-motion and reduce-transparency are respected throughout.
 - **Linux install guide**: in-app reference for installing EasyTier on remote Linux peers.
-- **Distribution**: CI publishes one DMG, using Developer ID signing/notarization when configured and an ad-hoc fallback otherwise; updates are served from a manifest JSON with `minimumSystemVersion: 15.0`.
+- **Distribution**: CI publishes one Developer ID signed and Apple-notarized DMG; updates are served from a manifest JSON with `minimumSystemVersion: 15.0`.
 
 ### Known limitations
-- No app sandbox: distributed outside the Mac App Store; ad-hoc fallback builds cannot install the privileged helper.
+- No app sandbox: the app is distributed outside the Mac App Store with Developer ID signing and Apple notarization.
 - No bundled privacy manifest (`PrivacyInfo.xcprivacy`); planned for a future release.
 - English-only UI; localization is planned post-1.0.

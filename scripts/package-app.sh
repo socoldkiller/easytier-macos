@@ -18,12 +18,8 @@ BUILD_CONFIGURATION="${EASYTIER_BUILD_CONFIGURATION:-debug}"
 APP_VERSION="${EASYTIER_APP_VERSION:-}"
 DEAD_STRIP_RELEASE="${EASYTIER_DEAD_STRIP_RELEASE:-1}"
 STRIP_RELEASE_BINARIES="${EASYTIER_STRIP_RELEASE_BINARIES:-1}"
-CODE_SIGN_IDENTITY="${EASYTIER_CODESIGN_IDENTITY:--}"
-REQUIRE_DISTRIBUTION_SIGNING="${EASYTIER_REQUIRE_DISTRIBUTION_SIGNING:-0}"
-CODE_SIGN_TIMESTAMP="${EASYTIER_CODESIGN_TIMESTAMP:-1}"
+CODE_SIGN_IDENTITY="${EASYTIER_CODESIGN_IDENTITY:-}"
 CLEAN_HELPER_STATE="${EASYTIER_CLEAN_HELPER_STATE:-}"
-ALLOW_UNINSTALLABLE_HELPER="${EASYTIER_ALLOW_UNINSTALLABLE_HELPER:-0}"
-AUTO_CODESIGN_IDENTITY="${EASYTIER_AUTO_CODESIGN_IDENTITY:-1}"
 RESET_BTM_STATE="${EASYTIER_RESET_BTM:-0}"
 
 if [[ "$BUILD_CONFIGURATION" != "debug" && "$BUILD_CONFIGURATION" != "release" ]]; then
@@ -40,13 +36,6 @@ if [[ ! "$APP_VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
   echo "EASYTIER_APP_VERSION must be a numeric version like 0.2.0; got '$APP_VERSION'." >&2
   exit 1
 fi
-
-identity_names_matching() {
-  local pattern="$1"
-  security find-identity -v -p codesigning 2>/dev/null \
-    | sed -n 's/^ *[0-9]*) [A-Fa-f0-9]* "\(.*\)"$/\1/p' \
-    | grep -E "$pattern" || true
-}
 
 run_with_timeout() {
   local seconds="$1"
@@ -65,44 +54,12 @@ run_with_timeout() {
   return "$status"
 }
 
-select_codesign_identity() {
-  if [[ "$REQUIRE_DISTRIBUTION_SIGNING" == "1" ]]; then
-    identity_names_matching '^Developer ID Application:' | head -n 1
-    return
-  fi
-
-  {
-    identity_names_matching '^Apple Development:'
-    identity_names_matching '^Developer ID Application:'
-    identity_names_matching '^Mac Developer:'
-  } | head -n 1
-}
-
-if [[ "$CODE_SIGN_IDENTITY" == "-" && "$AUTO_CODESIGN_IDENTITY" == "1" ]]; then
-  AUTO_SELECTED_IDENTITY="$(select_codesign_identity)"
-  if [[ -n "$AUTO_SELECTED_IDENTITY" ]]; then
-    CODE_SIGN_IDENTITY="$AUTO_SELECTED_IDENTITY"
-    echo "Using code signing identity: $CODE_SIGN_IDENTITY" >&2
-  fi
-fi
-
-if [[ "$REQUIRE_DISTRIBUTION_SIGNING" == "1" && "$ALLOW_UNINSTALLABLE_HELPER" == "1" ]]; then
-  echo "EASYTIER_ALLOW_UNINSTALLABLE_HELPER cannot be used when EASYTIER_REQUIRE_DISTRIBUTION_SIGNING=1." >&2
-  exit 1
-fi
-
-if [[ "$REQUIRE_DISTRIBUTION_SIGNING" == "1" && ( -z "$CODE_SIGN_IDENTITY" || "$CODE_SIGN_IDENTITY" == "-" ) ]]; then
-  echo "Release packaging requires EASYTIER_CODESIGN_IDENTITY with a Developer ID Application certificate." >&2
-  exit 1
-fi
-
-if [[ "$ALLOW_UNINSTALLABLE_HELPER" != "1" && ( -z "$CODE_SIGN_IDENTITY" || "$CODE_SIGN_IDENTITY" == "-" ) ]]; then
+if [[ "$CODE_SIGN_IDENTITY" != "Developer ID Application:"* ]]; then
   cat >&2 <<EOF
-Packaging an installable privileged helper requires a code signing identity.
+Packaging requires an explicit Developer ID Application identity.
 
-Install an Apple Development or Developer ID Application certificate, or allow
-an ad-hoc app without helper installation by setting
-EASYTIER_ALLOW_UNINSTALLABLE_HELPER=1 and EASYTIER_AUTO_CODESIGN_IDENTITY=0.
+Set EASYTIER_CODESIGN_IDENTITY, for example:
+  EASYTIER_CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)"
 EOF
   exit 1
 fi
@@ -113,29 +70,20 @@ fi
 
 verify_packaged_app() {
   local app_path="$1"
-  local verify_installable_helper=0
-
-  if [[ "$ALLOW_UNINSTALLABLE_HELPER" != "1" ]]; then
-    verify_installable_helper=1
-  fi
-
-  EASYTIER_VERIFY_INSTALLABLE_HELPER="$verify_installable_helper" \
-    "$ROOT_DIR/scripts/verify-app.sh" "$app_path"
+  "$ROOT_DIR/scripts/verify-app.sh" "$app_path"
 }
 
 sign_macho() {
   local identifier="$1"
   local path="$2"
   local entitlements="${3:-}"
-  local codesign_args=(--force)
-
-  if [[ "$CODE_SIGN_IDENTITY" != "-" && "$CODE_SIGN_TIMESTAMP" == "1" ]]; then
-    codesign_args+=(--timestamp --options runtime)
-  elif [[ "$CODE_SIGN_IDENTITY" != "-" ]]; then
-    codesign_args+=(--options runtime)
-  fi
-
-  codesign_args+=(--sign "$CODE_SIGN_IDENTITY" --identifier "$identifier")
+  local codesign_args=(
+    --force
+    --timestamp
+    --options runtime
+    --sign "$CODE_SIGN_IDENTITY"
+    --identifier "$identifier"
+  )
 
   if [[ -n "$entitlements" ]]; then
     codesign_args+=(--entitlements "$entitlements")
