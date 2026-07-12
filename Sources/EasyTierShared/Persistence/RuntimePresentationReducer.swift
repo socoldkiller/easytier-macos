@@ -149,15 +149,18 @@ enum RuntimePresentationReducer {
             let liveMembers = snapshot.memberStatuses.map(markedOnline)
             let previousKnown = next.lastKnownMembersByInstanceID[instance.instance_id] ?? []
             let merged = mergeMembers(live: liveMembers, lastKnown: previousKnown)
-
-            if !liveMembers.isEmpty {
-                next.lastKnownMembersByInstanceID[instance.instance_id] = merged.lastKnown
-            }
-
             let canRetainMissingMembers = instance.running
                 && instance.detail?.running != false
                 && instance.runtimeErrorMessage == nil
                 && instance.listenerErrorFromEvents == nil
+
+            if !liveMembers.isEmpty {
+                let shouldPreservePreviousMembers = canRetainMissingMembers
+                    && instance.detail?.my_node_info == nil
+                next.lastKnownMembersByInstanceID[instance.instance_id] = shouldPreservePreviousMembers
+                    ? merged.lastKnown
+                    : liveMembers
+            }
             next.visibleMembersByInstanceName[instance.name] = canRetainMissingMembers
                 ? merged.visible
                 : liveMembers
@@ -177,7 +180,7 @@ enum RuntimePresentationReducer {
             if liveByIdentity[identity] == nil {
                 liveOrder.append(identity)
             }
-            liveByIdentity[identity] = markedOnline(member)
+            liveByIdentity[identity] = member
         }
 
         var visible: [NetworkMemberStatus] = []

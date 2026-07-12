@@ -441,7 +441,7 @@ import Testing
     #expect(members.allSatisfy { $0.latency == "-" })
 }
 
-@Test func restartPublishesPartialTopologyWithoutDroppingMissingMembers() throws {
+@Test func partialTopologyRetainsMissingMembersForOnePoll() throws {
     var fullInstance = RuntimePresentationFixture.instance(
         hostname: "peer-a",
         txBytes: 10_000,
@@ -476,23 +476,41 @@ import Testing
     let partialMembers = try #require(
         partial.state.memberPresentation.visibleMembersByInstanceName["fixture-network"]
     )
+    let missingMember = try #require(partialMembers.first { $0.hostname == "peer-b" })
 
     #expect(partialMembers.map(\.hostname) == ["local", "peer-a", "peer-b"])
     #expect(partialMembers.first(where: { $0.hostname == "local" })?.availability == .online)
     #expect(partialMembers.first(where: { $0.hostname == "peer-a" })?.availability == .online)
-    #expect(partialMembers.first(where: { $0.hostname == "peer-b" })?.availability == .connecting)
-    #expect(partialMembers.first(where: { $0.hostname == "peer-b" })?.routeCost == "-")
-    #expect(partialMembers.first(where: { $0.hostname == "peer-b" })?.tunnelProto == "-")
+    #expect(missingMember.availability == .connecting)
+    #expect(missingMember.routeCost == "-")
+    #expect(missingMember.tunnelProto == "-")
 
-    let complete = RuntimePresentationReducer.reduce(
-        running: [fullInstance],
+    let stillPartial = RuntimePresentationReducer.reduce(
+        running: [partialInstance],
         previous: partial.state,
         selectedTab: .status,
         now: RuntimePresentationFixture.date(at: 2)
     )
+    let stillPartialMembers = try #require(
+        stillPartial.state.memberPresentation.visibleMembersByInstanceName["fixture-network"]
+    )
+    let retainedMembers = try #require(
+        stillPartial.state.memberPresentation.lastKnownMembersByInstanceID["fixture-instance"]
+    )
+
+    #expect(stillPartialMembers.map(\.hostname) == ["local", "peer-a"])
+    #expect(retainedMembers.map(\.hostname) == ["local", "peer-a"])
+
+    let complete = RuntimePresentationReducer.reduce(
+        running: [fullInstance],
+        previous: stillPartial.state,
+        selectedTab: .status,
+        now: RuntimePresentationFixture.date(at: 3)
+    )
     let completeMembers = try #require(
         complete.state.memberPresentation.visibleMembersByInstanceName["fixture-network"]
     )
+    #expect(completeMembers.map(\.hostname) == ["local", "peer-a", "peer-b"])
     #expect(completeMembers.allSatisfy { $0.availability == .online })
 }
 
