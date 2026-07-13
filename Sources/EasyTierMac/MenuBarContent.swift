@@ -11,7 +11,6 @@ struct MenuBarContent: View {
     @Environment(\.dismiss) private var dismiss
 
     var openMainWindowAction: (() -> Void)?
-    var openSoftwareUpdateWindowAction: (() -> Void)?
     var dismissMenuBarAction: (() -> Void)?
 
     @State private var copiedDeviceAddress = false
@@ -79,29 +78,16 @@ struct MenuBarContent: View {
                 MenuBarDivider()
             }
 
-            if updater.hasUnacknowledgedUpdate, updater.state.availableUpdate != nil {
-                MenuBarUpdateBanner(
-                    title: "Update Available",
-                    systemImage: "arrow.up.circle.fill",
-                    accessibilityLabel: "Update available"
-                ) {
-                    updater.acknowledgeAvailableUpdate()
-                    dismissMenuBar()
-                    openSoftwareUpdateWindow()
-                }
-                MenuBarDivider()
-            } else if updater.hasUnacknowledgedUpdateIssue, updater.state.needsAttention {
-                MenuBarUpdateBanner(
-                    title: "Update Needs Attention",
-                    systemImage: "exclamationmark.triangle.fill",
-                    accessibilityLabel: "Software update needs attention"
-                ) {
-                    updater.acknowledgeUpdateIssue()
-                    dismissMenuBar()
-                    openSoftwareUpdateWindow()
-                }
-                MenuBarDivider()
+            MenuBarListButton(
+                title: "Check for Updates…",
+                isDisabled: !updater.canCheckForUpdates || store.isQuitting
+            ) {
+                dismissMenuBar()
+                updater.checkForUpdates()
             }
+            .accessibilityHint(Text("Checks for a new EasyTier version"))
+
+            MenuBarDivider()
 
             MenuBarListButton(title: "About EasyTier", isDisabled: store.isQuitting) {
                 openMainWindow()
@@ -256,17 +242,6 @@ struct MenuBarContent: View {
         NSApp.unhide(nil)
         openWindow(id: EasyTierWindowID.main)
         NSApp.activate(ignoringOtherApps: true)
-    }
-
-    private func openSoftwareUpdateWindow() {
-        if let openSoftwareUpdateWindowAction {
-            openSoftwareUpdateWindowAction()
-            return
-        }
-
-        openOrRaiseSoftwareUpdateWindow {
-            openWindow(id: EasyTierWindowID.softwareUpdate)
-        }
     }
 
     private func openMainWindowAndDismiss() {
@@ -672,48 +647,5 @@ private struct MenuBarListButton: View {
     private var rowBackground: Color {
         if isDisabled { return .clear }
         return isHovering ? MenuBarPalette.selectedRow : .clear
-    }
-}
-
-private struct MenuBarUpdateBanner: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var title: String
-    var systemImage: String
-    var accessibilityLabel: String
-    var action: () -> Void
-
-    @State private var isHovering = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: systemImage)
-                    .font(.body)
-                    .foregroundStyle(.orange)
-                Text(title)
-                    .font(.body.weight(.medium))
-                    .foregroundStyle(.primary)
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-            .contentShape(Rectangle())
-            .padding(.horizontal, 12)
-            .padding(.vertical, MenuBarPalette.selectedRowContentVerticalPadding)
-            .background(rowBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .padding(.horizontal, MenuBarPalette.selectedRowHorizontalInset)
-            .padding(.vertical, MenuBarPalette.selectedRowVerticalInset)
-        }
-        .buttonStyle(QuietPressButtonStyle(pressedScale: 0.985, pressedOpacity: 0.82))
-        .onHover { isHovering = $0 }
-        .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: isHovering)
-        .accessibilityLabel(Text(accessibilityLabel))
-        .accessibilityHint(Text("Opens the Software Update window"))
-    }
-
-    private var rowBackground: Color {
-        isHovering ? MenuBarPalette.selectedRow : Color.orange.opacity(0.1)
     }
 }

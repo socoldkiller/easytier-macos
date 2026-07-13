@@ -12,6 +12,7 @@ ARCH := $(shell uname -m)
 DMG_PATH ?= $(ARTIFACTS_DIR)/EasyTier-macOS-$(ARCH).dmg
 FFI_CACHE_DIR ?= $(HOME)/Library/Caches/easytier-macos/ffi
 CODESIGN_IDENTITY ?=
+SPARKLE_PUBLIC_ED_KEY ?=
 
 # Rust FFI/core optimization knobs. Defaults favor the smallest release app.
 RUST_OPT_LEVEL ?= z
@@ -47,6 +48,7 @@ help:
 	@printf '%s\n' 'Useful overrides:'
 	@printf '%s\n' '  APP_PATH=/path/EasyTier.app DMG_PATH=/path/EasyTier.dmg'
 	@printf '%s\n' '  CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)"'
+	@printf '%s\n' '  SPARKLE_PUBLIC_ED_KEY="base64 SUPublicEDKey from Sparkle generate_keys"'
 	@printf '%s\n' '  RUST_OPT_LEVEL=3 for throughput-focused Rust builds; default is z for size.'
 
 bootstrap:
@@ -97,6 +99,7 @@ app-debug: require-codesign-identity ffi
 	EASYTIER_APP_PRODUCTS_DIR="$(APP_PRODUCTS_DIR)" \
 	EASYTIER_SWIFT_BUILD_DIR="$(SWIFT_BUILD_DIR)" \
 	EASYTIER_CODESIGN_IDENTITY="$(CODESIGN_IDENTITY)" \
+	EASYTIER_SPARKLE_PUBLIC_ED_KEY="$(SPARKLE_PUBLIC_ED_KEY)" \
 	EASYTIER_EXPORT_APP_DIR="$(APP_PATH)" \
 	./scripts/package-app.sh
 
@@ -106,6 +109,7 @@ app-release-signed: require-codesign-identity ffi
 	EASYTIER_APP_PRODUCTS_DIR="$(APP_PRODUCTS_DIR)" \
 	EASYTIER_SWIFT_BUILD_DIR="$(SWIFT_BUILD_DIR)" \
 	EASYTIER_CODESIGN_IDENTITY="$(CODESIGN_IDENTITY)" \
+	EASYTIER_SPARKLE_PUBLIC_ED_KEY="$(SPARKLE_PUBLIC_ED_KEY)" \
 	EASYTIER_EXPORT_APP_DIR="$(APP_PATH)" \
 	./scripts/package-app.sh
 
@@ -124,6 +128,7 @@ install-helper: require-codesign-identity ffi
 	EASYTIER_APP_PRODUCTS_DIR="$(APP_PRODUCTS_DIR)" \
 	EASYTIER_SWIFT_BUILD_DIR="$(SWIFT_BUILD_DIR)" \
 	EASYTIER_CODESIGN_IDENTITY="$(CODESIGN_IDENTITY)" \
+	EASYTIER_SPARKLE_PUBLIC_ED_KEY="$(SPARKLE_PUBLIC_ED_KEY)" \
 	EASYTIER_EXPORT_APP_DIR="$(INSTALL_APP_PATH)" \
 	EASYTIER_OPEN_APP=1 \
 	./scripts/dev-install-helper.sh

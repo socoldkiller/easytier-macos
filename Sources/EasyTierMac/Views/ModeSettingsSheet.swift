@@ -58,7 +58,6 @@ enum SettingsSelection: Hashable {
 
 struct EasyTierSettingsSheet: View {
     @Environment(\.dismissWindow) private var dismissWindow
-    @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(EasyTierAppStore.self) private var store
     @Environment(AppAppearanceSettings.self) private var appearance
@@ -201,8 +200,9 @@ struct EasyTierSettingsSheet: View {
                     }
                     SettingsRowDivider()
                     SettingsInlineRow("Updates") {
-                        Button(updater.state.settingsActionTitle, action: performUpdateAction)
+                        Button("Check for Updates…", action: performUpdateAction)
                             .controlSize(.small)
+                            .disabled(!updater.canCheckForUpdates)
                     }
                 }
 
@@ -372,43 +372,19 @@ struct EasyTierSettingsSheet: View {
 
     private var autoCheckUpdatesBinding: Binding<Bool> {
         Binding {
-            updater.autoCheckOnLaunch
+            updater.automaticallyChecksForUpdates
         } set: { isEnabled in
-            updater.autoCheckOnLaunch = isEnabled
-            if isEnabled {
-                updater.scheduleAutomaticCheckIfNeeded()
-            }
+            updater.automaticallyChecksForUpdates = isEnabled
         }
     }
 
     private var generalUpdateSummaryText: String {
-        switch updater.state {
-        case .available(let update, _, let wasPreviouslySkipped):
-            wasPreviouslySkipped ? "Version \(update.version) was skipped" : "Version \(update.version) available"
-        case .downloading:
-            "Downloading"
-        case .downloadComplete:
-            "Download complete"
-        case .failed, .downloadFailed, .verificationFailed:
-            "Needs attention"
-        case .checking:
-            "Checking"
-        case .noUpdate:
-            "Up to date"
-        case .idle:
-            "Stable releases"
-        }
+        if updater.sessionInProgress { return "Update session in progress" }
+        return updater.automaticallyChecksForUpdates ? "Checks signed stable releases daily" : "Automatic checks are off"
     }
 
     private func performUpdateAction() {
-        openOrRaiseSoftwareUpdateWindow {
-            openWindow(id: EasyTierWindowID.softwareUpdate)
-        }
-        if updater.state.shouldStartCheckFromSettings {
-            updater.checkForUpdates(origin: .manual)
-        } else {
-            updater.acknowledgeAvailableUpdate()
-        }
+        updater.checkForUpdates()
     }
 
     private var settingsErrorPresented: Binding<Bool> {
@@ -614,7 +590,6 @@ private struct SettingsSidebar: View {
 
 private struct SettingsAboutView: View {
     @Environment(SoftwareUpdateController.self) private var updater
-    @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let appInfo = AppVersionInfo.current
@@ -646,15 +621,10 @@ private struct SettingsAboutView: View {
                 Section("Software Update") {
                     LabeledContent {
                         HStack(spacing: 10) {
-                            if case .available(_, _, let wasPreviouslySkipped) = updater.state {
-                                StatusPill(
-                                    wasPreviouslySkipped ? "Previously skipped" : "Update available",
-                                    tone: wasPreviouslySkipped ? .neutral : .warning
-                                )
-                            }
                             Spacer(minLength: 0)
-                            Button(updater.state.settingsActionTitle, action: performUpdateAction)
+                            Button("Check for Updates…", action: performUpdateAction)
                                 .controlSize(.small)
+                                .disabled(!updater.canCheckForUpdates)
                         }
                     } label: {
                         Text(updateSummaryText)
@@ -662,8 +632,8 @@ private struct SettingsAboutView: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    if let lastCheck = updater.lastCheckFormatted {
-                        LabeledContent("Last check", value: lastCheck)
+                    if let lastCheck = updater.lastUpdateCheckDate {
+                        LabeledContent("Last check", value: lastCheck.formatted(date: .abbreviated, time: .shortened))
                     }
                 }
 
@@ -697,50 +667,14 @@ private struct SettingsAboutView: View {
     }
 
     private var updateSummaryText: String {
-        switch updater.state {
-        case .checking:
-            "Checking stable releases…"
-        case .noUpdate:
-            "EasyTier is up to date."
-        case .available(let update, _, let wasPreviouslySkipped):
-            wasPreviouslySkipped
-                ? "EasyTier \(update.version) is available and was previously skipped."
-                : "EasyTier \(update.version) is available."
-        case .downloading:
-            "Downloading update…"
-        case .downloadComplete:
-            "Update download complete."
-        case .failed, .downloadFailed, .verificationFailed:
-            "Updater needs attention."
-        case .idle:
-            "Checks stable releases only."
-        }
+        if updater.sessionInProgress { return "Software update is in progress…" }
+        return updater.automaticallyChecksForUpdates
+            ? "EasyTier checks signed stable releases automatically."
+            : "Automatic update checks are disabled."
     }
 
     private func performUpdateAction() {
-        openOrRaiseSoftwareUpdateWindow {
-            openWindow(id: EasyTierWindowID.softwareUpdate)
-        }
-        if updater.state.shouldStartCheckFromSettings {
-            updater.checkForUpdates(origin: .manual)
-        } else {
-            updater.acknowledgeAvailableUpdate()
-        }
-    }
-}
-
-private extension SoftwareUpdateState {
-    var shouldStartCheckFromSettings: Bool {
-        switch self {
-        case .idle, .noUpdate:
-            true
-        case .checking, .available, .downloading, .failed, .downloadFailed, .verificationFailed, .downloadComplete:
-            false
-        }
-    }
-
-    var settingsActionTitle: String {
-        shouldStartCheckFromSettings ? "Check for Updates…" : "Open Software Update…"
+        updater.checkForUpdates()
     }
 }
 

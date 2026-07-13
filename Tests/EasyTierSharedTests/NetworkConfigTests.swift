@@ -551,6 +551,41 @@ import Testing
 }
 
 @MainActor
+@Test func softwareUpdateStopsNetworkAndHelperEvenWithVpnOnDemand() async {
+    let client = RecordingToggleClient()
+    let config = NetworkConfig(instance_id: "update-id", network_name: "office")
+    let store = EasyTierAppStore(client: client)
+
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+    store.instances = [NetworkInstance(instance_id: config.instance_id, name: config.network_name, running: true)]
+    store.vpnOnDemandEnabled = true
+
+    #expect(store.runningConfigIDsForSoftwareUpdate() == [config.instance_id])
+
+    await store.prepareForSoftwareUpdate()
+
+    #expect(client.retainedInstanceNames == [[]])
+    #expect(client.shutdownCount == 1)
+    #expect(store.isQuitting)
+}
+
+@MainActor
+@Test func softwareUpdateRestoreStartsRequestedConfigurationOnce() async {
+    let client = RecordingToggleClient()
+    let config = NetworkConfig(instance_id: "restore-id", network_name: "office", no_tun: true)
+    let store = EasyTierAppStore(client: client)
+
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+
+    await store.restoreConfigsAfterSoftwareUpdate(configIDs: [config.instance_id, "missing-id"])
+
+    #expect(client.runConfigs.map(\.instance_id) == [config.instance_id])
+    #expect(!store.isQuitting)
+}
+
+@MainActor
 @Test func appStoreSavesNetworkSecretInKeychainNotToml() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let storage = EasyTierStorage(baseDirectory: directory)

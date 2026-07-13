@@ -12,6 +12,7 @@ let package = Package(
         .executable(name: "EasyTierPrivilegedHelper", targets: ["EasyTierPrivilegedHelper"]),
     ],
     dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.4"),
         .package(url: "https://github.com/mattt/swift-toml.git", from: "2.0.0"),
     ],
     targets: [
@@ -44,9 +45,19 @@ let package = Package(
         ),
         .executableTarget(
             name: "EasyTierMac",
-            dependencies: ["EasyTierShared", "EasyTierRuntime"],
+            dependencies: [
+                "EasyTierShared",
+                "EasyTierRuntime",
+                .product(name: "Sparkle", package: "Sparkle"),
+            ],
             resources: [
                 .process("Resources"),
+            ],
+            linkerSettings: [
+                .unsafeFlags([
+                    "-Xlinker", "-rpath",
+                    "-Xlinker", "@executable_path/../Frameworks",
+                ]),
             ]
         ),
         .executableTarget(

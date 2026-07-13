@@ -32,10 +32,9 @@ concurrency:
 jobs:
   build:
     name: Build and test EasyTier
-    # Push/tag builds use the shared self-hosted macOS runner pool. Any online
-    # runner with the easytier-macos label is eligible, so CI can continue when
-    # one machine is offline or asleep.
-    runs-on: ${{ ((github.event_name == 'workflow_dispatch' && inputs.runner == 'self-hosted') || github.event_name == 'push') && 'easytier-macos' || 'macos-14' }}
+    # Release-capable builds stay on ARM64 so the published appcast always
+    # describes the single Apple-silicon artifact supported by this release.
+    runs-on: ${{ ((github.event_name == 'workflow_dispatch' && inputs.runner == 'self-hosted') || github.event_name == 'push') && fromJSON('["self-hosted","macOS","ARM64","easytier-macos"]') || 'macos-14' }}
     timeout-minutes: 90
     permissions:
       contents: read
@@ -115,6 +114,7 @@ jobs:
           APPLE_NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
         run: |
           missing=()
           for name in \
@@ -124,7 +124,8 @@ jobs:
             APPLE_CODESIGN_IDENTITY \
             APPLE_NOTARY_KEY \
             APPLE_NOTARY_KEY_ID \
-            APPLE_NOTARY_ISSUER_ID
+            APPLE_NOTARY_ISSUER_ID \
+            SPARKLE_PUBLIC_ED_KEY
           do
             if [[ -z "${!name}" ]]; then
               missing+=("$name")
@@ -132,7 +133,7 @@ jobs:
           done
 
           if [[ "${#missing[@]}" -ne 0 ]]; then
-            printf 'Tag releases require Developer ID signing and Apple notarization. Missing secrets: %s\n' \
+            printf 'Tag releases require Developer ID signing, Apple notarization, and a Sparkle public key. Missing values: %s\n' \
               "${missing[*]}" >&2
             exit 1
           fi
@@ -152,6 +153,7 @@ jobs:
         env:
           EASYTIER_APP_PRODUCTS_DIR: ${{ secrets.EASYTIER_APP_PRODUCTS_DIR || format('{0}/EasyTierAppProducts', runner.temp) }}
           EASYTIER_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+          EASYTIER_SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
         run: |
           rm -rf .build/artifacts
           mkdir -p .build/artifacts
@@ -299,6 +301,15 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Require Sparkle feed signing credential
+        env:
+          SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
+        run: |
+          if [[ -z "$SPARKLE_EDDSA_PRIVATE_KEY" ]]; then
+            echo "The github-pages environment or repository must provide SPARKLE_EDDSA_PRIVATE_KEY." >&2
+            exit 1
+          fi
+
       - name: Prepare release artifact directory
         run: rm -rf .build/release-artifacts
 
@@ -329,8 +340,47 @@ jobs:
           if metadata.get("signing") != "developer-id" or metadata.get("notarized") is not True:
               print(f"Refusing to publish an unsigned or unnotarized release: {metadata}", file=sys.stderr)
               sys.exit(1)
+          if metadata.get("architecture") != "ARM64":
+              print(f"Refusing to publish a non-ARM64 release: {metadata}", file=sys.stderr)
+              sys.exit(1)
           PY
           ./scripts/verify-release-dmg.sh "${dmg_files[0]}"
+
+      - name: Validate Sparkle build ordering
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          metadata_path="$(find .build/release-artifacts -maxdepth 1 -name '*.metadata.json' -print -quit)"
+          current_feed="$RUNNER_TEMP/current-update.json"
+          ordering_cache_bust="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if ! curl -fsSL -H 'Cache-Control: no-cache' "https://socoldkiller.github.io/easytier-macos/update.json?ordering=$ordering_cache_bust" -o "$current_feed"; then
+            echo "Could not load the existing update feed for monotonic build validation." >&2
+            exit 1
+          fi
+
+          python3 - "$metadata_path" "$current_feed" "$TAG_NAME" <<'PY'
+          import json
+          import sys
+
+          metadata_path, feed_path, tag = sys.argv[1:]
+          with open(metadata_path, "r", encoding="utf-8") as handle:
+              metadata = json.load(handle)
+          with open(feed_path, "r", encoding="utf-8") as handle:
+              current = json.load(handle)
+
+          new_build = int(str(metadata["build"]))
+          current_build = int(str(current["build"]))
+          current_tag = str(current.get("tag", ""))
+          if current_tag == tag:
+              if new_build != current_build:
+                  raise SystemExit(
+                      f"A rerun of {tag} changed CFBundleVersion: {new_build} != {current_build}"
+                  )
+          elif new_build <= current_build:
+              raise SystemExit(
+                  f"New CFBundleVersion must exceed the published build: {new_build} <= {current_build}"
+              )
+          PY
 
       - name: Ensure GitHub CLI
         run: |
@@ -353,23 +403,130 @@ jobs:
               "${#dmg_files[@]}" "${#metadata_files[@]}" >&2
             exit 1
           fi
-          cat > "$NOTES_PATH" <<'EOF'
-          Automated EasyTier macOS app build.
 
-          This DMG is Developer ID signed, Apple-notarized, stapled, and verified with macOS Gatekeeper before publication.
-          EOF
+          python3 - "$TAG_NAME" "$NOTES_PATH" <<'PY'
+          import pathlib
+          import sys
 
-          gh release view "$TAG_NAME" --repo "$REPOSITORY" >/dev/null 2>&1 || \
+          tag, output_path = sys.argv[1:]
+          version = tag[1:] if tag.startswith(("v", "V")) else tag
+          lines = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8").splitlines()
+          heading = f"## [{version}]"
+          start = next((index for index, line in enumerate(lines) if line.startswith(heading)), None)
+          if start is None:
+              raise SystemExit(f"CHANGELOG.md is missing a {heading} section")
+
+          end = next(
+              (index for index in range(start + 1, len(lines)) if lines[index].startswith("## ")),
+              len(lines),
+          )
+          body = "\n".join(lines[start + 1:end]).strip()
+          if not body:
+              raise SystemExit(f"CHANGELOG.md section {heading} is empty")
+
+          notes = (
+              f"# EasyTier {version}\n\n{body}\n\n"
+              "This DMG is Developer ID signed, Apple-notarized, stapled, and verified with Gatekeeper.\n"
+          )
+          pathlib.Path(output_path).write_text(notes, encoding="utf-8")
+          PY
+
+          release_exists=0
+          if gh release view "$TAG_NAME" --repo "$REPOSITORY" >/dev/null 2>&1; then
+            release_exists=1
+          else
             gh release create "$TAG_NAME" --repo "$REPOSITORY" --title "$TAG_NAME" --notes-file "$NOTES_PATH"
+          fi
           gh release edit "$TAG_NAME" --repo "$REPOSITORY" --notes-file "$NOTES_PATH"
-          gh release upload "$TAG_NAME" "${dmg_files[0]}" --repo "$REPOSITORY" --clobber
 
-      - name: Generate update feed
+          existing_dir="$RUNNER_TEMP/existing-release-asset"
+          rm -rf "$existing_dir"
+          mkdir -p "$existing_dir"
+          asset_name="$(basename "${dmg_files[0]}")"
+          if [[ "$release_exists" == "1" ]] && gh release download "$TAG_NAME" --repo "$REPOSITORY" --pattern "$asset_name" --dir "$existing_dir"; then
+            cmp "${dmg_files[0]}" "$existing_dir/$asset_name" || {
+              echo "Refusing to replace immutable release asset $asset_name with different bytes." >&2
+              exit 1
+            }
+            echo "Existing release asset is byte-identical; upload skipped."
+          else
+            gh release upload "$TAG_NAME" "${dmg_files[0]}" --repo "$REPOSITORY"
+          fi
+
+      - name: Generate signed Sparkle and legacy update feeds
         env:
           TAG_NAME: ${{ github.ref_name }}
           REPOSITORY: ${{ github.repository }}
+          SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
         run: |
-          mkdir -p .build/pages
+          rm -rf .build/pages .build/appcast-input .build/sparkle-tools
+          mkdir -p .build/pages .build/appcast-input
+
+          shopt -s nullglob
+          dmg_files=(.build/release-artifacts/*.dmg)
+          metadata_files=(.build/release-artifacts/*.metadata.json)
+          if [[ "${#dmg_files[@]}" -ne 1 || "${#metadata_files[@]}" -ne 1 ]]; then
+            echo "Expected exactly one DMG and one metadata file for feed generation." >&2
+            exit 1
+          fi
+          dmg_path="${dmg_files[0]}"
+          dmg_name="$(basename "$dmg_path")"
+          notes_name="${dmg_name%.dmg}.md"
+          cp "$dmg_path" ".build/appcast-input/$dmg_name"
+          cp .build/release-artifacts/RELEASE_NOTES.md ".build/appcast-input/$notes_name"
+
+          XCODE_APP="$(python3 - <<'PY'
+          import glob
+          import os
+          import re
+
+          def version(path):
+              match = re.search(r'Xcode_(\d+(?:\.\d+)*)\.app$', path)
+              return tuple(int(part) for part in match.group(1).split('.')) if match else ()
+
+          candidates = glob.glob('/Applications/Xcode_16*.app')
+          if candidates:
+              print(max(candidates, key=version))
+          elif os.path.isdir('/Applications/Xcode.app'):
+              print('/Applications/Xcode.app')
+          PY
+          )"
+          [[ -n "$XCODE_APP" ]] || {
+            echo "Xcode 16 or newer is required to resolve the pinned Sparkle tools." >&2
+            exit 1
+          }
+          export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
+          swift_version="$(swift --version)"
+          printf '%s\n' "$swift_version"
+          swift_major="$(printf '%s\n' "$swift_version" | sed -n 's/.*Swift version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+          if [[ -z "$swift_major" || "$swift_major" -lt 6 ]]; then
+            echo "Swift 6 or newer is required to resolve this package." >&2
+            exit 1
+          fi
+
+          swift package resolve --scratch-path .build/sparkle-tools
+          sparkle_tools=".build/sparkle-tools/artifacts/sparkle/Sparkle/bin"
+          [[ -x "$sparkle_tools/generate_appcast" ]] || {
+            echo "Pinned Sparkle generate_appcast tool was not resolved." >&2
+            exit 1
+          }
+
+          generate_output="$(
+            printf '%s' "$SPARKLE_EDDSA_PRIVATE_KEY" | \
+              "$sparkle_tools/generate_appcast" \
+                --ed-key-file - \
+                --download-url-prefix "https://github.com/$REPOSITORY/releases/download/$TAG_NAME/" \
+                --embed-release-notes \
+                --maximum-versions 1 \
+                -o "${{ github.workspace }}/.build/pages/appcast.xml" \
+                .build/appcast-input 2>&1
+          )"
+          printf '%s\n' "$generate_output"
+          if [[ "$generate_output" == *"does not match"* ]]; then
+            echo "Sparkle private key does not match SUPublicEDKey in the packaged app." >&2
+            exit 1
+          fi
+
           python3 - <<'PY'
           import glob
           import hashlib
@@ -437,6 +594,61 @@ jobs:
               handle.write("\n")
           PY
 
+          python3 - "$dmg_path" "${metadata_files[0]}" "$TAG_NAME" "$REPOSITORY" <<'PY'
+          import json
+          import pathlib
+          import sys
+          import xml.etree.ElementTree as ET
+
+          dmg_path, metadata_path, tag, repository = sys.argv[1:]
+          with open(metadata_path, "r", encoding="utf-8") as handle:
+              metadata = json.load(handle)
+
+          root = ET.parse(".build/pages/appcast.xml").getroot()
+          item = root.find("./channel/item")
+          if item is None:
+              raise SystemExit("Generated appcast does not contain an item")
+          enclosure = item.find("enclosure")
+          if enclosure is None:
+              raise SystemExit("Generated appcast does not contain an enclosure")
+
+          def local_name(name):
+              return name.rsplit("}", 1)[-1]
+
+          attributes = {local_name(key): value for key, value in enclosure.attrib.items()}
+          elements = {local_name(child.tag): (child.text or "").strip() for child in item}
+          expected_url = f"https://github.com/{repository}/releases/download/{tag}/{pathlib.Path(dmg_path).name}"
+          expected_length = str(pathlib.Path(dmg_path).stat().st_size)
+          expected_version = str(metadata["build"])
+          expected_short_version = str(metadata["version"])
+
+          checks = {
+              "url": (attributes.get("url"), expected_url),
+              "length": (attributes.get("length"), expected_length),
+              "version": (attributes.get("version") or elements.get("version"), expected_version),
+              "shortVersionString": (
+                  attributes.get("shortVersionString") or elements.get("shortVersionString"),
+                  expected_short_version,
+              ),
+              "minimumSystemVersion": (elements.get("minimumSystemVersion"), "15.0"),
+              "hardwareRequirements": (elements.get("hardwareRequirements"), "arm64"),
+          }
+          for field, (actual, expected) in checks.items():
+              if actual != expected:
+                  raise SystemExit(f"Appcast {field} mismatch: {actual!r} != {expected!r}")
+
+          signature = attributes.get("edSignature")
+          if not signature:
+              raise SystemExit("Appcast enclosure is missing sparkle:edSignature")
+          pathlib.Path(".build/release-artifacts/appcast-signature.txt").write_text(signature, encoding="utf-8")
+          PY
+
+          signature="$(cat .build/release-artifacts/appcast-signature.txt)"
+          printf '%s' "$SPARKLE_EDDSA_PRIVATE_KEY" | \
+            "$sparkle_tools/sign_update" --verify --ed-key-file - "$dmg_path" "$signature"
+          printf '%s' "$SPARKLE_EDDSA_PRIVATE_KEY" | \
+            "$sparkle_tools/sign_update" --verify --ed-key-file - .build/pages/appcast.xml
+
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
@@ -454,3 +666,21 @@ jobs:
       - name: Deploy update feed to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: Verify deployed update feeds
+        run: |
+          deployed_appcast="$RUNNER_TEMP/deployed-appcast.xml"
+          deployed_legacy="$RUNNER_TEMP/deployed-update.json"
+          for attempt in {1..12}; do
+            cache_bust="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${attempt}"
+            if curl -fsSL -H 'Cache-Control: no-cache' "https://socoldkiller.github.io/easytier-macos/appcast.xml?deploy=$cache_bust" -o "$deployed_appcast" && \
+               curl -fsSL -H 'Cache-Control: no-cache' "https://socoldkiller.github.io/easytier-macos/update.json?deploy=$cache_bust" -o "$deployed_legacy" && \
+               cmp .build/pages/appcast.xml "$deployed_appcast" && \
+               cmp .build/pages/update.json "$deployed_legacy"; then
+              echo "GitHub Pages is serving the newly signed update feeds."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "GitHub Pages did not serve the expected update feeds within 60 seconds." >&2
+          exit 1

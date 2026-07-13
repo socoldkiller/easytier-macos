@@ -110,6 +110,8 @@ macOS 15 及以上。
 
 去 [Releases](https://github.com/socoldkiller/easytier-macos/releases) 下载最新 DMG，拖进 Applications。
 
+从 v1.4.0 开始，后续版本可通过 `EasyTier > Check for Updates…` 直接验证、安装并重新启动，不再需要打开 Finder 或拖拽 DMG。由于 v1.3.3 及更早版本尚未内置 Sparkle，升级到 v1.4.0 仍需完成最后一次手动安装。
+
 首次启动：
 1. Release DMG 已经过 Developer ID 签名和 Apple 公证；如果 macOS 提示无法验证开发者，请不要绕过 Gatekeeper，重新下载并提交 Issue
 2. 启动后会提示安装 Helper，按 macOS 弹窗操作
@@ -137,11 +139,13 @@ Developer ID 打包：
 
 ```bash
 export CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)"
-make app-debug CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
-make dmg CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
+export SPARKLE_PUBLIC_ED_KEY="base64-public-key-from-generate_keys"
+make app-debug CODESIGN_IDENTITY="$CODESIGN_IDENTITY" SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY"
+make dmg CODESIGN_IDENTITY="$CODESIGN_IDENTITY" SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY"
 ```
 
 所有打包入口都强制使用 Developer ID、secure timestamp 和 hardened runtime。缺少正确签名身份时会直接失败，不会生成降级包。
+Sparkle 生产密钥和 GitHub 变量配置见 [`Packaging/SPARKLE.md`](Packaging/SPARKLE.md)。
 
 ## 架构
 

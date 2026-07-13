@@ -18,6 +18,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Unified the minimum supported macOS version to 15.0 across `Package.swift`, the generated `Info.plist` (`LSMinimumSystemVersion`), the README badges, and the update-feed `minimumSystemVersion`. Previously the badge/prose/Info.plist claimed macOS 14+ while `Package.swift` required macOS 15.
 - The privileged helper `LaunchDaemon` now ships with `RunAtLoad=false` so the daemon only starts on demand when a TUN network is requested, matching the README's description of helper behavior. Previously the helper launched at every login.
 
+## [1.4.0] — Unreleased
+
+### Added
+- Replaced the manual DMG updater with Sparkle 2.9.4. Installed copies can now verify, install, and relaunch updates without opening Finder or dragging the app into Applications.
+- Added EdDSA-signed update archives and signed appcast/release-note validation before extraction.
+- Running network configurations are stopped safely before replacement and restored once after the updated app relaunches.
+
+### Changed
+- Software Update now uses Sparkle's standard macOS interface for release notes, progress, skip/remind controls, errors, keyboard navigation, and accessibility.
+- Automatic checks remain enabled by default on a daily schedule, while background download and silent installation stay disabled.
+- Release CI now publishes an immutable notarized DMG, signed `appcast.xml`, and the legacy `update.json` from the same artifact.
+
+### Migration
+- v1.3.3 and earlier do not contain Sparkle, so installing v1.4.0 requires one final manual DMG replacement. In-app installation applies to updates from v1.4.0 onward.
+
 ## [1.0.0] — Unreleased
 
 Initial production release of EasyTier for macOS.

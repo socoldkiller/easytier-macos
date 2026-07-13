@@ -7,40 +7,45 @@ import SwiftUI
 enum EasyTierWindowID {
     static let main = "main"
     static let settings = "settings"
-    static let softwareUpdate = "software-update"
-}
-
-@MainActor
-func openOrRaiseSoftwareUpdateWindow(openWindow: () -> Void) {
-    NSApp.unhide(nil)
-
-    if let window = NSApp.windows.first(where: { window in
-        window.identifier?.rawValue == EasyTierWindowID.softwareUpdate || window.title == "Software Update"
-    }) {
-        if window.isMiniaturized {
-            window.deminiaturize(nil)
-        }
-        window.makeKeyAndOrderFront(nil)
-    } else {
-        openWindow()
-    }
-
-    NSApp.activate(ignoringOtherApps: true)
 }
 
 @main
 struct EasyTierApp: App {
     @NSApplicationDelegateAdaptor(EasyTierApplicationDelegate.self) private var appDelegate
-    @State private var store = EasyTierAppStore(
-        inProcessClient: StaticEasyTierFFIClient(),
-        helperRegistration: HelperRegistrationService()
-    )
-    @State private var updater = SoftwareUpdateController()
+    @State private var store: EasyTierAppStore
+    @State private var updater: SoftwareUpdateController
     @State private var menuBarController = MenuBarStatusItemController()
     @State private var appearanceSettings = AppAppearanceSettings()
 
     init() {
         Self.runHelperCommandIfRequested()
+
+        let store = EasyTierAppStore(
+            inProcessClient: StaticEasyTierFFIClient(),
+            helperRegistration: HelperRegistrationService()
+        )
+        _store = State(initialValue: store)
+        _updater = State(initialValue: SoftwareUpdateController(
+            captureRunningConfigIDs: {
+                store.runningConfigIDsForSoftwareUpdate()
+            },
+            prepareForInstallation: {
+                await store.prepareForSoftwareUpdate()
+                let service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
+                do {
+                    try await service.unregister()
+                    store.recordNotice("Privileged helper unregistered for software update.")
+                } catch {
+                    store.recordNotice("Privileged helper unregister before software update was skipped: \(error.localizedDescription)")
+                }
+            },
+            restoreRunningConfigIDs: { configIDs in
+                await store.restoreConfigsAfterSoftwareUpdate(configIDs: configIDs)
+            },
+            recordNotice: { message in
+                store.recordNotice(message)
+            }
+        ))
     }
 
     var body: some Scene {
@@ -77,7 +82,8 @@ struct EasyTierApp: App {
                         await store.prepareForAppQuit()
                     }
                     await store.load()
-                    updater.scheduleAutomaticCheckIfNeeded()
+                    await updater.restorePendingRuntimeIfNeeded()
+                    updater.start()
                 }
         }
         .windowToolbarStyle(.unified)
@@ -128,23 +134,6 @@ struct EasyTierApp: App {
             }
         }
 
-        Window("Software Update", id: EasyTierWindowID.softwareUpdate) {
-            SoftwareUpdateView()
-                .environment(updater)
-                .environment(appearanceSettings)
-                .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
-                .easyTierWindowBackground(glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
-                .hideScrollViewScrollers()
-                .background(
-                    WindowAccessor { window in
-                        window.identifier = NSUserInterfaceItemIdentifier(EasyTierWindowID.softwareUpdate)
-                        configureMainWindow(window, glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
-                    }
-                    .frame(width: 0, height: 0)
-                )
-        }
-        .windowToolbarStyle(.unified)
-        .windowResizability(.contentSize)
     }
 
     private var menuBarConnectionState: ConnectionGlyphState {
@@ -279,18 +268,12 @@ struct EasyTierApp: App {
 
 @MainActor
 private struct SoftwareUpdateCommands: Commands {
-    @Environment(\.openWindow) private var openWindow
-
     var updater: SoftwareUpdateController
 
     var body: some Commands {
         CommandGroup(after: .appInfo) {
-            Button("Check for Updates…") {
-                openOrRaiseSoftwareUpdateWindow {
-                    openWindow(id: EasyTierWindowID.softwareUpdate)
-                }
-                updater.checkForUpdates(origin: .manual)
-            }
+            Button("Check for Updates…", action: updater.checkForUpdates)
+                .disabled(!updater.canCheckForUpdates)
         }
     }
 }

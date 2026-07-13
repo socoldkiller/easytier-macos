@@ -113,6 +113,8 @@ macOS 15 or later.
 
 Grab the DMG from [Releases](https://github.com/socoldkiller/easytier-macos/releases) and drop it into Applications.
 
+Starting with v1.4.0, later releases can be verified, installed, and relaunched from `EasyTier > Check for Updates…` without opening Finder or dragging another DMG. v1.3.3 and earlier do not contain Sparkle, so moving v1.4.0 into Applications is the final manual upgrade.
+
 First launch:
 1. Release DMGs are Developer ID signed and Apple-notarized. If macOS cannot verify the developer, do not bypass Gatekeeper; download the DMG again and report the release issue.
 2. TUN mode prompts for the privileged helper → follow the dialogs
@@ -141,9 +143,12 @@ Developer ID packaging:
 
 ```bash
 export CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)"
-make app-debug CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
-make dmg CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
+export SPARKLE_PUBLIC_ED_KEY="base64-public-key-from-generate_keys"
+make app-debug CODESIGN_IDENTITY="$CODESIGN_IDENTITY" SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY"
+make dmg CODESIGN_IDENTITY="$CODESIGN_IDENTITY" SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY"
 ```
+
+See [`Packaging/SPARKLE.md`](Packaging/SPARKLE.md) for production key provisioning and GitHub configuration.
 
 Every packaging entry point requires Developer ID signing, a secure timestamp, and the hardened runtime. Packaging fails instead of producing a downgraded build when the identity is missing or invalid.
 

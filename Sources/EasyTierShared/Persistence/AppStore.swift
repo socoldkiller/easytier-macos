@@ -457,13 +457,18 @@ public final class EasyTierAppStore {
     }
 
     private func runSelectedConfigWithoutMutationLock() async {
-        guard !isQuitting else { return }
         guard let config = selectedConfig else { return }
+        _ = await runConfigWithoutMutationLock(config)
+    }
+
+    @discardableResult
+    private func runConfigWithoutMutationLock(_ config: NetworkConfig) async -> Error? {
+        guard !isQuitting else { return nil }
         guard runningInstance(matching: config) == nil else {
             log("Start skipped because \(config.network_name) is already tracked.")
-            return
+            return nil
         }
-        await busy {
+        return await busy {
             log("Starting \(config.network_name)...")
             try validateConfigForCurrentRuntime(config)
             let keychainConfig = try await configWithKeychainSecret(config, reason: "Use the network secret to start \(config.network_name).")
@@ -685,6 +690,45 @@ public final class EasyTierAppStore {
                 log("Privileged helper shutdown requested.")
             } catch {
                 log("Privileged helper shutdown skipped: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    public func runningConfigIDsForSoftwareUpdate() -> [String] {
+        configs.compactMap { config in
+            runningInstance(matching: config) == nil ? nil : config.id
+        }
+    }
+
+    public func prepareForSoftwareUpdate() async {
+        guard !isQuitting else { return }
+        isQuitting = true
+        await stopAll()
+        stopPolling()
+
+        if let shutdownClient = privilegedClient as? EasyTierHelperShutdownClient {
+            do {
+                try await shutdownClient.shutdownHelper()
+                log("Privileged helper shutdown requested for software update.")
+            } catch {
+                log("Privileged helper shutdown before software update was skipped: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    public func restoreConfigsAfterSoftwareUpdate(configIDs: [String]) async {
+        isQuitting = false
+        startPolling()
+
+        let requestedIDs = Set(configIDs)
+        let configsToRestore = configs.filter { requestedIDs.contains($0.id) }
+        guard !configsToRestore.isEmpty else { return }
+
+        await withRuntimeMutation {
+            for config in configsToRestore {
+                if await runConfigWithoutMutationLock(config) != nil {
+                    log("Could not restore \(config.network_name) after software update.")
+                }
             }
         }
     }

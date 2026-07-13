@@ -3,7 +3,6 @@ import Foundation
 
 @MainActor
 final class EasyTierApplicationDelegate: NSObject, NSApplicationDelegate {
-    private static var allowsTermination = false
     private static var quitPreparation: (() async -> Void)?
     private static var quitTask: Task<Void, Never>?
 
@@ -16,27 +15,18 @@ final class EasyTierApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 
     static func quitEasyTier() {
-        guard quitTask == nil else { return }
-        quitTask = Task {
-            await quitPreparation?()
-            terminateNow()
-            quitTask = nil
-        }
-    }
-
-    static func terminateNow() {
-        allowsTermination = true
         NSApp.terminate(nil)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            Foundation.exit(EXIT_SUCCESS)
-        }
     }
 
-    func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
-        guard Self.allowsTermination else {
-            Self.quitEasyTier()
-            return .terminateCancel
+    func applicationShouldTerminate(_ application: NSApplication) -> NSApplication.TerminateReply {
+        guard Self.quitTask == nil else { return .terminateLater }
+        guard let quitPreparation = Self.quitPreparation else { return .terminateNow }
+
+        Self.quitTask = Task {
+            await quitPreparation()
+            application.reply(toApplicationShouldTerminate: true)
+            Self.quitTask = nil
         }
-        return .terminateNow
+        return .terminateLater
     }
 }
