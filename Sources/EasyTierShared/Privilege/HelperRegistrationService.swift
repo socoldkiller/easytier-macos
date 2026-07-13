@@ -70,20 +70,26 @@ public final class HelperRegistrationService {
             if useLegacy {
                 _ = try? await backend.unregister()
                 try await backend.installLegacy()
+                await refreshAsync(useLegacy: true)
+                if state != .enabled {
+                    throw PrivilegedHelperError.needsRegistration
+                }
             } else {
                 _ = try? await backend.unregister()
                 if await backend.legacyArtifactsExist() {
                     try await backend.uninstallLegacy()
                 }
                 try await backend.register()
-            }
-            await refreshAsync(useLegacy: useLegacy)
-            if state != .enabled {
-                throw PrivilegedHelperError.needsRegistration
+                try await backend.probeHelper()
+                state = .enabled
+                detail = "Privileged helper is enabled."
             }
         } catch {
             await refreshAfterRegistrationFailure(error, useLegacy: useLegacy)
-            throw PrivilegedHelperError.needsRegistration
+            if state == .requiresApproval {
+                throw PrivilegedHelperError.needsRegistration
+            }
+            throw error
         }
     }
 
@@ -165,6 +171,7 @@ public final class HelperRegistrationService {
         var legacyIsInstalled: @MainActor () async -> Bool
         var installLegacy: @MainActor () async throws -> Void
         var uninstallLegacy: @MainActor () async throws -> Void
+        var probeHelper: @MainActor () async throws -> Void
     }
 
     private func waitForBusy() async {
@@ -222,7 +229,8 @@ public final class HelperRegistrationService {
             legacyArtifactsExist: { await Self.readLegacyArtifactsExist() },
             legacyIsInstalled: { await Self.readLegacyIsInstalled() },
             installLegacy: { try await Self.installLegacy() },
-            uninstallLegacy: { try await Self.uninstallLegacy() }
+            uninstallLegacy: { try await Self.uninstallLegacy() },
+            probeHelper: { try await Self.probeModernHelper() }
         )
     }
 
@@ -232,6 +240,10 @@ public final class HelperRegistrationService {
 
     private nonisolated static func uninstallLegacy() async throws {
         try await Task.detached { @Sendable in try LegacyPrivilegedHelperService.uninstallUsingAdministratorPrivileges() }.value
+    }
+
+    private nonisolated static func probeModernHelper() async throws {
+        try await PrivilegedEasyTierClient().probeHelperAvailability()
     }
 }
 

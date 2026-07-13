@@ -2,6 +2,9 @@ import Foundation
 import ServiceManagement
 
 package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelperShutdownClient, @unchecked Sendable {
+    private static let defaultCallTimeout: TimeInterval = 15
+    private static let registrationProbeTimeout: TimeInterval = 3
+
     private let connectionLock = NSLock()
     private var _connection: NSXPCConnection?
 
@@ -13,7 +16,7 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
         conn?.invalidate()
     }
 
-    private func acquireConnection() throws -> NSXPCConnection {
+    private func acquireConnection() -> NSXPCConnection {
         connectionLock.lock()
         defer { connectionLock.unlock() }
 
@@ -21,15 +24,8 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
             return conn
         }
 
-        // SMAppService.status triggers a synchronous XPC round-trip to the
-        // system daemon (smd), which is expensive. Only pay that cost when we
-        // are about to open a fresh connection. Once a cached NSXPCConnection
-        // exists, the helper's liveness is already observable through the
-        // proxy error handler in callHelperReturningPayload, which drops the
-        // connection and re-checks status on failure — so this guard is not
-        // needed on every poll.
-        try ensureHelperIsEnabled()
-
+        // XPC is the readiness signal; SMAppService.status is only consulted
+        // after a proxy error because its snapshot can lag registration.
         let conn = NSXPCConnection(
             machServiceName: EasyTierPrivilegedHelperConstants.machServiceName,
             options: [.privileged]
@@ -99,7 +95,7 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
         domain: String?,
         payload: String
     ) async throws -> String {
-        try await callHelperReturningPayload(timeoutError: Self.rpcTimeoutError) { helper, reply in
+        try await callHelperReturningPayload(timeout: Self.defaultCallTimeout, timeoutError: Self.rpcTimeoutError) { helper, reply in
             helper.callJSONRPC(
                 clientID: clientID,
                 url: url.absoluteString,
@@ -113,21 +109,36 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
     }
 
     package func helperPingPayload() async throws -> String {
-        do {
-            let payload = try await callHelperReturningPayload { service, reply in service.ping(reply: reply) }
-            guard payload == EasyTierPrivilegedHelperConstants.pingPayload else {
-                throw PrivilegedHelperError.helperReported(
-                    PrivilegedHelperErrorPayload(
-                        code: "protocolMismatch",
-                        message: "Privileged helper is registered but does not match this app version.",
-                        recoverySuggestion: "Reinstall the privileged helper from this EasyTier app."
-                    )
-                )
-            }
-            return payload
-        } catch PrivilegedHelperError.unavailable {
-            throw PrivilegedHelperError.unavailable
+        try await helperPingPayload(
+            timeout: Self.defaultCallTimeout,
+            timeoutError: Self.timeoutError
+        )
+    }
+
+    package func probeHelperAvailability() async throws {
+        _ = try await helperPingPayload(
+            timeout: Self.registrationProbeTimeout,
+            timeoutError: Self.registrationProbeTimeoutError
+        )
+    }
+
+    private func helperPingPayload(
+        timeout: TimeInterval,
+        timeoutError: @escaping @Sendable () -> PrivilegedHelperError
+    ) async throws -> String {
+        let payload = try await callHelperReturningPayload(timeout: timeout, timeoutError: timeoutError) { service, reply in
+            service.ping(reply: reply)
         }
+        guard payload == EasyTierPrivilegedHelperConstants.pingPayload else {
+            throw PrivilegedHelperError.helperReported(
+                PrivilegedHelperErrorPayload(
+                    code: "protocolMismatch",
+                    message: "Privileged helper is registered but does not match this app version.",
+                    recoverySuggestion: "Reinstall the privileged helper from this EasyTier app."
+                )
+            )
+        }
+        return payload
     }
 
     package func shutdownHelper() async throws {
@@ -142,33 +153,38 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
     }
 
     private func callHelperReturningPayload(_ body: @escaping (EasyTierPrivilegedServiceProtocol, @escaping (String?, String?) -> Void) -> Void) async throws -> String {
-        try await callHelperReturningPayload(timeoutError: Self.timeoutError, body)
+        try await callHelperReturningPayload(timeout: Self.defaultCallTimeout, timeoutError: Self.timeoutError, body)
     }
 
-    private func callHelperReturningPayload(timeoutError: @escaping @Sendable () -> PrivilegedHelperError, _ body: @escaping (EasyTierPrivilegedServiceProtocol, @escaping (String?, String?) -> Void) -> Void) async throws -> String {
+    private func callHelperReturningPayload(
+        timeout: TimeInterval,
+        timeoutError: @escaping @Sendable () -> PrivilegedHelperError,
+        _ body: @escaping (EasyTierPrivilegedServiceProtocol, @escaping (String?, String?) -> Void) -> Void
+    ) async throws -> String {
         do {
-            return try await performHelperCall(timeoutError: timeoutError, body: body, isRetry: false)
+            return try await performHelperCall(timeout: timeout, timeoutError: timeoutError, body: body, isRetry: false)
         } catch PrivilegedHelperError.unavailable {
             // Daemon may have idle-exited even though it is still registered.
             // Drop the cached connection and retry once — launchd will relaunch the helper.
             dropConnection()
-            return try await performHelperCall(timeoutError: timeoutError, body: body, isRetry: true)
+            return try await performHelperCall(timeout: timeout, timeoutError: timeoutError, body: body, isRetry: true)
         }
     }
 
     private func performHelperCall(
+        timeout: TimeInterval,
         timeoutError: @escaping @Sendable () -> PrivilegedHelperError,
         body: @escaping (EasyTierPrivilegedServiceProtocol, @escaping (String?, String?) -> Void) -> Void,
         isRetry: Bool
     ) async throws -> String {
-        let connection = try acquireConnection()
+        let connection = acquireConnection()
 
         return try await withCheckedThrowingContinuation { continuation in
             let state = HelperCallState(continuation: continuation)
             let timeoutWork = DispatchWorkItem { [weak state] in
                 state?.finish(.failure(timeoutError()))
             }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 15, execute: timeoutWork)
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timeoutWork)
 
             let proxy = connection.remoteObjectProxyWithErrorHandler { [weak self] _ in
                 timeoutWork.cancel()
@@ -209,26 +225,6 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
         return status == .enabled ? helperUnavailableError() : statusError(status)
     }
 
-    private func ensureHelperIsEnabled() throws {
-        if LegacyPrivilegedHelperService.shouldUseLegacyInstaller {
-            if LegacyPrivilegedHelperService.isInstalled {
-                return
-            }
-            throw Self.legacyNeedsInstallError()
-        }
-
-        let service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
-        let status = service.status
-        switch status {
-        case .enabled:
-            return
-        case .notRegistered:
-            throw PrivilegedHelperError.needsRegistration
-        default:
-            throw Self.statusError(status)
-        }
-    }
-
     private static func timeoutError() -> PrivilegedHelperError {
         if LegacyPrivilegedHelperService.shouldUseLegacyInstaller {
             if !LegacyPrivilegedHelperService.isInstalled {
@@ -247,6 +243,25 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
                 code: "helperTimeout",
                 message: "Privileged helper is enabled but did not respond within 15 seconds.",
                 recoverySuggestion: "Quit and reopen EasyTier, then try installing the helper again. If this continues, remove and reinstall EasyTier."
+            )
+        )
+    }
+
+    private static func registrationProbeTimeoutError() -> PrivilegedHelperError {
+        if LegacyPrivilegedHelperService.shouldUseLegacyInstaller {
+            return LegacyPrivilegedHelperService.isInstalled ? helperUnavailableError() : legacyNeedsInstallError()
+        }
+
+        let service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
+        if service.status != .enabled {
+            return statusError(service.status)
+        }
+
+        return .helperReported(
+            PrivilegedHelperErrorPayload(
+                code: "helperProbeTimeout",
+                message: "Privileged helper was registered but did not become reachable.",
+                recoverySuggestion: "Try starting the network again. If this continues, quit and reopen EasyTier."
             )
         )
     }

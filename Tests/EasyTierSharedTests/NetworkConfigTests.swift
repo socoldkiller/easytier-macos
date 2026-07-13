@@ -2965,6 +2965,39 @@ import Testing
     #expect(registration.state == .enabled)
 }
 
+@MainActor
+@Test func ensureRegisteredUsesXPCProbeWhenServiceStatusIsStillNotFound() async throws {
+    let backend = HelperRegistrationBackendSpy(status: .notFound)
+    backend.statusAfterRegister = .notFound
+    let registration = HelperRegistrationService(backend: backend.backend(), refreshOnInit: false)
+
+    try await registration.ensureRegistered()
+
+    #expect(backend.registerCount == 1)
+    #expect(backend.probeCount == 1)
+    #expect(registration.state == .enabled)
+}
+
+@MainActor
+@Test func ensureRegisteredClassifiesXPCProbeFailureUsingServiceStatus() async throws {
+    let backend = HelperRegistrationBackendSpy(status: .notFound)
+    backend.statusAfterRegister = .requiresApproval
+    backend.probeError = PrivilegedHelperError.unavailable
+    let registration = HelperRegistrationService(backend: backend.backend(), refreshOnInit: false)
+
+    do {
+        try await registration.ensureRegistered()
+        Issue.record("ensureRegistered should surface the failed helper probe")
+    } catch let error as PrivilegedHelperError {
+        #expect(error == .needsRegistration)
+    } catch {
+        Issue.record("unexpected error: \(error)")
+    }
+
+    #expect(backend.probeCount == 1)
+    #expect(registration.state == .requiresApproval)
+}
+
 @Test func runtimeInfoDerivesLocalAndPeerMembers() throws {
     let json = """
     {
@@ -3660,6 +3693,8 @@ private final class HelperRegistrationBackendSpy {
     var registerCount = 0
     var unregisterCount = 0
     var uninstallLegacyCount = 0
+    var probeCount = 0
+    var probeError: Error?
 
     init(status: SMAppService.Status) {
         self.status = status
@@ -3667,7 +3702,12 @@ private final class HelperRegistrationBackendSpy {
 
     func backend() -> HelperRegistrationService.Backend {
         HelperRegistrationService.Backend(
-            status: { self.status },
+            status: {
+                if self.registerCount > 0, let statusAfterRegister = self.statusAfterRegister {
+                    return statusAfterRegister
+                }
+                return self.status
+            },
             register: {
                 self.registerCount += 1
                 if let statusAfterRegister = self.statusAfterRegister {
@@ -3684,6 +3724,12 @@ private final class HelperRegistrationBackendSpy {
                 self.uninstallLegacyCount += 1
                 self.legacyArtifactsPresent = false
                 self.legacyInstalled = false
+            },
+            probeHelper: {
+                self.probeCount += 1
+                if let probeError = self.probeError {
+                    throw probeError
+                }
             }
         )
     }
