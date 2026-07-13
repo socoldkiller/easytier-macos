@@ -70,6 +70,95 @@ import Testing
     #expect(second.state.statusMetricsByInstance["fixture-network"]?["peer-200"]?.txBytes == 10_000)
 }
 
+@Test func suspendedPresentationDoesNotPublishDynamicMetrics() {
+    let first = RuntimePresentationReducer.reduce(
+        running: [RuntimePresentationFixture.instance(txBytes: 10_000, rxBytes: 12_000)],
+        previous: RuntimePresentationState(),
+        selectedTab: .status,
+        presentationActivity: .interactive,
+        now: RuntimePresentationFixture.t0
+    )
+
+    let suspended = RuntimePresentationReducer.reduce(
+        running: [RuntimePresentationFixture.instance(txBytes: 50_000, rxBytes: 60_000, latencyUs: 8_000)],
+        previous: first.state,
+        selectedTab: .status,
+        presentationActivity: .suspended,
+        now: RuntimePresentationFixture.t1
+    )
+
+    #expect(!suspended.shouldPublishStatusMetrics)
+    #expect(!suspended.shouldPublishTrafficSamples)
+    #expect(suspended.state.statusMetricsByInstance == first.state.statusMetricsByInstance)
+}
+
+@Test func dayLongSuspensionPublishesTopologyButNoDynamicPresentation() {
+    let statusBaseline = RuntimePresentationReducer.reduce(
+        running: [RuntimePresentationFixture.instance(txBytes: 10_000, rxBytes: 12_000)],
+        previous: RuntimePresentationState(),
+        selectedTab: .status,
+        now: RuntimePresentationFixture.t0
+    )
+    let trafficBaseline = RuntimePresentationReducer.reduce(
+        running: [RuntimePresentationFixture.instance(txBytes: 10_000, rxBytes: 12_000)],
+        previous: statusBaseline.state,
+        selectedTab: .view,
+        now: RuntimePresentationFixture.t0
+    )
+    let live = RuntimePresentationReducer.reduce(
+        running: [RuntimePresentationFixture.instance(txBytes: 15_000, rxBytes: 18_000)],
+        previous: trafficBaseline.state,
+        selectedTab: .view,
+        now: RuntimePresentationFixture.t1
+    )
+
+    let originalStatusMetrics = live.state.statusMetricsByInstance
+    let originalTrafficSamples = live.state.trafficSamplesByInstance
+    let originalTrafficStatuses = live.state.trafficSamplingStatusByInstance
+    var state = live.state
+    var dynamicPublicationCount = 0
+    var topologyRefreshCount = 0
+    var selectedSnapshotRefreshCount = 0
+
+    for tick in 1...86_400 {
+        let topologyChanged = tick >= 43_200
+        let change = RuntimePresentationReducer.reduce(
+            running: [RuntimePresentationFixture.instance(
+                hostname: topologyChanged ? "peer-b" : "peer-a",
+                txBytes: 15_000 + tick * 100,
+                rxBytes: 18_000 + tick * 120,
+                latencyUs: 1_000 + tick
+            )],
+            previous: state,
+            selectedTab: tick.isMultiple(of: 2) ? .status : .view,
+            presentationActivity: .suspended,
+            now: RuntimePresentationFixture.date(at: TimeInterval(tick + 1))
+        )
+
+        if change.shouldPublishStatusMetrics
+            || change.shouldPublishTrafficSamples
+            || change.shouldPublishTrafficSamplingStatus {
+            dynamicPublicationCount += 1
+        }
+        if change.shouldPublishInstances
+            || change.shouldPublishRuntimeDetails
+            || change.shouldPublishMemberPresentation {
+            topologyRefreshCount += 1
+        }
+        if change.shouldRefreshSelectedSnapshots {
+            selectedSnapshotRefreshCount += 1
+        }
+        state = change.state
+    }
+
+    #expect(dynamicPublicationCount == 0)
+    #expect(topologyRefreshCount > 0)
+    #expect(selectedSnapshotRefreshCount == topologyRefreshCount)
+    #expect(state.statusMetricsByInstance == originalStatusMetrics)
+    #expect(state.trafficSamplesByInstance == originalTrafficSamples)
+    #expect(state.trafficSamplingStatusByInstance == originalTrafficStatuses)
+}
+
 @Test func unchangedStatusMetricsDoNotPublish() {
     let first = RuntimePresentationReducer.reduce(
         running: [RuntimePresentationFixture.instance(txBytes: 10_000, rxBytes: 12_000)],
@@ -128,6 +217,92 @@ import Testing
     #expect(second.state.trafficSamplesByInstance["fixture-network"]?.last?.rxBytesPerSecond == 6_000)
     #expect(second.state.trafficSamplesByInstance["fixture-network"]?.last?.sessionID != TrafficSample.legacySessionID)
     #expect(second.state.trafficSamplingStatusByInstance["fixture-network"]?.phase == .live)
+}
+
+@Test func presentationResumeStartsANewTrafficBaselineWithoutCrossGapRate() throws {
+    let baseline = RuntimePresentationFixture.reduce(at: 0, txBytes: 10_000, rxBytes: 12_000)
+    let first = RuntimePresentationFixture.reduce(
+        previous: baseline.state,
+        at: 1,
+        txBytes: 15_000,
+        rxBytes: 18_000
+    )
+    let originalSample = try #require(first.state.trafficSamplesByInstance["fixture-network"]?.first)
+
+    let resumed = RuntimePresentationReducer.reduce(
+        running: [RuntimePresentationFixture.instance(txBytes: 25_000, rxBytes: 30_000)],
+        previous: first.state,
+        selectedTab: .view,
+        presentationActivity: .interactive,
+        resetTrafficBaselines: ["fixture-network"],
+        now: RuntimePresentationFixture.date(at: 2)
+    )
+
+    let resumedSamples = try #require(resumed.state.trafficSamplesByInstance["fixture-network"])
+    let resumedStatus = try #require(resumed.state.trafficSamplingStatusByInstance["fixture-network"])
+    #expect(resumedSamples.map(\.id) == [originalSample.id])
+    #expect(resumedStatus.activeSessionID != originalSample.sessionID)
+    #expect(resumedStatus.phase == .collecting)
+    #expect(resumedStatus.resumeEvent?.reason == .gap)
+    #expect(resumedStatus.resumeEvent?.gapDuration == 1)
+}
+
+@Test func trafficBaselineResetOnlyAffectsSuspendedInstances() throws {
+    let firstName = "fixture-network"
+    let secondName = "second-network"
+    let baseline = RuntimePresentationReducer.reduce(
+        running: [
+            RuntimePresentationFixture.instance(txBytes: 10_000, rxBytes: 12_000),
+            RuntimePresentationFixture.instance(
+                txBytes: 20_000,
+                rxBytes: 24_000,
+                networkName: secondName,
+                instanceID: "second-instance"
+            ),
+        ],
+        previous: RuntimePresentationState(),
+        selectedTab: .view,
+        now: RuntimePresentationFixture.t0
+    )
+    let live = RuntimePresentationReducer.reduce(
+        running: [
+            RuntimePresentationFixture.instance(txBytes: 15_000, rxBytes: 18_000),
+            RuntimePresentationFixture.instance(
+                txBytes: 25_000,
+                rxBytes: 30_000,
+                networkName: secondName,
+                instanceID: "second-instance"
+            ),
+        ],
+        previous: baseline.state,
+        selectedTab: .view,
+        now: RuntimePresentationFixture.t1
+    )
+    let firstSession = try #require(live.state.trafficSamplingStatusByInstance[firstName]?.activeSessionID)
+    let secondSession = try #require(live.state.trafficSamplingStatusByInstance[secondName]?.activeSessionID)
+
+    let resumed = RuntimePresentationReducer.reduce(
+        running: [
+            RuntimePresentationFixture.instance(txBytes: 25_000, rxBytes: 30_000),
+            RuntimePresentationFixture.instance(
+                txBytes: 35_000,
+                rxBytes: 42_000,
+                networkName: secondName,
+                instanceID: "second-instance"
+            ),
+        ],
+        previous: live.state,
+        selectedTab: .view,
+        resetTrafficBaselines: [firstName],
+        now: RuntimePresentationFixture.date(at: 2)
+    )
+
+    #expect(resumed.state.trafficSamplesByInstance[firstName]?.count == 1)
+    #expect(resumed.state.trafficSamplingStatusByInstance[firstName]?.activeSessionID != firstSession)
+    #expect(resumed.state.trafficSamplingStatusByInstance[firstName]?.phase == .collecting)
+    #expect(resumed.state.trafficSamplesByInstance[secondName]?.count == 2)
+    #expect(resumed.state.trafficSamplingStatusByInstance[secondName]?.activeSessionID == secondSession)
+    #expect(resumed.state.trafficSamplingStatusByInstance[secondName]?.phase == .live)
 }
 
 @Test func shortTrafficGapContinuesTheActiveSession() throws {
@@ -601,11 +776,13 @@ private enum RuntimePresentationFixture {
         txBytes: Int,
         rxBytes: Int,
         latencyUs: Int = 1_000,
-        events: [String]? = nil
+        events: [String]? = nil,
+        networkName: String = "fixture-network",
+        instanceID: String = "fixture-instance"
     ) -> NetworkInstance {
         NetworkInstance(
-            instance_id: "fixture-instance",
-            name: "fixture-network",
+            instance_id: instanceID,
+            name: networkName,
             running: true,
             detail: NetworkInstanceRunningInfo(
                 dev_name: "utun-fixture",
@@ -628,7 +805,7 @@ private enum RuntimePresentationFixture {
                     ),
                 ],
                 running: true,
-                instance_id: "fixture-instance"
+                instance_id: instanceID
             )
         )
     }

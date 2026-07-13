@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import ServiceManagement
 import Testing
@@ -1053,7 +1054,7 @@ import Testing
 }
 
 @MainActor
-@Test func secretCacheAvoidsRepeatedKeychainReads() async {
+@Test func sequentialSecretReadsDoNotRetainAPlaintextAppStoreCache() async {
     let config = NetworkConfig(instance_id: "cache-id", network_name: "office")
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "cached-secret"], canAutofill: true)
     let store = EasyTierAppStore(
@@ -1065,7 +1066,63 @@ import Testing
     #expect(secrets.readReasons.count == 1)
 
     _ = try? await store.revealNetworkSecret(for: config)
-    #expect(secrets.readReasons.count == 1, "second read should hit the in-memory cache")
+    #expect(secrets.readReasons.count == 2, "LAContext, not the plaintext secret, owns authentication reuse")
+}
+
+@MainActor
+@Test func concurrentSecretReadsShareOneKeychainRequest() async throws {
+    let config = NetworkConfig(instance_id: "concurrent-secret-id", network_name: "office")
+    let secrets = BlockingNetworkSecretStore(secret: "shared-secret")
+    let store = EasyTierAppStore(
+        client: RecordingToggleClient(),
+        networkSecretStore: secrets
+    )
+
+    let first = Task { try await store.revealNetworkSecret(for: config) }
+    let second = Task { try await store.revealNetworkSecret(for: config) }
+    defer { secrets.releaseReads() }
+
+    let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+    while secrets.readCount == 0, ContinuousClock.now < deadline {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    try? await Task.sleep(for: .milliseconds(50))
+
+    #expect(secrets.readCount == 1, "concurrent callers should share the first Keychain read")
+
+    secrets.releaseReads()
+    #expect(try await first.value == "shared-secret")
+    #expect(try await second.value == "shared-secret")
+}
+
+@MainActor
+@Test func systemSleepInvalidatesNetworkSecretAuthenticationSession() {
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"])
+    let store = EasyTierAppStore(
+        client: RecordingToggleClient(),
+        networkSecretStore: secrets
+    )
+
+    store.handleSystemWillSleep(now: Date(timeIntervalSince1970: 100))
+
+    #expect(secrets.authenticationInvalidationCount == 1)
+}
+
+@MainActor
+@Test func applicationResignActiveDoesNotInvalidateNetworkSecretAuthenticationSession() async {
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"])
+    let store = EasyTierAppStore(
+        client: RecordingToggleClient(),
+        networkSecretStore: secrets
+    )
+    store.startPolling()
+    defer { store.stopPolling() }
+    await Task.yield()
+
+    NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: nil)
+    try? await Task.sleep(for: .milliseconds(20))
+
+    #expect(secrets.authenticationInvalidationCount == 0)
 }
 
 @MainActor
@@ -2921,12 +2978,14 @@ import Testing
     let backend = HelperRegistrationBackendSpy(status: .requiresApproval)
     let registration = HelperRegistrationService(backend: backend.backend(), refreshOnInit: false)
     let config = NetworkConfig(instance_id: "pending-approval-id", network_name: "pending-approval-network")
+    let secrets = MemoryNetworkSecretStore(secrets: [config.network_name: "pending-secret"])
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let store = EasyTierAppStore(
         privilegedClient: client,
         inProcessClient: client,
         helperRegistration: registration,
-        storage: EasyTierStorage(baseDirectory: directory)
+        storage: EasyTierStorage(baseDirectory: directory),
+        networkSecretStore: secrets
     )
 
     store.configs = [config]
@@ -2935,6 +2994,7 @@ import Testing
     await store.runSelectedConfig()
     #expect(client.runConfigs.isEmpty)
     #expect(store.lastErrorIsHelperPermission)
+    #expect(secrets.readReasons.count == 1)
 
     await store.retryStartAfterHelperApproval()
     #expect(client.runConfigs.isEmpty)
@@ -2943,6 +3003,8 @@ import Testing
     await store.retryStartAfterHelperApproval()
 
     #expect(client.runConfigs.map(\.instance_id) == [config.instance_id])
+    #expect(client.runConfigs.first?.network_secret == "pending-secret")
+    #expect(secrets.readReasons.count == 2, "pending helper state must not retain the plaintext secret")
 }
 
 @MainActor
@@ -3441,6 +3503,7 @@ private final class MemoryNetworkSecretStore: NetworkSecretStore, @unchecked Sen
     var readReasons: [String?] = []
     var canAutofill: Bool
     var readError: Error?
+    private(set) var authenticationInvalidationCount = 0
 
     init(secrets: [String: String] = [:], canAutofill: Bool = false) {
         self.secrets = secrets
@@ -3468,6 +3531,51 @@ private final class MemoryNetworkSecretStore: NetworkSecretStore, @unchecked Sen
 
     func canAutofillWithBiometrics() -> Bool {
         canAutofill
+    }
+
+    func invalidateAuthenticationSession() {
+        authenticationInvalidationCount += 1
+    }
+}
+
+private final class BlockingNetworkSecretStore: NetworkSecretStore, @unchecked Sendable {
+    private let condition = NSCondition()
+    private let storedSecret: String
+    private var storedReadCount = 0
+    private var readsReleased = false
+
+    init(secret: String) {
+        storedSecret = secret
+    }
+
+    var readCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return storedReadCount
+    }
+
+    func save(_: String, for _: NetworkConfig) throws {}
+
+    func secret(for _: NetworkConfig, reason _: String?) throws -> String? {
+        condition.lock()
+        storedReadCount += 1
+        condition.broadcast()
+        while !readsReleased {
+            condition.wait()
+        }
+        condition.unlock()
+        return storedSecret
+    }
+
+    func deleteSecret(for _: NetworkConfig) throws {}
+    func containsSecret(for _: NetworkConfig) -> Bool { true }
+    func canAutofillWithBiometrics() -> Bool { true }
+
+    func releaseReads() {
+        condition.lock()
+        readsReleased = true
+        condition.broadcast()
+        condition.unlock()
     }
 }
 

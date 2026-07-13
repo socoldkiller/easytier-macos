@@ -63,6 +63,51 @@ signing_authority() {
     | awk '/^Authority=/ && !found {sub(/^Authority=/, ""); print; found=1}'
 }
 
+verify_keychain_signing() {
+  local embedded_profile="$APP_PATH/Contents/embedded.provisionprofile"
+  [[ -f "$embedded_profile" ]] || fail "EasyTier.app must embed a Developer ID provisioning profile for the Data Protection Keychain."
+
+  local temp_dir profile_plist signed_entitlements app_team expected_identifier wildcard_keychain_group
+  local profile_team profile_identifier profile_groups signed_identifier signed_groups biometric
+  local expiration expiration_epoch now_epoch
+  temp_dir="$(mktemp -d)"
+  profile_plist="$temp_dir/profile.plist"
+  signed_entitlements="$temp_dir/entitlements.plist"
+  security cms -D -i "$embedded_profile" -o "$profile_plist" >/dev/null
+  codesign -d --entitlements :- "$APP_PATH" >"$signed_entitlements" 2>/dev/null
+
+  app_team="$(signature_field "$APP_PATH" TeamIdentifier)"
+  expected_identifier="$app_team.com.kkrainbow.easytier.mac"
+  wildcard_keychain_group="$app_team.*"
+  profile_team="$(plutil -extract TeamIdentifier.0 raw -o - "$profile_plist" 2>/dev/null || true)"
+  profile_identifier="$(
+    plutil -extract Entitlements.application-identifier raw -o - "$profile_plist" 2>/dev/null \
+      || /usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.application-identifier' "$profile_plist" 2>/dev/null \
+      || true
+  )"
+  profile_groups="$(plutil -extract Entitlements.keychain-access-groups json -o - "$profile_plist" 2>/dev/null || true)"
+  signed_identifier="$(/usr/libexec/PlistBuddy -c 'Print :com.apple.application-identifier' "$signed_entitlements" 2>/dev/null || true)"
+  signed_groups="$(plutil -extract keychain-access-groups json -o - "$signed_entitlements" 2>/dev/null || true)"
+  biometric="$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.device.biometric' "$signed_entitlements" 2>/dev/null || true)"
+
+  [[ "$profile_team" == "$app_team" ]] || fail "Provisioning profile Team ID does not match the app signature."
+  [[ "$profile_identifier" == "$expected_identifier" ]] || fail "Provisioning profile does not target $expected_identifier."
+  [[ "$profile_groups" == *"\"$expected_identifier\""* \
+      || "$profile_groups" == *"\"$wildcard_keychain_group\""* ]] \
+    || fail "Provisioning profile does not authorize Keychain group $expected_identifier."
+  [[ "$signed_identifier" == "$expected_identifier" ]] || fail "Signed app is missing application identifier $expected_identifier."
+  [[ "$signed_groups" == *"\"$expected_identifier\""* ]] || fail "Signed app is missing Keychain access group $expected_identifier."
+  [[ "$biometric" == "true" ]] || fail "Signed app is missing the biometric entitlement."
+
+  expiration="$(plutil -extract ExpirationDate raw -o - "$profile_plist" 2>/dev/null || true)"
+  expiration_epoch="$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$expiration" '+%s' 2>/dev/null || true)"
+  now_epoch="$(date -u '+%s')"
+  [[ -n "$expiration_epoch" && "$expiration_epoch" -gt "$now_epoch" ]] || fail "Embedded provisioning profile is expired or unreadable: $expiration"
+
+  rm -rf "$temp_dir"
+  echo "Data Protection Keychain profile and entitlements are valid for $expected_identifier."
+}
+
 verify_developer_id_signatures() {
   local app_team item authority team details
   app_team="$(signature_field "$APP_PATH" TeamIdentifier)"
@@ -170,6 +215,7 @@ verify_app_bundle() {
   helper_bundle_identifier="$(sfltool csinfo "$HELPER_BINARY" 2>/dev/null | sed -n 's/^Bundle Identifier: //p')"
   [[ "$helper_bundle_identifier" == "com.kkrainbow.easytier.mac.helper" ]] || fail "Unexpected helper bundle identifier: $helper_bundle_identifier"
 
+  verify_keychain_signing
   codesign --verify --deep --strict --verbose=2 "$APP_PATH" >/dev/null
   verify_developer_id_signatures
 }

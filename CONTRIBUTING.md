@@ -4,7 +4,7 @@ Thanks for considering a contribution! This file is a short orientation for the 
 
 ## Build
 
-Requires **Xcode 16+** (Swift 6), **Rust 1.95+ stable**, and the Protocol Buffers compiler (`protoc`). Packaging also requires a Developer ID Application certificate; building the FFI and running tests do not.
+Requires **Xcode 16+** (Swift 6), **Rust 1.95+ stable**, and the Protocol Buffers compiler (`protoc`). App packaging also requires a Developer ID Application certificate, a matching provisioning profile that authorizes the app's Keychain access group, and the production Sparkle public key. A final DMG additionally requires a valid `notarytool` profile; building the FFI and running tests do not.
 
 ```bash
 git clone --recurse-submodules https://github.com/socoldkiller/easytier-macos.git
@@ -15,14 +15,16 @@ make ffi         # build the current-architecture Rust FFI archive
 make test        # run the Swift and Rust test suites
 
 export CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)"
-make app-debug CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
-make dmg CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
+export PROVISIONING_PROFILE="/path/to/EasyTier.provisionprofile"
+export SPARKLE_PUBLIC_ED_KEY="base64-public-key"
+make app-debug CODESIGN_IDENTITY="$CODESIGN_IDENTITY" PROVISIONING_PROFILE="$PROVISIONING_PROFILE" SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY"
+make dmg CODESIGN_IDENTITY="$CODESIGN_IDENTITY" PROVISIONING_PROFILE="$PROVISIONING_PROFILE" SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY" APP_VERSION=1.4.0
 ```
 
 Output paths:
 - App bundle: `.build/artifacts/EasyTier.app`
 - FFI library: `Vendor/Frameworks/static/libeasytier_ffi.a`
-- DMG: `.build/artifacts/EasyTier-macOS-$(uname -m).dmg`
+- DMG: `.build/artifacts/EasyTier-macOS-ARM64.dmg`
 
 See the `Makefile` for the exact invocations.
 
@@ -31,6 +33,7 @@ See the `Makefile` for the exact invocations.
 ```bash
 make test-swift
 make test-rust
+make test-packaging
 
 # Run both suites
 make test
@@ -65,12 +68,12 @@ Packaging/                  Entitlements and packaging metadata
 1. Open an issue describing the change before working on a non-trivial PR.
 2. Branch from `main`, keep commits focused.
 3. Make sure `make test` passes locally.
-4. PRs that touch the privileged helper or packaging scripts should be validated by a maintainer with signing credentials using `make smoke CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)"` and `make dmg CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)"`.
+4. PRs that touch the privileged helper or packaging scripts should be validated by a maintainer with signing credentials using `make smoke` for the app and `make dmg` for the final signed, notarized, stapled, and Gatekeeper-verified image. Both commands require the Developer ID identity, provisioning profile, and Sparkle public key described in [`Packaging/RELEASE.md`](Packaging/RELEASE.md).
 5. Don't edit release version metadata or the update manifest yourself — the release tag supplies the version.
 
 ## Releasing
 
-Releases are cut by maintainers via git tags; the `macos-app.yml` workflow handles signing, notarization, stapling, DMG layout, and the update feed upload. The CI also publishes `minimumSystemVersion: 15.0` in the update manifest, so the minimum supported OS is macOS 15.
+Releases are cut by maintainers via git tags. Local builds and `macos-app.yml` both call the same `scripts/release.sh` module for signing, notarization, stapling, DMG verification, release metadata, Sparkle signing, and feed validation. GitHub Actions remains a thin credential/artifact/Pages adapter. See [`Packaging/RELEASE.md`](Packaging/RELEASE.md) for the complete flow and required secrets. The update feeds publish `minimumSystemVersion: 15.0`, so the minimum supported OS is macOS 15.
 
 ## License
 

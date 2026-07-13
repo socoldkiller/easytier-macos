@@ -77,7 +77,7 @@ struct LinuxInstallGuideView: View {
             .padding(.vertical, 13)
         }
         .frame(minWidth: 560, idealWidth: 640, minHeight: 440, idealHeight: 520)
-        .presentationBackground { FrostedGlass() }
+        .presentationBackground { FrostedGlass(role: .sheet) }
         .hideScrollViewScrollers()
     }
 }

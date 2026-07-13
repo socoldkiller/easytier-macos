@@ -173,7 +173,21 @@ struct EasyTierSettingsSheet: View {
                     "Appearance",
                     footer: "Panel backgrounds apply only while frosted glass is enabled. Traditional mode keeps solid panels for readability."
                 ) {
-                    Toggle("Frosted Glass", isOn: appearance.glassEffectsEnabledBinding)
+                    Toggle(isOn: appearance.glassEffectsEnabledBinding) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text("Frosted Glass")
+                            Text("Beta")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .fixedSize()
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(.secondary.opacity(0.13), in: Capsule(style: .continuous))
+                                .accessibilityLabel(Text("Beta"))
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                    .accessibilityLabel(Text("Frosted Glass, Beta"))
                     SettingsRowDivider()
                     Toggle("Panel Backgrounds", isOn: appearance.glassPanelBackgroundsEnabledBinding)
                         .disabled(!appearance.glassEffectsEnabled)

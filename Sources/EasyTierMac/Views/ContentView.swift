@@ -664,6 +664,7 @@ struct ContentView: View {
             store.clearRemoteConfigSession()
         }
         flushPendingLocalDraft()
+        EasyTierPerformanceSignposts.workspaceTransition()
         workspaceTransitionEdge = networkTransitionEdge(from: previousValue, to: newValue)
         workspaceTransitionDistance = Self.networkTransitionDistance
         store.selectedConfigID = newValue
@@ -673,6 +674,7 @@ struct ContentView: View {
     private func selectWorkspaceTab(_ tab: WorkspaceTab) {
         guard tab != store.selectedTab else { return }
         flushPendingLocalDraft()
+        EasyTierPerformanceSignposts.workspaceTransition()
         workspaceTransitionEdge =
             tab.motionIndex > store.selectedTab.motionIndex ? .trailing : .leading
         workspaceTransitionDistance = Self.tabTransitionDistance

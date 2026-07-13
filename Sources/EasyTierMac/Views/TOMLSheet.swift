@@ -55,7 +55,7 @@ struct TOMLSheet: View {
         }
         .padding(24)
         .frame(minWidth: 560, idealWidth: 720, minHeight: 400, idealHeight: 560)
-        .presentationBackground { FrostedGlass() }
+        .presentationBackground { FrostedGlass(role: .sheet) }
         .presentedSurfaceMotion()
         .hideScrollViewScrollers()
     }

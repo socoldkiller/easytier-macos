@@ -1,5 +1,19 @@
 import Foundation
 
+package enum RuntimePresentationActivity: Equatable, Sendable {
+    case interactive
+    case visibleInactive
+    case suspended
+
+    var allowsDynamicPresentation: Bool {
+        self != .suspended
+    }
+
+    package var allowsAnimations: Bool {
+        self == .interactive
+    }
+}
+
 struct RuntimeMemberStatusMetricsSnapshot: Equatable {
     var txBytes: Int64
     var rxBytes: Int64
@@ -63,6 +77,15 @@ struct RuntimePresentationChange {
     var shouldPublishStatusMetrics: Bool
     var shouldPublishTrafficSamples: Bool
     var shouldPublishTrafficSamplingStatus: Bool
+
+    var shouldRefreshSelectedSnapshots: Bool {
+        shouldPublishInstances
+            || shouldPublishRuntimeDetails
+            || shouldPublishMemberPresentation
+            || shouldPublishStatusMetrics
+            || shouldPublishTrafficSamples
+            || shouldPublishTrafficSamplingStatus
+    }
 }
 
 enum RuntimePresentationReducer {
@@ -74,6 +97,8 @@ enum RuntimePresentationReducer {
         running: [NetworkInstance],
         previous: RuntimePresentationState,
         selectedTab: WorkspaceTab,
+        presentationActivity: RuntimePresentationActivity = .interactive,
+        resetTrafficBaselines: Set<String> = [],
         now: Date = Date(),
         trafficSampleWindow: Int = Self.defaultTrafficSampleWindow
     ) -> RuntimePresentationChange {
@@ -96,14 +121,15 @@ enum RuntimePresentationReducer {
         let statusMetricsResult = statusMetrics(
             from: runningSnapshots,
             previous: previous.statusMetricsByInstance,
-            isActive: selectedTab == .status
+            isActive: presentationActivity.allowsDynamicPresentation && selectedTab == .status
         )
         let trafficSamplesResult = trafficSamples(
             from: runningSnapshots,
             previousSamples: previous.trafficSamplesByInstance,
             previousCounters: previous.trafficCountersByInstance,
             previousStatuses: previous.trafficSamplingStatusByInstance,
-            isActive: selectedTab == .view,
+            isActive: presentationActivity.allowsDynamicPresentation && selectedTab == .view,
+            resetBaselines: resetTrafficBaselines,
             now: now,
             sampleWindow: trafficSampleWindow
         )
@@ -274,6 +300,7 @@ enum RuntimePresentationReducer {
         previousCounters: [String: RuntimeTrafficCounter],
         previousStatuses: [String: RuntimeTrafficSamplingStatus],
         isActive: Bool,
+        resetBaselines: Set<String>,
         now: Date,
         sampleWindow: Int
     ) -> (
@@ -293,13 +320,21 @@ enum RuntimePresentationReducer {
             guard snapshot.instance.detail != nil else { continue }
             let totals = snapshot.trafficTotals
             let instanceName = snapshot.instance.name
-            let previous = nextCounters[instanceName]
+            let resetBaseline = resetBaselines.contains(instanceName)
+            let retainedCounter = nextCounters[instanceName]
+            let previous = resetBaseline ? nil : retainedCounter
             var samples = (nextSamples[instanceName] ?? []).filter { $0.timestamp >= cutoff }
 
             guard let previous else {
                 let sessionID = UUID()
                 let existingStatus = nextStatuses[instanceName]
-                let resumeEvent: TrafficResumeEvent? = if existingStatus?.phase == .collecting {
+                let resumeEvent: TrafficResumeEvent? = if resetBaseline, let retainedCounter {
+                    TrafficResumeEvent(
+                        timestamp: now,
+                        gapDuration: max(now.timeIntervalSince(retainedCounter.timestamp), 0),
+                        reason: .gap
+                    )
+                } else if existingStatus?.phase == .collecting {
                     existingStatus?.resumeEvent
                 } else if !samples.isEmpty || existingStatus != nil {
                     TrafficResumeEvent(timestamp: now, reason: .counterReset)

@@ -5,13 +5,13 @@ import SwiftUI
 
 struct MenuBarStatusItemBridge: NSViewRepresentable {
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var controller: MenuBarStatusItemController
     var store: EasyTierAppStore
     var updater: SoftwareUpdateController
     var appearanceSettings: AppAppearanceSettings
     var connectionState: ConnectionGlyphState
-    var configureWindow: (NSWindow) -> Void
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
@@ -20,7 +20,7 @@ struct MenuBarStatusItemBridge: NSViewRepresentable {
             updater: updater,
             appearanceSettings: appearanceSettings,
             connectionState: connectionState,
-            configureOpenWindows: configureOpenWindows,
+            reduceMotion: reduceMotion,
             openMainWindow: openMainWindow
         )
         return view
@@ -32,7 +32,7 @@ struct MenuBarStatusItemBridge: NSViewRepresentable {
             updater: updater,
             appearanceSettings: appearanceSettings,
             connectionState: connectionState,
-            configureOpenWindows: configureOpenWindows,
+            reduceMotion: reduceMotion,
             openMainWindow: openMainWindow
         )
     }
@@ -41,18 +41,6 @@ struct MenuBarStatusItemBridge: NSViewRepresentable {
         NSApp.unhide(nil)
         openWindow(id: EasyTierWindowID.main)
         NSApp.activate(ignoringOtherApps: true)
-        DispatchQueue.main.async {
-            configureOpenWindows()
-            DispatchQueue.main.async {
-                configureOpenWindows()
-            }
-        }
-    }
-
-    private func configureOpenWindows() {
-        for window in NSApp.windows where window.level == .normal {
-            configureWindow(window)
-        }
     }
 }
 
@@ -64,11 +52,17 @@ final class MenuBarStatusItemController: NSObject {
     private var connectionState: ConnectionGlyphState = .idle
     private var activeNodeIndex = 0
     private var animationTask: Task<Void, Never>?
-    private var localEventMonitor: Any?
-    private var globalEventMonitor: Any?
+    nonisolated(unsafe) private var localEventMonitor: Any?
+    nonisolated(unsafe) private var globalEventMonitor: Any?
     private var resignActiveTask: Task<Void, Never>?
-    private var configureOpenWindowsAction: (() -> Void)?
+    private var renderAvailabilityTasks: [Task<Void, Never>] = []
     private var openMainWindowAction: (() -> Void)?
+    private var currentStore: EasyTierAppStore?
+    private var currentUpdater: SoftwareUpdateController?
+    private var currentAppearanceSettings: AppAppearanceSettings?
+    private var reduceMotion = false
+    private var screenAvailable = true
+    private var sessionActive = true
 
     private static let popoverSize = NSSize(width: 292, height: 370)
     private static let counterclockwiseNodeIndexes = [0, 1, 2]
@@ -80,6 +74,7 @@ final class MenuBarStatusItemController: NSObject {
         popover.behavior = .transient
         popover.animates = true
         popover.contentSize = Self.popoverSize
+        installRenderAvailabilityObservers()
     }
 
     func update(
@@ -87,12 +82,21 @@ final class MenuBarStatusItemController: NSObject {
         updater: SoftwareUpdateController,
         appearanceSettings: AppAppearanceSettings,
         connectionState: ConnectionGlyphState,
-        configureOpenWindows: @escaping () -> Void,
+        reduceMotion: Bool,
         openMainWindow: @escaping () -> Void
     ) {
         installStatusItemIfNeeded()
-        configureOpenWindowsAction = configureOpenWindows
         openMainWindowAction = openMainWindow
+        currentStore = store
+        currentUpdater = updater
+        currentAppearanceSettings = appearanceSettings
+
+        if self.reduceMotion != reduceMotion {
+            self.reduceMotion = reduceMotion
+            popover.animates = !reduceMotion
+            activeNodeIndex = 0
+            updateAnimation()
+        }
 
         if self.connectionState != connectionState {
             self.connectionState = connectionState
@@ -100,8 +104,6 @@ final class MenuBarStatusItemController: NSObject {
             updateAnimation()
         }
         refreshStatusImage()
-
-        updatePopoverContent(store: store, updater: updater, appearanceSettings: appearanceSettings)
     }
 
     func closePopover() {
@@ -123,15 +125,15 @@ final class MenuBarStatusItemController: NSObject {
         statusItem = item
     }
 
-    private func updatePopoverContent(
-        store: EasyTierAppStore,
-        updater: SoftwareUpdateController,
-        appearanceSettings: AppAppearanceSettings
-    ) {
+    private func installPopoverContentIfNeeded() {
         guard hostingController == nil else {
             popover.contentSize = Self.popoverSize
             return
         }
+        guard let store = currentStore,
+              let updater = currentUpdater,
+              let appearanceSettings = currentAppearanceSettings
+        else { return }
 
         let content = MenuBarContent(
             openMainWindowAction: { [weak self] in self?.openMainWindowAction?() },
@@ -151,7 +153,7 @@ final class MenuBarStatusItemController: NSObject {
 
     private func refreshStatusImage() {
         let currentActiveNodeIndex: Int?
-        if connectionState == .connecting {
+        if connectionState == .connecting, !reduceMotion, screenAvailable, sessionActive {
             currentActiveNodeIndex = Self.counterclockwiseNodeIndexes[activeNodeIndex % Self.counterclockwiseNodeIndexes.count]
         } else {
             currentActiveNodeIndex = nil
@@ -167,22 +169,24 @@ final class MenuBarStatusItemController: NSObject {
 
     private func updateAnimation() {
         animationTask?.cancel()
+        animationTask = nil
 
-        guard connectionState == .connecting else { return }
-        animationTask = Task { [weak self] in
-            await self?.runConnectingAnimation()
-        }
-    }
-
-    private func runConnectingAnimation() async {
-        while !Task.isCancelled {
-            do {
-                try await Task.sleep(nanoseconds: Self.stepDurationNanoseconds)
-            } catch {
-                break
-            }
-            activeNodeIndex = (activeNodeIndex + 1) % Self.counterclockwiseNodeIndexes.count
+        guard connectionState == .connecting, !reduceMotion, screenAvailable, sessionActive else {
+            activeNodeIndex = 0
             refreshStatusImage()
+            return
+        }
+        animationTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: Self.stepDurationNanoseconds)
+                } catch {
+                    break
+                }
+                guard let self else { break }
+                self.activeNodeIndex = (self.activeNodeIndex + 1) % Self.counterclockwiseNodeIndexes.count
+                self.refreshStatusImage()
+            }
         }
     }
 
@@ -192,11 +196,61 @@ final class MenuBarStatusItemController: NSObject {
         if popover.isShown {
             closePopover()
         } else {
-            configureOpenWindowsAction?()
+            NSApp.activate(ignoringOtherApps: true)
+            installPopoverContentIfNeeded()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             installDismissHandlers()
-            NSApp.activate(ignoringOtherApps: true)
         }
+    }
+
+    private func installRenderAvailabilityObservers() {
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        renderAvailabilityTasks = [
+            renderAvailabilityTask(center: workspaceCenter, name: NSWorkspace.screensDidSleepNotification) { controller in
+                controller.setScreenAvailable(false)
+            },
+            renderAvailabilityTask(center: workspaceCenter, name: NSWorkspace.screensDidWakeNotification) { controller in
+                controller.setScreenAvailable(true)
+            },
+            renderAvailabilityTask(center: workspaceCenter, name: NSWorkspace.willSleepNotification) { controller in
+                controller.setScreenAvailable(false)
+            },
+            renderAvailabilityTask(center: workspaceCenter, name: NSWorkspace.didWakeNotification) { controller in
+                controller.setScreenAvailable(true)
+            },
+            renderAvailabilityTask(center: workspaceCenter, name: NSWorkspace.sessionDidResignActiveNotification) { controller in
+                controller.setSessionActive(false)
+            },
+            renderAvailabilityTask(center: workspaceCenter, name: NSWorkspace.sessionDidBecomeActiveNotification) { controller in
+                controller.setSessionActive(true)
+            },
+        ]
+    }
+
+    private func renderAvailabilityTask(
+        center: NotificationCenter,
+        name: Notification.Name,
+        action: @escaping @MainActor (MenuBarStatusItemController) -> Void
+    ) -> Task<Void, Never> {
+        Task { @MainActor [weak self] in
+            let notifications = center.notifications(named: name)
+            for await _ in notifications {
+                guard !Task.isCancelled, let self else { break }
+                action(self)
+            }
+        }
+    }
+
+    private func setScreenAvailable(_ available: Bool) {
+        guard screenAvailable != available else { return }
+        screenAvailable = available
+        updateAnimation()
+    }
+
+    private func setSessionActive(_ active: Bool) {
+        guard sessionActive != active else { return }
+        sessionActive = active
+        updateAnimation()
     }
 
     private func installDismissHandlers() {
@@ -254,11 +308,27 @@ final class MenuBarStatusItemController: NSObject {
         let point = button.convert(event.locationInWindow, from: nil)
         return button.bounds.contains(point)
     }
+
+    deinit {
+        animationTask?.cancel()
+        resignActiveTask?.cancel()
+        for task in renderAvailabilityTasks {
+            task.cancel()
+        }
+        if let localEventMonitor {
+            NSEvent.removeMonitor(localEventMonitor)
+        }
+        if let globalEventMonitor {
+            NSEvent.removeMonitor(globalEventMonitor)
+        }
+    }
 }
 
 extension MenuBarStatusItemController: NSPopoverDelegate {
     func popoverDidClose(_ notification: Notification) {
         removeDismissHandlers()
+        popover.contentViewController = nil
+        hostingController = nil
     }
 }
 

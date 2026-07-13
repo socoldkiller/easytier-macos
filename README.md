@@ -119,7 +119,7 @@ macOS 15 及以上。
 
 ## 构建
 
-需要 Xcode 16+（带 Swift 6）、Rust 1.95+ stable 工具链和 Protocol Buffers 编译器（`protoc`）。运行测试不需要签名证书；打包 App 或 DMG 必须安装 Developer ID Application 证书。
+需要 Xcode 16+（带 Swift 6）、Rust 1.95+ stable 工具链和 Protocol Buffers 编译器（`protoc`）。运行测试不需要签名证书；打包 App 需要 Developer ID Application 证书、匹配的 provisioning profile 和 Sparkle 公钥，最终 DMG 还需要有效的 `notarytool` profile。
 
 ```bash
 git clone --recurse-submodules https://github.com/socoldkiller/easytier-macos.git
@@ -133,19 +133,30 @@ make test        # 运行 Swift 和 Rust 测试
 产物路径：
 - App bundle：`.build/artifacts/EasyTier.app`
 - FFI 库：`Vendor/Frameworks/static/libeasytier_ffi.a`
-- DMG：`.build/artifacts/EasyTier-macOS-$(uname -m).dmg`
+- DMG：`.build/artifacts/EasyTier-macOS-ARM64.dmg`
 
 Developer ID 打包：
 
 ```bash
 export CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)"
+export PROVISIONING_PROFILE="/path/to/EasyTier.provisionprofile"
 export SPARKLE_PUBLIC_ED_KEY="base64-public-key-from-generate_keys"
-make app-debug CODESIGN_IDENTITY="$CODESIGN_IDENTITY" SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY"
-make dmg CODESIGN_IDENTITY="$CODESIGN_IDENTITY" SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY"
+make app-debug \
+  CODESIGN_IDENTITY="$CODESIGN_IDENTITY" \
+  PROVISIONING_PROFILE="$PROVISIONING_PROFILE" \
+  SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY"
+
+# 在版本 tag 上运行时会得到稳定版本号和 build number；未打 tag 时显式传 APP_VERSION。
+make dmg \
+  CODESIGN_IDENTITY="$CODESIGN_IDENTITY" \
+  PROVISIONING_PROFILE="$PROVISIONING_PROFILE" \
+  SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY" \
+  APP_VERSION=1.4.0
 ```
 
-所有打包入口都强制使用 Developer ID、secure timestamp 和 hardened runtime。缺少正确签名身份时会直接失败，不会生成降级包。
-Sparkle 生产密钥和 GitHub 变量配置见 [`Packaging/SPARKLE.md`](Packaging/SPARKLE.md)。
+`make dmg` 现在只生成最终发布产物：App 先公证并 staple，再创建 DMG，之后 DMG 再公证、staple，并通过 quarantine/Gatekeeper 全链路验证，不再暴露“只有签名但尚未公证”的 DMG 入口。Provisioning profile 必须授权应用自己的 Keychain access group，用于 Data Protection Keychain；不要把 profile 提交到仓库。缺少正确签名配置时会直接失败，不会生成降级包。
+
+完整的本地与 CI 发布配置见 [`Packaging/RELEASE.md`](Packaging/RELEASE.md)，Sparkle 生产密钥设置见 [`Packaging/SPARKLE.md`](Packaging/SPARKLE.md)。
 
 ## 架构
 

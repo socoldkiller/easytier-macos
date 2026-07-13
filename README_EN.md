@@ -124,7 +124,7 @@ First launch:
 
 ### Prerequisites
 
-Xcode 16+, Swift 6, Rust 1.95+ stable, and the Protocol Buffers compiler (`protoc`). Tests do not require a signing certificate; packaging an app or DMG requires an installed Developer ID Application certificate.
+Xcode 16+, Swift 6, Rust 1.95+ stable, and the Protocol Buffers compiler (`protoc`). Tests do not require signing credentials. App packaging requires a Developer ID Application certificate, a matching provisioning profile, and the Sparkle public key; a final DMG also requires a valid `notarytool` profile.
 
 ```bash
 git clone --recurse-submodules https://github.com/socoldkiller/easytier-macos.git
@@ -136,21 +136,31 @@ make test        # run Swift and Rust tests
 
 Output paths:
 - App bundle: `.build/artifacts/EasyTier.app`
-- DMG: `.build/artifacts/EasyTier-macOS-$(uname -m).dmg`
+- DMG: `.build/artifacts/EasyTier-macOS-ARM64.dmg`
 - FFI lib: `Vendor/Frameworks/static/libeasytier_ffi.a`
 
 Developer ID packaging:
 
 ```bash
 export CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)"
+export PROVISIONING_PROFILE="/path/to/EasyTier.provisionprofile"
 export SPARKLE_PUBLIC_ED_KEY="base64-public-key-from-generate_keys"
-make app-debug CODESIGN_IDENTITY="$CODESIGN_IDENTITY" SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY"
-make dmg CODESIGN_IDENTITY="$CODESIGN_IDENTITY" SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY"
+make app-debug \
+  CODESIGN_IDENTITY="$CODESIGN_IDENTITY" \
+  PROVISIONING_PROFILE="$PROVISIONING_PROFILE" \
+  SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY"
+
+# An exact version tag supplies a stable version/build. Set APP_VERSION before the tag exists.
+make dmg \
+  CODESIGN_IDENTITY="$CODESIGN_IDENTITY" \
+  PROVISIONING_PROFILE="$PROVISIONING_PROFILE" \
+  SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY" \
+  APP_VERSION=1.4.0
 ```
 
-See [`Packaging/SPARKLE.md`](Packaging/SPARKLE.md) for production key provisioning and GitHub configuration.
+See [`Packaging/RELEASE.md`](Packaging/RELEASE.md) for the complete local and CI release configuration and [`Packaging/SPARKLE.md`](Packaging/SPARKLE.md) for production key provisioning.
 
-Every packaging entry point requires Developer ID signing, a secure timestamp, and the hardened runtime. Packaging fails instead of producing a downgraded build when the identity is missing or invalid.
+`make dmg` now emits only a final release artifact: the app is notarized and stapled before DMG creation, then the DMG is notarized, stapled, and exercised through the quarantine/Gatekeeper verifier. There is no public target for a merely signed, unnotarized DMG. The provisioning profile must authorize the app's private Keychain access group for the Data Protection Keychain; never commit it to the repository. Packaging fails instead of producing a downgraded build when signing configuration is missing or invalid.
 
 ### Call path
 

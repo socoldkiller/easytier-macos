@@ -1,3 +1,4 @@
+import EasyTierShared
 import SwiftUI
 
 enum EasyTierMotion {
@@ -60,6 +61,7 @@ private struct EasyTierTransitionModifier: ViewModifier {
 
 struct MotionSwitch<ID: Hashable, Content: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.windowPresentationActivity) private var presentationActivity
 
     var id: ID
     var insertionEdge: Edge
@@ -91,14 +93,21 @@ struct MotionSwitch<ID: Hashable, Content: View>: View {
         if fillsAvailableSpace {
             switcher
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: id)
+                .animation(contentAnimation, value: id)
         } else {
             switcher
-                .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: id)
+                .animation(contentAnimation, value: id)
         }
     }
 
+    private var contentAnimation: Animation? {
+        presentationActivity.allowsAnimations
+            ? EasyTierMotion.content(reduceMotion: reduceMotion)
+            : nil
+    }
+
     private var transition: AnyTransition {
+        guard presentationActivity.allowsAnimations else { return .identity }
         guard !reduceMotion else { return .opacity }
         return .asymmetric(
             insertion: .easyTierSlideFade(edge: insertionEdge, distance: distance),

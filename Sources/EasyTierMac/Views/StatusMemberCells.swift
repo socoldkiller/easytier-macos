@@ -248,6 +248,7 @@ struct MemberRouteCell: View {
 
 struct LatencyMetricText: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.windowPresentationActivity) private var presentationActivity
 
     var value: String
     var animationsPaused: Bool
@@ -281,7 +282,7 @@ struct LatencyMetricText: View {
     }
 
     private var shouldAnimate: Bool {
-        !animationsPaused && !reduceMotion
+        presentationActivity.allowsAnimations && !animationsPaused && !reduceMotion
     }
 
     private var shouldShowPulse: Bool {
@@ -295,6 +296,7 @@ struct LatencyMetricText: View {
 
 struct AnimatedMetricText: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.windowPresentationActivity) private var presentationActivity
 
     var value: String
     var color: Color = .primary
@@ -313,12 +315,13 @@ struct AnimatedMetricText: View {
     }
 
     private var shouldAnimate: Bool {
-        animates && !reduceMotion
+        presentationActivity.allowsAnimations && animates && !reduceMotion
     }
 }
 
 struct TrafficMetricText: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.windowPresentationActivity) private var presentationActivity
 
     var value: String
     var accent: Color
@@ -348,7 +351,7 @@ struct TrafficMetricText: View {
     }
 
     private var shouldAnimate: Bool {
-        !animationsPaused && !reduceMotion
+        presentationActivity.allowsAnimations && !animationsPaused && !reduceMotion
     }
 
     private var shouldShowPulse: Bool {

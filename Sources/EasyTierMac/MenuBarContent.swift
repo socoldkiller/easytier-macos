@@ -126,7 +126,7 @@ struct MenuBarContent: View {
         }
         .frame(width: 292)
         .foregroundStyle(MenuBarPalette.primaryText)
-        .background(MenuBarPanelBackground())
+        .background(FrostedGlass(role: .popover))
     }
 
     private var selectedNetworkState: ConnectionGlyphState {
@@ -299,25 +299,6 @@ private enum MenuBarPalette {
     static let selectedRowContentVerticalPadding: CGFloat = 4
     static let connected = EasyTierColors.menuBarConnected
     static let selectedRowText = Color(nsColor: .selectedMenuItemTextColor)
-}
-
-private struct MenuBarPanelBackground: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        configure(view)
-        return view
-    }
-
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {
-        configure(view)
-    }
-
-    private func configure(_ view: NSVisualEffectView) {
-        let reduceTransparency = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
-        view.material = reduceTransparency ? .windowBackground : .sidebar
-        view.blendingMode = .behindWindow
-        view.state = .active
-    }
 }
 
 private struct MenuBarDivider: View {

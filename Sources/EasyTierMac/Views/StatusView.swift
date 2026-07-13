@@ -4,6 +4,7 @@ import SwiftUI
 
 struct StatusView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.windowPresentationActivity) private var presentationActivity
     @Environment(EasyTierAppStore.self) private var store
     @Environment(AppAppearanceSettings.self) private var appearanceSettings
     @State private var publicServerGroupExpanded = false
@@ -65,7 +66,12 @@ struct StatusView: View {
             }
         }
         .padding()
-        .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: display.runtimeError)
+        .animation(
+            presentationActivity.allowsAnimations
+                ? EasyTierMotion.content(reduceMotion: reduceMotion)
+                : nil,
+            value: display.runtimeError
+        )
         .onAppear { displayedMembers = members }
         .onChange(of: members) { _, newMembers in
             guard !memberTableIsScrolling else { return }

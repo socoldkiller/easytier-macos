@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Unified local and GitHub release builds behind one tested signing, notarization, DMG, and Sparkle pipeline. Tag reruns now reuse an existing immutable GitHub Release DMG when recovering a failed feed or Pages deployment.
 - Removed the unused Config Server and legacy Remote app-mode paths. EasyTier now keeps one local runtime mode, with per-peer hostname updates handled separately through RPC.
 - Simplified macOS packaging to publish one DMG and require Developer ID signing and Apple notarization for every release.
 - Removed non-Developer-ID packaging fallbacks; local App and DMG packaging now require a Developer ID Application identity, secure timestamp, hardened runtime, and an installable privileged helper.

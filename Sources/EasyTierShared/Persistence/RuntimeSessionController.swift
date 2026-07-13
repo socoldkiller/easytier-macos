@@ -15,6 +15,7 @@ final class RuntimeSessionController {
 
     private var pollingTask: Task<Void, Never>?
     private var trafficCountersByInstance: [String: RuntimeTrafficCounter] = [:]
+    private var trafficBaselinesNeedingReset: Set<String> = []
     private var pendingStarts: [String: PendingNetworkStart] = [:]
     private var pollingEnabled = true
     private var instanceClientKind: [String: ClientKind] = [:]
@@ -52,10 +53,12 @@ final class RuntimeSessionController {
     func clearClientKind(for config: NetworkConfig) {
         instanceClientKind.removeValue(forKey: config.instance_id)
         trafficCountersByInstance.removeValue(forKey: config.network_name)
+        trafficBaselinesNeedingReset.remove(config.network_name)
     }
 
     func clearTrafficTracking(instanceName: String) {
         trafficCountersByInstance.removeValue(forKey: instanceName)
+        trafficBaselinesNeedingReset.remove(instanceName)
     }
 
     func hasPrivilegedInstances(in instances: [NetworkInstance]) -> Bool {
@@ -72,6 +75,7 @@ final class RuntimeSessionController {
         instanceClientKind.removeAll()
         pendingStarts.removeAll()
         trafficCountersByInstance.removeAll()
+        trafficBaselinesNeedingReset.removeAll()
     }
 
     func setPendingStartAfterApproval(_ config: NetworkConfig) {
@@ -108,6 +112,7 @@ final class RuntimeSessionController {
         currentTrafficSamplingStatus: [String: RuntimeTrafficSamplingStatus],
         currentMemberPresentation: RuntimeMemberPresentationState = RuntimeMemberPresentationState(),
         selectedTab: WorkspaceTab,
+        presentationActivity: RuntimePresentationActivity = .interactive,
         shouldApply: @escaping @MainActor () -> Bool = { true }
     ) async throws -> RuntimePresentationChange? {
         // Merge runtime info from both the privileged daemon (TUN instances) and
@@ -141,6 +146,9 @@ final class RuntimeSessionController {
         }
         mergePendingStarts(into: &running)
 
+        let resetTrafficBaselines = presentationActivity.allowsDynamicPresentation && selectedTab == .view
+            ? trafficBaselinesNeedingReset
+            : []
         let presentationChange = RuntimePresentationReducer.reduce(
             running: running,
             previous: RuntimePresentationState(
@@ -152,9 +160,20 @@ final class RuntimeSessionController {
                 trafficCountersByInstance: trafficCountersByInstance,
                 trafficSamplingStatusByInstance: currentTrafficSamplingStatus
             ),
-            selectedTab: selectedTab
+            selectedTab: selectedTab,
+            presentationActivity: presentationActivity,
+            resetTrafficBaselines: resetTrafficBaselines
         )
         trafficCountersByInstance = presentationChange.state.trafficCountersByInstance
+        if !resetTrafficBaselines.isEmpty {
+            let activeNames = Set(running.map(\.name))
+            let namesWithDetails = Set(running.compactMap { instance in
+                instance.detail == nil ? nil : instance.name
+            })
+            trafficBaselinesNeedingReset.subtract(
+                resetTrafficBaselines.subtracting(activeNames).union(namesWithDetails)
+            )
+        }
         updateSystemSleepAssertion(for: running)
 
         return presentationChange
@@ -162,7 +181,6 @@ final class RuntimeSessionController {
 
     func startPolling(
         refresh: @escaping @MainActor () async -> Void,
-        clearSecretCache: @escaping @MainActor () -> Void,
         handleWillSleep: @escaping @MainActor () -> Void,
         handleDidWake: @escaping @MainActor () async -> Void
     ) {
@@ -175,7 +193,6 @@ final class RuntimeSessionController {
             }
         }
         registerSleepWakeNotifications(
-            clearSecretCache: clearSecretCache,
             handleWillSleep: handleWillSleep,
             handleDidWake: handleDidWake
         )
@@ -196,6 +213,10 @@ final class RuntimeSessionController {
 
     func resumePolling() {
         pollingEnabled = true
+    }
+
+    func markTrafficBaselineResetNeeded() {
+        trafficBaselinesNeedingReset.formUnion(trafficCountersByInstance.keys)
     }
 
     func handleSystemWillSleep(
@@ -230,7 +251,6 @@ final class RuntimeSessionController {
     }
 
     private func registerSleepWakeNotifications(
-        clearSecretCache: @escaping @MainActor () -> Void,
         handleWillSleep: @escaping @MainActor () -> Void,
         handleDidWake: @escaping @MainActor () async -> Void
     ) {
@@ -250,13 +270,6 @@ final class RuntimeSessionController {
                 for await _ in notifications {
                     guard !Task.isCancelled else { break }
                     self?.scheduleWakeRecovery(handleDidWake: handleDidWake)
-                }
-            },
-            Task { @MainActor in
-                let notifications = NotificationCenter.default.notifications(named: NSApplication.didResignActiveNotification)
-                for await _ in notifications {
-                    guard !Task.isCancelled else { break }
-                    clearSecretCache()
                 }
             },
         ]

@@ -5,8 +5,8 @@ import ServiceManagement
 import SwiftUI
 
 enum EasyTierWindowID {
-    static let main = "main"
-    static let settings = "settings"
+    static let main = EasyTierWindowRole.main.rawValue
+    static let settings = EasyTierWindowRole.settings.rawValue
 }
 
 @main
@@ -16,6 +16,7 @@ struct EasyTierApp: App {
     @State private var updater: SoftwareUpdateController
     @State private var menuBarController = MenuBarStatusItemController()
     @State private var appearanceSettings = AppAppearanceSettings()
+    @State private var mainWindowPresentation = WindowPresentationModel()
 
     init() {
         Self.runHelperCommandIfRequested()
@@ -54,6 +55,7 @@ struct EasyTierApp: App {
                 .environment(store)
                 .environment(updater)
                 .environment(appearanceSettings)
+                .environment(\.windowPresentationActivity, mainWindowPresentation.activity)
                 .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
                 .easyTierWindowBackground(glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
                 .hideScrollViewScrollers()
@@ -63,17 +65,19 @@ struct EasyTierApp: App {
                         store: store,
                         updater: updater,
                         appearanceSettings: appearanceSettings,
-                        connectionState: menuBarConnectionState,
-                        configureWindow: { window in
-                            configureMainWindow(window, glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
-                        }
+                        connectionState: menuBarConnectionState
                     )
                     .frame(width: 0, height: 0)
                 )
                 .background(
-                    WindowAccessor { window in
-                        configureMainWindow(window, glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
-                    }
+                    WindowAccessor(
+                        role: .main,
+                        glassEffectsEnabled: appearanceSettings.glassEffectsEnabled,
+                        activityDidChange: { activity in
+                            mainWindowPresentation.activity = activity
+                            store.setRuntimePresentationActivity(activity)
+                        }
+                    )
                     .frame(width: 0, height: 0)
                 )
                 .frame(minWidth: 900, idealWidth: 1100, minHeight: 620, idealHeight: 720)
@@ -99,9 +103,10 @@ struct EasyTierApp: App {
             .easyTierWindowBackground(glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
             .hideScrollViewScrollers()
             .background(
-                WindowAccessor { window in
-                    configureMainWindow(window, glassEffectsEnabled: appearanceSettings.glassEffectsEnabled)
-                }
+                WindowAccessor(
+                    role: .settings,
+                    glassEffectsEnabled: appearanceSettings.glassEffectsEnabled
+                )
                 .frame(width: 0, height: 0)
             )
         }
@@ -142,32 +147,6 @@ struct EasyTierApp: App {
         guard var instance = store.selectedRunningInstance else { return .idle }
         instance.detail = store.selectedRuntimeDetail
         return store.instanceIsFullyConnected(instance) ? .connected : .connecting
-    }
-
-    private func configureMainWindow(_ window: NSWindow, glassEffectsEnabled: Bool) {
-        let frame = window.frame
-        let effectiveGlass = glassEffectsEnabled && !NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
-
-        if !window.styleMask.contains(.fullSizeContentView) {
-            window.styleMask.insert(.fullSizeContentView)
-        }
-        if !window.titlebarAppearsTransparent {
-            window.titlebarAppearsTransparent = true
-        }
-
-        let targetOpacity = !effectiveGlass
-        if window.isOpaque != targetOpacity {
-            window.isOpaque = targetOpacity
-        }
-
-        let targetBackgroundColor: NSColor = effectiveGlass ? .clear : .windowBackgroundColor
-        if window.backgroundColor != targetBackgroundColor {
-            window.backgroundColor = targetBackgroundColor
-        }
-
-        if window.frame != frame {
-            window.setFrame(frame, display: true)
-        }
     }
 
     private static func runHelperCommandIfRequested() {

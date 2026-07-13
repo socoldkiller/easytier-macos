@@ -62,6 +62,7 @@ private struct TrafficLineChart: View, Equatable {
     @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.windowPresentationActivity) private var presentationActivity
     @State private var selectedSample: TrafficSample?
 
     private let uploadColor = EasyTierColors.metricUpload
@@ -122,13 +123,19 @@ private struct TrafficLineChart: View, Equatable {
                 .strokeBorder(panelStroke, lineWidth: 1)
         }
         .shadow(color: shadowColor, radius: 10, y: 5)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: snapshot)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: selectedSample?.id)
+        .animation(chartAnimation, value: snapshot)
+        .animation(chartAnimation, value: selectedSample?.id)
         .onChange(of: snapshot.displaySamples) { _, newSamples in
             if let selectedSample, !newSamples.contains(where: { $0.id == selectedSample.id }) {
                 self.selectedSample = nil
             }
         }
+    }
+
+    private var chartAnimation: Animation? {
+        presentationActivity.allowsAnimations && !reduceMotion
+            ? .easeOut(duration: 0.16)
+            : nil
     }
 
     private var chart: some View {

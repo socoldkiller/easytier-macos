@@ -5,3 +5,5 @@ Vendor/Frameworks/static/
 *.xcuserstate
 *.xcuserdata/
 .idea/
+__pycache__/
+*.py[cod]

@@ -32,13 +32,13 @@ public final class EasyTierAppStore {
     public var isShowingSettings = false
     public var isShowingAbout = false
     public var isShowingLinuxInstallGuide = false
-    public var trafficSamplesByInstance: [String: [TrafficSample]] = [:] {
+    @ObservationIgnored public var trafficSamplesByInstance: [String: [TrafficSample]] = [:] {
         didSet {
             trafficSamplesByInstanceWriteCount += 1
             refreshSelectedRuntimeSnapshotsIfNeeded()
         }
     }
-    private var statusMetricsByInstance: [String: [String: RuntimeMemberStatusMetricsSnapshot]] = [:]
+    @ObservationIgnored private var statusMetricsByInstance: [String: [String: RuntimeMemberStatusMetricsSnapshot]] = [:]
     @ObservationIgnored private var trafficSamplingStatusByInstance: [String: RuntimeTrafficSamplingStatus] = [:]
     @ObservationIgnored private var runtimeMemberPresentation = RuntimeMemberPresentationState()
     public private(set) var selectedStatusSnapshot: RuntimeStatusSnapshot = .empty
@@ -66,7 +66,9 @@ public final class EasyTierAppStore {
     private let storage: EasyTierStorage
     private let networkSecretStore: any NetworkSecretStore
     private let systemSleepPreventer: any SystemSleepPreventing
-    private var secretCache: [String: String] = [:]
+    @ObservationIgnored private var pendingSecretReads: [String: PendingSecretRead] = [:]
+    @ObservationIgnored private var secretAuthenticationGeneration: UInt64 = 0
+    @ObservationIgnored private var secretReadRevisions: [String: UInt64] = [:]
     private var lastErrorKind: LastErrorKind?
 
     @ObservationIgnored private lazy var runtimeSession = RuntimeSessionController(
@@ -81,6 +83,7 @@ public final class EasyTierAppStore {
     @ObservationIgnored private var lastAppliedRuntimeRefreshRevision: UInt64 = 0
     @ObservationIgnored private var runtimeMutationLocked = false
     @ObservationIgnored private var runtimeMutationInProgress = false
+    @ObservationIgnored private var runtimePresentationActivity: RuntimePresentationActivity = .interactive
     @ObservationIgnored private var runtimeMutationWaiters: [CheckedContinuation<Void, Never>] = []
     @ObservationIgnored private var busyOperationCount = 0
 
@@ -89,6 +92,13 @@ public final class EasyTierAppStore {
     @ObservationIgnored public private(set) var trafficSamplesByInstanceWriteCount = 0
 
     private enum LastErrorKind { case helperPermission }
+
+    private struct PendingSecretRead {
+        let id: UUID
+        let authenticationGeneration: UInt64
+        let revision: UInt64
+        let task: Task<String?, Error>
+    }
 
     public func resetWriteCounters() {
         runtimeDetailsWriteCount = 0
@@ -406,7 +416,7 @@ public final class EasyTierAppStore {
                 intent.target.isLocal && (intent.target.instanceID == config.instance_id || intent.target.networkName == config.network_name)
             }
             reversedPortForwardFingerprints.removeValue(forKey: config.instance_id)
-            secretCache.removeValue(forKey: config.network_name)
+            invalidatePendingSecretRead(for: config.network_name)
             let removedID = configs.remove(at: index).id
             let storage = self.storage
             Task.detached(priority: .background) {
@@ -431,12 +441,10 @@ public final class EasyTierAppStore {
     }
 
     private func migrateNetworkSecret(from oldConfig: NetworkConfig, to newConfig: NetworkConfig) {
+        invalidatePendingSecretRead(for: oldConfig.network_name)
+        invalidatePendingSecretRead(for: newConfig.network_name)
         do {
-            guard let secret = try networkSecretStore.secret(for: oldConfig, reason: nil) else { return }
-            try networkSecretStore.save(secret, for: newConfig)
-            try networkSecretStore.deleteSecret(for: oldConfig)
-            secretCache[oldConfig.network_name] = nil
-            secretCache[newConfig.network_name] = secret
+            try networkSecretStore.migrateSecret(from: oldConfig, to: newConfig)
         } catch {
             log("Skipped keychain secret migration from \(oldConfig.network_name) to \(newConfig.network_name): \(error.localizedDescription)")
         }
@@ -477,7 +485,7 @@ public final class EasyTierAppStore {
                 do {
                     try await helperRegistration.ensureRegistered()
                 } catch {
-                    runtimeSession.setPendingStartAfterApproval(cleanConfig)
+                    runtimeSession.setPendingStartAfterApproval(Self.configWithoutNetworkSecret(cleanConfig))
                     throw error
                 }
             }
@@ -507,8 +515,12 @@ public final class EasyTierAppStore {
                   configs.contains(where: { $0.instance_id == config.instance_id })
             else { return }
             await busy {
-                try await client(for: config).run(toml: try encodedTOML(for: config))
-                setRuntimeClientKind(for: config)
+                let keychainConfig = try await configWithKeychainSecret(
+                    config,
+                    reason: "Use the network secret to start \(config.network_name) after helper approval."
+                )
+                try await client(for: config).run(toml: try encodedTOML(for: keychainConfig))
+                setRuntimeClientKind(for: keychainConfig)
                 runtimeSession.recordPendingStart(for: config)
                 log("Start requested for \(config.network_name) after helper approval.")
             }
@@ -593,7 +605,7 @@ public final class EasyTierAppStore {
                     do {
                         try await helperRegistration.ensureRegistered()
                     } catch {
-                        runtimeSession.setPendingStartAfterApproval(cleanConfig)
+                        runtimeSession.setPendingStartAfterApproval(Self.configWithoutNetworkSecret(cleanConfig))
                         throw error
                     }
                 }
@@ -616,6 +628,12 @@ public final class EasyTierAppStore {
             !reversed.contains(portForwardFingerprint(for: rule))
         }
         return clean
+    }
+
+    private static func configWithoutNetworkSecret(_ config: NetworkConfig) -> NetworkConfig {
+        var config = config
+        config.network_secret = nil
+        return config
     }
 
     public func toggleSelectedConfigConnection() async {
@@ -672,6 +690,7 @@ public final class EasyTierAppStore {
     public func prepareForAppQuit() async {
         guard !isQuitting else { return }
         isQuitting = true
+        invalidateSecretAuthenticationSession()
 
         if vpnOnDemandEnabled {
             await withRuntimeMutation {
@@ -703,6 +722,7 @@ public final class EasyTierAppStore {
     public func prepareForSoftwareUpdate() async {
         guard !isQuitting else { return }
         isQuitting = true
+        invalidateSecretAuthenticationSession()
         await stopAll()
         stopPolling()
 
@@ -1081,7 +1101,6 @@ public final class EasyTierAppStore {
     public func startPolling() {
         runtimeSession.startPolling(
             refresh: { [weak self] in await self?.refreshRuntime() },
-            clearSecretCache: { [weak self] in self?.clearSecretCache() },
             handleWillSleep: { [weak self] in self?.handleSystemWillSleep() },
             handleDidWake: { [weak self] in await self?.handleSystemDidWake() }
         )
@@ -1099,7 +1118,24 @@ public final class EasyTierAppStore {
         runtimeSession.resumePolling()
     }
 
+    package func setRuntimePresentationActivity(_ activity: RuntimePresentationActivity) {
+        guard runtimePresentationActivity != activity else { return }
+        let previous = runtimePresentationActivity
+        runtimePresentationActivity = activity
+
+        if activity == .suspended {
+            runtimeSession.markTrafficBaselineResetNeeded()
+        }
+
+        if previous == .suspended, activity != .suspended {
+            Task { @MainActor [weak self] in
+                await self?.refreshRuntime()
+            }
+        }
+    }
+
     func handleSystemWillSleep(now: Date = Date()) {
+        invalidateSecretAuthenticationSession()
         let shouldScheduleRecovery = !runtimeMutationInProgress && !isQuitting
         let recoverableConfigIDs = shouldScheduleRecovery
             ? configs.filter { runtimeReadinessPhase(matching: $0) == .ready }.map(\.id)
@@ -1125,10 +1161,6 @@ public final class EasyTierAppStore {
             configIDs: recoveryRequest.configIDs,
             expectedGeneration: recoveryRequest.expectedOperationGeneration
         )
-    }
-
-    private func clearSecretCache() {
-        secretCache.removeAll()
     }
 
     private func recoverPreviouslyRunningConfigsAfterWake(
@@ -1168,7 +1200,7 @@ public final class EasyTierAppStore {
             do {
                 try await helperRegistration.ensureRegistered()
             } catch {
-                runtimeSession.setPendingStartAfterApproval(cleanConfig)
+                runtimeSession.setPendingStartAfterApproval(Self.configWithoutNetworkSecret(cleanConfig))
                 throw error
             }
         }
@@ -1181,6 +1213,8 @@ public final class EasyTierAppStore {
 
     private func refreshRuntimeThrowing(allowDuringRuntimeMutation: Bool = false) async throws {
         guard allowDuringRuntimeMutation || !runtimeMutationInProgress else { return }
+        let refreshSignpostID = EasyTierPerformanceSignposts.beginRuntimeRefresh()
+        defer { EasyTierPerformanceSignposts.endRuntimeRefresh(refreshSignpostID) }
         runtimeRefreshRevision &+= 1
         let refreshRevision = runtimeRefreshRevision
         let operationGeneration = runtimeOperationGeneration
@@ -1192,6 +1226,7 @@ public final class EasyTierAppStore {
             currentTrafficSamplingStatus: trafficSamplingStatusByInstance,
             currentMemberPresentation: runtimeMemberPresentation,
             selectedTab: selectedTab,
+            presentationActivity: runtimePresentationActivity,
             shouldApply: { [weak self] in
                 guard let self else { return false }
                 return refreshRevision > self.lastAppliedRuntimeRefreshRevision
@@ -1204,6 +1239,9 @@ public final class EasyTierAppStore {
               allowDuringRuntimeMutation || !runtimeMutationInProgress
         else { return }
         lastAppliedRuntimeRefreshRevision = refreshRevision
+        let publishSignpostID = presentationChange.shouldRefreshSelectedSnapshots
+            ? EasyTierPerformanceSignposts.beginRuntimePublish()
+            : nil
         isPublishingRuntimePresentation = true
         if presentationChange.shouldPublishMemberPresentation {
             runtimeMemberPresentation = presentationChange.state.memberPresentation
@@ -1224,7 +1262,12 @@ public final class EasyTierAppStore {
             trafficSamplingStatusByInstance = presentationChange.state.trafficSamplingStatusByInstance
         }
         isPublishingRuntimePresentation = false
-        refreshSelectedRuntimeSnapshots()
+        if presentationChange.shouldRefreshSelectedSnapshots {
+            refreshSelectedRuntimeSnapshots()
+        }
+        if let publishSignpostID {
+            EasyTierPerformanceSignposts.endRuntimePublish(publishSignpostID)
+        }
         // A mutation's authoritative collect must not hold the control-plane
         // FIFO while hostname intent RPCs are retried. Normal polling performs
         // that reconciliation on the next refresh.
@@ -1388,8 +1431,8 @@ public final class EasyTierAppStore {
         var configs = configs
         for index in configs.indices {
             guard let secret = configs[index].network_secret?.nilIfEmpty else { continue }
+            invalidatePendingSecretRead(for: configs[index].network_name)
             try networkSecretStore.save(secret, for: configs[index])
-            secretCache[configs[index].network_name] = secret
             configs[index].network_secret = nil
         }
         return configs
@@ -1397,18 +1440,65 @@ public final class EasyTierAppStore {
 
     private func configWithKeychainSecret(_ config: NetworkConfig, reason: String) async throws -> NetworkConfig {
         guard config.network_secret?.nilIfEmpty == nil else { return config }
-        if let cached = secretCache[config.network_name] {
-            var config = config
-            config.network_secret = cached
-            return config
+        let networkName = config.network_name
+        let pendingRead: PendingSecretRead
+        if let existing = pendingSecretReads[networkName],
+           existing.authenticationGeneration == secretAuthenticationGeneration,
+           existing.revision == secretReadRevision(for: networkName)
+        {
+            pendingRead = existing
+        } else {
+            let store = networkSecretStore
+            let task = Task.detached { @Sendable in
+                try store.secret(for: config, reason: reason)
+            }
+            pendingRead = PendingSecretRead(
+                id: UUID(),
+                authenticationGeneration: secretAuthenticationGeneration,
+                revision: secretReadRevision(for: networkName),
+                task: task
+            )
+            pendingSecretReads[networkName] = pendingRead
         }
-        let store = networkSecretStore
-        let secret = try await Task.detached { @Sendable in try store.secret(for: config, reason: reason) }.value
+
+        let secret: String?
+        do {
+            secret = try await pendingRead.task.value
+        } catch {
+            removePendingSecretReadIfMatching(pendingRead, for: networkName)
+            throw error
+        }
+        removePendingSecretReadIfMatching(pendingRead, for: networkName)
+        guard pendingRead.authenticationGeneration == secretAuthenticationGeneration,
+              pendingRead.revision == secretReadRevision(for: networkName)
+        else {
+            throw CancellationError()
+        }
         guard let secret else { return config }
-        secretCache[config.network_name] = secret
         var config = config
         config.network_secret = secret
         return config
+    }
+
+    private func secretReadRevision(for networkName: String) -> UInt64 {
+        secretReadRevisions[networkName, default: 0]
+    }
+
+    private func invalidatePendingSecretRead(for networkName: String) {
+        secretReadRevisions[networkName, default: 0] &+= 1
+        pendingSecretReads.removeValue(forKey: networkName)?.task.cancel()
+    }
+
+    private func removePendingSecretReadIfMatching(_ pendingRead: PendingSecretRead, for networkName: String) {
+        guard pendingSecretReads[networkName]?.id == pendingRead.id else { return }
+        pendingSecretReads.removeValue(forKey: networkName)
+    }
+
+    private func invalidateSecretAuthenticationSession() {
+        secretAuthenticationGeneration &+= 1
+        pendingSecretReads.values.forEach { $0.task.cancel() }
+        pendingSecretReads.removeAll()
+        networkSecretStore.invalidateAuthenticationSession()
     }
 
     private func encodedTOML(for config: NetworkConfig) throws -> String {

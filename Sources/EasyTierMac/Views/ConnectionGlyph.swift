@@ -1,3 +1,4 @@
+import EasyTierShared
 import SwiftUI
 
 enum ConnectionGlyphState: Equatable {
@@ -8,6 +9,9 @@ enum ConnectionGlyphState: Equatable {
 }
 
 struct ConnectionGlyph: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.windowPresentationActivity) private var presentationActivity
+
     var state: ConnectionGlyphState
     var size: CGFloat = 18
 
@@ -24,7 +28,7 @@ struct ConnectionGlyph: View {
             }
         }
         .frame(width: size, height: size)
-        .task(id: state) {
+        .task(id: animationIdentity) {
             await runConnectingAnimationIfNeeded()
         }
         .accessibilityLabel(accessibilityLabel)
@@ -33,8 +37,16 @@ struct ConnectionGlyph: View {
     private static let nodeCount = 3
     private static let stepDurationNanoseconds: UInt64 = 340_000_000
 
+    private var animationIdentity: AnimationIdentity {
+        AnimationIdentity(state: state, enabled: allowsAnimation)
+    }
+
+    private var allowsAnimation: Bool {
+        presentationActivity.allowsAnimations && !reduceMotion
+    }
+
     private func runConnectingAnimationIfNeeded() async {
-        guard state == .connecting else {
+        guard state == .connecting, allowsAnimation else {
             activeNodeIndex = 0
             return
         }
@@ -50,6 +62,11 @@ struct ConnectionGlyph: View {
                 activeNodeIndex = (activeNodeIndex + 1) % Self.nodeCount
             }
         }
+    }
+
+    private struct AnimationIdentity: Equatable {
+        var state: ConnectionGlyphState
+        var enabled: Bool
     }
 
     private var lineWidth: CGFloat {

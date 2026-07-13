@@ -14,12 +14,16 @@ FRAMEWORKS_DIR="$CONTENTS_DIR/Frameworks"
 LAUNCH_DAEMONS_DIR="$CONTENTS_DIR/Library/LaunchDaemons"
 BUNDLE_IDENTIFIER="com.kkrainbow.easytier.mac"
 HELPER_IDENTIFIER="com.kkrainbow.easytier.mac.helper"
-APP_ENTITLEMENTS="$ROOT_DIR/Packaging/EasyTierMac.entitlements"
+APP_ENTITLEMENTS_TEMPLATE="$ROOT_DIR/Packaging/EasyTierMac.entitlements"
+APP_ENTITLEMENTS="$APP_PRODUCTS_DIR/EasyTierMac.generated.entitlements"
+PROVISIONING_PROFILE="${EASYTIER_PROVISIONING_PROFILE:-}"
+PROVISIONING_PROFILE_PLIST="$APP_PRODUCTS_DIR/EasyTierMac.provisioning.plist"
 BUILD_CONFIGURATION="${EASYTIER_BUILD_CONFIGURATION:-debug}"
 APP_VERSION="${EASYTIER_APP_VERSION:-}"
 DEAD_STRIP_RELEASE="${EASYTIER_DEAD_STRIP_RELEASE:-1}"
 STRIP_RELEASE_BINARIES="${EASYTIER_STRIP_RELEASE_BINARIES:-1}"
 CODE_SIGN_IDENTITY="${EASYTIER_CODESIGN_IDENTITY:-}"
+CODE_SIGN_KEYCHAIN="${EASYTIER_CODESIGN_KEYCHAIN:-}"
 CLEAN_HELPER_STATE="${EASYTIER_CLEAN_HELPER_STATE:-}"
 RESET_BTM_STATE="${EASYTIER_RESET_BTM:-0}"
 SPARKLE_FEED_URL="${EASYTIER_SPARKLE_FEED_URL:-https://socoldkiller.github.io/easytier-macos/appcast.xml}"
@@ -67,6 +71,11 @@ EOF
   exit 1
 fi
 
+if [[ -n "$CODE_SIGN_KEYCHAIN" && ! -f "$CODE_SIGN_KEYCHAIN" ]]; then
+  echo "EASYTIER_CODESIGN_KEYCHAIN does not exist: $CODE_SIGN_KEYCHAIN" >&2
+  exit 1
+fi
+
 if [[ ! "$SPARKLE_FEED_URL" =~ ^https:// ]]; then
   echo "EASYTIER_SPARKLE_FEED_URL must use HTTPS; got '$SPARKLE_FEED_URL'." >&2
   exit 1
@@ -81,6 +90,69 @@ Sparkle's generate_keys tool.
 EOF
   exit 1
 fi
+
+prepare_keychain_signing_assets() {
+  if [[ -z "$PROVISIONING_PROFILE" || ! -f "$PROVISIONING_PROFILE" ]]; then
+    cat >&2 <<EOF
+Packaging requires a Developer ID provisioning profile for the Data Protection Keychain.
+
+Set EASYTIER_PROVISIONING_PROFILE to the profile path for $BUNDLE_IDENTIFIER.
+EOF
+    exit 1
+  fi
+
+  local signing_team_id profile_team_id expected_application_identifier wildcard_keychain_group
+  local profile_application_identifier profile_groups expiration expiration_epoch now_epoch
+  if [[ "$CODE_SIGN_IDENTITY" =~ \(([A-Z0-9]{10})\)$ ]]; then
+    signing_team_id="${BASH_REMATCH[1]}"
+  else
+    echo "Could not extract the Team ID from EASYTIER_CODESIGN_IDENTITY: $CODE_SIGN_IDENTITY" >&2
+    exit 1
+  fi
+
+  mkdir -p "$APP_PRODUCTS_DIR"
+  rm -f "$PROVISIONING_PROFILE_PLIST" "$APP_ENTITLEMENTS"
+  security cms -D -i "$PROVISIONING_PROFILE" -o "$PROVISIONING_PROFILE_PLIST"
+  profile_team_id="$(plutil -extract TeamIdentifier.0 raw -o - "$PROVISIONING_PROFILE_PLIST" 2>/dev/null || true)"
+  expected_application_identifier="$signing_team_id.$BUNDLE_IDENTIFIER"
+  wildcard_keychain_group="$signing_team_id.*"
+  profile_application_identifier="$(
+    plutil -extract Entitlements.application-identifier raw -o - "$PROVISIONING_PROFILE_PLIST" 2>/dev/null \
+      || /usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.application-identifier' "$PROVISIONING_PROFILE_PLIST" 2>/dev/null \
+      || true
+  )"
+  profile_groups="$(plutil -extract Entitlements.keychain-access-groups json -o - "$PROVISIONING_PROFILE_PLIST" 2>/dev/null || true)"
+
+  [[ "$profile_team_id" == "$signing_team_id" ]] || {
+    echo "Provisioning profile Team ID mismatch: profile=$profile_team_id signing=$signing_team_id" >&2
+    exit 1
+  }
+  [[ "$profile_application_identifier" == "$expected_application_identifier" ]] || {
+    echo "Provisioning profile application identifier mismatch: expected $expected_application_identifier, got $profile_application_identifier" >&2
+    exit 1
+  }
+  [[ "$profile_groups" == *"\"$expected_application_identifier\""* \
+      || "$profile_groups" == *"\"$wildcard_keychain_group\""* ]] || {
+    echo "Provisioning profile does not authorize Keychain access group $expected_application_identifier." >&2
+    exit 1
+  }
+
+  expiration="$(plutil -extract ExpirationDate raw -o - "$PROVISIONING_PROFILE_PLIST" 2>/dev/null || true)"
+  expiration_epoch="$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$expiration" '+%s' 2>/dev/null || true)"
+  now_epoch="$(date -u '+%s')"
+  [[ -n "$expiration_epoch" && "$expiration_epoch" -gt "$now_epoch" ]] || {
+    echo "Provisioning profile is expired or has an unreadable ExpirationDate: $expiration" >&2
+    exit 1
+  }
+
+  cp "$APP_ENTITLEMENTS_TEMPLATE" "$APP_ENTITLEMENTS"
+  /usr/libexec/PlistBuddy -c "Add :com.apple.application-identifier string $expected_application_identifier" "$APP_ENTITLEMENTS"
+  /usr/libexec/PlistBuddy -c "Add :com.apple.developer.team-identifier string $signing_team_id" "$APP_ENTITLEMENTS"
+  /usr/libexec/PlistBuddy -c 'Add :keychain-access-groups array' "$APP_ENTITLEMENTS"
+  /usr/libexec/PlistBuddy -c "Add :keychain-access-groups:0 string $expected_application_identifier" "$APP_ENTITLEMENTS"
+}
+
+prepare_keychain_signing_assets
 
 if [[ -z "$CLEAN_HELPER_STATE" ]]; then
   CLEAN_HELPER_STATE=0
@@ -106,19 +178,26 @@ sign_macho() {
   if [[ -n "$entitlements" ]]; then
     codesign_args+=(--entitlements "$entitlements")
   fi
+  if [[ -n "$CODE_SIGN_KEYCHAIN" ]]; then
+    codesign_args+=(--keychain "$CODE_SIGN_KEYCHAIN")
+  fi
 
   codesign "${codesign_args[@]}" "$path"
 }
 
 sign_embedded_code() {
   local path="$1"
-  codesign \
-    --force \
-    --timestamp \
-    --options runtime \
-    --preserve-metadata=identifier,entitlements \
-    --sign "$CODE_SIGN_IDENTITY" \
-    "$path"
+  local codesign_args=(
+    --force
+    --timestamp
+    --options runtime
+    --preserve-metadata=identifier,entitlements
+    --sign "$CODE_SIGN_IDENTITY"
+  )
+  if [[ -n "$CODE_SIGN_KEYCHAIN" ]]; then
+    codesign_args+=(--keychain "$CODE_SIGN_KEYCHAIN")
+  fi
+  codesign "${codesign_args[@]}" "$path"
 }
 
 git_revision() {
@@ -253,6 +332,7 @@ mkdir -p "$FRAMEWORKS_DIR"
 mkdir -p "$LAUNCH_DAEMONS_DIR"
 cp "$BUILD_DIR/EasyTierMac" "$MACOS_DIR/EasyTierMac"
 cp "$BUILD_DIR/EasyTierPrivilegedHelper" "$MACOS_DIR/EasyTierPrivilegedHelper"
+cp "$PROVISIONING_PROFILE" "$CONTENTS_DIR/embedded.provisionprofile"
 if [[ ! -d "$BUILD_DIR/Sparkle.framework" ]]; then
   echo "Sparkle.framework was not produced by SwiftPM at $BUILD_DIR/Sparkle.framework." >&2
   exit 1
