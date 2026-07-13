@@ -2949,6 +2949,22 @@ import Testing
     #expect(backend.unregisterCount == 0)
 }
 
+@MainActor
+@Test func ensureRegisteredRemovesLegacyHelperBeforeModernRegistration() async throws {
+    let backend = HelperRegistrationBackendSpy(status: .notRegistered)
+    backend.legacyArtifactsPresent = true
+    backend.statusAfterRegister = .enabled
+    let registration = HelperRegistrationService(backend: backend.backend(), refreshOnInit: false)
+
+    try await registration.ensureRegistered()
+
+    #expect(backend.unregisterCount == 1)
+    #expect(backend.uninstallLegacyCount == 1)
+    #expect(backend.registerCount == 1)
+    #expect(!backend.legacyArtifactsPresent)
+    #expect(registration.state == .enabled)
+}
+
 @Test func runtimeInfoDerivesLocalAndPeerMembers() throws {
     let json = """
     {
@@ -3638,8 +3654,12 @@ private final class RecordingSystemSleepPreventer: SystemSleepPreventing, @unche
 @MainActor
 private final class HelperRegistrationBackendSpy {
     var status: SMAppService.Status
+    var statusAfterRegister: SMAppService.Status?
+    var legacyArtifactsPresent = false
+    var legacyInstalled = false
     var registerCount = 0
     var unregisterCount = 0
+    var uninstallLegacyCount = 0
 
     init(status: SMAppService.Status) {
         self.status = status
@@ -3648,11 +3668,23 @@ private final class HelperRegistrationBackendSpy {
     func backend() -> HelperRegistrationService.Backend {
         HelperRegistrationService.Backend(
             status: { self.status },
-            register: { self.registerCount += 1 },
+            register: {
+                self.registerCount += 1
+                if let statusAfterRegister = self.statusAfterRegister {
+                    self.status = statusAfterRegister
+                }
+            },
             unregister: { self.unregisterCount += 1 },
+            canInstallHelper: { true },
             useLegacyInstaller: { false },
-            legacyIsInstalled: { false },
-            installLegacy: {}
+            legacyArtifactsExist: { self.legacyArtifactsPresent },
+            legacyIsInstalled: { self.legacyInstalled },
+            installLegacy: {},
+            uninstallLegacy: {
+                self.uninstallLegacyCount += 1
+                self.legacyArtifactsPresent = false
+                self.legacyInstalled = false
+            }
         )
     }
 }

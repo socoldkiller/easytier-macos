@@ -55,7 +55,7 @@ public final class HelperRegistrationService {
             throw PrivilegedHelperError.needsRegistration
         }
 
-        guard Self.currentBundleCanInstallHelper else {
+        guard backend.canInstallHelper() else {
             state = .error
             detail = Self.unstableBundleLocationMessage
             throw PrivilegedHelperError.needsRegistration
@@ -72,6 +72,9 @@ public final class HelperRegistrationService {
                 try await backend.installLegacy()
             } else {
                 _ = try? await backend.unregister()
+                if await backend.legacyArtifactsExist() {
+                    try await backend.uninstallLegacy()
+                }
                 try await backend.register()
             }
             await refreshAsync(useLegacy: useLegacy)
@@ -156,9 +159,12 @@ public final class HelperRegistrationService {
         var status: @MainActor () async -> SMAppService.Status
         var register: @MainActor () async throws -> Void
         var unregister: @MainActor () async throws -> Void
+        var canInstallHelper: @MainActor () -> Bool
         var useLegacyInstaller: @MainActor () async -> Bool
+        var legacyArtifactsExist: @MainActor () async -> Bool
         var legacyIsInstalled: @MainActor () async -> Bool
         var installLegacy: @MainActor () async throws -> Void
+        var uninstallLegacy: @MainActor () async throws -> Void
     }
 
     private func waitForBusy() async {
@@ -201,20 +207,31 @@ public final class HelperRegistrationService {
         await Task.detached { @Sendable in LegacyPrivilegedHelperService.isInstalled }.value
     }
 
+    private nonisolated static func readLegacyArtifactsExist() async -> Bool {
+        await Task.detached { @Sendable in LegacyPrivilegedHelperService.hasInstalledArtifacts }.value
+    }
+
     private static func liveBackend(service: SMAppService) -> Backend {
         let box = ServiceBox(service: service)
         return Backend(
             status: { await Self.readServiceStatus(box) },
             register: { try await Self.serviceRegister(box) },
             unregister: { try await Self.serviceUnregister(box) },
+            canInstallHelper: { Self.currentBundleCanInstallHelper },
             useLegacyInstaller: { await Self.readShouldUseLegacyInstaller() },
+            legacyArtifactsExist: { await Self.readLegacyArtifactsExist() },
             legacyIsInstalled: { await Self.readLegacyIsInstalled() },
-            installLegacy: { try await Self.installLegacy() }
+            installLegacy: { try await Self.installLegacy() },
+            uninstallLegacy: { try await Self.uninstallLegacy() }
         )
     }
 
     private nonisolated static func installLegacy() async throws {
         try await Task.detached { @Sendable in try LegacyPrivilegedHelperService.installUsingAdministratorPrivileges() }.value
+    }
+
+    private nonisolated static func uninstallLegacy() async throws {
+        try await Task.detached { @Sendable in try LegacyPrivilegedHelperService.uninstallUsingAdministratorPrivileges() }.value
     }
 }
 

@@ -11,6 +11,12 @@ public enum LegacyPrivilegedHelperService {
         return appTeam == nil || helperTeam == nil
     }
 
+    public static var hasInstalledArtifacts: Bool {
+        FileManager.default.fileExists(atPath: launchDaemonPath)
+            || FileManager.default.fileExists(atPath: helperPath)
+            || isInstalled
+    }
+
     public static var isInstalled: Bool {
         let result = run("/bin/launchctl", ["print", "system/\(EasyTierPrivilegedHelperConstants.bundleIdentifier)"])
         guard result.status == 0 else { return false }
