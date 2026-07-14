@@ -134,8 +134,17 @@ make ffi         # build the Rust FFI static lib for this Mac
 make test        # run Swift and Rust tests
 ```
 
+The distributable app is defined by a native Xcode project:
+
+```bash
+open EasyTier.xcodeproj
+```
+
+The `EasyTierMac` scheme includes the macOS app, privileged helper, and Rust FFI build dependency. Debug is available for local builds; `Product > Archive` uses Release and requires the Developer ID identity plus the matching provisioning profile. SwiftPM remains the owner of the Shared/Runtime modules and tests so the business dependency graph is not duplicated in Xcode.
+
 Output paths:
 - App bundle: `.build/artifacts/EasyTier.app`
+- Xcode archive: `.build/AppProducts/EasyTier.xcarchive`
 - DMG: `.build/artifacts/EasyTier-macOS-ARM64.dmg`
 - FFI lib: `Vendor/Frameworks/static/libeasytier_ffi.a`
 

@@ -21,16 +21,10 @@ trap cleanup EXIT
 mkdir -p "$FAKE_BIN" "$FAKE_HELPERS" "$ARTIFACTS_DIR" "$TEMP_PARENT"
 touch "$PROFILE_PATH" "$KEYCHAIN_PATH" "$TRACE_FILE" "$ARGS_TRACE"
 
-cat > "$FAKE_HELPERS/build-ffi" <<'EOF'
+cat > "$FAKE_HELPERS/archive-app" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'build-ffi\n' >> "$TRACE_FILE"
-EOF
-
-cat > "$FAKE_HELPERS/package-app" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-printf 'package-app\n' >> "$TRACE_FILE"
+printf 'xcode-archive\n' >> "$TRACE_FILE"
 mkdir -p "$EASYTIER_EXPORT_APP_DIR/Contents/MacOS"
 printf '#!/usr/bin/env bash\n' > "$EASYTIER_EXPORT_APP_DIR/Contents/MacOS/EasyTierMac"
 chmod +x "$EASYTIER_EXPORT_APP_DIR/Contents/MacOS/EasyTierMac"
@@ -146,8 +140,7 @@ run_artifact() {
   EASYTIER_ARTIFACTS_DIR="$ARTIFACTS_DIR" \
   EASYTIER_RELEASE_TEMP_PARENT="$TEMP_PARENT" \
   EASYTIER_RELEASE_ARCHITECTURE=ARM64 \
-  EASYTIER_RELEASE_BUILD_FFI_SCRIPT="$FAKE_HELPERS/build-ffi" \
-  EASYTIER_RELEASE_PACKAGE_APP_SCRIPT="$FAKE_HELPERS/package-app" \
+  EASYTIER_RELEASE_ARCHIVE_APP_SCRIPT="$FAKE_HELPERS/archive-app" \
   EASYTIER_RELEASE_CREATE_DMG_SCRIPT="$FAKE_HELPERS/create-dmg" \
   EASYTIER_RELEASE_VERIFY_DMG_SCRIPT="$FAKE_HELPERS/verify-dmg" \
   EASYTIER_CODESIGN_IDENTITY="Developer ID Application: Test (ABCDEFGHIJ)" \
@@ -164,8 +157,7 @@ APPLE_NOTARY_ISSUER_ID=00000000-0000-0000-0000-000000000000 \
 run_artifact > "$TEST_ROOT/ci-artifact.log"
 
 cat > "$TEST_ROOT/expected-trace.txt" <<'EOF'
-build-ffi
-package-app
+xcode-archive
 archive-app
 notary-app
 staple-app

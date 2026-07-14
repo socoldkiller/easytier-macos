@@ -8,6 +8,8 @@ let package = Package(
         .macOS(.v15),
     ],
     products: [
+        .library(name: "EasyTierShared", targets: ["EasyTierShared"]),
+        .library(name: "EasyTierRuntime", targets: ["EasyTierRuntime"]),
         .executable(name: "EasyTierMac", targets: ["EasyTierMac"]),
         .executable(name: "EasyTierPrivilegedHelper", targets: ["EasyTierPrivilegedHelper"]),
     ],
@@ -63,13 +65,12 @@ let package = Package(
         .executableTarget(
             name: "EasyTierPrivilegedHelper",
             dependencies: ["EasyTierShared", "EasyTierRuntime"],
-            exclude: ["Info.plist"],
             linkerSettings: [
                 .unsafeFlags([
                     "-Xlinker", "-sectcreate",
                     "-Xlinker", "__TEXT",
                     "-Xlinker", "__info_plist",
-                    "-Xlinker", "Sources/EasyTierPrivilegedHelper/Info.plist",
+                    "-Xlinker", "Packaging/EasyTierPrivilegedHelper-Info.plist",
                 ]),
             ]
         ),

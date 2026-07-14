@@ -130,8 +130,17 @@ make ffi         # 编译当前 Mac 架构的 Rust FFI 静态库
 make test        # 运行 Swift 和 Rust 测试
 ```
 
+应用分发工程是原生 Xcode 项目：
+
+```bash
+open EasyTier.xcodeproj
+```
+
+`EasyTierMac` Scheme 包含 macOS App、Privileged Helper 和 Rust FFI 构建依赖。Debug 可直接用于本地编译；`Product > Archive` 使用 Release 配置，需要 Developer ID 证书和匹配的 provisioning profile。SwiftPM 继续管理 Shared/Runtime 模块及测试，避免在 Xcode 中维护第二份业务依赖图。
+
 产物路径：
 - App bundle：`.build/artifacts/EasyTier.app`
+- Xcode archive：`.build/AppProducts/EasyTier.xcarchive`
 - FFI 库：`Vendor/Frameworks/static/libeasytier_ffi.a`
 - DMG：`.build/artifacts/EasyTier-macOS-ARM64.dmg`
 

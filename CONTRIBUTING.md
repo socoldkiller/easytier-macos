@@ -14,6 +14,8 @@ make bootstrap   # verify the toolchain
 make ffi         # build the current-architecture Rust FFI archive
 make test        # run the Swift and Rust test suites
 
+open EasyTier.xcodeproj  # run the native app or inspect Product > Archive
+
 export CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)"
 export PROVISIONING_PROFILE="/path/to/EasyTier.provisionprofile"
 export SPARKLE_PUBLIC_ED_KEY="base64-public-key"
@@ -51,6 +53,8 @@ Sources/
   EasyTierRuntime/          In-process EasyTier runtime glue
   CEasyTierFFI/             C shim that exposes the Rust FFI
 Rust/EasyTierGuiFFI/        Rust crate that links against EasyTier Core
+EasyTier.xcodeproj/         Native App/Helper/FFI assembly and Archive scheme
+Configurations/            Shared Xcode build and signing settings
 scripts/                    Packaging / signing / notarization / verification
 Packaging/                  Entitlements and packaging metadata
 .github/workflows/          CI: build, test, sign, notarize, publish update feed

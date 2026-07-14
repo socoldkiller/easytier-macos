@@ -1,0 +1,606 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXAggregateTarget section */
+		E70000000000000000000042 /* BuildEasyTierFFI */ = {
+			isa = PBXAggregateTarget;
+			buildConfigurationList = E7000000000000000000007B /* Build configuration list for PBXAggregateTarget "BuildEasyTierFFI" */;
+			buildPhases = (
+				E70000000000000000000038 /* Build Rust FFI */,
+			);
+			dependencies = (
+			);
+			name = BuildEasyTierFFI;
+			packageProductDependencies = (
+			);
+			productName = BuildEasyTierFFI;
+		};
+/* End PBXAggregateTarget section */
+
+/* Begin PBXBuildFile section */
+		E70000000000000000000001 /* EasyTierShared in Frameworks */ = {isa = PBXBuildFile; productRef = E70000000000000000000082 /* EasyTierShared */; };
+		E70000000000000000000002 /* EasyTierRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = E70000000000000000000083 /* EasyTierRuntime */; };
+		E70000000000000000000003 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = E70000000000000000000084 /* Sparkle */; };
+		E70000000000000000000004 /* EasyTierShared in Frameworks */ = {isa = PBXBuildFile; productRef = E70000000000000000000085 /* EasyTierShared */; };
+		E70000000000000000000005 /* EasyTierRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = E70000000000000000000086 /* EasyTierRuntime */; };
+		E70000000000000000000006 /* EasyTierPrivilegedHelper in Embed Privileged Helper */ = {isa = PBXBuildFile; fileRef = E70000000000000000000012 /* EasyTierPrivilegedHelper */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		E70000000000000000000007 /* com.kkrainbow.easytier.mac.helper.plist in Copy LaunchDaemon */ = {isa = PBXBuildFile; fileRef = E70000000000000000000019 /* com.kkrainbow.easytier.mac.helper.plist */; };
+		E70000000000000000000009 /* easytier-icon.icns in Resources */ = {isa = PBXBuildFile; fileRef = E7000000000000000000001A /* easytier-icon.icns */; };
+		E7000000000000000000000A /* easytier-icon.png in Resources */ = {isa = PBXBuildFile; fileRef = E7000000000000000000001C /* easytier-icon.png */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		E70000000000000000000051 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E70000000000000000000060 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E70000000000000000000041;
+			remoteInfo = EasyTierPrivilegedHelper;
+		};
+		E70000000000000000000053 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E70000000000000000000060 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E70000000000000000000042;
+			remoteInfo = BuildEasyTierFFI;
+		};
+		E70000000000000000000055 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E70000000000000000000060 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E70000000000000000000042;
+			remoteInfo = BuildEasyTierFFI;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		E70000000000000000000035 /* Embed Privileged Helper */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 6;
+			files = (
+				E70000000000000000000006 /* EasyTierPrivilegedHelper in Embed Privileged Helper */,
+			);
+			name = "Embed Privileged Helper";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E70000000000000000000036 /* Copy LaunchDaemon */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Library/LaunchDaemons;
+			dstSubfolderSpec = 1;
+			files = (
+				E70000000000000000000007 /* com.kkrainbow.easytier.mac.helper.plist in Copy LaunchDaemon */,
+			);
+			name = "Copy LaunchDaemon";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		E70000000000000000000011 /* EasyTier.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EasyTier.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E70000000000000000000012 /* EasyTierPrivilegedHelper */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = EasyTierPrivilegedHelper; sourceTree = BUILT_PRODUCTS_DIR; };
+		E70000000000000000000013 /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
+		E70000000000000000000014 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
+		E70000000000000000000015 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
+		E70000000000000000000016 /* EasyTierMac.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = EasyTierMac.entitlements; sourceTree = "<group>"; };
+		E70000000000000000000017 /* EasyTierMac-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "EasyTierMac-Info.plist"; sourceTree = "<group>"; };
+		E70000000000000000000018 /* EasyTierPrivilegedHelper-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "EasyTierPrivilegedHelper-Info.plist"; sourceTree = "<group>"; };
+		E70000000000000000000019 /* com.kkrainbow.easytier.mac.helper.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = com.kkrainbow.easytier.mac.helper.plist; sourceTree = "<group>"; };
+		E7000000000000000000001A /* easytier-icon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; name = easytier-icon.icns; path = Assets/easytier-icon.icns; sourceTree = SOURCE_ROOT; };
+		E7000000000000000000001B /* Package.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Package.swift; sourceTree = "<group>"; };
+		E7000000000000000000001C /* easytier-icon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = easytier-icon.png; path = Sources/EasyTierMac/Resources/easytier-icon.png; sourceTree = SOURCE_ROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		E70000000000000000000090 /* Exceptions for EasyTierMac sources */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Resources/easytier-icon.png,
+			);
+			target = E70000000000000000000040 /* EasyTierMac */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		E70000000000000000000024 /* EasyTierMac */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				E70000000000000000000090 /* Exceptions for EasyTierMac sources */,
+			);
+			path = Sources/EasyTierMac;
+			sourceTree = "<group>";
+		};
+		E70000000000000000000025 /* EasyTierPrivilegedHelper */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Sources/EasyTierPrivilegedHelper;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		E70000000000000000000030 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E70000000000000000000001 /* EasyTierShared in Frameworks */,
+				E70000000000000000000002 /* EasyTierRuntime in Frameworks */,
+				E70000000000000000000003 /* Sparkle in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E70000000000000000000031 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E70000000000000000000004 /* EasyTierShared in Frameworks */,
+				E70000000000000000000005 /* EasyTierRuntime in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		E70000000000000000000020 = {
+			isa = PBXGroup;
+			children = (
+				E7000000000000000000001B /* Package.swift */,
+				E70000000000000000000024 /* EasyTierMac */,
+				E70000000000000000000025 /* EasyTierPrivilegedHelper */,
+				E70000000000000000000022 /* Configurations */,
+				E70000000000000000000023 /* Packaging */,
+				E70000000000000000000021 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		E70000000000000000000021 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				E70000000000000000000011 /* EasyTier.app */,
+				E70000000000000000000012 /* EasyTierPrivilegedHelper */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		E70000000000000000000022 /* Configurations */ = {
+			isa = PBXGroup;
+			children = (
+				E70000000000000000000013 /* Base.xcconfig */,
+				E70000000000000000000014 /* Debug.xcconfig */,
+				E70000000000000000000015 /* Release.xcconfig */,
+			);
+			path = Configurations;
+			sourceTree = "<group>";
+		};
+		E70000000000000000000023 /* Packaging */ = {
+			isa = PBXGroup;
+			children = (
+				E70000000000000000000017 /* EasyTierMac-Info.plist */,
+				E70000000000000000000018 /* EasyTierPrivilegedHelper-Info.plist */,
+				E70000000000000000000016 /* EasyTierMac.entitlements */,
+				E70000000000000000000019 /* com.kkrainbow.easytier.mac.helper.plist */,
+				E7000000000000000000001A /* easytier-icon.icns */,
+				E7000000000000000000001C /* easytier-icon.png */,
+			);
+			path = Packaging;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		E70000000000000000000040 /* EasyTierMac */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E70000000000000000000075 /* Build configuration list for PBXNativeTarget "EasyTierMac" */;
+			buildPhases = (
+				E70000000000000000000032 /* Sources */,
+				E70000000000000000000030 /* Frameworks */,
+				E70000000000000000000034 /* Resources */,
+				E70000000000000000000035 /* Embed Privileged Helper */,
+				E70000000000000000000036 /* Copy LaunchDaemon */,
+				E70000000000000000000039 /* Sign Sparkle Components */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E70000000000000000000050 /* PBXTargetDependency */,
+				E70000000000000000000052 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				E70000000000000000000024 /* EasyTierMac */,
+			);
+			name = EasyTierMac;
+			packageProductDependencies = (
+				E70000000000000000000082 /* EasyTierShared */,
+				E70000000000000000000083 /* EasyTierRuntime */,
+				E70000000000000000000084 /* Sparkle */,
+			);
+			productName = EasyTier;
+			productReference = E70000000000000000000011 /* EasyTier.app */;
+			productType = "com.apple.product-type.application";
+		};
+		E70000000000000000000041 /* EasyTierPrivilegedHelper */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E70000000000000000000078 /* Build configuration list for PBXNativeTarget "EasyTierPrivilegedHelper" */;
+			buildPhases = (
+				E70000000000000000000033 /* Sources */,
+				E70000000000000000000031 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E70000000000000000000054 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				E70000000000000000000025 /* EasyTierPrivilegedHelper */,
+			);
+			name = EasyTierPrivilegedHelper;
+			packageProductDependencies = (
+				E70000000000000000000085 /* EasyTierShared */,
+				E70000000000000000000086 /* EasyTierRuntime */,
+			);
+			productName = EasyTierPrivilegedHelper;
+			productReference = E70000000000000000000012 /* EasyTierPrivilegedHelper */;
+			productType = "com.apple.product-type.tool";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		E70000000000000000000060 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					E70000000000000000000040 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					E70000000000000000000041 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					E70000000000000000000042 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = E70000000000000000000072 /* Build configuration list for PBXProject "EasyTier" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = E70000000000000000000020;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				E70000000000000000000080 /* XCLocalSwiftPackageReference "." */,
+				E70000000000000000000081 /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = E70000000000000000000021 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				E70000000000000000000040 /* EasyTierMac */,
+				E70000000000000000000041 /* EasyTierPrivilegedHelper */,
+				E70000000000000000000042 /* BuildEasyTierFFI */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		E70000000000000000000034 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E70000000000000000000009 /* easytier-icon.icns in Resources */,
+				E7000000000000000000000A /* easytier-icon.png in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		E70000000000000000000038 /* Build Rust FFI */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust FFI";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/Vendor/Frameworks/static/libeasytier_ffi.a",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "set -euo pipefail\nif [[ \"${EASYTIER_XCODE_SKIP_FFI_BUILD:-0}\" == \"1\" ]]; then\n  [[ -f \"$SRCROOT/Vendor/Frameworks/static/libeasytier_ffi.a\" ]] || {\n    echo \"Prebuilt Rust FFI archive is missing.\" >&2\n    exit 1\n  }\nelse\n  \"$SRCROOT/scripts/build-ffi.sh\"\nfi\n";
+			showEnvVarsInLog = 0;
+		};
+		E70000000000000000000039 /* Sign Sparkle Components */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)/Sparkle.framework",
+			);
+			name = "Sign Sparkle Components";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "\"$SRCROOT/scripts/sign-sparkle-for-xcode.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		E70000000000000000000032 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E70000000000000000000033 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		E70000000000000000000050 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E70000000000000000000041 /* EasyTierPrivilegedHelper */;
+			targetProxy = E70000000000000000000051 /* PBXContainerItemProxy */;
+		};
+		E70000000000000000000052 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E70000000000000000000042 /* BuildEasyTierFFI */;
+			targetProxy = E70000000000000000000053 /* PBXContainerItemProxy */;
+		};
+		E70000000000000000000054 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E70000000000000000000042 /* BuildEasyTierFFI */;
+			targetProxy = E70000000000000000000055 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		E70000000000000000000070 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = E70000000000000000000014 /* Debug.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_CXX_LIBRARY = "libc++";
+			};
+			name = Debug;
+		};
+		E70000000000000000000071 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = E70000000000000000000015 /* Release.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_CXX_LIBRARY = "libc++";
+			};
+			name = Release;
+		};
+		E70000000000000000000073 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CODE_SIGN_ENTITLEMENTS = "$(EASYTIER_CODE_SIGN_ENTITLEMENTS)";
+				CODE_SIGN_IDENTITY = "$(EASYTIER_CODE_SIGN_IDENTITY)";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				DEVELOPMENT_TEAM = "$(EASYTIER_DEVELOPMENT_TEAM)";
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				EXECUTABLE_NAME = EasyTierMac;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Packaging/EasyTierMac-Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				OTHER_CODE_SIGN_FLAGS = "$(inherited) $(EASYTIER_OTHER_CODE_SIGN_FLAGS)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.kkrainbow.easytier.mac;
+				PRODUCT_MODULE_NAME = EasyTierMac;
+				PRODUCT_NAME = EasyTier;
+				PROVISIONING_PROFILE_SPECIFIER = "$(EASYTIER_PROVISIONING_PROFILE_SPECIFIER)";
+				SKIP_INSTALL = NO;
+				SUPPORTED_PLATFORMS = macosx;
+				SUPPORTS_MACCATALYST = NO;
+			};
+			name = Debug;
+		};
+		E70000000000000000000074 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CODE_SIGN_ENTITLEMENTS = "$(EASYTIER_CODE_SIGN_ENTITLEMENTS)";
+				CODE_SIGN_IDENTITY = "$(EASYTIER_CODE_SIGN_IDENTITY)";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				DEVELOPMENT_TEAM = "$(EASYTIER_DEVELOPMENT_TEAM)";
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				EXECUTABLE_NAME = EasyTierMac;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Packaging/EasyTierMac-Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				OTHER_CODE_SIGN_FLAGS = "$(inherited) $(EASYTIER_OTHER_CODE_SIGN_FLAGS)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.kkrainbow.easytier.mac;
+				PRODUCT_MODULE_NAME = EasyTierMac;
+				PRODUCT_NAME = EasyTier;
+				PROVISIONING_PROFILE_SPECIFIER = "$(EASYTIER_PROVISIONING_PROFILE_SPECIFIER)";
+				SKIP_INSTALL = NO;
+				SUPPORTED_PLATFORMS = macosx;
+				SUPPORTS_MACCATALYST = NO;
+			};
+			name = Release;
+		};
+		E70000000000000000000076 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "$(EASYTIER_CODE_SIGN_IDENTITY)";
+				CODE_SIGN_STYLE = Manual;
+				CREATE_INFOPLIST_SECTION_IN_BINARY = YES;
+				DEVELOPMENT_TEAM = "$(EASYTIER_DEVELOPMENT_TEAM)";
+				ENABLE_HARDENED_RUNTIME = YES;
+				EXECUTABLE_NAME = EasyTierPrivilegedHelper;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Packaging/EasyTierPrivilegedHelper-Info.plist";
+				OTHER_CODE_SIGN_FLAGS = "$(inherited) $(EASYTIER_OTHER_CODE_SIGN_FLAGS)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.kkrainbow.easytier.mac.helper;
+				PRODUCT_NAME = EasyTierPrivilegedHelper;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = macosx;
+			};
+			name = Debug;
+		};
+		E70000000000000000000077 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "$(EASYTIER_CODE_SIGN_IDENTITY)";
+				CODE_SIGN_STYLE = Manual;
+				CREATE_INFOPLIST_SECTION_IN_BINARY = YES;
+				DEVELOPMENT_TEAM = "$(EASYTIER_DEVELOPMENT_TEAM)";
+				ENABLE_HARDENED_RUNTIME = YES;
+				EXECUTABLE_NAME = EasyTierPrivilegedHelper;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Packaging/EasyTierPrivilegedHelper-Info.plist";
+				OTHER_CODE_SIGN_FLAGS = "$(inherited) $(EASYTIER_OTHER_CODE_SIGN_FLAGS)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.kkrainbow.easytier.mac.helper;
+				PRODUCT_NAME = EasyTierPrivilegedHelper;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = macosx;
+			};
+			name = Release;
+		};
+		E70000000000000000000079 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		E7000000000000000000007A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		E70000000000000000000072 /* Build configuration list for PBXProject "EasyTier" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E70000000000000000000070 /* Debug */,
+				E70000000000000000000071 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E70000000000000000000075 /* Build configuration list for PBXNativeTarget "EasyTierMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E70000000000000000000073 /* Debug */,
+				E70000000000000000000074 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E70000000000000000000078 /* Build configuration list for PBXNativeTarget "EasyTierPrivilegedHelper" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E70000000000000000000076 /* Debug */,
+				E70000000000000000000077 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E7000000000000000000007B /* Build configuration list for PBXAggregateTarget "BuildEasyTierFFI" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E70000000000000000000079 /* Debug */,
+				E7000000000000000000007A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		E70000000000000000000080 /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ".";
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		E70000000000000000000081 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = exactVersion;
+				version = 2.9.4;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		E70000000000000000000082 /* EasyTierShared */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E70000000000000000000080 /* XCLocalSwiftPackageReference "." */;
+			productName = EasyTierShared;
+		};
+		E70000000000000000000083 /* EasyTierRuntime */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E70000000000000000000080 /* XCLocalSwiftPackageReference "." */;
+			productName = EasyTierRuntime;
+		};
+		E70000000000000000000084 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E70000000000000000000081 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+		E70000000000000000000085 /* EasyTierShared */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E70000000000000000000080 /* XCLocalSwiftPackageReference "." */;
+			productName = EasyTierShared;
+		};
+		E70000000000000000000086 /* EasyTierRuntime */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E70000000000000000000080 /* XCLocalSwiftPackageReference "." */;
+			productName = EasyTierRuntime;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = E70000000000000000000060 /* Project object */;
+}

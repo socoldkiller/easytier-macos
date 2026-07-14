@@ -1,8 +1,8 @@
 # Release Pipeline
 
-EasyTier has one release implementation: `scripts/release.sh`. Local builds and
-GitHub Actions provide credentials to the same module; neither should duplicate
-the signing, notarization, DMG, or Sparkle command sequence.
+EasyTier has one release implementation: `scripts/release.sh`. Xcode owns the
+native App archive and nested signing; local builds and GitHub Actions provide
+credentials to the same release module for notarization, DMG, and Sparkle.
 
 ## Final DMG on a trusted Mac
 
@@ -46,16 +46,23 @@ stable `BUILD_NUMBER=YYYYMMDDhhmmss` as well.
 The final outputs are:
 
 ```text
+.build/AppProducts/EasyTier.xcarchive
 .build/artifacts/EasyTier.app
 .build/artifacts/EasyTier-macOS-ARM64.dmg
 .build/artifacts/EasyTier-macOS-ARM64.metadata.json
 ```
 
+`scripts/archive-app.sh` temporarily installs the supplied provisioning profile
+in Xcode's user profile directory, archives `EasyTierMac`, copies the app from
+`Products/Applications`, verifies it, and removes only the temporary installed
+profile. The Xcode project owns bundle assembly and nested code signing; the
+release module never rebuilds the app layout by hand.
+
 The DMG target is not a shortcut for an intermediate signed image. It always
 runs this complete state machine:
 
 ```text
-build/sign/verify App
+Xcode archive/sign/verify App
 -> notarize and staple App
 -> create DMG from the stapled App
 -> notarize and staple DMG

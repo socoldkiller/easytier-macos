@@ -47,14 +47,14 @@ if [[ "$PACKAGE_FIRST" == "1" ]]; then
     EASYTIER_CLEAN_HELPER_STATE=1 \
     EASYTIER_RESET_BTM="$RESET_BTM_STATE" \
     EASYTIER_EXPORT_APP_DIR="$APP_PATH" \
-      ./scripts/package-app.sh | tail -n 1
+      ./scripts/archive-app.sh | tail -n 1
   )"
   APP_BINARY="$APP_PATH/Contents/MacOS/EasyTierMac"
 fi
 
 if [[ ! -x "$APP_BINARY" ]]; then
   echo "EasyTier app binary not found: $APP_BINARY" >&2
-  echo "Run ./scripts/package-app.sh first, or leave EASYTIER_PACKAGE_FIRST=1." >&2
+  echo "Run ./scripts/archive-app.sh first, or leave EASYTIER_PACKAGE_FIRST=1." >&2
   exit 1
 fi
 

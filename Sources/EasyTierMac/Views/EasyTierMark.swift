@@ -9,9 +9,11 @@ enum EasyTierIconResource {
             return image
         }
 
+        #if SWIFT_PACKAGE
         if let moduleURL = Bundle.module.url(forResource: "easytier-icon", withExtension: "png") {
             return NSImage(contentsOf: moduleURL)
         }
+        #endif
 
         return nil
     }()

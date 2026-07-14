@@ -14,7 +14,7 @@ FFI_CACHE_DIR ?= $(HOME)/Library/Caches/easytier-macos/ffi
 PYTHON_BIN ?= python3
 CODESIGN_IDENTITY ?=
 CODESIGN_KEYCHAIN ?= $(firstword $(wildcard $(HOME)/Library/Keychains/easytier-signing.keychain-db))
-PROVISIONING_PROFILE ?=
+PROVISIONING_PROFILE ?= $(HOME)/Library/Developer/Xcode/UserData/Provisioning Profiles/56f9d3f7-c23c-4946-a0e9-f226d27458e7.provisionprofile
 SPARKLE_PUBLIC_ED_KEY ?=
 NOTARY_PROFILE ?= easytier-notary
 NOTARY_KEYCHAIN ?= $(CODESIGN_KEYCHAIN)
@@ -27,7 +27,7 @@ RUST_OPT_LEVEL ?= z
 RUST_LTO ?= fat
 RUST_CODEGEN_UNITS ?= 1
 
-.PHONY: help bootstrap ffi test-swift test-rust test-packaging test smoke clean clean-cache \
+.PHONY: help bootstrap ffi test-swift test-rust test-packaging test-xcode-project test smoke clean clean-cache \
 	require-codesign-identity \
 	app-debug app-release-signed \
 	dmg release-dmg verify-app install-helper
@@ -40,11 +40,12 @@ help:
 	@printf '%-24s %s\n' 'make test-swift' 'Run Swift package tests.'
 	@printf '%-24s %s\n' 'make test-rust' 'Run Rust FFI tests.'
 	@printf '%-24s %s\n' 'make test-packaging' 'Run credential-free release pipeline tests.'
+	@printf '%-24s %s\n' 'make test-xcode-project' 'Resolve and validate the native Xcode project.'
 	@printf '%-24s %s\n' 'make test' 'Run all automated tests.'
 	@printf '%-24s %s\n' 'make smoke' 'Run tests and package a Developer ID app with the required profile/Sparkle key.'
 	@printf '%s\n' ''
-	@printf '%-24s %s\n' 'make app-debug' 'Build a Developer ID signed debug .app with profile/Sparkle metadata.'
-	@printf '%-24s %s\n' 'make app-release-signed' 'Build a Developer ID signed release .app with profile/Sparkle metadata.'
+	@printf '%-24s %s\n' 'make app-debug' 'Archive a Developer ID signed debug .app with Xcode.'
+	@printf '%-24s %s\n' 'make app-release-signed' 'Archive a Developer ID signed release .app with Xcode.'
 	@printf '%s\n' ''
 	@printf '%-24s %s\n' 'make dmg' 'Build the final signed, notarized, stapled, and verified release DMG.'
 	@printf '%-24s %s\n' 'make verify-app' 'Run bundle/signature/linkage verification on APP_PATH.'
@@ -82,7 +83,13 @@ test-packaging:
 	$(PYTHON_BIN) -m unittest discover -s Tests/PackagingTests -p 'test_*.py' -v
 	bash Tests/PackagingTests/release-pipeline-tests.sh
 
-test: test-swift test-rust test-packaging
+test-xcode-project:
+	xcodebuild -project EasyTier.xcodeproj -list \
+		-clonedSourcePackagesDirPath "$(SWIFT_BUILD_DIR)" \
+		-disableAutomaticPackageResolution \
+		-onlyUsePackageVersionsFromResolvedFile
+
+test: test-swift test-rust test-packaging test-xcode-project
 
 smoke: test app-release-signed
 
@@ -108,7 +115,7 @@ require-codesign-identity:
 			;; \
 	esac
 
-app-debug: require-codesign-identity ffi
+app-debug: require-codesign-identity
 	mkdir -p "$(ARTIFACTS_DIR)"
 	EASYTIER_BUILD_CONFIGURATION=debug \
 	EASYTIER_APP_PRODUCTS_DIR="$(APP_PRODUCTS_DIR)" \
@@ -117,10 +124,12 @@ app-debug: require-codesign-identity ffi
 	EASYTIER_CODESIGN_KEYCHAIN="$(CODESIGN_KEYCHAIN)" \
 	EASYTIER_PROVISIONING_PROFILE="$(PROVISIONING_PROFILE)" \
 	EASYTIER_SPARKLE_PUBLIC_ED_KEY="$(SPARKLE_PUBLIC_ED_KEY)" \
+	EASYTIER_APP_VERSION="$(APP_VERSION)" \
+	EASYTIER_BUILD_NUMBER="$(BUILD_NUMBER)" \
 	EASYTIER_EXPORT_APP_DIR="$(APP_PATH)" \
-	./scripts/package-app.sh
+	./scripts/archive-app.sh
 
-app-release-signed: require-codesign-identity ffi
+app-release-signed: require-codesign-identity
 	mkdir -p "$(ARTIFACTS_DIR)"
 	EASYTIER_BUILD_CONFIGURATION=release \
 	EASYTIER_APP_PRODUCTS_DIR="$(APP_PRODUCTS_DIR)" \
@@ -129,8 +138,10 @@ app-release-signed: require-codesign-identity ffi
 	EASYTIER_CODESIGN_KEYCHAIN="$(CODESIGN_KEYCHAIN)" \
 	EASYTIER_PROVISIONING_PROFILE="$(PROVISIONING_PROFILE)" \
 	EASYTIER_SPARKLE_PUBLIC_ED_KEY="$(SPARKLE_PUBLIC_ED_KEY)" \
+	EASYTIER_APP_VERSION="$(APP_VERSION)" \
+	EASYTIER_BUILD_NUMBER="$(BUILD_NUMBER)" \
 	EASYTIER_EXPORT_APP_DIR="$(APP_PATH)" \
-	./scripts/package-app.sh
+	./scripts/archive-app.sh
 
 dmg: release-dmg
 
@@ -154,7 +165,7 @@ release-dmg: require-codesign-identity
 verify-app:
 	./scripts/verify-app.sh "$(APP_PATH)"
 
-install-helper: require-codesign-identity ffi
+install-helper: require-codesign-identity
 	EASYTIER_APP_PRODUCTS_DIR="$(APP_PRODUCTS_DIR)" \
 	EASYTIER_SWIFT_BUILD_DIR="$(SWIFT_BUILD_DIR)" \
 	EASYTIER_CODESIGN_IDENTITY="$(CODESIGN_IDENTITY)" \

@@ -160,7 +160,7 @@ verify_app_bundle() {
 
   local bundle_icon
   bundle_icon="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP_PATH/Contents/Info.plist")"
-  [[ "$bundle_icon" == "EasyTier.icns" ]] || fail "Packaged app must use the official EasyTier dock icon: $bundle_icon"
+  [[ "$bundle_icon" == "easytier-icon.icns" ]] || fail "Packaged app must use the official EasyTier dock icon: $bundle_icon"
   [[ -f "$APP_PATH/Contents/Resources/$bundle_icon" ]] || fail "Missing dock icon resource: Contents/Resources/$bundle_icon"
   [[ -f "$APP_PATH/Contents/Resources/easytier-icon.png" ]] || fail "Missing About icon resource: Contents/Resources/easytier-icon.png"
 
@@ -197,7 +197,7 @@ verify_app_bundle() {
   [[ "$autoupdate_entitlements" == *"org.sparkle-project.Sparkle.Autoupdate"* ]] || fail "Sparkle Autoupdate signing entitlements were not preserved."
 
   local linked_libraries load_commands
-  linked_libraries="$(otool -L "$GUI_BINARY")"
+  linked_libraries="$(otool -L "$GUI_BINARY" | tail -n +2)"
   load_commands="$(otool -l "$GUI_BINARY")"
   [[ "$linked_libraries" == *"@rpath/Sparkle.framework/Versions/B/Sparkle"* ]] || fail "EasyTierMac does not link Sparkle via @rpath."
   [[ "$linked_libraries" != *"/.build/"* ]] || fail "EasyTierMac links a Sparkle framework from the build directory."

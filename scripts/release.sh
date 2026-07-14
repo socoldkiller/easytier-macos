@@ -4,8 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 RELEASE_FEED_HELPER="${EASYTIER_RELEASE_FEED_HELPER:-$ROOT_DIR/scripts/release_feed.py}"
-BUILD_FFI_SCRIPT="${EASYTIER_RELEASE_BUILD_FFI_SCRIPT:-$ROOT_DIR/scripts/build-ffi.sh}"
-PACKAGE_APP_SCRIPT="${EASYTIER_RELEASE_PACKAGE_APP_SCRIPT:-$ROOT_DIR/scripts/package-app.sh}"
+ARCHIVE_APP_SCRIPT="${EASYTIER_RELEASE_ARCHIVE_APP_SCRIPT:-$ROOT_DIR/scripts/archive-app.sh}"
 CREATE_DMG_SCRIPT="${EASYTIER_RELEASE_CREATE_DMG_SCRIPT:-$ROOT_DIR/scripts/create-dmg.sh}"
 VERIFY_DMG_SCRIPT="${EASYTIER_RELEASE_VERIFY_DMG_SCRIPT:-$ROOT_DIR/scripts/verify-release-dmg.sh}"
 
@@ -212,13 +211,9 @@ artifact_preflight() {
   require_command xcrun
   require_command "$PYTHON_BIN"
   require_executable "$RELEASE_FEED_HELPER"
-  require_executable "$PACKAGE_APP_SCRIPT"
+  require_executable "$ARCHIVE_APP_SCRIPT"
   require_executable "$CREATE_DMG_SCRIPT"
   require_executable "$VERIFY_DMG_SCRIPT"
-  if [[ "${EASYTIER_RELEASE_SKIP_FFI_BUILD:-0}" != "1" ]]; then
-    require_executable "$BUILD_FFI_SCRIPT"
-  fi
-
   [[ "${EASYTIER_CODESIGN_IDENTITY:-}" == "Developer ID Application:"* ]] \
     || die "EASYTIER_CODESIGN_IDENTITY must name a Developer ID Application identity."
   [[ "${EASYTIER_SPARKLE_PUBLIC_ED_KEY:-}" =~ ^[A-Za-z0-9+/]{43}=$ ]] \
@@ -237,15 +232,10 @@ build_artifact() {
   rm -rf "$APP_PATH"
   rm -f "$DMG_PATH" "$METADATA_PATH"
 
-  if [[ "${EASYTIER_RELEASE_SKIP_FFI_BUILD:-0}" != "1" ]]; then
-    log "Building the release Rust FFI"
-    "$BUILD_FFI_SCRIPT"
-  fi
-
-  log "Building and Developer ID signing EasyTier.app"
+  log "Archiving and Developer ID signing EasyTier.app with Xcode"
   export EASYTIER_BUILD_CONFIGURATION=release
   export EASYTIER_EXPORT_APP_DIR="$APP_PATH"
-  "$PACKAGE_APP_SCRIPT"
+  "$ARCHIVE_APP_SCRIPT"
 
   local app_archive="$TEMP_ROOT/EasyTier-app.zip"
   log "Archiving the signed app for notarization"
