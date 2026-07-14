@@ -64,6 +64,7 @@ import Testing
         keychain.copyQueries[1][kSecUseAuthenticationContext as String] as? LAContext
     )
     #expect(firstContext === secondContext)
+    #expect(firstContext.touchIDAuthenticationAllowableReuseDuration == 300)
     #expect(keychain.copyQueries.allSatisfy {
         $0[kSecUseDataProtectionKeychain as String] as? Bool == true
     })
@@ -74,6 +75,57 @@ import Testing
         keychain.copyQueries[2][kSecUseAuthenticationContext as String] as? LAContext
     )
     #expect(firstContext !== thirdContext)
+}
+
+@Test func existenceChecksNeverPresentAuthenticationUI() throws {
+    let keychain = RecordingNetworkSecretKeychainClient()
+    keychain.copyResults = [(errSecInteractionNotAllowed, nil)]
+    let store = SystemNetworkSecretStore(keychain: keychain)
+    let config = NetworkConfig(instance_id: "existence-id", network_name: "office")
+
+    #expect(try store.containsSecret(for: config))
+    #expect(keychain.copyQueries.count == 1)
+    #expect(
+        keychain.copyQueries[0][kSecUseAuthenticationUI as String] as? String
+            == kSecUseAuthenticationUISkip as String
+    )
+    #expect(keychain.copyQueries[0][kSecUseAuthenticationContext as String] == nil)
+}
+
+@Test func existenceChecksSurfaceUnexpectedKeychainErrors() {
+    let keychain = RecordingNetworkSecretKeychainClient()
+    keychain.copyResults = [(errSecMissingEntitlement, nil)]
+    let store = SystemNetworkSecretStore(keychain: keychain)
+    let config = NetworkConfig(instance_id: "existence-error-id", network_name: "office")
+
+    #expect(throws: NetworkSecretStoreError.self) {
+        try store.containsSecret(for: config)
+    }
+    #expect(keychain.copyQueries.count == 1)
+}
+
+@Test func existenceChecksFallBackToLegacyItemsWithoutAuthenticationUI() throws {
+    let keychain = RecordingNetworkSecretKeychainClient()
+    keychain.copyResults = [
+        (errSecItemNotFound, nil),
+        (errSecInteractionNotAllowed, nil),
+    ]
+    let store = SystemNetworkSecretStore(keychain: keychain)
+    let config = NetworkConfig(instance_id: "legacy-existence-id", network_name: "office")
+
+    #expect(try store.containsSecret(for: config))
+    #expect(keychain.copyQueries.count == 2)
+    #expect(keychain.copyQueries[0][kSecUseDataProtectionKeychain as String] as? Bool == true)
+    #expect(keychain.copyQueries[1][kSecUseDataProtectionKeychain as String] == nil)
+    #expect(keychain.copyQueries.allSatisfy {
+        $0[kSecUseAuthenticationUI as String] as? String == kSecUseAuthenticationUISkip as String
+    })
+}
+
+@Test func userCanceledKeychainErrorsAreRecognized() {
+    #expect(NetworkSecretStoreError.keychain(errSecUserCanceled).isUserCancellation)
+    #expect(!NetworkSecretStoreError.keychain(errSecAuthFailed).isUserCancellation)
+    #expect(!NetworkSecretStoreError.invalidData.isUserCancellation)
 }
 
 @Test func saveReusesTheAuthenticatedContextForProtectedUpdates() throws {

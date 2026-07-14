@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Security
 import ServiceManagement
 import Testing
 @testable import EasyTierShared
@@ -625,6 +626,41 @@ import Testing
 }
 
 @MainActor
+@Test func runSelectedConfigPrefersTransientSecretWithoutReadingKeychain() async {
+    let client = RecordingToggleClient()
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "saved-secret"])
+    let config = NetworkConfig(instance_id: "transient-run-id", network_name: "office", network_secret: nil)
+    let store = EasyTierAppStore(client: client, networkSecretStore: secrets)
+
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+
+    await store.runSelectedConfig(networkSecretOverride: "typed-secret")
+
+    #expect(client.runConfigs.first?.network_secret == "typed-secret")
+    #expect(secrets.readReasons.isEmpty)
+    #expect(secrets.secrets["office"] == "saved-secret")
+}
+
+@MainActor
+@Test func explicitKeychainSaveIsSeparateFromTransientRunSecret() async throws {
+    let secrets = MemoryNetworkSecretStore()
+    let config = NetworkConfig(instance_id: "explicit-save-id", network_name: "office")
+    let store = EasyTierAppStore(
+        client: RecordingToggleClient(),
+        networkSecretStore: secrets
+    )
+
+    #expect(!(try await store.hasSavedNetworkSecret(for: config)))
+    try await store.saveNetworkSecretToKeychain("saved-secret", for: config)
+    #expect(try await store.hasSavedNetworkSecret(for: config))
+    #expect(secrets.secrets["office"] == "saved-secret")
+
+    try await store.removeNetworkSecretFromKeychain(for: config)
+    #expect(!(try await store.hasSavedNetworkSecret(for: config)))
+}
+
+@MainActor
 @Test func runSelectedConfigDoesNotStartAfterQuitBegins() async {
     let client = RecordingToggleClient()
     let config = NetworkConfig(instance_id: "quit-guard-id", network_name: "quit-guard-network")
@@ -681,6 +717,58 @@ import Testing
     #expect(store.configs.first?.network_name == "after")
     #expect(client.stoppedInstanceNames.isEmpty)
     #expect(client.runConfigs.isEmpty)
+}
+
+@MainActor
+@Test func applyConfigDraftDoesNotImplicitlySaveTransientSecretToKeychain() async {
+    let secrets = MemoryNetworkSecretStore()
+    let original = NetworkConfig(instance_id: "transient-save-id", network_name: "office")
+    var updated = original
+    updated.network_secret = "typed-secret"
+    let store = EasyTierAppStore(
+        client: RecordingToggleClient(),
+        networkSecretStore: secrets
+    )
+    store.configs = [original]
+
+    let result = await store.applyConfigDraft(
+        configID: original.instance_id,
+        draft: updated,
+        replacing: nil
+    )
+
+    #expect(result == .saved)
+    #expect(store.configs.first?.network_secret?.nilIfEmpty == nil)
+    #expect(secrets.secrets.isEmpty)
+}
+
+@MainActor
+@Test func applyConfigDraftRestartsWithTransientSecretWithoutSavingIt() async {
+    let client = RecordingToggleClient()
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "saved-secret"])
+    let original = NetworkConfig(instance_id: "transient-restart-id", network_name: "office")
+    var updated = original
+    updated.hostname = "updated-host"
+    updated.network_secret = "typed-secret"
+    let running = NetworkInstance(
+        instance_id: original.instance_id,
+        name: original.network_name,
+        running: true
+    )
+    let store = EasyTierAppStore(client: client, networkSecretStore: secrets)
+    store.configs = [original]
+    store.instances = [running]
+
+    let result = await store.applyConfigDraft(
+        configID: original.instance_id,
+        draft: updated,
+        replacing: running
+    )
+
+    #expect(result == .restarted)
+    #expect(client.runConfigs.first?.network_secret == "typed-secret")
+    #expect(secrets.readReasons.isEmpty)
+    #expect(secrets.secrets["office"] == "saved-secret")
 }
 
 @MainActor
@@ -918,6 +1006,25 @@ import Testing
 }
 
 @MainActor
+@Test func exportSelectedTOMLPrefersTransientSecretWithoutReadingKeychain() async throws {
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "saved-secret"])
+    let config = NetworkConfig(instance_id: "transient-export-id", network_name: "office")
+    let store = EasyTierAppStore(
+        client: RecordingToggleClient(),
+        networkSecretStore: secrets
+    )
+
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+
+    let toml = try await store.exportSelectedTOML(networkSecretOverride: "typed-secret")
+
+    #expect(toml.contains("network_secret = \"typed-secret\""))
+    #expect(!toml.contains("saved-secret"))
+    #expect(secrets.readReasons.isEmpty)
+}
+
+@MainActor
 @Test func exportSelectedTOMLAppliesMagicDNSSettingsOverlay() async throws {
     var config = NetworkConfig(instance_id: "dns-export-id", network_name: "office")
     config.enable_magic_dns = true
@@ -1002,43 +1109,9 @@ import Testing
 }
 
 @MainActor
-@Test func networkSecretAutofillRequiresSavedSecretAndBiometrics() async {
-    let config = NetworkConfig(instance_id: "autofill-id", network_name: "office")
-    let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"], canAutofill: true)
-    let store = EasyTierAppStore(
-        client: RecordingToggleClient(),
-        networkSecretStore: secrets
-    )
-
-    #expect(await store.networkSecretCanAutofill(for: config))
-
-    secrets.canAutofill = false
-
-    #expect(!(await store.networkSecretCanAutofill(for: config)))
-    #expect(secrets.readReasons.isEmpty)
-}
-
-@MainActor
-@Test func networkSecretAutofillSilentlyIgnoresReadErrors() async {
-    let config = NetworkConfig(instance_id: "autofill-error-id", network_name: "office")
-    let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"], canAutofill: true)
-    secrets.readError = EasyTierCoreError.operationFailed("user canceled")
-    let store = EasyTierAppStore(
-        client: RecordingToggleClient(),
-        networkSecretStore: secrets
-    )
-
-    let secret = await store.autofillNetworkSecret(for: config)
-
-    #expect(secret == nil)
-    #expect(store.lastError == nil)
-    #expect(secrets.readReasons.count == 1)
-}
-
-@MainActor
 @Test func explicitNetworkSecretReadReportsErrors() async {
     let config = NetworkConfig(instance_id: "explicit-error-id", network_name: "office")
-    let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"], canAutofill: true)
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"])
     secrets.readError = EasyTierCoreError.operationFailed("keychain failed")
     let store = EasyTierAppStore(
         client: RecordingToggleClient(),
@@ -1056,7 +1129,7 @@ import Testing
 @MainActor
 @Test func sequentialSecretReadsDoNotRetainAPlaintextAppStoreCache() async {
     let config = NetworkConfig(instance_id: "cache-id", network_name: "office")
-    let secrets = MemoryNetworkSecretStore(secrets: ["office": "cached-secret"], canAutofill: true)
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "cached-secret"])
     let store = EasyTierAppStore(
         client: RecordingToggleClient(),
         networkSecretStore: secrets
@@ -1106,6 +1179,58 @@ import Testing
     store.handleSystemWillSleep(now: Date(timeIntervalSince1970: 100))
 
     #expect(secrets.authenticationInvalidationCount == 1)
+    #expect(store.networkSecretSessionRevision == 1)
+}
+
+@MainActor
+@Test func selectingAnotherNetworkInvalidatesNetworkSecretSession() {
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"])
+    let first = NetworkConfig(instance_id: "first-secret-session-id", network_name: "office")
+    let second = NetworkConfig(instance_id: "second-secret-session-id", network_name: "lab")
+    let store = EasyTierAppStore(
+        client: RecordingToggleClient(),
+        networkSecretStore: secrets
+    )
+    store.configs = [first, second]
+
+    store.selectedConfigID = first.instance_id
+    #expect(store.networkSecretSessionRevision == 0)
+
+    store.selectedConfigID = second.instance_id
+
+    #expect(secrets.authenticationInvalidationCount == 1)
+    #expect(store.networkSecretSessionRevision == 1)
+}
+
+@MainActor
+@Test func workspaceSessionResignInvalidatesNetworkSecretAuthenticationSession() {
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"])
+    let store = EasyTierAppStore(
+        client: RecordingToggleClient(),
+        networkSecretStore: secrets
+    )
+
+    store.handleUserSessionDidResignActive()
+
+    #expect(secrets.authenticationInvalidationCount == 1)
+    #expect(store.networkSecretSessionRevision == 1)
+}
+
+@MainActor
+@Test func canceledNetworkSecretReadDoesNotSurfaceGlobalError() async {
+    let config = NetworkConfig(instance_id: "canceled-secret-id", network_name: "office")
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"])
+    secrets.readError = NetworkSecretStoreError.keychain(errSecUserCanceled)
+    let store = EasyTierAppStore(
+        client: RecordingToggleClient(),
+        networkSecretStore: secrets
+    )
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+
+    await store.runSelectedConfig()
+
+    #expect(store.lastError == nil)
 }
 
 @MainActor
@@ -3501,13 +3626,12 @@ private final class MemoryNetworkSecretStore: NetworkSecretStore, @unchecked Sen
     var secrets: [String: String]
     var deletedIDs: [String] = []
     var readReasons: [String?] = []
-    var canAutofill: Bool
     var readError: Error?
+    var containsError: Error?
     private(set) var authenticationInvalidationCount = 0
 
-    init(secrets: [String: String] = [:], canAutofill: Bool = false) {
+    init(secrets: [String: String] = [:]) {
         self.secrets = secrets
-        self.canAutofill = canAutofill
     }
 
     func save(_ secret: String, for config: NetworkConfig) throws {
@@ -3525,12 +3649,9 @@ private final class MemoryNetworkSecretStore: NetworkSecretStore, @unchecked Sen
         secrets.removeValue(forKey: config.network_name)
     }
 
-    func containsSecret(for config: NetworkConfig) -> Bool {
-        secrets[config.network_name] != nil
-    }
-
-    func canAutofillWithBiometrics() -> Bool {
-        canAutofill
+    func containsSecret(for config: NetworkConfig) throws -> Bool {
+        if let containsError { throw containsError }
+        return secrets[config.network_name] != nil
     }
 
     func invalidateAuthenticationSession() {
@@ -3568,8 +3689,7 @@ private final class BlockingNetworkSecretStore: NetworkSecretStore, @unchecked S
     }
 
     func deleteSecret(for _: NetworkConfig) throws {}
-    func containsSecret(for _: NetworkConfig) -> Bool { true }
-    func canAutofillWithBiometrics() -> Bool { true }
+    func containsSecret(for _: NetworkConfig) throws -> Bool { true }
 
     func releaseReads() {
         condition.lock()

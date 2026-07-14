@@ -9,7 +9,12 @@ public final class EasyTierAppStore {
         didSet { refreshSelectedRuntimeSnapshotsIfNeeded() }
     }
     public var selectedConfigID: String? {
-        didSet { refreshSelectedRuntimeSnapshotsIfNeeded() }
+        didSet {
+            if oldValue != nil, oldValue != selectedConfigID {
+                invalidateSecretAuthenticationSession()
+            }
+            refreshSelectedRuntimeSnapshotsIfNeeded()
+        }
     }
     public var mode: AppMode = .default
     public var instances: [NetworkInstance] = [] {
@@ -43,6 +48,7 @@ public final class EasyTierAppStore {
     @ObservationIgnored private var runtimeMemberPresentation = RuntimeMemberPresentationState()
     public private(set) var selectedStatusSnapshot: RuntimeStatusSnapshot = .empty
     public private(set) var selectedTrafficSnapshot: RuntimeTrafficSnapshot = .empty
+    public private(set) var networkSecretSessionRevision: UInt64 = 0
     public var runtimeIntents: [RuntimeIntent] = []
     public var reversedPortForwardFingerprints: [String: Set<String>] = [:]
     public var vpnOnDemandEnabled = false
@@ -67,7 +73,6 @@ public final class EasyTierAppStore {
     private let networkSecretStore: any NetworkSecretStore
     private let systemSleepPreventer: any SystemSleepPreventing
     @ObservationIgnored private var pendingSecretReads: [String: PendingSecretRead] = [:]
-    @ObservationIgnored private var secretAuthenticationGeneration: UInt64 = 0
     @ObservationIgnored private var secretReadRevisions: [String: UInt64] = [:]
     private var lastErrorKind: LastErrorKind?
 
@@ -458,19 +463,22 @@ public final class EasyTierAppStore {
         selectConfig(offset: 1)
     }
 
-    public func runSelectedConfig() async {
+    public func runSelectedConfig(networkSecretOverride: String? = nil) async {
         await withRuntimeMutation {
-            await runSelectedConfigWithoutMutationLock()
+            await runSelectedConfigWithoutMutationLock(networkSecretOverride: networkSecretOverride)
         }
     }
 
-    private func runSelectedConfigWithoutMutationLock() async {
+    private func runSelectedConfigWithoutMutationLock(networkSecretOverride: String? = nil) async {
         guard let config = selectedConfig else { return }
-        _ = await runConfigWithoutMutationLock(config)
+        _ = await runConfigWithoutMutationLock(config, networkSecretOverride: networkSecretOverride)
     }
 
     @discardableResult
-    private func runConfigWithoutMutationLock(_ config: NetworkConfig) async -> Error? {
+    private func runConfigWithoutMutationLock(
+        _ config: NetworkConfig,
+        networkSecretOverride: String? = nil
+    ) async -> Error? {
         guard !isQuitting else { return nil }
         guard runningInstance(matching: config) == nil else {
             log("Start skipped because \(config.network_name) is already tracked.")
@@ -479,13 +487,20 @@ public final class EasyTierAppStore {
         return await busy {
             log("Starting \(config.network_name)...")
             try validateConfigForCurrentRuntime(config)
-            let keychainConfig = try await configWithKeychainSecret(config, reason: "Use the network secret to start \(config.network_name).")
+            let keychainConfig = try await configWithResolvedNetworkSecret(
+                config,
+                override: networkSecretOverride,
+                reason: "Use the network secret to start \(config.network_name)."
+            )
             let cleanConfig = Self.configWithoutReversedPortForwards(keychainConfig, fingerprints: reversedPortForwardFingerprints)
             if config.requiresTUN, let helperRegistration {
                 do {
                     try await helperRegistration.ensureRegistered()
                 } catch {
-                    runtimeSession.setPendingStartAfterApproval(Self.configWithoutNetworkSecret(cleanConfig))
+                    let pendingConfig = networkSecretOverride?.nilIfEmpty == nil
+                        ? Self.configWithoutNetworkSecret(cleanConfig)
+                        : cleanConfig
+                    runtimeSession.setPendingStartAfterApproval(pendingConfig)
                     throw error
                 }
             }
@@ -552,9 +567,14 @@ public final class EasyTierAppStore {
 
     public func restartSelectedConfig(
         replacing instance: NetworkInstance,
-        configID targetConfigID: String? = nil
+        configID targetConfigID: String? = nil,
+        networkSecretOverride: String? = nil
     ) async {
-        _ = await restartConfig(replacing: instance, configID: targetConfigID)
+        _ = await restartConfig(
+            replacing: instance,
+            configID: targetConfigID,
+            networkSecretOverride: networkSecretOverride
+        )
     }
 
     public func applyConfigDraft(
@@ -566,11 +586,15 @@ public final class EasyTierAppStore {
             return .failed("The network configuration no longer exists.")
         }
 
-        updateConfig(id: configID, with: draft, saveImmediately: true)
+        let networkSecretOverride = draft.network_secret?.nilIfEmpty
+        var persistedDraft = draft
+        persistedDraft.network_secret = nil
+        updateConfig(id: configID, with: persistedDraft, saveImmediately: true)
         guard let instance else { return .saved }
         return await restartConfig(
             replacing: instance,
             configID: configID,
+            networkSecretOverride: networkSecretOverride,
             surfaceError: false
         )
     }
@@ -578,6 +602,7 @@ public final class EasyTierAppStore {
     private func restartConfig(
         replacing instance: NetworkInstance,
         configID targetConfigID: String? = nil,
+        networkSecretOverride: String? = nil,
         surfaceError: Bool = true
     ) async -> ConfigApplyResult {
         guard let targetConfigID = targetConfigID ?? selectedConfigID else {
@@ -593,7 +618,11 @@ public final class EasyTierAppStore {
             let error = await busy(surfaceError: surfaceError) {
                 log("Restarting \(config.network_name)...")
                 try validateConfigForCurrentRuntime(config, replacing: instance)
-                let keychainConfig = try await configWithKeychainSecret(config, reason: "Use the network secret to restart \(config.network_name).")
+                let keychainConfig = try await configWithResolvedNetworkSecret(
+                    config,
+                    override: networkSecretOverride,
+                    reason: "Use the network secret to restart \(config.network_name)."
+                )
                 let cleanConfig = Self.configWithoutReversedPortForwards(keychainConfig, fingerprints: reversedPortForwardFingerprints)
                 let targetClient = client(for: config)
                 try await targetClient.validate(toml: try encodedTOML(for: cleanConfig))
@@ -605,7 +634,10 @@ public final class EasyTierAppStore {
                     do {
                         try await helperRegistration.ensureRegistered()
                     } catch {
-                        runtimeSession.setPendingStartAfterApproval(Self.configWithoutNetworkSecret(cleanConfig))
+                        let pendingConfig = networkSecretOverride?.nilIfEmpty == nil
+                            ? Self.configWithoutNetworkSecret(cleanConfig)
+                            : cleanConfig
+                        runtimeSession.setPendingStartAfterApproval(pendingConfig)
                         throw error
                     }
                 }
@@ -1050,9 +1082,13 @@ public final class EasyTierAppStore {
         await applyMode(mode)
     }
 
-    public func exportSelectedTOML() async throws -> String {
+    public func exportSelectedTOML(networkSecretOverride: String? = nil) async throws -> String {
         guard let selectedConfig else { return "" }
-        let config = try await configWithKeychainSecret(selectedConfig, reason: "Use the network secret for TOML export.")
+        let config = try await configWithResolvedNetworkSecret(
+            selectedConfig,
+            override: networkSecretOverride,
+            reason: "Use the network secret for TOML export."
+        )
         return try encodedTOML(for: config)
     }
 
@@ -1083,25 +1119,46 @@ public final class EasyTierAppStore {
         }
     }
 
-    public func networkSecretCanAutofill(for config: NetworkConfig) async -> Bool {
+    public func hasSavedNetworkSecret(for config: NetworkConfig) async throws -> Bool {
         let store = networkSecretStore
-        return await Task.detached { @Sendable in
-            store.containsSecret(for: config) && store.canAutofillWithBiometrics()
+        return try await Task.detached { @Sendable in
+            try store.containsSecret(for: config)
         }.value
     }
 
-    public func autofillNetworkSecret(for config: NetworkConfig) async -> String? {
-        (try? await configWithKeychainSecret(config, reason: "Use Touch ID to fill the network secret for \(config.network_name).").network_secret?.nilIfEmpty)
+    public func saveNetworkSecretToKeychain(_ secret: String, for config: NetworkConfig) async throws {
+        guard let secret = secret.nilIfEmpty else { return }
+        invalidatePendingSecretRead(for: config.network_name)
+        let store = networkSecretStore
+        try await Task.detached { @Sendable in
+            try store.save(secret, for: config)
+        }.value
+    }
+
+    public func removeNetworkSecretFromKeychain(for config: NetworkConfig) async throws {
+        invalidatePendingSecretRead(for: config.network_name)
+        let store = networkSecretStore
+        try await Task.detached { @Sendable in
+            try store.deleteSecret(for: config)
+        }.value
     }
 
     public func revealNetworkSecret(for config: NetworkConfig) async throws -> String? {
-        try await configWithKeychainSecret(config, reason: "Show the network secret for \(config.network_name).").network_secret?.nilIfEmpty
+        try await configWithKeychainSecret(
+            config,
+            reason: "Unlock the saved network secret for \(config.network_name)."
+        ).network_secret?.nilIfEmpty
+    }
+
+    public func lockNetworkSecretSession() {
+        invalidateSecretAuthenticationSession()
     }
 
     public func startPolling() {
         runtimeSession.startPolling(
             refresh: { [weak self] in await self?.refreshRuntime() },
             handleWillSleep: { [weak self] in self?.handleSystemWillSleep() },
+            handleSessionResign: { [weak self] in self?.handleUserSessionDidResignActive() },
             handleDidWake: { [weak self] in await self?.handleSystemDidWake() }
         )
     }
@@ -1145,6 +1202,10 @@ public final class EasyTierAppStore {
             recoverableConfigIDs: recoverableConfigIDs,
             operationGeneration: shouldScheduleRecovery ? runtimeOperationGeneration : nil
         )
+    }
+
+    func handleUserSessionDidResignActive() {
+        invalidateSecretAuthenticationSession()
     }
 
     func handleSystemDidWake(now: Date = Date()) async {
@@ -1443,7 +1504,7 @@ public final class EasyTierAppStore {
         let networkName = config.network_name
         let pendingRead: PendingSecretRead
         if let existing = pendingSecretReads[networkName],
-           existing.authenticationGeneration == secretAuthenticationGeneration,
+           existing.authenticationGeneration == networkSecretSessionRevision,
            existing.revision == secretReadRevision(for: networkName)
         {
             pendingRead = existing
@@ -1454,7 +1515,7 @@ public final class EasyTierAppStore {
             }
             pendingRead = PendingSecretRead(
                 id: UUID(),
-                authenticationGeneration: secretAuthenticationGeneration,
+                authenticationGeneration: networkSecretSessionRevision,
                 revision: secretReadRevision(for: networkName),
                 task: task
             )
@@ -1469,7 +1530,7 @@ public final class EasyTierAppStore {
             throw error
         }
         removePendingSecretReadIfMatching(pendingRead, for: networkName)
-        guard pendingRead.authenticationGeneration == secretAuthenticationGeneration,
+        guard pendingRead.authenticationGeneration == networkSecretSessionRevision,
               pendingRead.revision == secretReadRevision(for: networkName)
         else {
             throw CancellationError()
@@ -1477,6 +1538,19 @@ public final class EasyTierAppStore {
         guard let secret else { return config }
         var config = config
         config.network_secret = secret
+        return config
+    }
+
+    private func configWithResolvedNetworkSecret(
+        _ config: NetworkConfig,
+        override: String?,
+        reason: String
+    ) async throws -> NetworkConfig {
+        guard let override = override?.nilIfEmpty else {
+            return try await configWithKeychainSecret(config, reason: reason)
+        }
+        var config = config
+        config.network_secret = override
         return config
     }
 
@@ -1495,7 +1569,7 @@ public final class EasyTierAppStore {
     }
 
     private func invalidateSecretAuthenticationSession() {
-        secretAuthenticationGeneration &+= 1
+        networkSecretSessionRevision &+= 1
         pendingSecretReads.values.forEach { $0.task.cancel() }
         pendingSecretReads.removeAll()
         networkSecretStore.invalidateAuthenticationSession()
@@ -1561,12 +1635,22 @@ public final class EasyTierAppStore {
             try await operation()
             return nil
         } catch {
-            if surfaceError || Self.lastErrorKind(for: error) != nil {
+            let wasCanceled = Self.isNetworkSecretAccessCancellation(error)
+            if !wasCanceled, surfaceError || Self.lastErrorKind(for: error) != nil {
                 setLastError(error)
             }
-            log("Error: \(Self.errorMessage(for: error))")
+            if wasCanceled {
+                log("Network secret access canceled.")
+            } else {
+                log("Error: \(Self.errorMessage(for: error))")
+            }
             return error
         }
+    }
+
+    public static func isNetworkSecretAccessCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        return (error as? NetworkSecretStoreError)?.isUserCancellation == true
     }
 
     private func setLastError(_ error: Error) {

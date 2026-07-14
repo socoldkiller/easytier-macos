@@ -137,72 +137,440 @@ struct FlagToggle: View {
     }
 }
 
+struct NetworkSecretFieldState: Equatable {
+    enum Availability: Equatable {
+        case checking
+        case absent
+        case present
+        case unknown
+    }
+
+    enum Material: Equatable {
+        case none
+        case draft
+        case loaded
+    }
+
+    enum Operation: Equatable {
+        case checking
+        case unlocking
+        case saving
+        case removing
+    }
+
+    var availability: Availability = .checking
+    var material: Material = .none
+    var operation: Operation? = .checking
+    var isRevealed = false
+    var errorMessage: String?
+
+    var hasSavedSecret: Bool { availability == .present }
+    var blocksEditing: Bool { operation != nil && operation != .checking }
+
+    mutating func resetForLookup(hasValue: Bool, treatsValueAsLoaded: Bool = false) {
+        availability = .checking
+        material = hasValue ? (treatsValueAsLoaded ? .loaded : .draft) : .none
+        operation = .checking
+        isRevealed = false
+        errorMessage = nil
+    }
+
+    mutating func configureWithoutKeychain(hasValue: Bool) {
+        availability = .absent
+        material = hasValue ? .loaded : .none
+        operation = nil
+        isRevealed = false
+        errorMessage = nil
+    }
+
+    mutating func completeLookup(saved: Bool, hasValue: Bool) {
+        availability = saved ? .present : .absent
+        if !hasValue {
+            material = .none
+            isRevealed = false
+        } else if material == .none {
+            material = .draft
+        }
+        operation = nil
+        errorMessage = nil
+    }
+
+    mutating func failLookup(_ message: String) {
+        availability = .unknown
+        operation = nil
+        errorMessage = message
+    }
+
+    mutating func userEdited(hasValue: Bool) {
+        material = hasValue ? .draft : .none
+        operation = nil
+        isRevealed = false
+        errorMessage = nil
+    }
+
+    mutating func beginUnlock() {
+        operation = .unlocking
+        errorMessage = nil
+    }
+
+    mutating func completeUnlock(foundSecret: Bool) {
+        availability = foundSecret ? .present : .absent
+        material = foundSecret ? .loaded : .none
+        operation = nil
+        isRevealed = false
+        errorMessage = nil
+    }
+
+    mutating func beginSave() {
+        operation = .saving
+        isRevealed = false
+        errorMessage = nil
+    }
+
+    mutating func completeSave() {
+        availability = .present
+        material = .loaded
+        operation = nil
+        isRevealed = false
+        errorMessage = nil
+    }
+
+    mutating func beginRemove() {
+        operation = .removing
+        isRevealed = false
+        errorMessage = nil
+    }
+
+    mutating func completeRemove() {
+        availability = .absent
+        material = .none
+        operation = nil
+        isRevealed = false
+        errorMessage = nil
+    }
+
+    mutating func discardDraft() {
+        material = .none
+        operation = nil
+        isRevealed = false
+        errorMessage = nil
+    }
+
+    mutating func toggleReveal() {
+        guard material == .loaded else { return }
+        isRevealed.toggle()
+    }
+
+    mutating func hideSecret() {
+        isRevealed = false
+    }
+
+    mutating func cancelOperation() {
+        operation = nil
+        errorMessage = nil
+    }
+
+    mutating func failOperation(_ message: String) {
+        operation = nil
+        errorMessage = message
+    }
+}
+
 struct NetworkSecretField: View {
+    private enum FocusTarget: Hashable {
+        case input
+        case accessory
+    }
+
     @Environment(EasyTierAppStore.self) private var store
-    @Binding var config: NetworkConfig
-    @State private var isRevealed = false
-    @State private var autofillAttemptedForInstanceID: String?
-    @FocusState private var isFocused: Bool
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityShowButtonShapes) private var showButtonShapes
+    var config: NetworkConfig
+    @Binding var secret: String?
+    var keychainEnabled = true
+    @State private var state = NetworkSecretFieldState()
+    @FocusState private var focusedControl: FocusTarget?
 
     var body: some View {
-        HStack(spacing: 8) {
-            secretInput
-                .textFieldStyle(.glassField)
+        VStack(alignment: .leading, spacing: 5) {
+            inputShell
                 .frame(minWidth: ConfigControlMetrics.secretFieldMinWidth, maxWidth: .infinity)
-                .focused($isFocused)
-                .onChange(of: isFocused) { _, focused in
-                    guard focused else { return }
-                    autofillIfAvailable()
-                }
+                .help(secretHelp)
+                .contextMenu { contextMenuActions }
 
+            if let errorMessage = state.errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 4))
+            }
+        }
+        .task(id: keychainLookupID) {
+            await refreshSavedSecretState()
+        }
+        .onChange(of: focusedControl) { _, focused in
+            if focused == nil { state.hideSecret() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { state.hideSecret() }
+        }
+        .onDisappear { state.hideSecret() }
+        .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: state)
+    }
+
+    private var inputShell: some View {
+        HStack(spacing: 8) {
+            secretInputSurface
+            accessory
+                .frame(width: 26, height: 24)
+        }
+    }
+
+    private var secretInputSurface: some View {
+        Group {
+            if state.isRevealed {
+                TextField(secretPlaceholder, text: editableSecret)
+            } else {
+                SecureField(secretPlaceholder, text: editableSecret)
+            }
+        }
+        .textFieldStyle(.plain)
+        .focused($focusedControl, equals: .input)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .accessibilityLabel(Text("Network secret"))
+        .accessibilityValue(Text(secretAccessibilityValue))
+        .background(
+            Color.primary.opacity(0.05),
+            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(
+                    focusedControl != nil
+                        ? Color.accentColor.opacity(0.72)
+                        : Color.primary.opacity(showButtonShapes ? 0.35 : 0.1),
+                    lineWidth: focusedControl != nil || showButtonShapes ? 1 : 0.5
+                )
+        }
+        .disabled(state.blocksEditing)
+    }
+
+    @ViewBuilder
+    private var accessory: some View {
+        if state.operation != nil {
+            ProgressView()
+                .controlSize(.mini)
+                .accessibilityLabel(Text(operationAccessibilityLabel))
+        } else if state.material == .loaded, hasTransientSecret {
             Button {
-                isRevealed.toggle()
+                state.toggleReveal()
             } label: {
-                Image(systemName: isRevealed ? "eye.slash" : "eye")
+                Image(systemName: state.isRevealed ? "eye.slash" : "eye")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .buttonStyle(.borderless)
-            .help(isRevealed ? "Hide secret" : "Show secret")
-            .accessibilityLabel(Text(isRevealed ? "Hide secret" : "Show secret"))
-
+            .focused($focusedControl, equals: .accessory)
+            .help(state.isRevealed ? "Hide network secret" : "Show network secret")
+            .accessibilityLabel(Text(state.isRevealed ? "Hide network secret" : "Show network secret"))
+        } else if keychainEnabled, state.material == .draft, hasTransientSecret {
             Button {
-                fillFromKeychain()
+                saveToKeychain()
+            } label: {
+                ZStack(alignment: .bottomTrailing) {
+                    Image(systemName: "key.fill")
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 7, weight: .bold))
+                        .offset(x: 3, y: 2)
+                }
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .buttonStyle(.plain)
+            .focused($focusedControl, equals: .accessory)
+            .help(state.hasSavedSecret ? "Replace the saved Keychain secret" : "Save to Keychain")
+            .accessibilityLabel(Text(state.hasSavedSecret ? "Replace saved Keychain secret" : "Save network secret to Keychain"))
+        } else if keychainEnabled, state.material == .none, state.hasSavedSecret {
+            Button {
+                unlockFromKeychain()
             } label: {
                 Image(systemName: "key.fill")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .buttonStyle(.borderless)
-            .help("Fill from Keychain")
-            .accessibilityLabel(Text("Fill from Keychain"))
+            .focused($focusedControl, equals: .accessory)
+            .help("Unlock from Keychain")
+            .accessibilityLabel(Text("Unlock network secret from Keychain"))
+        } else {
+            Color.clear
+                .accessibilityHidden(true)
         }
     }
 
     @ViewBuilder
-    private var secretInput: some View {
-        if isRevealed {
-            TextField("Optional shared secret", text: Binding($config.network_secret, replacingNilWith: ""))
-        } else {
-            SecureField("Optional shared secret", text: Binding($config.network_secret, replacingNilWith: ""))
+    private var contextMenuActions: some View {
+        if keychainEnabled, state.material == .draft, state.hasSavedSecret {
+            Button("Discard Changes") {
+                secret = nil
+                state.discardDraft()
+            }
+        }
+
+        if keychainEnabled, state.hasSavedSecret {
+            Button("Remove from Keychain", role: .destructive) {
+                removeFromKeychain()
+            }
         }
     }
 
-    private func autofillIfAvailable() {
-        guard config.network_secret?.nilIfEmpty == nil else { return }
-        guard autofillAttemptedForInstanceID != config.instance_id else { return }
-        autofillAttemptedForInstanceID = config.instance_id
-        Task {
-            guard await store.networkSecretCanAutofill(for: config) else { return }
-            guard let secret = await store.autofillNetworkSecret(for: config) else { return }
-            config.network_secret = secret
+    private var editableSecret: Binding<String> {
+        Binding(
+            get: { secret ?? "" },
+            set: { newValue in
+                secret = newValue.nilIfEmpty
+                state.userEdited(hasValue: newValue.nilIfEmpty != nil)
+            }
+        )
+    }
+
+    private var hasTransientSecret: Bool {
+        secret?.nilIfEmpty != nil
+    }
+
+    private var secretPlaceholder: String {
+        state.material == .none && state.hasSavedSecret
+            ? "Saved in Keychain"
+            : "Optional shared secret"
+    }
+
+    private var secretHelp: String {
+        switch (state.material, state.availability) {
+        case (.loaded, _):
+            "The password is loaded for this network session. Use the eye to show or hide it."
+        case (.draft, .present):
+            "Run uses this value without changing the saved Keychain password until you save it."
+        case (.draft, _):
+            "Run can use this value once. Use the key button to save it in Keychain."
+        case (.none, .present):
+            "A password is saved in Keychain. Use the key button to unlock it with Touch ID or your Mac password."
+        case (.none, .unknown):
+            "Keychain status is unavailable. You can still enter a password and try saving it."
+        default:
+            "Enter a password for this session, then save it explicitly in Keychain if needed."
         }
     }
 
-    private func fillFromKeychain() {
+    private var secretAccessibilityValue: String {
+        switch (state.material, state.availability) {
+        case (.loaded, _):
+            state.isRevealed ? "Password loaded, visible" : "Password loaded, hidden"
+        case (.draft, .present):
+            "Unsaved replacement, hidden"
+        case (.draft, _):
+            "Unsaved password, hidden"
+        case (.none, .present):
+            "Saved in Keychain, locked"
+        case (.none, .checking):
+            "Checking Keychain"
+        default:
+            "No password"
+        }
+    }
+
+    private var operationAccessibilityLabel: String {
+        switch state.operation {
+        case .checking: "Checking Keychain"
+        case .unlocking: "Unlocking network secret"
+        case .saving: "Saving network secret"
+        case .removing: "Removing network secret"
+        case nil: ""
+        }
+    }
+
+    private var keychainLookupID: String {
+        "\(keychainEnabled)|\(config.instance_id)|\(config.network_name)|\(store.networkSecretSessionRevision)"
+    }
+
+    @MainActor
+    private func refreshSavedSecretState() async {
+        let lookupID = keychainLookupID
+        guard keychainEnabled else {
+            state.configureWithoutKeychain(hasValue: hasTransientSecret)
+            return
+        }
+
+        state.resetForLookup(hasValue: hasTransientSecret)
+        do {
+            let exists = try await store.hasSavedNetworkSecret(for: config)
+            guard !Task.isCancelled, lookupID == keychainLookupID else { return }
+            state.completeLookup(saved: exists, hasValue: hasTransientSecret)
+        } catch {
+            guard !Task.isCancelled, lookupID == keychainLookupID else { return }
+            state.failLookup(error.localizedDescription)
+        }
+    }
+
+    private func saveToKeychain() {
+        guard let value = secret?.nilIfEmpty else { return }
+        let operationID = keychainLookupID
+        let operationConfig = config
+        state.beginSave()
         Task {
             do {
-                guard let secret = try await store.revealNetworkSecret(for: config) else { return }
-                config.network_secret = secret
+                try await store.saveNetworkSecretToKeychain(value, for: operationConfig)
+                guard operationID == keychainLookupID else { return }
+                secret = value
+                state.completeSave()
+                store.recordNotice("Saved the network secret for \(operationConfig.network_name) in Keychain.")
             } catch {
-                store.lastError = error.localizedDescription
+                guard operationID == keychainLookupID else { return }
+                handleOperationError(error)
             }
+        }
+    }
+
+    private func unlockFromKeychain() {
+        let operationID = keychainLookupID
+        let operationConfig = config
+        state.beginUnlock()
+        Task {
+            do {
+                let value = try await store.revealNetworkSecret(for: operationConfig)
+                guard operationID == keychainLookupID else { return }
+                secret = value
+                state.completeUnlock(foundSecret: value?.nilIfEmpty != nil)
+            } catch {
+                guard operationID == keychainLookupID else { return }
+                handleOperationError(error)
+            }
+        }
+    }
+
+    private func removeFromKeychain() {
+        let operationID = keychainLookupID
+        let operationConfig = config
+        state.beginRemove()
+        Task {
+            do {
+                try await store.removeNetworkSecretFromKeychain(for: operationConfig)
+                guard operationID == keychainLookupID else { return }
+                secret = nil
+                state.completeRemove()
+                store.recordNotice("Removed the network secret for \(operationConfig.network_name) from Keychain.")
+            } catch {
+                guard operationID == keychainLookupID else { return }
+                handleOperationError(error)
+            }
+        }
+    }
+
+    private func handleOperationError(_ error: Error) {
+        if EasyTierAppStore.isNetworkSecretAccessCancellation(error) {
+            state.cancelOperation()
+        } else {
+            state.failOperation(error.localizedDescription)
         }
     }
 }

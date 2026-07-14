@@ -138,6 +138,14 @@ open EasyTier.xcodeproj
 
 `EasyTierMac` Scheme 包含 macOS App、Privileged Helper 和 Rust FFI 构建依赖。Debug 可直接用于本地编译；`Product > Archive` 使用 Release 配置，需要 Developer ID 证书和匹配的 provisioning profile。SwiftPM 继续管理 Shared/Runtime 模块及测试，避免在 Xcode 中维护第二份业务依赖图。
 
+需要调试 Data Protection Keychain 时，先复制并填写本机签名配置：
+
+```bash
+cp Configurations/Signing.example.xcconfig Configurations/Signing.local.xcconfig
+```
+
+`Signing.local.xcconfig` 不会提交到 Git。普通 `EasyTierMac` Scheme 可直接调试 GUI、Keychain 和 `no_tun` 网络。TUN 网络必须从稳定安装路径注册 privileged helper；在 Xcode 中选择 `EasyTierMac-InstalledDebug` 后运行，它会把签名后的 Debug App 安装到 `/Applications/EasyTier.app`，再由 LLDB 启动该副本。首次安装 Helper 时仍需在“系统设置 → 通用 → 登录项与扩展”中批准 EasyTier。命令行等价操作是 `make debug-install`。
+
 产物路径：
 - App bundle：`.build/artifacts/EasyTier.app`
 - Xcode archive：`.build/AppProducts/EasyTier.xcarchive`

@@ -5,3 +5,6 @@ EASYTIER_BUILD_CONFIGURATION = debug
 ONLY_ACTIVE_ARCH = YES
 SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG
 SWIFT_OPTIMIZATION_LEVEL = -Onone
+
+// Optional per-machine Developer ID settings. This file is intentionally ignored.
+#include? "Signing.local.xcconfig"

@@ -6,8 +6,7 @@ public protocol NetworkSecretStore: Sendable {
     func save(_ secret: String, for config: NetworkConfig) throws
     func secret(for config: NetworkConfig, reason: String?) throws -> String?
     func deleteSecret(for config: NetworkConfig) throws
-    func containsSecret(for config: NetworkConfig) -> Bool
-    func canAutofillWithBiometrics() -> Bool
+    func containsSecret(for config: NetworkConfig) throws -> Bool
     func migrateSecret(from oldConfig: NetworkConfig, to newConfig: NetworkConfig) throws
     func invalidateAuthenticationSession()
 }
@@ -39,6 +38,11 @@ public enum NetworkSecretStoreError: LocalizedError {
         case let .keychain(status):
             SecCopyErrorMessageString(status, nil) as String? ?? "Keychain error \(status)."
         }
+    }
+
+    public var isUserCancellation: Bool {
+        guard case let .keychain(status) = self else { return false }
+        return status == errSecUserCanceled
     }
 }
 
@@ -75,6 +79,11 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
     private enum Backend {
         case dataProtection
         case legacy
+    }
+
+    private enum ItemPresence {
+        case absent
+        case present
     }
 
     private let keychain: any NetworkSecretKeychainClient
@@ -178,17 +187,11 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
         try requireSuccessOrNotFound(legacyStatus)
     }
 
-    public func containsSecret(for config: NetworkConfig) -> Bool {
-        if contains(config: config, backend: .dataProtection) {
+    public func containsSecret(for config: NetworkConfig) throws -> Bool {
+        if try presence(config: config, backend: .dataProtection) == .present {
             return true
         }
-        return contains(config: config, backend: .legacy)
-    }
-
-    public func canAutofillWithBiometrics() -> Bool {
-        let context = LAContext()
-        var error: NSError?
-        return context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
+        return try presence(config: config, backend: .legacy) == .present
     }
 
     public func migrateSecret(from oldConfig: NetworkConfig, to newConfig: NetworkConfig) throws {
@@ -265,18 +268,24 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
         return keychain.copyMatching(query)
     }
 
-    private func contains(config: NetworkConfig, backend: Backend) -> Bool {
+    private func presence(config: NetworkConfig, backend: Backend) throws -> ItemPresence {
         var query = baseQuery(for: config, backend: backend)
         query[kSecReturnAttributes as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
-        if backend == .dataProtection {
-            let context = LAContext()
-            context.interactionNotAllowed = true
-            query[kSecUseAuthenticationContext as String] = context
-        }
+        // Existence checks must never surface authentication UI. Apple
+        // recommends skipping protected items for broad/non-reading queries.
+        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUISkip
 
         let status = keychain.copyMatching(query).status
-        return status == errSecSuccess || status == errSecInteractionNotAllowed
+        switch status {
+        case errSecSuccess, errSecInteractionNotAllowed:
+            return .present
+        case errSecItemNotFound:
+            return .absent
+        default:
+            try requireSuccess(status)
+            return .absent
+        }
     }
 
     private func baseQuery(for config: NetworkConfig, backend: Backend) -> [String: Any] {
@@ -327,6 +336,7 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
 
         let context = contextFactory()
         context.localizedReason = reason ?? "Access the saved secret for network \"\(networkName)\"."
+        context.touchIDAuthenticationAllowableReuseDuration = 300
         authenticationContexts[networkName] = context
         return context
     }

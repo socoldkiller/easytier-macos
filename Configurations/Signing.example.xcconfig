@@ -1,0 +1,11 @@
+// Copy this file to Signing.local.xcconfig and replace every placeholder.
+// Signing.local.xcconfig is ignored because identities, profile UUIDs, and
+// Keychain locations are specific to each developer machine.
+
+EASYTIER_APPLICATION_IDENTIFIER = TEAMID.com.kkrainbow.easytier.mac
+EASYTIER_CODE_SIGN_ENTITLEMENTS = Packaging/EasyTierMac.entitlements
+EASYTIER_CODE_SIGN_IDENTITY = Developer ID Application: Developer Name (TEAMID)
+EASYTIER_CODE_SIGN_KEYCHAIN = /Users/you/Library/Keychains/easytier-signing.keychain-db
+EASYTIER_DEVELOPMENT_TEAM = TEAMID
+EASYTIER_OTHER_CODE_SIGN_FLAGS = --keychain $(EASYTIER_CODE_SIGN_KEYCHAIN)
+EASYTIER_PROVISIONING_PROFILE_SPECIFIER = PROFILE-UUID

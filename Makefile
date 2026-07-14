@@ -30,7 +30,7 @@ RUST_CODEGEN_UNITS ?= 1
 .PHONY: help bootstrap ffi test-swift test-rust test-packaging test-xcode-project test smoke clean clean-cache \
 	require-codesign-identity \
 	app-debug app-release-signed \
-	dmg release-dmg verify-app install-helper
+	debug-install dmg release-dmg verify-app install-helper
 
 help:
 	@printf '%s\n' 'EasyTier macOS build targets:'
@@ -45,6 +45,7 @@ help:
 	@printf '%-24s %s\n' 'make smoke' 'Run tests and package a Developer ID app with the required profile/Sparkle key.'
 	@printf '%s\n' ''
 	@printf '%-24s %s\n' 'make app-debug' 'Archive a Developer ID signed debug .app with Xcode.'
+	@printf '%-24s %s\n' 'make debug-install' 'Build, install, and open the signed Xcode Debug app.'
 	@printf '%-24s %s\n' 'make app-release-signed' 'Archive a Developer ID signed release .app with Xcode.'
 	@printf '%s\n' ''
 	@printf '%-24s %s\n' 'make dmg' 'Build the final signed, notarized, stapled, and verified release DMG.'
@@ -142,6 +143,18 @@ app-release-signed: require-codesign-identity
 	EASYTIER_BUILD_NUMBER="$(BUILD_NUMBER)" \
 	EASYTIER_EXPORT_APP_DIR="$(APP_PATH)" \
 	./scripts/archive-app.sh
+
+debug-install:
+	xcodebuild -project EasyTier.xcodeproj \
+		-scheme EasyTierMac \
+		-configuration Debug \
+		-destination 'platform=macOS,arch=arm64' \
+		-derivedDataPath "$(APP_PRODUCTS_DIR)/DebugDerivedData" \
+		build
+	EASYTIER_INSTALL_APP_PATH="$(INSTALL_APP_PATH)" \
+	EASYTIER_OPEN_APP=1 \
+	./scripts/install-xcode-debug-app.sh \
+		"$(APP_PRODUCTS_DIR)/DebugDerivedData/Build/Products/Debug/EasyTier.app"
 
 dmg: release-dmg
 

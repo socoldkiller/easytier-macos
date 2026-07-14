@@ -5,6 +5,7 @@ struct ConfigEditorView: View {
     @Environment(EasyTierAppStore.self) private var store
     @Environment(\.openWindow) private var openWindow
     @Binding var config: NetworkConfig
+    @Binding private var networkSecretDraft: String?
     var members: [NetworkMemberStatus] = []
     var remoteSession: RemoteConfigSession? = nil
     var onScrolledPastTopChange: (Bool) -> Void = { _ in }
@@ -15,6 +16,20 @@ struct ConfigEditorView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isRemote: Bool { remoteSession != nil }
+
+    init(
+        config: Binding<NetworkConfig>,
+        networkSecretDraft: Binding<String?>? = nil,
+        members: [NetworkMemberStatus] = [],
+        remoteSession: RemoteConfigSession? = nil,
+        onScrolledPastTopChange: @escaping (Bool) -> Void = { _ in }
+    ) {
+        _config = config
+        _networkSecretDraft = networkSecretDraft ?? config.network_secret
+        self.members = members
+        self.remoteSession = remoteSession
+        self.onScrolledPastTopChange = onScrolledPastTopChange
+    }
 
     private static let scrollSpaceName = "ConfigEditorScroll"
     private static let toolbarHideThreshold: CGFloat = 18
@@ -34,7 +49,11 @@ struct ConfigEditorView: View {
                 CardSection("Network") {
                     networkNameRow
                     FieldRow("Network secret") {
-                        NetworkSecretField(config: $config)
+                        NetworkSecretField(
+                            config: config,
+                            secret: $networkSecretDraft,
+                            keychainEnabled: !isRemote
+                        )
                     }
                 }
                 .disabled(isRemote)

@@ -2,6 +2,7 @@
 .build/
 DerivedData/
 Vendor/Frameworks/static/
+Configurations/Signing.local.xcconfig
 *.xcuserstate
 *.xcuserdata/
 .idea/

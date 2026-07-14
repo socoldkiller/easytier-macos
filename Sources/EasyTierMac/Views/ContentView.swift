@@ -10,6 +10,7 @@ struct ContentView: View {
     @Environment(AppAppearanceSettings.self) private var appearanceSettings
     @State private var tomlPresentation: TOMLPresentation?
     @State private var draftConfig = NetworkConfig()
+    @State private var draftNetworkSecret: String?
     @State private var draftConfigID: String?
     @State private var draftIsDirty = false
     @State private var configApplyCoordinator = ConfigApplyCoordinator()
@@ -64,6 +65,9 @@ struct ContentView: View {
             if selectedConfigIDLocal != newID {
                 selectedConfigIDLocal = newID
             }
+        }
+        .onChange(of: store.networkSecretSessionRevision) { _, _ in
+            draftNetworkSecret = nil
         }
         .onChange(of: selectedConfigIDLocal) { _, newID in
             selectConfig(id: newID)
@@ -161,6 +165,8 @@ struct ContentView: View {
         }
         .onDisappear {
             flushPendingLocalDraft()
+            draftNetworkSecret = nil
+            store.lockNetworkSecretSession()
         }
     }
 
@@ -181,7 +187,11 @@ struct ContentView: View {
             if let session = store.remoteConfigSession {
                 remoteConfigContent(session: session)
             } else if let config = draftConfigBinding() {
-                ConfigEditorView(config: config, members: store.selectedLiveMemberStatuses)
+                ConfigEditorView(
+                    config: config,
+                    networkSecretDraft: $draftNetworkSecret,
+                    members: store.selectedLiveMemberStatuses
+                )
             } else if store.selectedConfigID != nil {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -892,7 +902,7 @@ struct ContentView: View {
         let runningInstance = storedConfig.flatMap(store.runningInstance(matching:))
         let request = LocalConfigApplyRequest(
             configID: draftConfigID,
-            config: draftConfig,
+            config: currentLocalDraft(),
             replacing: runningInstance
         )
         configApplyCoordinator.schedule(request) { request in
@@ -908,7 +918,7 @@ struct ContentView: View {
         )
         if result.succeeded,
            draftConfigID == request.configID,
-           draftConfig == request.config
+           currentLocalDraft() == request.config
         {
             draftIsDirty = false
         }
@@ -924,10 +934,10 @@ struct ContentView: View {
     private func performSelectedConnectionAction() {
         let shouldStop = selectedConfigCanStop
         let pendingDraft: LocalConfigApplyRequest?
-        if draftIsDirty, let draftConfigID {
+        if (draftIsDirty || draftNetworkSecret?.nilIfEmpty != nil), let draftConfigID {
             pendingDraft = LocalConfigApplyRequest(
                 configID: draftConfigID,
-                config: draftConfig,
+                config: currentLocalDraft(),
                 replacing: nil
             )
         } else {
@@ -942,21 +952,28 @@ struct ContentView: View {
             if shouldStop {
                 await store.stopSelectedConfig()
                 if let pendingDraft {
-                    store.updateConfig(
-                        id: pendingDraft.configID,
-                        with: pendingDraft.config,
-                        saveImmediately: true
+                    _ = await store.applyConfigDraft(
+                        configID: pendingDraft.configID,
+                        draft: pendingDraft.config,
+                        replacing: nil
                     )
                 }
             } else {
                 if let pendingDraft {
-                    store.updateConfig(
-                        id: pendingDraft.configID,
-                        with: pendingDraft.config,
-                        saveImmediately: true
+                    let result = await store.applyConfigDraft(
+                        configID: pendingDraft.configID,
+                        draft: pendingDraft.config,
+                        replacing: nil
                     )
+                    guard result.succeeded else {
+                        if case let .failed(message) = result { store.lastError = message }
+                        return
+                    }
                 }
-                await store.runSelectedConfig()
+                await store.runSelectedConfig(
+                    networkSecretOverride: pendingDraft?.config.network_secret?.nilIfEmpty
+                        ?? draftNetworkSecret?.nilIfEmpty
+                )
             }
         }
     }
@@ -979,14 +996,22 @@ struct ContentView: View {
             let config = store.configs.first(where: { $0.id == selectedID })
         else {
             draftConfig = NetworkConfig()
+            draftNetworkSecret = nil
             draftConfigID = nil
             draftIsDirty = false
             return
         }
         guard draftConfigID != selectedID else { return }
         draftConfig = config
+        draftNetworkSecret = nil
         draftConfigID = selectedID
         draftIsDirty = false
+    }
+
+    private func currentLocalDraft() -> NetworkConfig {
+        var config = draftConfig
+        config.network_secret = draftNetworkSecret?.nilIfEmpty
+        return config
     }
 
     private func openImportTOML() {
@@ -995,9 +1020,16 @@ struct ContentView: View {
 
     private func openExportTOML() async {
         do {
-            tomlPresentation = TOMLPresentation(mode: .export, text: try await store.exportSelectedTOML())
+            tomlPresentation = TOMLPresentation(
+                mode: .export,
+                text: try await store.exportSelectedTOML(
+                    networkSecretOverride: draftNetworkSecret?.nilIfEmpty
+                )
+            )
         } catch {
-            store.lastError = error.localizedDescription
+            if !EasyTierAppStore.isNetworkSecretAccessCancellation(error) {
+                store.lastError = error.localizedDescription
+            }
         }
     }
 }

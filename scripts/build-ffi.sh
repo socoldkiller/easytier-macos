@@ -18,6 +18,9 @@ RUST_RELEASE_PANIC="${EASYTIER_RUST_PANIC:-abort}"
 RUST_RELEASE_STRIP="${EASYTIER_RUST_STRIP:-none}"
 STRIP_STATIC_LIBS="${EASYTIER_STRIP_STATIC_LIBS:-1}"
 
+# Xcode launched from Finder does not inherit Cargo or Homebrew shell paths.
+export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 case "$(uname -m)" in
   arm64)
     TARGET_TRIPLE="aarch64-apple-darwin"

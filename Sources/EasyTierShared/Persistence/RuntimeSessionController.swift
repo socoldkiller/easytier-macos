@@ -182,6 +182,7 @@ final class RuntimeSessionController {
     func startPolling(
         refresh: @escaping @MainActor () async -> Void,
         handleWillSleep: @escaping @MainActor () -> Void,
+        handleSessionResign: @escaping @MainActor () -> Void,
         handleDidWake: @escaping @MainActor () async -> Void
     ) {
         pollingTask?.cancel()
@@ -194,6 +195,7 @@ final class RuntimeSessionController {
         }
         registerSleepWakeNotifications(
             handleWillSleep: handleWillSleep,
+            handleSessionResign: handleSessionResign,
             handleDidWake: handleDidWake
         )
     }
@@ -252,6 +254,7 @@ final class RuntimeSessionController {
 
     private func registerSleepWakeNotifications(
         handleWillSleep: @escaping @MainActor () -> Void,
+        handleSessionResign: @escaping @MainActor () -> Void,
         handleDidWake: @escaping @MainActor () async -> Void
     ) {
         unregisterSleepWakeNotifications()
@@ -263,6 +266,13 @@ final class RuntimeSessionController {
                 for await _ in notifications {
                     guard !Task.isCancelled else { break }
                     handleWillSleep()
+                }
+            },
+            Task { @MainActor in
+                let notifications = workspaceCenter.notifications(named: NSWorkspace.sessionDidResignActiveNotification)
+                for await _ in notifications {
+                    guard !Task.isCancelled else { break }
+                    handleSessionResign()
                 }
             },
             Task { @MainActor [weak self] in

@@ -142,6 +142,14 @@ open EasyTier.xcodeproj
 
 The `EasyTierMac` scheme includes the macOS app, privileged helper, and Rust FFI build dependency. Debug is available for local builds; `Product > Archive` uses Release and requires the Developer ID identity plus the matching provisioning profile. SwiftPM remains the owner of the Shared/Runtime modules and tests so the business dependency graph is not duplicated in Xcode.
 
+To debug the Data Protection Keychain, first create the ignored per-machine signing configuration:
+
+```bash
+cp Configurations/Signing.example.xcconfig Configurations/Signing.local.xcconfig
+```
+
+The regular `EasyTierMac` scheme supports GUI, Keychain, and `no_tun` debugging. A TUN network must register its privileged helper from a stable installed path; select `EasyTierMac-InstalledDebug` in Xcode to install the signed Debug app at `/Applications/EasyTier.app` and launch that copy under LLDB. The first helper installation still requires approval in System Settings → General → Login Items & Extensions. `make debug-install` provides the equivalent command-line flow.
+
 Output paths:
 - App bundle: `.build/artifacts/EasyTier.app`
 - Xcode archive: `.build/AppProducts/EasyTier.xcarchive`

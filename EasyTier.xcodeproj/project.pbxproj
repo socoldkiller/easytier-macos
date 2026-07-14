@@ -93,31 +93,31 @@
 		E70000000000000000000017 /* EasyTierMac-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "EasyTierMac-Info.plist"; sourceTree = "<group>"; };
 		E70000000000000000000018 /* EasyTierPrivilegedHelper-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "EasyTierPrivilegedHelper-Info.plist"; sourceTree = "<group>"; };
 		E70000000000000000000019 /* com.kkrainbow.easytier.mac.helper.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = com.kkrainbow.easytier.mac.helper.plist; sourceTree = "<group>"; };
-		E7000000000000000000001A /* easytier-icon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; name = easytier-icon.icns; path = Assets/easytier-icon.icns; sourceTree = SOURCE_ROOT; };
+		E7000000000000000000001A /* easytier-icon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; name = "easytier-icon.icns"; path = "Assets/easytier-icon.icns"; sourceTree = SOURCE_ROOT; };
 		E7000000000000000000001B /* Package.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Package.swift; sourceTree = "<group>"; };
-		E7000000000000000000001C /* easytier-icon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = easytier-icon.png; path = Sources/EasyTierMac/Resources/easytier-icon.png; sourceTree = SOURCE_ROOT; };
+		E7000000000000000000001C /* easytier-icon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = "easytier-icon.png"; path = "Sources/EasyTierMac/Resources/easytier-icon.png"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		E70000000000000000000090 /* Exceptions for EasyTierMac sources */ = {
+		E70000000000000000000090 /* Exceptions for "Sources/EasyTierMac" folder in "EasyTierMac" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				Resources/easytier-icon.png,
+				"Resources/easytier-icon.png",
 			);
 			target = E70000000000000000000040 /* EasyTierMac */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		E70000000000000000000024 /* EasyTierMac */ = {
+		E70000000000000000000024 /* Sources/EasyTierMac */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				E70000000000000000000090 /* Exceptions for EasyTierMac sources */,
+				E70000000000000000000090 /* Exceptions for "Sources/EasyTierMac" folder in "EasyTierMac" target */,
 			);
 			path = Sources/EasyTierMac;
 			sourceTree = "<group>";
 		};
-		E70000000000000000000025 /* EasyTierPrivilegedHelper */ = {
+		E70000000000000000000025 /* Sources/EasyTierPrivilegedHelper */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = Sources/EasyTierPrivilegedHelper;
 			sourceTree = "<group>";
@@ -151,8 +151,8 @@
 			isa = PBXGroup;
 			children = (
 				E7000000000000000000001B /* Package.swift */,
-				E70000000000000000000024 /* EasyTierMac */,
-				E70000000000000000000025 /* EasyTierPrivilegedHelper */,
+				E70000000000000000000024 /* Sources/EasyTierMac */,
+				E70000000000000000000025 /* Sources/EasyTierPrivilegedHelper */,
 				E70000000000000000000022 /* Configurations */,
 				E70000000000000000000023 /* Packaging */,
 				E70000000000000000000021 /* Products */,
@@ -212,7 +212,7 @@
 				E70000000000000000000052 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
-				E70000000000000000000024 /* EasyTierMac */,
+				E70000000000000000000024 /* Sources/EasyTierMac */,
 			);
 			name = EasyTierMac;
 			packageProductDependencies = (
@@ -237,7 +237,7 @@
 				E70000000000000000000054 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
-				E70000000000000000000025 /* EasyTierPrivilegedHelper */,
+				E70000000000000000000025 /* Sources/EasyTierPrivilegedHelper */,
 			);
 			name = EasyTierPrivilegedHelper;
 			packageProductDependencies = (
@@ -417,10 +417,10 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				DEVELOPMENT_TEAM = "$(EASYTIER_DEVELOPMENT_TEAM)";
 				ENABLE_APP_SANDBOX = NO;
-				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_HARDENED_RUNTIME = NO;
 				EXECUTABLE_NAME = EasyTierMac;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = Packaging/EasyTierMac-Info.plist;
+				INFOPLIST_FILE = "Packaging/EasyTierMac-Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -449,7 +449,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				EXECUTABLE_NAME = EasyTierMac;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = Packaging/EasyTierMac-Info.plist;
+				INFOPLIST_FILE = "Packaging/EasyTierMac-Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -559,7 +559,7 @@
 /* Begin XCLocalSwiftPackageReference section */
 		E70000000000000000000080 /* XCLocalSwiftPackageReference "." */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = ".";
+			relativePath = .;
 		};
 /* End XCLocalSwiftPackageReference section */
 
