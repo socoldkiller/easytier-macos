@@ -133,11 +133,11 @@ private struct MemberStatusIdentity: View {
     }
 
     private var magicDNSDomain: String? {
-        let hostname = member.hostname.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !hostname.isEmpty, hostname != "-" else { return nil }
-        let suffix = store.magicDNSSettings.dnsSuffix
-        let stripped = suffix.hasSuffix(".") ? String(suffix.dropLast()) : suffix
-        return "\(hostname).\(stripped)"
+        MagicDNSDisplay.memberDomain(
+            hostname: member.hostname,
+            config: store.selectedConfig,
+            settings: store.magicDNSSettings
+        )
     }
 
     private var memberSubtitle: String {
@@ -663,11 +663,11 @@ private struct CopyableIPv4Cell: View {
     }
 
     private var magicDNSDomain: String? {
-        let hostname = member.hostname.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !hostname.isEmpty, hostname != "-" else { return nil }
-        let suffix = store.magicDNSSettings.dnsSuffix
-        let stripped = suffix.hasSuffix(".") ? String(suffix.dropLast()) : suffix
-        return "\(hostname).\(stripped)"
+        MagicDNSDisplay.memberDomain(
+            hostname: member.hostname,
+            config: store.selectedConfig,
+            settings: store.magicDNSSettings
+        )
     }
 
     private func copy(_ ip: String) {

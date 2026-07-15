@@ -4,6 +4,19 @@ import SwiftUI
 
 enum MagicDNSDisplay {
     static let resolverIP = MagicDNSSystemResolverConfigurator.resolverIP
+
+    static func memberDomain(
+        hostname: String,
+        config: NetworkConfig?,
+        settings: MagicDNSSettings
+    ) -> String? {
+        guard config?.enable_magic_dns == true else { return nil }
+        let hostname = hostname.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !hostname.isEmpty, hostname != "-" else { return nil }
+        let suffix = settings.dnsSuffix
+        let strippedSuffix = suffix.hasSuffix(".") ? String(suffix.dropLast()) : suffix
+        return "\(hostname).\(strippedSuffix)"
+    }
 }
 
 enum EasyTierSettingsTab: String, CaseIterable, Identifiable, Hashable {
@@ -298,7 +311,10 @@ struct EasyTierSettingsSheet: View {
                     Text(MagicDNSDisplay.resolverIP)
                         .font(.callout.monospaced())
                         .foregroundStyle(.secondary)
-                    StatusDot(tone: .positive, accessibilityLabel: "Active")
+                    StatusDot(
+                        tone: store.isMagicDNSResolverActive ? .positive : .neutral,
+                        accessibilityLabel: store.isMagicDNSResolverActive ? "Active" : "Inactive"
+                    )
                 }
             }
         }

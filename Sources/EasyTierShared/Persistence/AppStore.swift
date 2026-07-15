@@ -211,6 +211,10 @@ public final class EasyTierAppStore {
         return runningInstance(matching: config)
     }
 
+    public var isMagicDNSResolverActive: Bool {
+        !runningMagicDNSConfigNames().isEmpty
+    }
+
     /// A tracked instance includes a start request that has been accepted but
     /// has not produced a ready runtime snapshot yet.
     public var selectedConfigCanStop: Bool {
