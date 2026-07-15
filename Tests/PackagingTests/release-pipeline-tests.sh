@@ -31,14 +31,20 @@ chmod +x "$EASYTIER_EXPORT_APP_DIR/Contents/MacOS/EasyTierMac"
 python3 - "$EASYTIER_EXPORT_APP_DIR/Contents/Info.plist" <<'PY'
 import pathlib
 import plistlib
+import os
 import sys
 
 path = pathlib.Path(sys.argv[1])
 with path.open("wb") as handle:
     plistlib.dump(
         {
-            "CFBundleShortVersionString": "1.4.0",
-            "CFBundleVersion": "20260714010203",
+            "CFBundleShortVersionString": os.environ.get("EASYTIER_APP_VERSION", "1.4.0"),
+            "CFBundleVersion": os.environ.get("EASYTIER_BUILD_NUMBER", "20260714010203"),
+            "EasyTierBuildChannel": os.environ.get("EASYTIER_BUILD_CHANNEL", "stable"),
+            "EasyTierBuildTime": os.environ.get("EASYTIER_BUILD_TIME", "2026-07-14T01:02:03Z"),
+            "EasyTierCoreCommit": os.environ.get("EASYTIER_CORE_REVISION", "b" * 40),
+            "EasyTierCoreTag": os.environ.get("EASYTIER_CORE_VERSION", "v2.6.4"),
+            "EasyTierGUICommit": os.environ.get("EASYTIER_GUI_REVISION", "a" * 40),
         },
         handle,
     )
@@ -146,8 +152,8 @@ run_artifact() {
   EASYTIER_CODESIGN_IDENTITY="Developer ID Application: Test (ABCDEFGHIJ)" \
   EASYTIER_PROVISIONING_PROFILE="$PROFILE_PATH" \
   EASYTIER_SPARKLE_PUBLIC_ED_KEY="$PUBLIC_KEY" \
-  EASYTIER_APP_VERSION=1.4.0 \
-  EASYTIER_BUILD_NUMBER=20260714010203 \
+  EASYTIER_APP_VERSION="${TEST_APP_VERSION:-1.4.0}" \
+  EASYTIER_BUILD_NUMBER="${TEST_BUILD_NUMBER:-20260714010203}" \
   "$ROOT_DIR/scripts/release.sh" artifact
 }
 
@@ -218,22 +224,70 @@ if ! grep -q -- "--keychain $KEYCHAIN_PATH" "$ARGS_TRACE"; then
   exit 1
 fi
 
+rm -rf "$ARTIFACTS_DIR"
+mkdir -p "$ARTIFACTS_DIR"
+: > "$TRACE_FILE"
+: > "$ARGS_TRACE"
+TEST_BUILD_NUMBER=20260715020000 \
+EASYTIER_RELEASE_CHANNEL=nightly \
+EASYTIER_BUILD_TIME=2026-07-15T02:00:00Z \
+EASYTIER_GUI_REVISION=dddddddddddddddddddddddddddddddddddddddd \
+EASYTIER_CORE_REVISION=cccccccccccccccccccccccccccccccccccccccc \
+EASYTIER_CORE_VERSION=v2.6.4-40-gc0ffee00 \
+EASYTIER_NOTARY_KEYCHAIN_PROFILE=easytier-notary \
+EASYTIER_NOTARY_KEYCHAIN="$KEYCHAIN_PATH" \
+run_artifact > "$TEST_ROOT/nightly-artifact.log"
+
+NIGHTLY_ARTIFACT="$ARTIFACTS_DIR/EasyTier-macOS-ARM64-nightly-20260715020000.dmg"
+NIGHTLY_METADATA="${NIGHTLY_ARTIFACT%.dmg}.metadata.json"
+test -s "$NIGHTLY_ARTIFACT"
+python3 - "$NIGHTLY_METADATA" <<'PY'
+import json
+import pathlib
+import sys
+
+metadata = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert metadata["channel"] == "nightly"
+assert metadata["build"] == "20260715020000"
+assert metadata["guiCommit"] == "d" * 40
+assert metadata["coreCommit"] == "c" * 40
+PY
+
 PUBLISH_ARTIFACTS="$TEST_ROOT/publish-artifacts"
 PAGES_DIR="$TEST_ROOT/pages"
 SPARKLE_TOOLS="$TEST_ROOT/sparkle-tools"
 REMOTE_DMG_SOURCE="$TEST_ROOT/remote-release/EasyTier-macOS-ARM64.dmg"
 CURRENT_FEED="$TEST_ROOT/current-update.json"
+CURRENT_PAGES="$TEST_ROOT/current-pages"
 PUBLISH_TRACE="$TEST_ROOT/publish-trace.txt"
-mkdir -p "$PUBLISH_ARTIFACTS" "$SPARKLE_TOOLS" "$(dirname "$REMOTE_DMG_SOURCE")"
+mkdir -p "$PUBLISH_ARTIFACTS" "$SPARKLE_TOOLS" "$CURRENT_PAGES" "$(dirname "$REMOTE_DMG_SOURCE")"
 printf 'new local build bytes\n' > "$PUBLISH_ARTIFACTS/EasyTier-macOS-ARM64.dmg"
 printf 'already published immutable bytes\n' > "$REMOTE_DMG_SOURCE"
-printf '{"tag":"v1.3.3","build":"20260713010203"}\n' > "$CURRENT_FEED"
+printf '{"tag":"v1.3.3","build":"20260713010203","channel":"stable"}\n' > "$CURRENT_FEED"
+cp "$CURRENT_FEED" "$CURRENT_PAGES/update.json"
+cat > "$CURRENT_PAGES/appcast.xml" <<'EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0" sparkle:signature="old-feed-signature">
+  <channel>
+    <item>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <enclosure url="https://example.invalid/old.dmg" length="1" sparkle:version="20260713010203" sparkle:shortVersionString="1.3.3" sparkle:edSignature="old-signature" />
+    </item>
+  </channel>
+</rss>
+EOF
 cat > "$PUBLISH_ARTIFACTS/EasyTier-macOS-ARM64.metadata.json" <<'EOF'
 {
   "architecture": "ARM64",
   "build": "20260714010203",
+  "buildTime": "2026-07-14T01:02:03Z",
+  "channel": "stable",
+  "coreCommit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "coreVersion": "v2.6.4",
+  "guiCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "notarized": true,
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "signing": "developer-id",
   "version": "1.4.0"
 }
@@ -365,6 +419,7 @@ EASYTIER_RELEASE_TEMP_PARENT="$TEMP_PARENT" \
 EASYTIER_RELEASE_VERIFY_DMG_SCRIPT="$FAKE_HELPERS/verify-publish-dmg" \
 EASYTIER_SPARKLE_TOOLS_DIR="$SPARKLE_TOOLS" \
 EASYTIER_CURRENT_FEED_PATH="$CURRENT_FEED" \
+EASYTIER_CURRENT_PAGES_DIR="$CURRENT_PAGES" \
 SPARKLE_EDDSA_PRIVATE_KEY=fake-sparkle-private-key \
 TAG_NAME=v1.4.0 \
 REPOSITORY=socoldkiller/easytier-macos \
@@ -402,4 +457,240 @@ if find "$TEMP_PARENT" -mindepth 1 -print -quit | grep -q .; then
   exit 1
 fi
 
-echo "Release artifact and rerun state-machine tests passed."
+NIGHTLY_ARTIFACTS="$TEST_ROOT/nightly-artifacts"
+NIGHTLY_PAGES="$TEST_ROOT/nightly-pages"
+NIGHTLY_CURRENT_PAGES="$TEST_ROOT/nightly-current-pages"
+NIGHTLY_CURRENT_FEED="$TEST_ROOT/current-nightly.json"
+NIGHTLY_DMG="$NIGHTLY_ARTIFACTS/EasyTier-macOS-ARM64-nightly-20260715020000.dmg"
+NIGHTLY_TRACE="$TEST_ROOT/nightly-trace.txt"
+GUI_REVISION="dddddddddddddddddddddddddddddddddddddddd"
+CORE_REVISION="cccccccccccccccccccccccccccccccccccccccc"
+mkdir -p "$NIGHTLY_ARTIFACTS" "$NIGHTLY_CURRENT_PAGES"
+cp -R "$PAGES_DIR/." "$NIGHTLY_CURRENT_PAGES/"
+cp "$NIGHTLY_CURRENT_PAGES/update.json" "$TEST_ROOT/stable-feed-before-nightly.json"
+printf 'nightly dmg bytes\n' > "$NIGHTLY_DMG"
+cat > "$NIGHTLY_ARTIFACTS/EasyTier-macOS-ARM64-nightly-20260715020000.metadata.json" <<EOF
+{
+  "architecture": "ARM64",
+  "build": "20260715020000",
+  "buildTime": "2026-07-15T02:00:00Z",
+  "channel": "nightly",
+  "coreCommit": "$CORE_REVISION",
+  "coreVersion": "v2.6.4-40-gc0ffee00",
+  "guiCommit": "$GUI_REVISION",
+  "notarized": true,
+  "schemaVersion": 2,
+  "signing": "developer-id",
+  "version": "1.4.0"
+}
+EOF
+cat > "$NIGHTLY_CURRENT_FEED" <<'EOF'
+{
+  "build": "20260714020000",
+  "channel": "nightly",
+  "coreCommit": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "guiCommit": "ffffffffffffffffffffffffffffffffffffffff",
+  "tag": "nightly-20260714020000"
+}
+EOF
+cp "$NIGHTLY_CURRENT_FEED" "$NIGHTLY_CURRENT_PAGES/nightly.json"
+: > "$NIGHTLY_TRACE"
+
+cat > "$FAKE_HELPERS/verify-nightly-dmg" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cmp -s "$1" "$NIGHTLY_DMG"
+printf 'verify-nightly-dmg\n' >> "$NIGHTLY_TRACE"
+EOF
+
+cat > "$FAKE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "release" && "$2" == "view" ]]; then
+  printf 'gh-view-nightly\n' >> "$NIGHTLY_TRACE"
+  exit 1
+fi
+if [[ "$1" == "release" && "$2" == "create" ]]; then
+  [[ " $* " == *" --prerelease "* ]]
+  [[ " $* " == *" --target $GUI_REVISION "* ]]
+  [[ " $* " == *" --title Nightly 2026-07-15 "* ]]
+  printf 'gh-create-nightly\n' >> "$NIGHTLY_TRACE"
+  exit 0
+fi
+if [[ "$1" == "release" && "$2" == "upload" ]]; then
+  printf 'gh-upload-nightly\n' >> "$NIGHTLY_TRACE"
+  exit 0
+fi
+echo "Unexpected nightly gh invocation: $*" >&2
+exit 1
+EOF
+
+cat > "$SPARKLE_TOOLS/generate_appcast" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+output=""
+prefix=""
+input=""
+channel=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    -o)
+      output="$2"
+      shift 2
+      ;;
+    --download-url-prefix)
+      prefix="$2"
+      shift 2
+      ;;
+    --channel)
+      channel="$2"
+      shift 2
+      ;;
+    --ed-key-file|--maximum-versions)
+      shift 2
+      ;;
+    --embed-release-notes)
+      shift
+      ;;
+    *)
+      input="$1"
+      shift
+      ;;
+  esac
+done
+[[ "$channel" == "nightly" ]]
+dmg="$input/EasyTier-macOS-ARM64-nightly-20260715020000.dmg"
+cmp -s "$dmg" "$NIGHTLY_DMG"
+size="$(wc -c < "$dmg" | tr -d ' ')"
+stable_dmg_size="$(wc -c < "$REMOTE_STABLE_DMG" | tr -d ' ')"
+printf 'generate-nightly-appcast\n' >> "$NIGHTLY_TRACE"
+cat > "$output" <<XML
+<?xml version="1.0" encoding="utf-8"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0" sparkle:signature="combined-feed-signature">
+  <channel>
+    <item>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <enclosure url="https://github.com/socoldkiller/easytier-macos/releases/download/v1.4.0/EasyTier-macOS-ARM64.dmg" length="$stable_dmg_size" sparkle:version="20260714010203" sparkle:shortVersionString="1.4.0" sparkle:edSignature="stable-signature" />
+    </item>
+    <item>
+      <sparkle:channel>nightly</sparkle:channel>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <enclosure url="${prefix}EasyTier-macOS-ARM64-nightly-20260715020000.dmg" length="$size" sparkle:version="20260715020000" sparkle:shortVersionString="1.4.0" sparkle:edSignature="nightly-signature" />
+    </item>
+  </channel>
+</rss>
+XML
+EOF
+
+cat > "$SPARKLE_TOOLS/sign_update" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+file_path=""
+for argument in "$@"; do
+  if [[ "$argument" == *.dmg || "$argument" == *.xml ]]; then
+    file_path="$argument"
+    break
+  fi
+done
+if [[ "$file_path" == *.dmg ]]; then
+  cmp -s "$file_path" "$NIGHTLY_DMG"
+  printf 'verify-nightly-signature\n' >> "$NIGHTLY_TRACE"
+elif [[ "$file_path" == *.xml ]]; then
+  printf 'verify-combined-appcast-signature\n' >> "$NIGHTLY_TRACE"
+else
+  exit 1
+fi
+EOF
+
+chmod +x "$FAKE_BIN/gh" "$FAKE_HELPERS/verify-nightly-dmg" "$SPARKLE_TOOLS"/*
+
+PATH="$FAKE_BIN:$PATH" \
+NIGHTLY_DMG="$NIGHTLY_DMG" \
+NIGHTLY_TRACE="$NIGHTLY_TRACE" \
+REMOTE_STABLE_DMG="$REMOTE_DMG_SOURCE" \
+GUI_REVISION="$GUI_REVISION" \
+EASYTIER_ARTIFACTS_DIR="$NIGHTLY_ARTIFACTS" \
+EASYTIER_PAGES_DIR="$NIGHTLY_PAGES" \
+EASYTIER_CURRENT_PAGES_DIR="$NIGHTLY_CURRENT_PAGES" \
+EASYTIER_CURRENT_FEED_PATH="$NIGHTLY_CURRENT_FEED" \
+EASYTIER_RELEASE_CHANNEL=nightly \
+EASYTIER_BUILD_TIME=2026-07-15T02:00:00Z \
+EASYTIER_GUI_REVISION="$GUI_REVISION" \
+EASYTIER_CORE_REVISION="$CORE_REVISION" \
+EASYTIER_RELEASE_TEMP_PARENT="$TEMP_PARENT" \
+EASYTIER_RELEASE_VERIFY_DMG_SCRIPT="$FAKE_HELPERS/verify-nightly-dmg" \
+EASYTIER_SPARKLE_TOOLS_DIR="$SPARKLE_TOOLS" \
+SPARKLE_EDDSA_PRIVATE_KEY=fake-sparkle-private-key \
+TAG_NAME=nightly-20260715020000 \
+REPOSITORY=socoldkiller/easytier-macos \
+GH_TOKEN=fake-token \
+"$ROOT_DIR/scripts/release.sh" publish > "$TEST_ROOT/nightly-publish.log"
+
+cat > "$TEST_ROOT/expected-nightly-trace.txt" <<'EOF'
+verify-nightly-dmg
+gh-view-nightly
+generate-nightly-appcast
+verify-nightly-signature
+verify-combined-appcast-signature
+gh-create-nightly
+gh-upload-nightly
+EOF
+diff -u "$TEST_ROOT/expected-nightly-trace.txt" "$NIGHTLY_TRACE"
+cmp "$TEST_ROOT/stable-feed-before-nightly.json" "$NIGHTLY_PAGES/update.json"
+
+python3 - "$NIGHTLY_PAGES/appcast.xml" "$NIGHTLY_PAGES/nightly.json" <<'PY'
+import json
+import pathlib
+import sys
+import xml.etree.ElementTree as ET
+
+appcast = ET.parse(sys.argv[1]).getroot()
+channels = []
+for item in appcast.findall("./channel/item"):
+    channel = next((child.text for child in item if child.tag.endswith("channel")), None)
+    channels.append(channel or "stable")
+assert sorted(channels) == ["nightly", "stable"]
+
+nightly = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+assert nightly["channel"] == "nightly"
+assert nightly["tag"] == "nightly-20260715020000"
+assert nightly["guiCommit"] == "dddddddddddddddddddddddddddddddddddddddd"
+assert nightly["coreCommit"] == "cccccccccccccccccccccccccccccccccccccccc"
+PY
+
+PRUNE_TRACE="$TEST_ROOT/prune-trace.txt"
+: > "$PRUNE_TRACE"
+cat > "$FAKE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "release" && "$2" == "list" ]]; then
+  index=16
+  while [[ "$index" -ge 1 ]]; do
+    printf 'nightly-202607%02d020000\n' "$index"
+    index=$((index - 1))
+  done
+  exit 0
+fi
+if [[ "$1" == "release" && "$2" == "delete" ]]; then
+  printf '%s\n' "$3" >> "$PRUNE_TRACE"
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "$FAKE_BIN/gh"
+
+PATH="$FAKE_BIN:$PATH" \
+PRUNE_TRACE="$PRUNE_TRACE" \
+REPOSITORY=socoldkiller/easytier-macos \
+EASYTIER_NIGHTLY_RELEASES_TO_KEEP=14 \
+"$ROOT_DIR/scripts/release.sh" prune-nightlies > "$TEST_ROOT/prune.log"
+
+cat > "$TEST_ROOT/expected-prune-trace.txt" <<'EOF'
+nightly-20260702020000
+nightly-20260701020000
+EOF
+diff -u "$TEST_ROOT/expected-prune-trace.txt" "$PRUNE_TRACE"
+
+echo "Stable, Nightly, feed-preservation, and retention state-machine tests passed."

@@ -112,6 +112,8 @@ macOS 15 及以上。
 
 从 v1.4.0 开始，后续版本可通过 `EasyTier > Check for Updates…` 直接验证、安装并重新启动，不再需要打开 Finder 或拖拽 DMG。由于 v1.3.3 及更早版本尚未内置 Sparkle，升级到 v1.4.0 仍需完成最后一次手动安装。
 
+在 `Settings > General > Software Update` 中可选择 `Latest Stable` 或 `Nightly`。Nightly 每晚从最新 GUI 与 EasyTier Core `main` 构建，可能不稳定；切回 Stable 只改变后续更新轨道，不会自动降级当前安装。
+
 首次启动：
 1. Release DMG 已经过 Developer ID 签名和 Apple 公证；如果 macOS 提示无法验证开发者，请不要绕过 Gatekeeper，重新下载并提交 Issue
 2. 启动后会提示安装 Helper，按 macOS 弹窗操作

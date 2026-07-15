@@ -5,6 +5,11 @@ struct AppVersionInfo: Equatable {
     var build: String
     var rawBuild: String
     var bundleIdentifier: String
+    var buildChannel: SoftwareUpdateTrack
+
+    var displayVersion: String {
+        buildChannel == .nightly ? "\(version) Nightly" : version
+    }
 
     static var current: AppVersionInfo {
         AppVersionInfo(bundle: .main)
@@ -21,6 +26,8 @@ struct AppVersionInfo: Equatable {
             ?? Self.formattedBuildTime(from: bundleVersion)
             ?? "Local"
         bundleIdentifier = bundle.bundleIdentifier ?? "com.kkrainbow.easytier.mac"
+        buildChannel = (info["EasyTierBuildChannel"] as? String)
+            .flatMap(SoftwareUpdateTrack.init(rawValue:)) ?? .stable
     }
 
     private static func formattedExecutableModificationDate(bundle: Bundle) -> String? {

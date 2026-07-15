@@ -84,6 +84,7 @@ struct EasyTierSettingsSheet: View {
     @State private var magicDNSSuffix: String
     @State private var settingsError: String?
     @State private var showingDisableRPCListenWarning = false
+    private let appInfo = AppVersionInfo.current
 
     var onChange: (AppMode, MagicDNSSettings) -> Void
 
@@ -218,9 +219,21 @@ struct EasyTierSettingsSheet: View {
 
                 CardSection(
                     "Software Update",
-                    footer: "EasyTier checks stable releases at most once every 24 hours."
+                    footer: softwareUpdateFooterText
                 ) {
                     Toggle("Check for Updates Automatically", isOn: autoCheckUpdatesBinding)
+                    SettingsRowDivider()
+                    SettingsInlineRow("Update To") {
+                        Picker("Update To", selection: updateTrackBinding) {
+                            ForEach(SoftwareUpdateTrack.allCases) { track in
+                                Text(track.displayName).tag(track)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(minWidth: 156, alignment: .trailing)
+                        .disabled(updater.sessionInProgress)
+                    }
                     SettingsRowDivider()
                     SettingsInlineRow("Status") {
                         Text(generalUpdateSummaryText)
@@ -410,9 +423,30 @@ struct EasyTierSettingsSheet: View {
         }
     }
 
+    private var updateTrackBinding: Binding<SoftwareUpdateTrack> {
+        Binding {
+            updater.updateTrack
+        } set: { track in
+            updater.updateTrack = track
+        }
+    }
+
+    private var softwareUpdateFooterText: String {
+        if updater.updateTrack == .nightly {
+            return "Built nightly from the latest EasyTier GUI and Core. Nightly builds may be unstable."
+        }
+        if appInfo.buildChannel == .nightly {
+            return "Stable updates are selected. This Nightly build remains installed until a newer Stable release is available."
+        }
+        return "EasyTier checks signed Stable releases at most once every 24 hours."
+    }
+
     private var generalUpdateSummaryText: String {
         if updater.sessionInProgress { return "Update session in progress" }
-        return updater.automaticallyChecksForUpdates ? "Checks signed stable releases daily" : "Automatic checks are off"
+        guard updater.automaticallyChecksForUpdates else { return "Automatic checks are off" }
+        return updater.updateTrack == .nightly
+            ? "Checks signed Stable and Nightly builds daily"
+            : "Checks signed Stable releases daily"
     }
 
     private func performUpdateAction() {
@@ -636,7 +670,7 @@ private struct SettingsAboutView: View {
                 Text("EasyTier for macOS")
                     .font(.largeTitle.weight(.semibold))
 
-                Text("Version \(appInfo.version)")
+                Text("Version \(appInfo.displayVersion)")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
@@ -664,6 +698,7 @@ private struct SettingsAboutView: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    LabeledContent("Update track", value: updater.updateTrack.displayName)
                     if let lastCheck = updater.lastUpdateCheckDate {
                         LabeledContent("Last check", value: lastCheck.formatted(date: .abbreviated, time: .shortened))
                     }
@@ -672,6 +707,7 @@ private struct SettingsAboutView: View {
                 Section("Version") {
                     SettingsMetadataRow(label: "GUI", value: "\(appInfo.version) · \(revisions.guiCommit)")
                     SettingsMetadataRow(label: "Core", value: revisions.coreVersion)
+                    SettingsMetadataRow(label: "Build channel", value: appInfo.buildChannel.buildDisplayName)
                     SettingsMetadataRow(label: "Build", value: appInfo.build)
                 }
 
@@ -700,9 +736,15 @@ private struct SettingsAboutView: View {
 
     private var updateSummaryText: String {
         if updater.sessionInProgress { return "Software update is in progress…" }
-        return updater.automaticallyChecksForUpdates
-            ? "EasyTier checks signed stable releases automatically."
-            : "Automatic update checks are disabled."
+        if appInfo.buildChannel == .nightly, updater.updateTrack == .stable {
+            return "Stable updates selected; this Nightly build will remain until a newer Stable release is available."
+        }
+        guard updater.automaticallyChecksForUpdates else {
+            return "Automatic update checks are disabled."
+        }
+        return updater.updateTrack == .nightly
+            ? "EasyTier checks signed Stable and Nightly builds automatically."
+            : "EasyTier checks signed Stable releases automatically."
     }
 
     private func performUpdateAction() {
@@ -743,9 +785,23 @@ private struct SettingsSourceRevisionInfo: Equatable {
         let bundledCore = normalized(info["EasyTierCoreCommit"] as? String)
 
         return SettingsSourceRevisionInfo(
-            guiCommit: bundledGUI ?? "unknown",
-            coreVersion: bundledCoreTag ?? bundledCore ?? "unknown"
+            guiCommit: abbreviated(bundledGUI) ?? "unknown",
+            coreVersion: joinedVersion(tag: bundledCoreTag, commit: bundledCore)
         )
+    }
+
+    private static func joinedVersion(tag: String?, commit: String?) -> String {
+        let abbreviatedCommit = abbreviated(commit)
+        if let tag, let abbreviatedCommit, !tag.contains(abbreviatedCommit) {
+            return "\(tag) · \(abbreviatedCommit)"
+        }
+        return tag ?? abbreviatedCommit ?? "unknown"
+    }
+
+    private static func abbreviated(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let isFullCommit = value.count == 40 && value.allSatisfy(\.isHexDigit)
+        return isFullCommit ? String(value.prefix(8)) : value
     }
 
     private static func normalized(_ value: String?) -> String? {

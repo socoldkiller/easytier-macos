@@ -2,6 +2,34 @@ import Foundation
 import Observation
 import Sparkle
 
+enum SoftwareUpdateTrack: String, CaseIterable, Identifiable, Sendable {
+    case stable
+    case nightly
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .stable: "Latest Stable"
+        case .nightly: "Nightly"
+        }
+    }
+
+    var buildDisplayName: String {
+        switch self {
+        case .stable: "Stable"
+        case .nightly: "Nightly"
+        }
+    }
+
+    var allowedSparkleChannels: Set<String> {
+        switch self {
+        case .stable: []
+        case .nightly: ["nightly"]
+        }
+    }
+}
+
 @MainActor
 protocol SoftwareUpdateClient: AnyObject {
     var canCheckForUpdates: Bool { get }
@@ -12,6 +40,7 @@ protocol SoftwareUpdateClient: AnyObject {
 
     func start()
     func checkForUpdates()
+    func resetUpdateCycleAfterShortDelay()
 }
 
 @MainActor
@@ -69,6 +98,10 @@ final class SparkleSoftwareUpdateClient: SoftwareUpdateClient {
     func checkForUpdates() {
         controller.checkForUpdates(nil)
     }
+
+    func resetUpdateCycleAfterShortDelay() {
+        controller.updater.resetUpdateCycleAfterShortDelay()
+    }
 }
 
 struct SoftwareUpdateRuntimeRestoreState: Codable, Equatable {
@@ -87,6 +120,14 @@ final class SoftwareUpdateController: NSObject, SPUUpdaterDelegate {
     private(set) var sessionInProgress = false
     private(set) var lastUpdateCheckDate: Date?
     private(set) var isStarted = false
+
+    var updateTrack: SoftwareUpdateTrack {
+        didSet {
+            guard updateTrack != oldValue else { return }
+            userDefaults.set(updateTrack.rawValue, forKey: Self.updateTrackKey)
+            client?.resetUpdateCycleAfterShortDelay()
+        }
+    }
 
     var automaticallyChecksForUpdates = true {
         didSet {
@@ -120,8 +161,11 @@ final class SoftwareUpdateController: NSObject, SPUUpdaterDelegate {
         restoreRunningConfigIDs: @escaping @MainActor ([String]) async -> Void = { _ in },
         recordNotice: @escaping @MainActor (String) -> Void = { _ in }
     ) {
+        let storedTrack = userDefaults.string(forKey: Self.updateTrackKey)
+            .flatMap(SoftwareUpdateTrack.init(rawValue:)) ?? .stable
         self.userDefaults = userDefaults
         self.currentBuild = currentBuild
+        updateTrack = storedTrack
         self.preparationTimeout = preparationTimeout
         self.captureRunningConfigIDs = captureRunningConfigIDs
         self.prepareForInstallation = prepareForInstallation
@@ -130,6 +174,7 @@ final class SoftwareUpdateController: NSObject, SPUUpdaterDelegate {
         super.init()
 
         migrateLegacyPreferencesIfNeeded()
+        userDefaults.set(updateTrack.rawValue, forKey: Self.updateTrackKey)
         if let clientFactory {
             client = clientFactory(self)
         } else {
@@ -149,6 +194,14 @@ final class SoftwareUpdateController: NSObject, SPUUpdaterDelegate {
     func checkForUpdates() {
         guard canCheckForUpdates else { return }
         client?.checkForUpdates()
+    }
+
+    var allowedSparkleChannels: Set<String> {
+        updateTrack.allowedSparkleChannels
+    }
+
+    func allowedChannels(for _: SPUUpdater) -> Set<String> {
+        allowedSparkleChannels
     }
 
     func restorePendingRuntimeIfNeeded() async {
@@ -294,6 +347,7 @@ final class SoftwareUpdateController: NSObject, SPUUpdaterDelegate {
     private static let legacySkippedVersionKey = "EasyTierUpdaterSkippedVersion"
     private static let sparkleAutomaticChecksKey = "SUEnableAutomaticChecks"
     private static let sparkleLastCheckDateKey = "SULastCheckTime"
+    private static let updateTrackKey = "EasyTierSoftwareUpdateTrack"
     private static let pendingRestoreStateKey = "EasyTierPendingSoftwareUpdateRuntimeRestore"
 }
 

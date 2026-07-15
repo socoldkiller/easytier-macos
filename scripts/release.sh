@@ -13,6 +13,8 @@ PAGES_DIR="${EASYTIER_PAGES_DIR:-$ROOT_DIR/.build/pages}"
 MINIMUM_SYSTEM_VERSION="${EASYTIER_MINIMUM_SYSTEM_VERSION:-15.0}"
 UPDATE_BASE_URL="${EASYTIER_UPDATE_BASE_URL:-https://socoldkiller.github.io/easytier-macos}"
 REPOSITORY="${REPOSITORY:-${GITHUB_REPOSITORY:-socoldkiller/easytier-macos}}"
+CORE_REPOSITORY="${EASYTIER_CORE_REPOSITORY:-EasyTier/EasyTier}"
+RELEASE_CHANNEL="${EASYTIER_RELEASE_CHANNEL:-stable}"
 
 TEMP_ROOT=""
 RELEASE_ARCHITECTURE=""
@@ -64,6 +66,12 @@ require_executable() {
   [[ -x "$path" ]] || die "Required release helper is not executable: $path"
 }
 
+configure_release_channel() {
+  [[ "$RELEASE_CHANNEL" == "stable" || "$RELEASE_CHANNEL" == "nightly" ]] \
+    || die "EASYTIER_RELEASE_CHANNEL must be stable or nightly: $RELEASE_CHANNEL"
+  export EASYTIER_BUILD_CHANNEL="$RELEASE_CHANNEL"
+}
+
 configure_paths() {
   local machine_architecture="${EASYTIER_RELEASE_ARCHITECTURE:-$(uname -m)}"
   case "$machine_architecture" in
@@ -75,8 +83,15 @@ configure_paths() {
       ;;
   esac
 
+  local default_dmg_name="EasyTier-macOS-$RELEASE_ARCHITECTURE.dmg"
+  if [[ "$RELEASE_CHANNEL" == "nightly" ]]; then
+    local nightly_date
+    [[ "${EASYTIER_BUILD_NUMBER:-}" =~ ^[0-9]{14}$ ]] \
+      || die "Nightly artifacts require a 14-digit EASYTIER_BUILD_NUMBER before path configuration."
+    default_dmg_name="EasyTier-macOS-$RELEASE_ARCHITECTURE-nightly-${EASYTIER_BUILD_NUMBER}.dmg"
+  fi
   APP_PATH="${EASYTIER_EXPORT_APP_DIR:-$ARTIFACTS_DIR/EasyTier.app}"
-  DMG_PATH="${EASYTIER_DMG_PATH:-$ARTIFACTS_DIR/EasyTier-macOS-$RELEASE_ARCHITECTURE.dmg}"
+  DMG_PATH="${EASYTIER_DMG_PATH:-$ARTIFACTS_DIR/$default_dmg_name}"
   METADATA_PATH="${EASYTIER_ARTIFACT_METADATA_PATH:-${DMG_PATH%.dmg}.metadata.json}"
 }
 
@@ -86,6 +101,21 @@ configure_release_version() {
   local head_commit=""
   local tag_commit=""
   local tag_commit_epoch=""
+
+  configure_release_channel
+  if [[ "$RELEASE_CHANNEL" == "nightly" ]]; then
+    [[ "${EASYTIER_APP_VERSION:-}" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] \
+      || die "Nightly artifacts require a numeric EASYTIER_APP_VERSION."
+    [[ "${EASYTIER_BUILD_NUMBER:-}" =~ ^[0-9]{14}$ ]] \
+      || die "Nightly artifacts require a 14-digit EASYTIER_BUILD_NUMBER."
+    [[ "${EASYTIER_BUILD_TIME:-}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+      || die "Nightly artifacts require EASYTIER_BUILD_TIME in UTC ISO-8601 format."
+    [[ "${EASYTIER_GUI_REVISION:-}" =~ ^[0-9a-f]{40}$ ]] \
+      || die "Nightly artifacts require a full EASYTIER_GUI_REVISION."
+    [[ "${EASYTIER_CORE_REVISION:-}" =~ ^[0-9a-f]{40}$ ]] \
+      || die "Nightly artifacts require a full EASYTIER_CORE_REVISION."
+    return
+  fi
 
   if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
     release_tag="${GITHUB_REF_NAME:-}"
@@ -221,8 +251,8 @@ artifact_preflight() {
 }
 
 build_artifact() {
-  configure_paths
   configure_release_version
+  configure_paths
   artifact_preflight
   ensure_temp_root
   prepare_provisioning_profile
@@ -307,14 +337,27 @@ validate_published_order() {
   local metadata_path="$1"
   local tag="$2"
   local current_feed="${EASYTIER_CURRENT_FEED_PATH:-}"
+  local feed_name="update.json"
+  local allow_missing_channel="${EASYTIER_ALLOW_MISSING_CHANNEL_FEED:-${EASYTIER_ALLOW_MISSING_CURRENT_FEED:-0}}"
+  [[ "$RELEASE_CHANNEL" == "nightly" ]] && feed_name="nightly.json"
   if [[ -z "$current_feed" ]]; then
-    current_feed="$TEMP_ROOT/current-update.json"
+    current_feed="$TEMP_ROOT/current-$feed_name"
     local cache_bust="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$(date +%s)"
     log "Checking the currently deployed build ordering"
     if ! curl -fsSL -H 'Cache-Control: no-cache' \
-      "$UPDATE_BASE_URL/update.json?ordering=$cache_bust" \
+      "$UPDATE_BASE_URL/$feed_name?ordering=$cache_bust" \
       -o "$current_feed"; then
-      if [[ "${EASYTIER_ALLOW_MISSING_CURRENT_FEED:-0}" == "1" ]]; then
+      if [[ "$allow_missing_channel" == "1" ]]; then
+        if [[ "$RELEASE_CHANNEL" == "nightly" ]]; then
+          local current_appcast="$TEMP_ROOT/current-ordering-appcast.xml"
+          curl -fsSL -H 'Cache-Control: no-cache' \
+            "$UPDATE_BASE_URL/appcast.xml?ordering=$cache_bust" \
+            -o "$current_appcast" \
+            || die "Could not load the existing appcast while bootstrapping Nightly."
+          if grep -q '<sparkle:channel>nightly</sparkle:channel>' "$current_appcast"; then
+            die "nightly.json is missing even though the appcast already contains Nightly."
+          fi
+        fi
         log "No current update feed was found; initial-feed override is enabled"
         return
       fi
@@ -425,6 +468,43 @@ resolve_sparkle_tools() {
     || die "Pinned Sparkle sign_update tool was not resolved in $SPARKLE_TOOLS_DIR."
 }
 
+bootstrap_pages_state() {
+  local source_dir="${EASYTIER_CURRENT_PAGES_DIR:-}"
+  local allow_missing="${EASYTIER_ALLOW_MISSING_CURRENT_FEED:-0}"
+  local cache_bust="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$(date +%s)"
+  local name
+
+  rm -rf "$PAGES_DIR"
+  mkdir -p "$PAGES_DIR"
+
+  if [[ -n "$source_dir" ]]; then
+    [[ -d "$source_dir" ]] || die "Current Pages directory does not exist: $source_dir"
+    for name in appcast.xml update.json nightly.json; do
+      if [[ -f "$source_dir/$name" ]]; then
+        cp "$source_dir/$name" "$PAGES_DIR/$name"
+      fi
+    done
+  else
+    for name in appcast.xml update.json nightly.json; do
+      curl -fsSL -H 'Cache-Control: no-cache' \
+        "$UPDATE_BASE_URL/$name?state=$cache_bust" \
+        -o "$PAGES_DIR/$name" 2>/dev/null || rm -f "$PAGES_DIR/$name"
+    done
+  fi
+
+  if [[ ! -s "$PAGES_DIR/appcast.xml" && "$allow_missing" != "1" ]]; then
+    die "Could not load the existing appcast; refusing to replace another update channel."
+  fi
+  if [[ "$RELEASE_CHANNEL" == "nightly" && ! -s "$PAGES_DIR/update.json" && "$allow_missing" != "1" ]]; then
+    die "Could not load the Stable update manifest before publishing Nightly."
+  fi
+  if [[ -s "$PAGES_DIR/appcast.xml" ]] && \
+    grep -q '<sparkle:channel>nightly</sparkle:channel>' "$PAGES_DIR/appcast.xml" && \
+    [[ ! -s "$PAGES_DIR/nightly.json" ]]; then
+    die "The appcast contains Nightly but nightly.json could not be preserved."
+  fi
+}
+
 generate_and_validate_feeds() {
   local dmg_path="$1"
   local metadata_path="$2"
@@ -432,26 +512,33 @@ generate_and_validate_feeds() {
   local notes_path="$4"
   local appcast_input="$TEMP_ROOT/appcast-input"
   local appcast_path="$PAGES_DIR/appcast.xml"
-  local legacy_path="$PAGES_DIR/update.json"
+  local channel_feed_path="$PAGES_DIR/update.json"
   local notes_name="$(basename "${dmg_path%.dmg}.md")"
   local generate_output signature
+  local generate_args
 
-  rm -rf "$PAGES_DIR" "$appcast_input"
-  mkdir -p "$PAGES_DIR" "$appcast_input"
+  [[ "$RELEASE_CHANNEL" == "nightly" ]] && channel_feed_path="$PAGES_DIR/nightly.json"
+  bootstrap_pages_state
+  rm -rf "$appcast_input"
+  mkdir -p "$appcast_input"
   cp "$dmg_path" "$appcast_input/$(basename "$dmg_path")"
   cp "$notes_path" "$appcast_input/$notes_name"
 
   resolve_sparkle_tools
   prepare_sparkle_private_key
   log "Generating the signed Sparkle appcast"
+  generate_args=(
+    --ed-key-file "$SPARKLE_PRIVATE_KEY_FILE"
+    --download-url-prefix "https://github.com/$REPOSITORY/releases/download/$tag/"
+    --embed-release-notes
+    --maximum-versions 1
+    -o "$appcast_path"
+  )
+  if [[ "$RELEASE_CHANNEL" == "nightly" ]]; then
+    generate_args+=(--channel nightly)
+  fi
   if ! generate_output="$(
-    "$SPARKLE_TOOLS_DIR/generate_appcast" \
-      --ed-key-file "$SPARKLE_PRIVATE_KEY_FILE" \
-      --download-url-prefix "https://github.com/$REPOSITORY/releases/download/$tag/" \
-      --embed-release-notes \
-      --maximum-versions 1 \
-      -o "$appcast_path" \
-      "$appcast_input" 2>&1
+    "$SPARKLE_TOOLS_DIR/generate_appcast" "${generate_args[@]}" "$appcast_input" 2>&1
   )"; then
     printf '%s\n' "$generate_output" >&2
     die "Sparkle appcast generation failed."
@@ -461,13 +548,13 @@ generate_and_validate_feeds() {
     die "Sparkle private key does not match SUPublicEDKey in the packaged app."
   fi
 
-  "$PYTHON_BIN" "$RELEASE_FEED_HELPER" legacy-feed \
+  "$PYTHON_BIN" "$RELEASE_FEED_HELPER" channel-feed \
     --metadata "$metadata_path" \
     --dmg "$dmg_path" \
     --tag "$tag" \
     --repository "$REPOSITORY" \
     --minimum-system-version "$MINIMUM_SYSTEM_VERSION" \
-    --output "$legacy_path"
+    --output "$channel_feed_path"
 
   signature="$(
     "$PYTHON_BIN" "$RELEASE_FEED_HELPER" validate-appcast \
@@ -494,16 +581,33 @@ publish_github_release() {
   local dmg_path="$1"
   local tag="$2"
   local notes_path="$3"
+  local title="$tag"
+  local release_args=()
+
+  if [[ "$RELEASE_CHANNEL" == "nightly" ]]; then
+    [[ "${EASYTIER_BUILD_TIME:-}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] \
+      || die "Nightly publication requires EASYTIER_BUILD_TIME."
+    [[ "${EASYTIER_GUI_REVISION:-}" =~ ^[0-9a-f]{40}$ ]] \
+      || die "Nightly publication requires EASYTIER_GUI_REVISION."
+    nightly_date="$(
+      "$PYTHON_BIN" -c \
+        'from datetime import datetime, timedelta; import sys; value = datetime.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ") + timedelta(hours=8); print(value.strftime("%Y-%m-%d"))' \
+        "$EASYTIER_BUILD_TIME"
+    )"
+    title="Nightly $nightly_date"
+    release_args=(--prerelease --target "$EASYTIER_GUI_REVISION")
+  fi
 
   if [[ "$RELEASE_EXISTS" == "0" ]]; then
     log "Creating GitHub Release $tag"
-    gh release create "$tag" \
-      --repo "$REPOSITORY" \
-      --title "$tag" \
-      --notes-file "$notes_path"
+    local create_args=(--repo "$REPOSITORY" --title "$title" --notes-file "$notes_path")
+    create_args+=("${release_args[@]}")
+    gh release create "$tag" "${create_args[@]}"
     RELEASE_EXISTS=1
   else
-    gh release edit "$tag" --repo "$REPOSITORY" --notes-file "$notes_path"
+    local edit_args=(--repo "$REPOSITORY" --title "$title" --notes-file "$notes_path")
+    [[ "$RELEASE_CHANNEL" == "nightly" ]] && edit_args+=(--prerelease)
+    gh release edit "$tag" "${edit_args[@]}"
   fi
 
   if [[ "$REMOTE_ASSET_EXISTS" == "0" ]]; then
@@ -515,7 +619,7 @@ publish_github_release() {
 }
 
 publish_release() {
-  configure_paths
+  configure_release_channel
   require_command curl
   require_command gh
   require_command swift
@@ -531,10 +635,18 @@ publish_release() {
   validate_published_order "$FOUND_METADATA" "$tag"
 
   notes_path="$ARTIFACTS_DIR/RELEASE_NOTES.md"
-  "$PYTHON_BIN" "$RELEASE_FEED_HELPER" release-notes \
-    --changelog "$ROOT_DIR/CHANGELOG.md" \
-    --tag "$tag" \
-    --output "$notes_path"
+  if [[ "$RELEASE_CHANNEL" == "nightly" ]]; then
+    "$PYTHON_BIN" "$RELEASE_FEED_HELPER" nightly-release-notes \
+      --metadata "$FOUND_METADATA" \
+      --repository "$REPOSITORY" \
+      --core-repository "$CORE_REPOSITORY" \
+      --output "$notes_path"
+  else
+    "$PYTHON_BIN" "$RELEASE_FEED_HELPER" release-notes \
+      --changelog "$ROOT_DIR/CHANGELOG.md" \
+      --tag "$tag" \
+      --output "$notes_path"
+  fi
 
   prepare_canonical_release_asset "$FOUND_DMG" "$FOUND_METADATA" "$tag"
   generate_and_validate_feeds "$CANONICAL_DMG" "$FOUND_METADATA" "$tag" "$notes_path"
@@ -544,31 +656,48 @@ publish_release() {
 }
 
 verify_deployed_feeds() {
+  configure_release_channel
   require_command cmp
   require_command curl
   ensure_temp_root
   [[ -s "$PAGES_DIR/appcast.xml" && -s "$PAGES_DIR/update.json" ]] \
     || die "Expected generated feeds in $PAGES_DIR."
+  if [[ "$RELEASE_CHANNEL" == "nightly" && ! -s "$PAGES_DIR/nightly.json" ]]; then
+    die "Nightly publication did not generate nightly.json."
+  fi
 
   local attempts="${EASYTIER_DEPLOY_VERIFY_ATTEMPTS:-12}"
   local delay="${EASYTIER_DEPLOY_VERIFY_DELAY_SECONDS:-5}"
   local deployed_appcast="$TEMP_ROOT/deployed-appcast.xml"
   local deployed_legacy="$TEMP_ROOT/deployed-update.json"
-  local attempt cache_bust
+  local deployed_nightly="$TEMP_ROOT/deployed-nightly.json"
+  local attempt cache_bust feeds_match
   [[ "$attempts" =~ ^[1-9][0-9]*$ ]] || die "EASYTIER_DEPLOY_VERIFY_ATTEMPTS must be positive."
   [[ "$delay" =~ ^[0-9]+$ ]] || die "EASYTIER_DEPLOY_VERIFY_DELAY_SECONDS must be non-negative."
 
   attempt=1
   while [[ "$attempt" -le "$attempts" ]]; do
     cache_bust="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$attempt"
+    feeds_match=0
     if curl -fsSL -H 'Cache-Control: no-cache' \
-         "$UPDATE_BASE_URL/appcast.xml?deploy=$cache_bust" \
-         -o "$deployed_appcast" && \
-       curl -fsSL -H 'Cache-Control: no-cache' \
-         "$UPDATE_BASE_URL/update.json?deploy=$cache_bust" \
-         -o "$deployed_legacy" && \
-       cmp "$PAGES_DIR/appcast.xml" "$deployed_appcast" && \
-       cmp "$PAGES_DIR/update.json" "$deployed_legacy"; then
+        "$UPDATE_BASE_URL/appcast.xml?deploy=$cache_bust" \
+        -o "$deployed_appcast" && \
+      curl -fsSL -H 'Cache-Control: no-cache' \
+        "$UPDATE_BASE_URL/update.json?deploy=$cache_bust" \
+        -o "$deployed_legacy" && \
+      cmp "$PAGES_DIR/appcast.xml" "$deployed_appcast" && \
+      cmp "$PAGES_DIR/update.json" "$deployed_legacy"; then
+      feeds_match=1
+      if [[ -s "$PAGES_DIR/nightly.json" ]]; then
+        if ! curl -fsSL -H 'Cache-Control: no-cache' \
+            "$UPDATE_BASE_URL/nightly.json?deploy=$cache_bust" \
+            -o "$deployed_nightly" || \
+          ! cmp "$PAGES_DIR/nightly.json" "$deployed_nightly"; then
+          feeds_match=0
+        fi
+      fi
+    fi
+    if [[ "$feeds_match" == "1" ]]; then
       log "GitHub Pages is serving the newly signed update feeds"
       return
     fi
@@ -580,6 +709,33 @@ verify_deployed_feeds() {
   die "GitHub Pages did not serve the expected update feeds after $attempts attempt(s)."
 }
 
+prune_nightly_releases() {
+  require_command gh
+  local keep="${EASYTIER_NIGHTLY_RELEASES_TO_KEEP:-14}"
+  local index tag
+  local tags=()
+  [[ "$keep" =~ ^[1-9][0-9]*$ ]] || die "EASYTIER_NIGHTLY_RELEASES_TO_KEEP must be positive."
+
+  while IFS= read -r tag; do
+    [[ -n "$tag" ]] && tags+=("$tag")
+  done < <(
+    gh release list \
+      --repo "$REPOSITORY" \
+      --limit 100 \
+      --json tagName,isPrerelease \
+      --jq '.[] | select(.isPrerelease and (.tagName | startswith("nightly-"))) | .tagName' \
+      | sort -r
+  )
+
+  index="$keep"
+  while [[ "$index" -lt "${#tags[@]}" ]]; do
+    tag="${tags[$index]}"
+    log "Deleting expired Nightly release $tag"
+    gh release delete "$tag" --repo "$REPOSITORY" --cleanup-tag --yes
+    index=$((index + 1))
+  done
+}
+
 usage() {
   cat <<'EOF'
 Usage: scripts/release.sh <command>
@@ -588,6 +744,7 @@ Commands:
   artifact               Build, sign, notarize, staple, and verify the final DMG.
   publish                Verify one artifact, generate signed feeds, and publish/reuse a GitHub Release asset.
   verify-deployed-feeds  Compare deployed GitHub Pages feeds byte-for-byte with the generated files.
+  prune-nightlies        Keep only the newest Nightly prereleases and their tags.
 
 Local notarization uses:
   EASYTIER_NOTARY_KEYCHAIN_PROFILE=easytier-notary
@@ -609,6 +766,9 @@ main() {
       ;;
     verify-deployed-feeds)
       verify_deployed_feeds
+      ;;
+    prune-nightlies)
+      prune_nightly_releases
       ;;
     help|-h|--help|"")
       usage

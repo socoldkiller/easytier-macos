@@ -115,6 +115,8 @@ Grab the DMG from [Releases](https://github.com/socoldkiller/easytier-macos/rele
 
 Starting with v1.4.0, later releases can be verified, installed, and relaunched from `EasyTier > Check for Updates…` without opening Finder or dragging another DMG. v1.3.3 and earlier do not contain Sparkle, so moving v1.4.0 into Applications is the final manual upgrade.
 
+Choose `Latest Stable` or `Nightly` under `Settings > General > Software Update`. Nightly packages the latest GUI and EasyTier Core `main` revisions each night and may be unstable. Switching back to Stable changes future updates only; it does not automatically downgrade the installed build.
+
 First launch:
 1. Release DMGs are Developer ID signed and Apple-notarized. If macOS cannot verify the developer, do not bypass Gatekeeper; download the DMG again and report the release issue.
 2. TUN mode prompts for the privileged helper → follow the dialogs

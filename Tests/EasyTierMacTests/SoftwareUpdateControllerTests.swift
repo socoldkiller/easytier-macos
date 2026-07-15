@@ -46,6 +46,61 @@ import Testing
 }
 
 @MainActor
+@Test func updateTrackDefaultsToStableAndNormalizesInvalidPreferences() {
+    let fixture = makeUserDefaults()
+    defer { fixture.clear() }
+
+    fixture.defaults.set("unsupported", forKey: updateTrackKey)
+    let controller = SoftwareUpdateController(
+        userDefaults: fixture.defaults,
+        clientFactory: { _ in TestSoftwareUpdateClient() }
+    )
+
+    #expect(controller.updateTrack == .stable)
+    #expect(controller.allowedSparkleChannels.isEmpty)
+    #expect(fixture.defaults.string(forKey: updateTrackKey) == SoftwareUpdateTrack.stable.rawValue)
+}
+
+@MainActor
+@Test func nightlyTrackPersistsAndResetsSparkleUpdateCycle() {
+    let fixture = makeUserDefaults()
+    defer { fixture.clear() }
+
+    let client = TestSoftwareUpdateClient()
+    let controller = SoftwareUpdateController(
+        userDefaults: fixture.defaults,
+        clientFactory: { _ in client }
+    )
+
+    controller.updateTrack = .nightly
+
+    #expect(controller.allowedSparkleChannels == ["nightly"])
+    #expect(fixture.defaults.string(forKey: updateTrackKey) == SoftwareUpdateTrack.nightly.rawValue)
+    #expect(client.resetUpdateCycleCount == 1)
+
+    controller.updateTrack = .nightly
+    #expect(client.resetUpdateCycleCount == 1)
+}
+
+@MainActor
+@Test func storedNightlyTrackLoadsBeforeSparkleStarts() {
+    let fixture = makeUserDefaults()
+    defer { fixture.clear() }
+
+    fixture.defaults.set(SoftwareUpdateTrack.nightly.rawValue, forKey: updateTrackKey)
+    let client = TestSoftwareUpdateClient()
+    let controller = SoftwareUpdateController(
+        userDefaults: fixture.defaults,
+        clientFactory: { _ in client }
+    )
+
+    #expect(controller.updateTrack == .nightly)
+    #expect(controller.allowedSparkleChannels == ["nightly"])
+    #expect(client.resetUpdateCycleCount == 0)
+    #expect(controller.responds(to: NSSelectorFromString("allowedChannelsForUpdater:")))
+}
+
+@MainActor
 @Test func controllerTracksSparkleStateAndForwardsUserActions() {
     let fixture = makeUserDefaults()
     defer { fixture.clear() }
@@ -197,6 +252,7 @@ private final class TestSoftwareUpdateClient: SoftwareUpdateClient {
     var stateDidChange: (@MainActor () -> Void)?
     private(set) var startCount = 0
     private(set) var checkCount = 0
+    private(set) var resetUpdateCycleCount = 0
 
     func start() {
         startCount += 1
@@ -206,6 +262,10 @@ private final class TestSoftwareUpdateClient: SoftwareUpdateClient {
     func checkForUpdates() {
         checkCount += 1
     }
+
+    func resetUpdateCycleAfterShortDelay() {
+        resetUpdateCycleCount += 1
+    }
 }
 
 private enum TestUpdateError: Error {
@@ -213,6 +273,7 @@ private enum TestUpdateError: Error {
 }
 
 private let pendingRestoreKey = "EasyTierPendingSoftwareUpdateRuntimeRestore"
+private let updateTrackKey = "EasyTierSoftwareUpdateTrack"
 
 private func makeUserDefaults() -> (defaults: UserDefaults, clear: () -> Void) {
     let suiteName = "SoftwareUpdateControllerTests.\(UUID().uuidString)"

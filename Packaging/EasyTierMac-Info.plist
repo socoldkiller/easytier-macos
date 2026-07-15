@@ -22,6 +22,8 @@
     <string>$(CURRENT_PROJECT_VERSION)</string>
     <key>EasyTierBuildTime</key>
     <string>$(EASYTIER_BUILD_TIME)</string>
+    <key>EasyTierBuildChannel</key>
+    <string>$(EASYTIER_BUILD_CHANNEL)</string>
     <key>EasyTierCoreCommit</key>
     <string>$(EASYTIER_CORE_COMMIT)</string>
     <key>EasyTierCoreTag</key>

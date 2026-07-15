@@ -5,6 +5,12 @@ and feed generation requires the matching private key. The signing and appcast
 commands themselves are owned by `scripts/release.sh`; this document only
 describes durable key provisioning.
 
+Stable and Nightly use the same signed `appcast.xml` and the same EdDSA key.
+Stable items use Sparkle's default channel; Nightly items contain
+`<sparkle:channel>nightly</sparkle:channel>`. Stable clients therefore ignore
+Nightly, while users who opt into Nightly can receive either channel's newer
+build. Do not create a second key or unsigned feed for Nightly.
+
 Generate the production key once on a trusted Mac:
 
 ```bash

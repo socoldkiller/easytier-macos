@@ -13,6 +13,10 @@ BUILD_CONFIGURATION="${EASYTIER_BUILD_CONFIGURATION:-release}"
 APP_VERSION="${EASYTIER_APP_VERSION:-}"
 BUILD_NUMBER="${EASYTIER_BUILD_NUMBER:-}"
 BUILD_TIME_UTC="${EASYTIER_BUILD_TIME:-}"
+BUILD_CHANNEL="${EASYTIER_BUILD_CHANNEL:-stable}"
+GUI_REVISION="${EASYTIER_GUI_REVISION:-}"
+CORE_REVISION="${EASYTIER_CORE_REVISION:-}"
+CORE_VERSION="${EASYTIER_CORE_VERSION:-}"
 CODE_SIGN_IDENTITY="${EASYTIER_CODESIGN_IDENTITY:-}"
 CODE_SIGN_KEYCHAIN="${EASYTIER_CODESIGN_KEYCHAIN:-}"
 PROVISIONING_PROFILE="${EASYTIER_PROVISIONING_PROFILE:-}"
@@ -44,10 +48,28 @@ trap cleanup EXIT
 
 git_revision() {
   local path="$1"
-  local revision
-  revision="$(git -C "$path" rev-parse --short HEAD 2>/dev/null || true)"
+  local configured_revision="${2:-}"
+  local ignore_submodules="${3:-0}"
+  local revision status
+  revision="$(git -C "$path" rev-parse HEAD 2>/dev/null || true)"
   [[ -n "$revision" ]] || revision="unknown"
-  if [[ -n "$(git -C "$path" status --short --untracked-files=no 2>/dev/null || true)" ]]; then
+
+  if [[ -n "$configured_revision" ]]; then
+    [[ "$configured_revision" =~ ^[0-9a-f]{40}$ ]] \
+      || die "Configured source revision must be a full lowercase Git SHA: $configured_revision"
+    [[ "$revision" == "$configured_revision" ]] \
+      || die "Configured source revision does not match $path: $configured_revision != $revision"
+  fi
+
+  if [[ "$ignore_submodules" == "1" ]]; then
+    status="$(git -C "$path" status --short --untracked-files=no --ignore-submodules=all 2>/dev/null || true)"
+  else
+    status="$(git -C "$path" status --short --untracked-files=no 2>/dev/null || true)"
+  fi
+  if [[ -n "$status" ]]; then
+    if [[ -n "$configured_revision" ]]; then
+      die "Source tree has tracked changes despite an explicit revision: $path"
+    fi
     revision="$revision-dirty"
   fi
   printf '%s\n' "$revision"
@@ -121,6 +143,8 @@ configure_version() {
   BUILD_TIME_UTC="${BUILD_TIME_UTC:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
   [[ "$BUILD_TIME_UTC" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
     || die "EASYTIER_BUILD_TIME must be an ISO-8601 UTC timestamp; got '$BUILD_TIME_UTC'."
+  [[ "$BUILD_CHANNEL" == "stable" || "$BUILD_CHANNEL" == "nightly" ]] \
+    || die "EASYTIER_BUILD_CHANNEL must be stable or nightly; got '$BUILD_CHANNEL'."
 }
 
 configure_source_packages_dir() {
@@ -218,9 +242,9 @@ archive_app() {
     || die "EASYTIER_BUILD_CONFIGURATION must be 'debug' or 'release'."
 
   local gui_commit core_version core_commit signing_flags=""
-  gui_commit="$(git_revision "$ROOT_DIR")"
-  core_version="$(git_version "$ROOT_DIR/Vendor/EasyTier")"
-  core_commit="$(git_revision "$ROOT_DIR/Vendor/EasyTier")"
+  gui_commit="$(git_revision "$ROOT_DIR" "$GUI_REVISION" 1)"
+  core_version="${CORE_VERSION:-$(git_version "$ROOT_DIR/Vendor/EasyTier")}"
+  core_commit="$(git_revision "$ROOT_DIR/Vendor/EasyTier" "$CORE_REVISION")"
   if [[ -n "$CODE_SIGN_KEYCHAIN" ]]; then
     signing_flags="--keychain $CODE_SIGN_KEYCHAIN"
   fi
@@ -241,6 +265,7 @@ archive_app() {
     "MARKETING_VERSION=$APP_VERSION"
     "CURRENT_PROJECT_VERSION=$BUILD_NUMBER"
     "EASYTIER_BUILD_TIME=$BUILD_TIME_UTC"
+    "EASYTIER_BUILD_CHANNEL=$BUILD_CHANNEL"
     "EASYTIER_GUI_COMMIT=$gui_commit"
     "EASYTIER_CORE_TAG=$core_version"
     "EASYTIER_CORE_COMMIT=$core_commit"

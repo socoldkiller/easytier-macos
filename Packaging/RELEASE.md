@@ -99,16 +99,46 @@ artifact transfer, and the official GitHub Pages actions. It calls:
 ./scripts/release.sh artifact
 ./scripts/release.sh publish
 ./scripts/release.sh verify-deployed-feeds
+./scripts/release.sh prune-nightlies
 ```
 
 `publish` verifies the downloaded DMG again, enforces monotonic build numbers,
-extracts release notes from `CHANGELOG.md`, generates and verifies the signed
-Sparkle appcast and legacy `update.json`, and then creates the GitHub Release.
+generates release notes, updates only the selected branch in the signed Sparkle
+appcast, and then creates the GitHub Release. Stable publication updates the
+legacy-compatible `update.json`; Nightly publication updates `nightly.json` and
+preserves `update.json` byte-for-byte.
 
 Tag reruns are recoverable. If an immutable DMG already exists on the GitHub
 Release, the pipeline downloads and verifies that exact asset and generates the
 feeds from its original bytes. It does not compare it with or replace a newly
 built DMG, whose signing timestamps and notarization tickets may differ.
+
+## Stable and Nightly channels
+
+Numeric `v*` tags publish Stable releases from the GUI repository's pinned
+EasyTier submodule. The appcast item has no explicit Sparkle channel.
+
+The scheduled workflow starts daily at 02:00 Asia/Shanghai. It checks out the
+workflow's exact GUI `main` SHA and the exact EasyTier Core `origin/main` SHA,
+then builds and tests that pair. If both SHAs match `nightly.json`, the workflow
+finishes without signing or publishing a duplicate. Otherwise it may publish:
+
+- Version: the most recent reachable numeric GUI tag.
+- Build: the workflow run creation time as UTC `YYYYMMDDHHMMSS`.
+- Tag: `nightly-YYYYMMDDHHMMSS`.
+- Asset: an immutable, signed, notarized Nightly DMG.
+- Release: a GitHub prerelease targeting the exact GUI SHA.
+
+Set repository variable `NIGHTLY_RELEASES_ENABLED=true` after the first manual
+Nightly validation. Scheduled runs always build and test, but only publish when
+that variable is enabled. A `workflow_dispatch` run with mode `nightly` may
+publish before the schedule is enabled.
+
+Both channels share one signed `appcast.xml`. Publication downloads the current
+Pages state after acquiring the global feed concurrency lock, retains one
+latest item per channel, and fails closed if an existing channel cannot be
+preserved. `prune-nightlies` runs only after Pages verification and keeps the
+newest 14 Nightly prereleases and tags.
 
 ## Credential handling
 
@@ -130,6 +160,7 @@ Credential-free release logic is covered by:
 make test-packaging
 ```
 
-Those tests exercise metadata, version ordering, release notes, appcast fields,
-the App/DMG notarization order, cleanup on failure, local and CI credential
-adapters, and immutable-asset reuse on a tag rerun.
+Those tests exercise metadata, per-channel version ordering, Stable/Nightly
+release notes, combined appcast fields, feed preservation, the App/DMG
+notarization order, cleanup on failure, immutable-asset reuse, and Nightly
+retention.

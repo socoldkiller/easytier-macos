@@ -17,6 +17,7 @@ RUST_RELEASE_CODEGEN_UNITS="${EASYTIER_RUST_CODEGEN_UNITS:-1}"
 RUST_RELEASE_PANIC="${EASYTIER_RUST_PANIC:-abort}"
 RUST_RELEASE_STRIP="${EASYTIER_RUST_STRIP:-none}"
 STRIP_STATIC_LIBS="${EASYTIER_STRIP_STATIC_LIBS:-1}"
+EXPECTED_CORE_REVISION="${EASYTIER_CORE_REVISION:-}"
 
 # Xcode launched from Finder does not inherit Cargo or Homebrew shell paths.
 export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -53,10 +54,18 @@ verify_core_gitlink() {
   fi
 
   local expected_rev current_rev
-  expected_rev="$(git ls-files --stage -- Vendor/EasyTier | awk '$1 == 160000 { print $2 }')"
   current_rev="$(git -C "$EASYTIER_DIR" rev-parse HEAD)"
+  if [[ -n "$EXPECTED_CORE_REVISION" ]]; then
+    [[ "$EXPECTED_CORE_REVISION" =~ ^[0-9a-f]{40}$ ]] || {
+      echo "EASYTIER_CORE_REVISION must be a full lowercase Git SHA: $EXPECTED_CORE_REVISION" >&2
+      exit 1
+    }
+    expected_rev="$EXPECTED_CORE_REVISION"
+  else
+    expected_rev="$(git ls-files --stage -- Vendor/EasyTier | awk '$1 == 160000 { print $2 }')"
+  fi
   if [[ -z "$expected_rev" || "$current_rev" != "$expected_rev" ]]; then
-    echo "Vendor/EasyTier does not match the repository gitlink; run: git submodule update --init --recursive" >&2
+    echo "Vendor/EasyTier does not match the expected revision $expected_rev; current revision is $current_rev." >&2
     exit 1
   fi
   if [[ -n "$(git -C "$EASYTIER_DIR" status --short --untracked-files=no)" ]]; then
