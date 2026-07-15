@@ -195,8 +195,10 @@ struct EasyTierSettingsSheet: View {
 
                 CardSection(
                     "General",
-                    footer: "Open EasyTier automatically when you sign in."
+                    footer: "When hidden from the Dock, EasyTier remains available from the menu bar."
                 ) {
+                    Toggle("Show in Dock", isOn: appearance.showsDockIconBinding)
+                    SettingsRowDivider()
                     Toggle("Launch at Login", isOn: $loginItem.isEnabled)
                         .onChange(of: loginItem.isEnabled) { _, _ in loginItem.apply() }
                 }
@@ -846,6 +848,13 @@ private extension AppAppearanceSettings {
         Binding(
             get: { self.glassPanelBackgroundsEnabled },
             set: { self.glassPanelBackgroundsEnabled = $0 }
+        )
+    }
+
+    var showsDockIconBinding: Binding<Bool> {
+        Binding(
+            get: { self.showsDockIcon },
+            set: { self.showsDockIcon = $0 }
         )
     }
 }

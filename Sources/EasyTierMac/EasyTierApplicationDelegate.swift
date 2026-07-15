@@ -18,6 +18,12 @@ final class EasyTierApplicationDelegate: NSObject, NSApplicationDelegate {
         NSApp.terminate(nil)
     }
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        guard let application = notification.object as? NSApplication else { return }
+        let showsDockIcon = AppAppearanceSettings.persistedShowsDockIcon()
+        _ = application.setActivationPolicy(AppAppearanceSettings.activationPolicy(showsDockIcon: showsDockIcon))
+    }
+
     func applicationShouldTerminate(_ application: NSApplication) -> NSApplication.TerminateReply {
         guard Self.quitTask == nil else { return .terminateLater }
         guard let quitPreparation = Self.quitPreparation else { return .terminateNow }
