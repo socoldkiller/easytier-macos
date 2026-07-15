@@ -410,21 +410,31 @@ EOF
 
 chmod +x "$FAKE_BIN/gh" "$FAKE_HELPERS/verify-publish-dmg" "$SPARKLE_TOOLS"/*
 
-PATH="$FAKE_BIN:$PATH" \
-PUBLISH_TRACE="$PUBLISH_TRACE" \
-REMOTE_DMG_SOURCE="$REMOTE_DMG_SOURCE" \
-EASYTIER_ARTIFACTS_DIR="$PUBLISH_ARTIFACTS" \
-EASYTIER_PAGES_DIR="$PAGES_DIR" \
-EASYTIER_RELEASE_TEMP_PARENT="$TEMP_PARENT" \
-EASYTIER_RELEASE_VERIFY_DMG_SCRIPT="$FAKE_HELPERS/verify-publish-dmg" \
-EASYTIER_SPARKLE_TOOLS_DIR="$SPARKLE_TOOLS" \
-EASYTIER_CURRENT_FEED_PATH="$CURRENT_FEED" \
-EASYTIER_CURRENT_PAGES_DIR="$CURRENT_PAGES" \
-SPARKLE_EDDSA_PRIVATE_KEY=fake-sparkle-private-key \
-TAG_NAME=v1.4.0 \
-REPOSITORY=socoldkiller/easytier-macos \
-GH_TOKEN=fake-token \
-"$ROOT_DIR/scripts/release.sh" publish > "$TEST_ROOT/publish.log"
+run_stable_publish_fixture() {
+  local trace_path="$1"
+  local pages_path="$2"
+  local current_pages_path="$3"
+  local allow_missing_current_feed="${4:-0}"
+
+  PATH="$FAKE_BIN:$PATH" \
+  PUBLISH_TRACE="$trace_path" \
+  REMOTE_DMG_SOURCE="$REMOTE_DMG_SOURCE" \
+  EASYTIER_ARTIFACTS_DIR="$PUBLISH_ARTIFACTS" \
+  EASYTIER_PAGES_DIR="$pages_path" \
+  EASYTIER_RELEASE_TEMP_PARENT="$TEMP_PARENT" \
+  EASYTIER_RELEASE_VERIFY_DMG_SCRIPT="$FAKE_HELPERS/verify-publish-dmg" \
+  EASYTIER_SPARKLE_TOOLS_DIR="$SPARKLE_TOOLS" \
+  EASYTIER_CURRENT_FEED_PATH="$CURRENT_FEED" \
+  EASYTIER_CURRENT_PAGES_DIR="$current_pages_path" \
+  EASYTIER_ALLOW_MISSING_CURRENT_FEED="$allow_missing_current_feed" \
+  SPARKLE_EDDSA_PRIVATE_KEY=fake-sparkle-private-key \
+  TAG_NAME=v1.4.0 \
+  REPOSITORY=socoldkiller/easytier-macos \
+  GH_TOKEN=fake-token \
+  "$ROOT_DIR/scripts/release.sh" publish
+}
+
+run_stable_publish_fixture "$PUBLISH_TRACE" "$PAGES_DIR" "$CURRENT_PAGES" > "$TEST_ROOT/publish.log"
 
 cat > "$TEST_ROOT/expected-publish-trace.txt" <<'EOF'
 verify-local-dmg
@@ -454,6 +464,44 @@ PY
 
 if find "$TEMP_PARENT" -mindepth 1 -print -quit | grep -q .; then
   echo "Temporary Sparkle credentials survived publish." >&2
+  exit 1
+fi
+
+BOOTSTRAP_CURRENT_PAGES="$TEST_ROOT/bootstrap-current-pages"
+BOOTSTRAP_PAGES="$TEST_ROOT/bootstrap-pages"
+BOOTSTRAP_FAILURE_TRACE="$TEST_ROOT/bootstrap-failure-trace.txt"
+BOOTSTRAP_SUCCESS_TRACE="$TEST_ROOT/bootstrap-success-trace.txt"
+mkdir -p "$BOOTSTRAP_CURRENT_PAGES"
+cp "$CURRENT_FEED" "$BOOTSTRAP_CURRENT_PAGES/update.json"
+: > "$BOOTSTRAP_FAILURE_TRACE"
+: > "$BOOTSTRAP_SUCCESS_TRACE"
+
+if run_stable_publish_fixture \
+  "$BOOTSTRAP_FAILURE_TRACE" \
+  "$BOOTSTRAP_PAGES" \
+  "$BOOTSTRAP_CURRENT_PAGES" \
+  0 > "$TEST_ROOT/bootstrap-failure.log" 2>&1; then
+  echo "Stable publish unexpectedly bootstrapped a missing appcast without an override." >&2
+  exit 1
+fi
+grep -F "Could not load the existing appcast; refusing to replace another update channel." \
+  "$TEST_ROOT/bootstrap-failure.log" >/dev/null
+
+run_stable_publish_fixture \
+  "$BOOTSTRAP_SUCCESS_TRACE" \
+  "$BOOTSTRAP_PAGES" \
+  "$BOOTSTRAP_CURRENT_PAGES" \
+  1 > "$TEST_ROOT/bootstrap-success.log"
+test -s "$BOOTSTRAP_PAGES/appcast.xml"
+test -s "$BOOTSTRAP_PAGES/update.json"
+grep -F 'sparkle:shortVersionString="1.4.0"' "$BOOTSTRAP_PAGES/appcast.xml" >/dev/null
+grep -F "generate-appcast-from-remote" "$BOOTSTRAP_SUCCESS_TRACE" >/dev/null
+grep -F \
+  "EASYTIER_ALLOW_MISSING_CURRENT_FEED: \${{ needs.build.outputs.tag_name == 'v1.4.0' && '1' || '0' }}" \
+  "$ROOT_DIR/.github/workflows/macos-app.yml" >/dev/null
+
+if find "$TEMP_PARENT" -mindepth 1 -print -quit | grep -q .; then
+  echo "Temporary Sparkle credentials survived Stable appcast bootstrap." >&2
   exit 1
 fi
 

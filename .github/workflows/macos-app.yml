@@ -320,6 +320,7 @@ jobs:
       EASYTIER_CORE_REVISION: ${{ needs.build.outputs.core_revision }}
       EASYTIER_CORE_VERSION: ${{ needs.build.outputs.core_version }}
       EASYTIER_ALLOW_MISSING_CHANNEL_FEED: ${{ needs.build.outputs.release_channel == 'nightly' && '1' || '0' }}
+      EASYTIER_ALLOW_MISSING_CURRENT_FEED: ${{ needs.build.outputs.tag_name == 'v1.4.0' && '1' || '0' }}
 
     steps:
       - name: Checkout release module
