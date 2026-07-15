@@ -601,7 +601,9 @@ publish_github_release() {
   if [[ "$RELEASE_EXISTS" == "0" ]]; then
     log "Creating GitHub Release $tag"
     local create_args=(--repo "$REPOSITORY" --title "$title" --notes-file "$notes_path")
-    create_args+=("${release_args[@]}")
+    if [[ "$RELEASE_CHANNEL" == "nightly" ]]; then
+      create_args+=("${release_args[@]}")
+    fi
     gh release create "$tag" "${create_args[@]}"
     RELEASE_EXISTS=1
   else

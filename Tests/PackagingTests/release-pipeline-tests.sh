@@ -309,6 +309,9 @@ cat > "$FAKE_BIN/gh" <<'EOF'
 set -euo pipefail
 if [[ "$1" == "release" && "$2" == "view" ]]; then
   printf 'gh-view\n' >> "$PUBLISH_TRACE"
+  if [[ "${PUBLISH_RELEASE_EXISTS:-1}" == "0" ]]; then
+    exit 1
+  fi
   printf 'EasyTier-macOS-ARM64.dmg\n'
   exit 0
 fi
@@ -330,9 +333,16 @@ if [[ "$1" == "release" && "$2" == "edit" ]]; then
   printf 'gh-edit\n' >> "$PUBLISH_TRACE"
   exit 0
 fi
-if [[ "$1" == "release" && ( "$2" == "upload" || "$2" == "create" ) ]]; then
-  echo "A rerun must not create or replace an existing DMG release asset." >&2
-  exit 1
+if [[ "$1" == "release" && "$2" == "create" ]]; then
+  [[ "${PUBLISH_RELEASE_EXISTS:-1}" == "0" ]]
+  [[ " $* " != *" --prerelease "* ]]
+  printf 'gh-create-stable\n' >> "$PUBLISH_TRACE"
+  exit 0
+fi
+if [[ "$1" == "release" && "$2" == "upload" ]]; then
+  [[ "${PUBLISH_RELEASE_EXISTS:-1}" == "0" ]]
+  printf 'gh-upload-stable\n' >> "$PUBLISH_TRACE"
+  exit 0
 fi
 echo "Unexpected gh invocation: $*" >&2
 exit 1
@@ -367,12 +377,20 @@ while [[ "$#" -gt 0 ]]; do
   esac
 done
 dmg="$input/EasyTier-macOS-ARM64.dmg"
-cmp -s "$dmg" "$REMOTE_DMG_SOURCE" || {
-  echo "Sparkle did not receive the immutable remote DMG." >&2
-  exit 1
-}
+if [[ "${PUBLISH_RELEASE_EXISTS:-1}" == "0" ]]; then
+  cmp -s "$dmg" "$LOCAL_DMG_SOURCE" || {
+    echo "Sparkle did not receive the initial local DMG." >&2
+    exit 1
+  }
+  printf 'generate-appcast-from-local\n' >> "$PUBLISH_TRACE"
+else
+  cmp -s "$dmg" "$REMOTE_DMG_SOURCE" || {
+    echo "Sparkle did not receive the immutable remote DMG." >&2
+    exit 1
+  }
+  printf 'generate-appcast-from-remote\n' >> "$PUBLISH_TRACE"
+fi
 size="$(wc -c < "$dmg" | tr -d ' ')"
-printf 'generate-appcast-from-remote\n' >> "$PUBLISH_TRACE"
 cat > "$output" <<XML
 <?xml version="1.0" encoding="utf-8"?>
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0" sparkle:signature="feed-signature">
@@ -398,8 +416,13 @@ for argument in "$@"; do
   fi
 done
 if [[ "$file_path" == *.dmg ]]; then
-  cmp -s "$file_path" "$REMOTE_DMG_SOURCE"
-  printf 'verify-remote-signature\n' >> "$PUBLISH_TRACE"
+  if [[ "${PUBLISH_RELEASE_EXISTS:-1}" == "0" ]]; then
+    cmp -s "$file_path" "$LOCAL_DMG_SOURCE"
+    printf 'verify-local-signature\n' >> "$PUBLISH_TRACE"
+  else
+    cmp -s "$file_path" "$REMOTE_DMG_SOURCE"
+    printf 'verify-remote-signature\n' >> "$PUBLISH_TRACE"
+  fi
 elif [[ "$file_path" == *.xml ]]; then
   printf 'verify-appcast-signature\n' >> "$PUBLISH_TRACE"
 else
@@ -415,10 +438,13 @@ run_stable_publish_fixture() {
   local pages_path="$2"
   local current_pages_path="$3"
   local allow_missing_current_feed="${4:-0}"
+  local release_exists="${5:-1}"
 
   PATH="$FAKE_BIN:$PATH" \
   PUBLISH_TRACE="$trace_path" \
   REMOTE_DMG_SOURCE="$REMOTE_DMG_SOURCE" \
+  LOCAL_DMG_SOURCE="$PUBLISH_ARTIFACTS/EasyTier-macOS-ARM64.dmg" \
+  PUBLISH_RELEASE_EXISTS="$release_exists" \
   EASYTIER_ARTIFACTS_DIR="$PUBLISH_ARTIFACTS" \
   EASYTIER_PAGES_DIR="$pages_path" \
   EASYTIER_RELEASE_TEMP_PARENT="$TEMP_PARENT" \
@@ -480,6 +506,7 @@ if run_stable_publish_fixture \
   "$BOOTSTRAP_FAILURE_TRACE" \
   "$BOOTSTRAP_PAGES" \
   "$BOOTSTRAP_CURRENT_PAGES" \
+  0 \
   0 > "$TEST_ROOT/bootstrap-failure.log" 2>&1; then
   echo "Stable publish unexpectedly bootstrapped a missing appcast without an override." >&2
   exit 1
@@ -491,11 +518,15 @@ run_stable_publish_fixture \
   "$BOOTSTRAP_SUCCESS_TRACE" \
   "$BOOTSTRAP_PAGES" \
   "$BOOTSTRAP_CURRENT_PAGES" \
-  1 > "$TEST_ROOT/bootstrap-success.log"
+  1 \
+  0 > "$TEST_ROOT/bootstrap-success.log"
 test -s "$BOOTSTRAP_PAGES/appcast.xml"
 test -s "$BOOTSTRAP_PAGES/update.json"
 grep -F 'sparkle:shortVersionString="1.4.0"' "$BOOTSTRAP_PAGES/appcast.xml" >/dev/null
-grep -F "generate-appcast-from-remote" "$BOOTSTRAP_SUCCESS_TRACE" >/dev/null
+grep -F "generate-appcast-from-local" "$BOOTSTRAP_SUCCESS_TRACE" >/dev/null
+grep -F "verify-local-signature" "$BOOTSTRAP_SUCCESS_TRACE" >/dev/null
+grep -F "gh-create-stable" "$BOOTSTRAP_SUCCESS_TRACE" >/dev/null
+grep -F "gh-upload-stable" "$BOOTSTRAP_SUCCESS_TRACE" >/dev/null
 grep -F \
   "EASYTIER_ALLOW_MISSING_CURRENT_FEED: \${{ needs.build.outputs.tag_name == 'v1.4.0' && '1' || '0' }}" \
   "$ROOT_DIR/.github/workflows/macos-app.yml" >/dev/null
