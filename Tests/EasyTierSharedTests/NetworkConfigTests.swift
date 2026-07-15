@@ -1086,6 +1086,30 @@ import Testing
     #expect(store.logLines.contains { $0.text.contains("Magic DNS suffix changed") && $0.text.contains("Restart office") })
 }
 
+@MainActor
+@Test func magicDNSResolverIsActiveOnlyForRunningEnabledNetworks() {
+    var magicDNSConfig = NetworkConfig(instance_id: "magic-dns", network_name: "magic")
+    magicDNSConfig.enable_magic_dns = true
+    let plainConfig = NetworkConfig(instance_id: "plain", network_name: "plain")
+    let store = EasyTierAppStore(client: RecordingToggleClient())
+    store.configs = [magicDNSConfig, plainConfig]
+
+    #expect(!store.isMagicDNSResolverActive)
+
+    store.instances = [
+        NetworkInstance(instance_id: plainConfig.instance_id, name: plainConfig.network_name, running: true),
+    ]
+    #expect(!store.isMagicDNSResolverActive)
+
+    store.instances.append(
+        NetworkInstance(instance_id: magicDNSConfig.instance_id, name: magicDNSConfig.network_name, running: true)
+    )
+    #expect(store.isMagicDNSResolverActive)
+
+    store.instances.removeAll { $0.instance_id == magicDNSConfig.instance_id }
+    #expect(!store.isMagicDNSResolverActive)
+}
+
 @Test func storagePersistsMagicDNSSettingsInSnapshotOnly() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let storage = EasyTierStorage(baseDirectory: directory)
