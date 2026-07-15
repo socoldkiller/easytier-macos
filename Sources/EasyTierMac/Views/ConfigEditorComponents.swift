@@ -450,15 +450,15 @@ struct NetworkSecretField: View {
         case (.loaded, _):
             "The password is loaded for this network session. Use the eye to show or hide it."
         case (.draft, .present):
-            "Run uses this value without changing the saved Keychain password until you save it."
+            "Enable or restart saves this replacement in Keychain. Use the key button to save it without connecting."
         case (.draft, _):
-            "Run can use this value once. Use the key button to save it in Keychain."
+            "Enable saves this password in Keychain. Use the key button to save it without connecting."
         case (.none, .present):
             "A password is saved in Keychain. Use the key button to unlock it with Touch ID or your Mac password."
         case (.none, .unknown):
             "Keychain status is unavailable. You can still enter a password and try saving it."
         default:
-            "Enter a password for this session, then save it explicitly in Keychain if needed."
+            "Enter a password. Enabling the network saves it in Keychain, or use the key button to save it now."
         }
     }
 
@@ -467,9 +467,9 @@ struct NetworkSecretField: View {
         case (.loaded, _):
             state.isRevealed ? "Password loaded, visible" : "Password loaded, hidden"
         case (.draft, .present):
-            "Unsaved replacement, hidden"
+            "Entered replacement, hidden"
         case (.draft, _):
-            "Unsaved password, hidden"
+            "Entered password, hidden"
         case (.none, .present):
             "Saved in Keychain, locked"
         case (.none, .checking):

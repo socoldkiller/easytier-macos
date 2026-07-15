@@ -494,17 +494,15 @@ public final class EasyTierAppStore {
             let keychainConfig = try await configWithResolvedNetworkSecret(
                 config,
                 override: networkSecretOverride,
-                reason: "Use the network secret to start \(config.network_name)."
+                reason: "Use the network secret to start \(config.network_name).",
+                persistOverride: true
             )
             let cleanConfig = Self.configWithoutReversedPortForwards(keychainConfig, fingerprints: reversedPortForwardFingerprints)
             if config.requiresTUN, let helperRegistration {
                 do {
                     try await helperRegistration.ensureRegistered()
                 } catch {
-                    let pendingConfig = networkSecretOverride?.nilIfEmpty == nil
-                        ? Self.configWithoutNetworkSecret(cleanConfig)
-                        : cleanConfig
-                    runtimeSession.setPendingStartAfterApproval(pendingConfig)
+                    runtimeSession.setPendingStartAfterApproval(Self.configWithoutNetworkSecret(cleanConfig))
                     throw error
                 }
             }
@@ -625,7 +623,8 @@ public final class EasyTierAppStore {
                 let keychainConfig = try await configWithResolvedNetworkSecret(
                     config,
                     override: networkSecretOverride,
-                    reason: "Use the network secret to restart \(config.network_name)."
+                    reason: "Use the network secret to restart \(config.network_name).",
+                    persistOverride: true
                 )
                 let cleanConfig = Self.configWithoutReversedPortForwards(keychainConfig, fingerprints: reversedPortForwardFingerprints)
                 let targetClient = client(for: config)
@@ -638,10 +637,7 @@ public final class EasyTierAppStore {
                     do {
                         try await helperRegistration.ensureRegistered()
                     } catch {
-                        let pendingConfig = networkSecretOverride?.nilIfEmpty == nil
-                            ? Self.configWithoutNetworkSecret(cleanConfig)
-                            : cleanConfig
-                        runtimeSession.setPendingStartAfterApproval(pendingConfig)
+                        runtimeSession.setPendingStartAfterApproval(Self.configWithoutNetworkSecret(cleanConfig))
                         throw error
                     }
                 }
@@ -1548,10 +1544,14 @@ public final class EasyTierAppStore {
     private func configWithResolvedNetworkSecret(
         _ config: NetworkConfig,
         override: String?,
-        reason: String
+        reason: String,
+        persistOverride: Bool = false
     ) async throws -> NetworkConfig {
         guard let override = override?.nilIfEmpty else {
             return try await configWithKeychainSecret(config, reason: reason)
+        }
+        if persistOverride {
+            try await saveNetworkSecretToKeychain(override, for: config)
         }
         var config = config
         config.network_secret = override

@@ -626,24 +626,32 @@ import Testing
 }
 
 @MainActor
-@Test func runSelectedConfigPrefersTransientSecretWithoutReadingKeychain() async {
-    let client = RecordingToggleClient()
-    let secrets = MemoryNetworkSecretStore(secrets: ["office": "saved-secret"])
-    let config = NetworkConfig(instance_id: "transient-run-id", network_name: "office", network_secret: nil)
-    let store = EasyTierAppStore(client: client, networkSecretStore: secrets)
+@Test func runSelectedConfigPersistsEnteredSecretForTheNextLaunch() async {
+    let firstClient = RecordingToggleClient()
+    let secondClient = RecordingToggleClient()
+    let secrets = MemoryNetworkSecretStore()
+    let config = NetworkConfig(instance_id: "entered-secret-run-id", network_name: "office", network_secret: nil)
+    let firstStore = EasyTierAppStore(client: firstClient, networkSecretStore: secrets)
 
-    store.configs = [config]
-    store.selectedConfigID = config.instance_id
+    firstStore.configs = [config]
+    firstStore.selectedConfigID = config.instance_id
 
-    await store.runSelectedConfig(networkSecretOverride: "typed-secret")
+    await firstStore.runSelectedConfig(networkSecretOverride: "typed-secret")
 
-    #expect(client.runConfigs.first?.network_secret == "typed-secret")
-    #expect(secrets.readReasons.isEmpty)
-    #expect(secrets.secrets["office"] == "saved-secret")
+    #expect(firstClient.runConfigs.first?.network_secret == "typed-secret")
+    #expect(secrets.secrets["office"] == "typed-secret")
+
+    let relaunchedStore = EasyTierAppStore(client: secondClient, networkSecretStore: secrets)
+    relaunchedStore.configs = [config]
+    relaunchedStore.selectedConfigID = config.instance_id
+
+    await relaunchedStore.runSelectedConfig()
+
+    #expect(secondClient.runConfigs.first?.network_secret == "typed-secret")
 }
 
 @MainActor
-@Test func explicitKeychainSaveIsSeparateFromTransientRunSecret() async throws {
+@Test func explicitKeychainSaveAndRemoveWorkWithoutRunningTheNetwork() async throws {
     let secrets = MemoryNetworkSecretStore()
     let config = NetworkConfig(instance_id: "explicit-save-id", network_name: "office")
     let store = EasyTierAppStore(
@@ -658,6 +666,23 @@ import Testing
 
     try await store.removeNetworkSecretFromKeychain(for: config)
     #expect(!(try await store.hasSavedNetworkSecret(for: config)))
+}
+
+@MainActor
+@Test func runSelectedConfigDoesNotStartWhenEnteredSecretCannotBeSaved() async {
+    let client = RecordingToggleClient()
+    let secrets = MemoryNetworkSecretStore()
+    secrets.saveError = EasyTierCoreError.operationFailed("keychain write failed")
+    let config = NetworkConfig(instance_id: "failed-secret-save-id", network_name: "office")
+    let store = EasyTierAppStore(client: client, networkSecretStore: secrets)
+
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+
+    await store.runSelectedConfig(networkSecretOverride: "typed-secret")
+
+    #expect(client.runConfigs.isEmpty)
+    #expect(store.lastError?.contains("keychain write failed") == true)
 }
 
 @MainActor
@@ -720,7 +745,7 @@ import Testing
 }
 
 @MainActor
-@Test func applyConfigDraftDoesNotImplicitlySaveTransientSecretToKeychain() async {
+@Test func applyConfigDraftDoesNotPersistEnteredSecretUntilTheNetworkStarts() async {
     let secrets = MemoryNetworkSecretStore()
     let original = NetworkConfig(instance_id: "transient-save-id", network_name: "office")
     var updated = original
@@ -743,7 +768,7 @@ import Testing
 }
 
 @MainActor
-@Test func applyConfigDraftRestartsWithTransientSecretWithoutSavingIt() async {
+@Test func applyConfigDraftRestartPersistsEnteredSecret() async {
     let client = RecordingToggleClient()
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "saved-secret"])
     let original = NetworkConfig(instance_id: "transient-restart-id", network_name: "office")
@@ -768,7 +793,7 @@ import Testing
     #expect(result == .restarted)
     #expect(client.runConfigs.first?.network_secret == "typed-secret")
     #expect(secrets.readReasons.isEmpty)
-    #expect(secrets.secrets["office"] == "saved-secret")
+    #expect(secrets.secrets["office"] == "typed-secret")
 }
 
 @MainActor
@@ -3157,6 +3182,38 @@ import Testing
 }
 
 @MainActor
+@Test func enteredSecretSurvivesHelperApprovalThroughKeychain() async throws {
+    let client = RecordingToggleClient()
+    let backend = HelperRegistrationBackendSpy(status: .requiresApproval)
+    let registration = HelperRegistrationService(backend: backend.backend(), refreshOnInit: false)
+    let config = NetworkConfig(instance_id: "entered-secret-approval-id", network_name: "approval-network")
+    let secrets = MemoryNetworkSecretStore()
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let store = EasyTierAppStore(
+        privilegedClient: client,
+        inProcessClient: client,
+        helperRegistration: registration,
+        storage: EasyTierStorage(baseDirectory: directory),
+        networkSecretStore: secrets
+    )
+
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+
+    await store.runSelectedConfig(networkSecretOverride: "typed-secret")
+
+    #expect(client.runConfigs.isEmpty)
+    #expect(secrets.secrets[config.network_name] == "typed-secret")
+    #expect(secrets.readReasons.isEmpty)
+
+    backend.status = .enabled
+    await store.retryStartAfterHelperApproval()
+
+    #expect(client.runConfigs.first?.network_secret == "typed-secret")
+    #expect(secrets.readReasons.count == 1, "pending helper state must reload the saved secret instead of retaining plaintext")
+}
+
+@MainActor
 @Test func olderHelperApprovalRetryDoesNotOverwriteNewerPendingConfig() throws {
     let client = RecordingToggleClient()
     let controller = RuntimeSessionController(
@@ -3651,6 +3708,7 @@ private final class MemoryNetworkSecretStore: NetworkSecretStore, @unchecked Sen
     var deletedIDs: [String] = []
     var readReasons: [String?] = []
     var readError: Error?
+    var saveError: Error?
     var containsError: Error?
     private(set) var authenticationInvalidationCount = 0
 
@@ -3659,6 +3717,7 @@ private final class MemoryNetworkSecretStore: NetworkSecretStore, @unchecked Sen
     }
 
     func save(_ secret: String, for config: NetworkConfig) throws {
+        if let saveError { throw saveError }
         secrets[config.network_name] = secret
     }
 
