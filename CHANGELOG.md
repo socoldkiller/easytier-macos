@@ -23,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Unified the minimum supported macOS version to 15.0 across `Package.swift`, the generated `Info.plist` (`LSMinimumSystemVersion`), the README badges, and the update-feed `minimumSystemVersion`. Previously the badge/prose/Info.plist claimed macOS 14+ while `Package.swift` required macOS 15.
 - The privileged helper `LaunchDaemon` now ships with `RunAtLoad=false` so the daemon only starts on demand when a TUN network is requested, matching the README's description of helper behavior. Previously the helper launched at every login.
 
+## [1.4.1] — 2026-07-16
+
+### Changed
+- Network passwords entered while enabling or restarting a configuration are now saved to the macOS Keychain before the runtime starts, so they remain available after relaunches and privileged-helper approval.
+
+### Fixed
+- A failed Keychain save now stops the connection attempt and surfaces the error instead of starting with a password that cannot be recovered.
+- Pending starts that wait for privileged-helper approval no longer retain plaintext passwords; they reload the saved value from Keychain after approval.
+- Stable publication now creates a new GitHub Release from the verified local DMG before switching to immutable-asset reuse on reruns.
+
 ## [1.4.0] — Unreleased
 
 ### Added
