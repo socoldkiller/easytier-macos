@@ -1,4 +1,5 @@
 import AppKit
+import EasyTierShared
 import SwiftUI
 
 struct TOMLSheet: View {
@@ -8,14 +9,27 @@ struct TOMLSheet: View {
     }
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     var mode: Mode
     @State private var text: String
+    @State private var includesNetworkSecret = false
+    @State private var isRefreshingExport = false
+    @State private var isShowingPlaintextWarning = false
+    @State private var exportError: String?
+    @State private var exportRefreshTask: Task<Void, Never>?
     var onImport: (String) -> Void
+    var onExportSecretInclusionChange: ((Bool) async throws -> String)?
 
-    init(mode: Mode, initialText: String, onImport: @escaping (String) -> Void) {
+    init(
+        mode: Mode,
+        initialText: String,
+        onImport: @escaping (String) -> Void,
+        onExportSecretInclusionChange: ((Bool) async throws -> String)? = nil
+    ) {
         self.mode = mode
         _text = State(initialValue: initialText)
         self.onImport = onImport
+        self.onExportSecretInclusionChange = onExportSecretInclusionChange
     }
 
     var body: some View {
@@ -23,6 +37,10 @@ struct TOMLSheet: View {
             Text(mode == .import ? "Import TOML" : "Export TOML")
                 .font(.title2.weight(.semibold))
                 .accessibilityAddTraits(.isHeader)
+
+            if mode == .export {
+                exportSecurityControls
+            }
 
             editor
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -37,6 +55,7 @@ struct TOMLSheet: View {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(text, forType: .string)
                     }
+                    .disabled(isRefreshingExport || text.isEmpty)
                     .accessibilityHint("Copies the TOML to the clipboard.")
                 }
                 Spacer()
@@ -58,6 +77,101 @@ struct TOMLSheet: View {
         .presentationBackground { FrostedGlass(role: .sheet) }
         .presentedSurfaceMotion()
         .hideScrollViewScrollers()
+        .onChange(of: scenePhase) { _, phase in
+            guard mode == .export, phase != .active else { return }
+            exportRefreshTask?.cancel()
+            exportRefreshTask = nil
+            text = ""
+            includesNetworkSecret = false
+            isRefreshingExport = false
+        }
+        .onDisappear {
+            if mode == .export {
+                exportRefreshTask?.cancel()
+                exportRefreshTask = nil
+                text = ""
+                includesNetworkSecret = false
+                isRefreshingExport = false
+            }
+        }
+        .alert("Include the plaintext network password?", isPresented: $isShowingPlaintextWarning) {
+            Button("Include Password", role: .destructive) {
+                refreshExport(includeNetworkSecret: true)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The exported TOML and anything copied from it will contain the network password in plaintext. Anyone with access to the file or clipboard can read it.")
+        }
+    }
+
+    private var exportSecurityControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle(
+                "Include network password",
+                isOn: Binding(
+                    get: { includesNetworkSecret },
+                    set: { include in
+                        if include {
+                            isShowingPlaintextWarning = true
+                        } else {
+                            refreshExport(includeNetworkSecret: false)
+                        }
+                    }
+                )
+            )
+            .disabled(isRefreshingExport)
+
+            if isRefreshingExport {
+                Label("Authenticating and rebuilding export...", systemImage: "lock.rotation")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if includesNetworkSecret {
+                Label("This preview contains a plaintext password.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.red)
+            } else {
+                Label("Password omitted. No Keychain access is required.", systemImage: "lock.shield")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let exportError {
+                Text(exportError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    private func refreshExport(includeNetworkSecret: Bool) {
+        guard let onExportSecretInclusionChange else {
+            includesNetworkSecret = false
+            return
+        }
+        exportRefreshTask?.cancel()
+        if !includeNetworkSecret {
+            text = ""
+            includesNetworkSecret = false
+        }
+        isRefreshingExport = true
+        exportError = nil
+        exportRefreshTask = Task {
+            do {
+                let refreshedText = try await onExportSecretInclusionChange(includeNetworkSecret)
+                guard !Task.isCancelled else { return }
+                text = refreshedText
+                includesNetworkSecret = includeNetworkSecret
+            } catch {
+                guard !Task.isCancelled else { return }
+                includesNetworkSecret = false
+                if !EasyTierAppStore.isNetworkSecretAccessCancellation(error) {
+                    exportError = error.localizedDescription
+                }
+            }
+            guard !Task.isCancelled else { return }
+            isRefreshingExport = false
+            exportRefreshTask = nil
+        }
     }
 
     @ViewBuilder private var editor: some View {

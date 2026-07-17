@@ -25,17 +25,24 @@ final class RuntimeSessionController {
     private var runtimeOperationGenerationBeforeSleep: UInt64?
     private var notificationTasks: [Task<Void, Never>] = []
     private var wakeRecoveryTask: Task<Void, Never>?
+    private var wakeRecoveryHandler: (@MainActor () async -> Void)?
+    private var wakeRecoveryPending = false
+    private var userSessionIsActive = true
+    private var applicationIsActive = true
+    private let wakeRecoveryDelay: Duration
 
     init(
         privilegedClient: any EasyTierCoreClient,
         inProcessClient: any EasyTierCoreClient,
         helperRegistration: HelperRegistrationService?,
-        systemSleepPreventer: any SystemSleepPreventing
+        systemSleepPreventer: any SystemSleepPreventing,
+        wakeRecoveryDelay: Duration = .seconds(3)
     ) {
         self.privilegedClient = privilegedClient
         self.inProcessClient = inProcessClient
         self.helperRegistration = helperRegistration
         self.systemSleepPreventer = systemSleepPreventer
+        self.wakeRecoveryDelay = wakeRecoveryDelay
     }
 
     func client(for config: NetworkConfig) -> any EasyTierCoreClient {
@@ -185,6 +192,7 @@ final class RuntimeSessionController {
         handleSessionResign: @escaping @MainActor () -> Void,
         handleDidWake: @escaping @MainActor () async -> Void
     ) {
+        wakeRecoveryHandler = handleDidWake
         pollingTask?.cancel()
         pollingTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -195,8 +203,7 @@ final class RuntimeSessionController {
         }
         registerSleepWakeNotifications(
             handleWillSleep: handleWillSleep,
-            handleSessionResign: handleSessionResign,
-            handleDidWake: handleDidWake
+            handleSessionResign: handleSessionResign
         )
     }
 
@@ -205,6 +212,8 @@ final class RuntimeSessionController {
         pollingTask = nil
         wakeRecoveryTask?.cancel()
         wakeRecoveryTask = nil
+        wakeRecoveryHandler = nil
+        wakeRecoveryPending = false
         updateSystemSleepAssertion(for: [])
         unregisterSleepWakeNotifications()
     }
@@ -215,6 +224,16 @@ final class RuntimeSessionController {
 
     func resumePolling() {
         pollingEnabled = true
+    }
+
+    func setApplicationActive(_ active: Bool) {
+        applicationIsActive = active
+        if active {
+            scheduleWakeRecoveryIfReady()
+        } else {
+            wakeRecoveryTask?.cancel()
+            wakeRecoveryTask = nil
+        }
     }
 
     func markTrafficBaselineResetNeeded() {
@@ -228,6 +247,7 @@ final class RuntimeSessionController {
     ) {
         wakeRecoveryTask?.cancel()
         wakeRecoveryTask = nil
+        wakeRecoveryPending = false
         sleepStartedAt = now
         runningConfigIDsBeforeSleep = operationGeneration == nil ? [] : recoverableConfigIDs
         runtimeOperationGenerationBeforeSleep = operationGeneration
@@ -254,8 +274,7 @@ final class RuntimeSessionController {
 
     private func registerSleepWakeNotifications(
         handleWillSleep: @escaping @MainActor () -> Void,
-        handleSessionResign: @escaping @MainActor () -> Void,
-        handleDidWake: @escaping @MainActor () async -> Void
+        handleSessionResign: @escaping @MainActor () -> Void
     ) {
         unregisterSleepWakeNotifications()
 
@@ -272,6 +291,7 @@ final class RuntimeSessionController {
                 let notifications = workspaceCenter.notifications(named: NSWorkspace.sessionDidResignActiveNotification)
                 for await _ in notifications {
                     guard !Task.isCancelled else { break }
+                    self.handleUserSessionDidResignActiveNotification()
                     handleSessionResign()
                 }
             },
@@ -279,18 +299,54 @@ final class RuntimeSessionController {
                 let notifications = workspaceCenter.notifications(named: NSWorkspace.didWakeNotification)
                 for await _ in notifications {
                     guard !Task.isCancelled else { break }
-                    self?.scheduleWakeRecovery(handleDidWake: handleDidWake)
+                    self?.handleSystemDidWakeNotification()
+                }
+            },
+            Task { @MainActor [weak self] in
+                let notifications = workspaceCenter.notifications(named: NSWorkspace.sessionDidBecomeActiveNotification)
+                for await _ in notifications {
+                    guard !Task.isCancelled else { break }
+                    self?.handleUserSessionDidBecomeActiveNotification()
                 }
             },
         ]
     }
 
-    private func scheduleWakeRecovery(handleDidWake: @escaping @MainActor () async -> Void) {
+    func handleSystemDidWakeNotification() {
+        wakeRecoveryPending = true
+        scheduleWakeRecoveryIfReady()
+    }
+
+    func handleUserSessionDidResignActiveNotification() {
+        userSessionIsActive = false
         wakeRecoveryTask?.cancel()
-        wakeRecoveryTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(3))
-            guard !Task.isCancelled else { return }
-            await handleDidWake()
+        wakeRecoveryTask = nil
+    }
+
+    func handleUserSessionDidBecomeActiveNotification() {
+        userSessionIsActive = true
+        scheduleWakeRecoveryIfReady()
+    }
+
+    private func scheduleWakeRecoveryIfReady() {
+        guard wakeRecoveryPending,
+              userSessionIsActive,
+              applicationIsActive,
+              let wakeRecoveryHandler
+        else { return }
+
+        wakeRecoveryTask?.cancel()
+        wakeRecoveryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: wakeRecoveryDelay)
+            guard !Task.isCancelled,
+                  wakeRecoveryPending,
+                  userSessionIsActive,
+                  applicationIsActive
+            else { return }
+            self.wakeRecoveryPending = false
+            self.wakeRecoveryTask = nil
+            await wakeRecoveryHandler()
         }
     }
 

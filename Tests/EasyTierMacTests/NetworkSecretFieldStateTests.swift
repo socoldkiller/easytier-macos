@@ -88,3 +88,15 @@ import Testing
     #expect(state.operation == .checking)
     #expect(!state.isRevealed)
 }
+
+@Test func ordinaryInactivityClearsLoadedMaterialButPreservesDrafts() {
+    var loaded = NetworkSecretFieldState()
+    loaded.completeUnlock(foundSecret: true)
+    loaded.clearLoadedMaterial()
+    #expect(loaded.material == .none)
+
+    var draft = NetworkSecretFieldState()
+    draft.userEdited(hasValue: true)
+    draft.clearLoadedMaterial()
+    #expect(draft.material == .draft)
+}

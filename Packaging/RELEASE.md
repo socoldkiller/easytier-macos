@@ -160,6 +160,20 @@ Credential-free release logic is covered by:
 make test-packaging
 ```
 
+Data Protection Keychain routing is also covered by a signed app-like harness.
+It uses a unique test service/account, verifies a protected write and a one-way
+legacy migration, then precisely removes both test backends:
+
+```bash
+make test-keychain-integration \
+  CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)" \
+  PROVISIONING_PROFILE="/path/to/EasyTier.provisionprofile"
+```
+
+Publishing CI runs this gate after importing the Developer ID certificate and
+before building, notarizing, or uploading the release artifact. Ordinary pull
+requests continue to run the credential-free query-construction tests.
+
 Those tests exercise metadata, per-channel version ordering, Stable/Nightly
 release notes, combined appcast fields, feed preservation, the App/DMG
 notarization order, cleanup on failure, immutable-asset reuse, and Nightly

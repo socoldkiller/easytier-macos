@@ -12,6 +12,10 @@ let package = Package(
         .library(name: "EasyTierRuntime", targets: ["EasyTierRuntime"]),
         .executable(name: "EasyTierMac", targets: ["EasyTierMac"]),
         .executable(name: "EasyTierPrivilegedHelper", targets: ["EasyTierPrivilegedHelper"]),
+        .executable(
+            name: "EasyTierKeychainIntegrationHarness",
+            targets: ["EasyTierKeychainIntegrationHarness"]
+        ),
     ],
     dependencies: [
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.4"),
@@ -73,6 +77,10 @@ let package = Package(
                     "-Xlinker", "Packaging/EasyTierPrivilegedHelper-Info.plist",
                 ]),
             ]
+        ),
+        .executableTarget(
+            name: "EasyTierKeychainIntegrationHarness",
+            dependencies: ["EasyTierShared"]
         ),
         .testTarget(
             name: "EasyTierSharedTests",

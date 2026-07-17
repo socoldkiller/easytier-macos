@@ -48,12 +48,23 @@ struct ContentView: View {
             .navigationTitle("")
             .toolbar { toolbar }
         }
+        .overlay(alignment: .top) {
+            if let notice = store.networkSecretCleanupNotice {
+                NetworkSecretCleanupBanner(
+                    message: notice,
+                    dismiss: store.dismissNetworkSecretCleanupNotice
+                )
+                .padding(.top, 12)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
         .task(id: store.selectedConfigID) {
             loadDraft(for: store.selectedConfigID)
         }
         .task {
             selectedTabLocal = store.selectedTab
             selectedConfigIDLocal = store.selectedConfigID
+            store.handleApplicationDidBecomeActive()
         }
         .onChange(of: store.selectedTab) { _, newTab in
             selectedTabLocal = newTab
@@ -80,6 +91,7 @@ struct ContentView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
+                store.handleApplicationDidBecomeActive()
                 Task {
                     if let registration = store.helperRegistration {
                         await registration.refresh()
@@ -87,6 +99,11 @@ struct ContentView: View {
                             await store.retryStartAfterHelperApproval()
                         }
                     }
+                }
+            } else {
+                store.handleApplicationDidResignActive()
+                if tomlPresentation?.mode == .export {
+                    tomlPresentation = nil
                 }
             }
         }
@@ -105,10 +122,21 @@ struct ContentView: View {
         .sheet(item: $tomlPresentation) { presentation in
             TOMLSheet(
                 mode: presentation.mode,
-                initialText: presentation.text
-            ) { text in
-                if presentation.mode == .import { store.importTOML(text) }
-            }
+                initialText: presentation.text,
+                onImport: { text in
+                    if presentation.mode == .import {
+                        Task { await store.importTOML(text) }
+                    }
+                },
+                onExportSecretInclusionChange: { includeNetworkSecret in
+                    try await store.exportSelectedTOML(
+                        options: TOMLExportOptions(
+                            includeNetworkSecret: includeNetworkSecret
+                        ),
+                        networkSecretOverride: draftNetworkSecret?.nilIfEmpty
+                    )
+                }
+            )
         }
         .sheet(isPresented: $store.isShowingLinuxInstallGuide) {
             LinuxInstallGuideView()
@@ -782,22 +810,31 @@ struct ContentView: View {
 
         var updatedConfig = storedConfig
         updatedConfig.hostname = newHostname
-        store.updateConfig(id: selectedID, with: updatedConfig, saveImmediately: true)
-
-        if draftConfigID == selectedID {
-            if draftIsDirty {
-                draftConfig.hostname = newHostname
-            } else {
-                draftConfig = updatedConfig
-            }
-        }
-
-        guard let runningInstanceToPatch else { return }
-        guard let newHostname else {
-            store.recordNotice("Saved hostname change. Clearing the running hostname will take effect after a manual restart.")
-            return
-        }
         Task {
+            do {
+                try await store.updateConfig(
+                    id: selectedID,
+                    with: updatedConfig,
+                    saveImmediately: true
+                )
+            } catch {
+                store.lastError = error.localizedDescription
+                return
+            }
+
+            if draftConfigID == selectedID {
+                if draftIsDirty {
+                    draftConfig.hostname = newHostname
+                } else {
+                    draftConfig = updatedConfig
+                }
+            }
+
+            guard let runningInstanceToPatch else { return }
+            guard let newHostname else {
+                store.recordNotice("Saved hostname change. Clearing the running hostname will take effect after a manual restart.")
+                return
+            }
             await store.applyLocalHostnameRuntimeIntent(
                 configID: selectedID,
                 runningInstance: runningInstanceToPatch,
@@ -1031,5 +1068,36 @@ struct ContentView: View {
                 store.lastError = error.localizedDescription
             }
         }
+    }
+}
+
+private struct NetworkSecretCleanupBanner: View {
+    var message: String
+    var dismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "key.horizontal.fill")
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(action: dismiss) {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.semibold))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss Keychain cleanup notice")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(maxWidth: 620)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.orange.opacity(0.35), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.12), radius: 12, y: 5)
+        .padding(.horizontal, 18)
     }
 }

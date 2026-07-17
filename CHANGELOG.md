@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `Latest Stable` and opt-in `Nightly` software-update tracks. Nightly packages exact GUI and EasyTier Core `main` revisions in one signed, notarized DMG.
 
 ### Changed
+- TOML export now omits `network_secret` by default without opening Keychain. Including it requires an explicit plaintext warning and fresh authentication.
+- Keychain authentication is scoped to each action: start/restart/wake may reuse a recent Touch ID device unlock for 10 seconds, while reveal, export, update, and delete require a fresh context.
 - Extended the signed Sparkle appcast to preserve one Stable and one Nightly channel item, with immutable daily prereleases, duplicate-source suppression, and retention of the newest 14 Nightly builds.
 - Unified local and GitHub release builds behind one tested signing, notarization, DMG, and Sparkle pipeline. Tag reruns now reuse an existing immutable GitHub Release DMG when recovering a failed feed or Pages deployment.
 - Removed the unused Config Server and legacy Remote app-mode paths. EasyTier now keeps one local runtime mode, with per-peer hostname updates handled separately through RPC.
@@ -19,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replaced the generated XCFramework/header pipeline with one current-architecture Rust static library and the tracked C header.
 
 ### Fixed
+- Fixed a macOS Keychain routing bug where legacy cleanup could also match and delete the newly saved Data Protection Keychain item. Modern and legacy operations now select their backends explicitly, verify protected writes before cleanup, and run through a signed release-gate integration harness.
+- Legacy network-password entries now migrate in the safe order of read, protected write, verification, then precise legacy deletion. Cleanup failures no longer discard a verified modern password and are retried later.
+- Sleep/wake recovery waits until both the macOS user session and the app are active before requesting authentication, and transient Keychain-loaded plaintext is cleared when the app becomes inactive.
+- Passwords that were already deleted by version 1.4.1 cannot be recovered and must be entered again after installing this update.
 - Corrected the License string in the About pane: the app is MIT-licensed, not LGPL-3.0.
 - Unified the minimum supported macOS version to 15.0 across `Package.swift`, the generated `Info.plist` (`LSMinimumSystemVersion`), the README badges, and the update-feed `minimumSystemVersion`. Previously the badge/prose/Info.plist claimed macOS 14+ while `Package.swift` required macOS 15.
 - The privileged helper `LaunchDaemon` now ships with `RunAtLoad=false` so the daemon only starts on demand when a TUN network is requested, matching the README's description of helper behavior. Previously the helper launched at every login.

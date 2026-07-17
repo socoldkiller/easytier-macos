@@ -2,6 +2,14 @@ import Foundation
 import Observation
 import TOML
 
+public struct TOMLExportOptions: Equatable, Sendable {
+    public var includeNetworkSecret: Bool
+
+    public init(includeNetworkSecret: Bool = false) {
+        self.includeNetworkSecret = includeNetworkSecret
+    }
+}
+
 @MainActor
 @Observable
 public final class EasyTierAppStore {
@@ -49,6 +57,7 @@ public final class EasyTierAppStore {
     public private(set) var selectedStatusSnapshot: RuntimeStatusSnapshot = .empty
     public private(set) var selectedTrafficSnapshot: RuntimeTrafficSnapshot = .empty
     public private(set) var networkSecretSessionRevision: UInt64 = 0
+    @ObservationIgnored private var networkSecretAccessGeneration: UInt64 = 0
     public var runtimeIntents: [RuntimeIntent] = []
     public var reversedPortForwardFingerprints: [String: Set<String>] = [:]
     public var vpnOnDemandEnabled = false
@@ -57,6 +66,7 @@ public final class EasyTierAppStore {
     public var peerSubscriptions: [PeerSubscription] = []
     public var isRefreshingPeerSubscriptions = false
     public var pendingPeerCardMerge: PeerCard?
+    public private(set) var networkSecretCleanupNotice: String?
 
     /// Presentation-only scroll state. Runtime collection must continue while
     /// this is true so topology changes are not hidden behind a stale gesture.
@@ -72,8 +82,7 @@ public final class EasyTierAppStore {
     private let storage: EasyTierStorage
     private let networkSecretStore: any NetworkSecretStore
     private let systemSleepPreventer: any SystemSleepPreventing
-    @ObservationIgnored private var pendingSecretReads: [String: PendingSecretRead] = [:]
-    @ObservationIgnored private var secretReadRevisions: [String: UInt64] = [:]
+    @ObservationIgnored private var didReportNetworkSecretCleanupIssue = false
     private var lastErrorKind: LastErrorKind?
 
     @ObservationIgnored private lazy var runtimeSession = RuntimeSessionController(
@@ -97,13 +106,6 @@ public final class EasyTierAppStore {
     @ObservationIgnored public private(set) var trafficSamplesByInstanceWriteCount = 0
 
     private enum LastErrorKind { case helperPermission }
-
-    private struct PendingSecretRead {
-        let id: UUID
-        let authenticationGeneration: UInt64
-        let revision: UInt64
-        let task: Task<String?, Error>
-    }
 
     public func resetWriteCounters() {
         runtimeDetailsWriteCount = 0
@@ -323,7 +325,7 @@ public final class EasyTierAppStore {
         do {
             let loaded = try storage.load()
             let snapshot = loaded.snapshot
-            configs = try configsWithSecretsStored(loaded.configs)
+            configs = try await configsWithSecretsStored(loaded.configs)
             runtimeIntents = snapshot.runtimeIntents
             reversedPortForwardFingerprints = snapshot.reversedPortForwardFingerprints
             vpnOnDemandEnabled = snapshot.vpnOnDemandEnabled
@@ -419,13 +421,24 @@ public final class EasyTierAppStore {
                     return
                 }
             }
+            let hasSharedCredentialReference = configs.enumerated().contains { candidateIndex, candidate in
+                candidateIndex != index && Self.secretNamespace(for: candidate) == Self.secretNamespace(for: config)
+            }
+            if !hasSharedCredentialReference {
+                do {
+                    try await networkSecretStore.deleteSecret(for: config, purpose: .delete)
+                } catch {
+                    setLastError(error)
+                    log("Delete canceled because the saved network secret could not be removed: \(error.localizedDescription)")
+                    return
+                }
+            }
             runtimeSession.clearClientKind(for: config)
             runtimeSession.clearPendingStart(for: config)
             runtimeIntents.removeAll { intent in
                 intent.target.isLocal && (intent.target.instanceID == config.instance_id || intent.target.networkName == config.network_name)
             }
             reversedPortForwardFingerprints.removeValue(forKey: config.instance_id)
-            invalidatePendingSecretRead(for: config.network_name)
             let removedID = configs.remove(at: index).id
             let storage = self.storage
             Task.detached(priority: .background) {
@@ -437,26 +450,37 @@ public final class EasyTierAppStore {
         }
     }
 
-    public func updateConfig(id: String, with config: NetworkConfig, saveImmediately: Bool = false) {
+    public func updateConfig(
+        id: String,
+        with config: NetworkConfig,
+        saveImmediately: Bool = false
+    ) async throws {
         guard let index = configs.firstIndex(where: { $0.id == id }) else { return }
         let oldConfig = configs[index]
-        if oldConfig.network_name != config.network_name {
-            migrateNetworkSecret(from: oldConfig, to: config)
+        if Self.secretNamespace(for: oldConfig) != Self.secretNamespace(for: config) {
+            try await migrateNetworkSecret(from: oldConfig, to: config, replacingIndex: index)
         }
-        configs[index] = config
+        configs[index] = Self.configWithoutNetworkSecret(config)
         if saveImmediately {
             save()
         }
     }
 
-    private func migrateNetworkSecret(from oldConfig: NetworkConfig, to newConfig: NetworkConfig) {
-        invalidatePendingSecretRead(for: oldConfig.network_name)
-        invalidatePendingSecretRead(for: newConfig.network_name)
-        do {
-            try networkSecretStore.migrateSecret(from: oldConfig, to: newConfig)
-        } catch {
-            log("Skipped keychain secret migration from \(oldConfig.network_name) to \(newConfig.network_name): \(error.localizedDescription)")
+    private func migrateNetworkSecret(
+        from oldConfig: NetworkConfig,
+        to newConfig: NetworkConfig,
+        replacingIndex: Int
+    ) async throws {
+        let removeSource = !configs.enumerated().contains { candidateIndex, candidate in
+            candidateIndex != replacingIndex
+                && Self.secretNamespace(for: candidate) == Self.secretNamespace(for: oldConfig)
         }
+        let result = try await networkSecretStore.migrateSecret(
+            from: oldConfig,
+            to: newConfig,
+            removeSource: removeSource
+        )
+        handleNetworkSecretCleanup(result.cleanup)
     }
 
     public func selectPreviousConfig() {
@@ -494,6 +518,7 @@ public final class EasyTierAppStore {
             let keychainConfig = try await configWithResolvedNetworkSecret(
                 config,
                 override: networkSecretOverride,
+                purpose: .run,
                 reason: "Use the network secret to start \(config.network_name).",
                 persistOverride: true
             )
@@ -534,6 +559,7 @@ public final class EasyTierAppStore {
             await busy {
                 let keychainConfig = try await configWithKeychainSecret(
                     config,
+                    purpose: .run,
                     reason: "Use the network secret to start \(config.network_name) after helper approval."
                 )
                 try await client(for: config).run(toml: try encodedTOML(for: keychainConfig))
@@ -591,12 +617,20 @@ public final class EasyTierAppStore {
         let networkSecretOverride = draft.network_secret?.nilIfEmpty
         var persistedDraft = draft
         persistedDraft.network_secret = nil
-        updateConfig(id: configID, with: persistedDraft, saveImmediately: true)
+        do {
+            if let networkSecretOverride {
+                try await saveNetworkSecretToKeychain(networkSecretOverride, for: persistedDraft)
+            }
+            try await updateConfig(id: configID, with: persistedDraft, saveImmediately: true)
+        } catch {
+            return .failed(Self.errorMessage(for: error))
+        }
         guard let instance else { return .saved }
         return await restartConfig(
             replacing: instance,
             configID: configID,
             networkSecretOverride: networkSecretOverride,
+            persistSecretOverride: false,
             surfaceError: false
         )
     }
@@ -605,6 +639,7 @@ public final class EasyTierAppStore {
         replacing instance: NetworkInstance,
         configID targetConfigID: String? = nil,
         networkSecretOverride: String? = nil,
+        persistSecretOverride: Bool = true,
         surfaceError: Bool = true
     ) async -> ConfigApplyResult {
         guard let targetConfigID = targetConfigID ?? selectedConfigID else {
@@ -623,8 +658,9 @@ public final class EasyTierAppStore {
                 let keychainConfig = try await configWithResolvedNetworkSecret(
                     config,
                     override: networkSecretOverride,
+                    purpose: .restart,
                     reason: "Use the network secret to restart \(config.network_name).",
-                    persistOverride: true
+                    persistOverride: persistSecretOverride
                 )
                 let cleanConfig = Self.configWithoutReversedPortForwards(keychainConfig, fingerprints: reversedPortForwardFingerprints)
                 let targetClient = client(for: config)
@@ -816,6 +852,10 @@ public final class EasyTierAppStore {
 
     public func recordNotice(_ message: String) {
         log(message)
+    }
+
+    public func dismissNetworkSecretCleanupNotice() {
+        networkSecretCleanupNotice = nil
     }
 
     public var lastErrorIsHelperPermission: Bool {
@@ -1082,17 +1122,38 @@ public final class EasyTierAppStore {
         await applyMode(mode)
     }
 
-    public func exportSelectedTOML(networkSecretOverride: String? = nil) async throws -> String {
+    public func exportSelectedTOML(
+        options: TOMLExportOptions = TOMLExportOptions(),
+        networkSecretOverride: String? = nil
+    ) async throws -> String {
         guard let selectedConfig else { return "" }
+        guard options.includeNetworkSecret else {
+            return try NetworkConfigTOMLCodec.encode(
+                Self.configWithoutNetworkSecret(selectedConfig),
+                magicDNSSettings: magicDNSSettings,
+                mode: .export
+            )
+        }
+        if networkSecretOverride?.nilIfEmpty != nil {
+            try await networkSecretStore.authenticate(
+                for: selectedConfig,
+                purpose: .export
+            )
+        }
         let config = try await configWithResolvedNetworkSecret(
             selectedConfig,
             override: networkSecretOverride,
+            purpose: .export,
             reason: "Use the network secret for TOML export."
         )
-        return try encodedTOML(for: config)
+        return try NetworkConfigTOMLCodec.encode(
+            config,
+            magicDNSSettings: magicDNSSettings,
+            mode: .export
+        )
     }
 
-    public func importTOML(_ toml: String) {
+    public func importTOML(_ toml: String) async {
         do {
             let metadata = try NetworkConfigTOMLCodec.metadata(from: toml)
             var config = try NetworkConfigTOMLCodec.decode(toml)
@@ -1106,7 +1167,7 @@ public final class EasyTierAppStore {
                     recordNotice("Detected custom Magic DNS suffix \(importedSettings.dnsSuffix); saved it as this Mac's Magic DNS suffix.")
                 }
             }
-            let imported = try configsWithSecretsStored([config])[0]
+            let imported = try await configsWithSecretsStored([config])[0]
             configs.append(imported)
             selectedConfigID = imported.id
             selectedTab = .config
@@ -1120,38 +1181,43 @@ public final class EasyTierAppStore {
     }
 
     public func hasSavedNetworkSecret(for config: NetworkConfig) async throws -> Bool {
-        let store = networkSecretStore
-        return try await Task.detached { @Sendable in
-            try store.containsSecret(for: config)
-        }.value
+        try await networkSecretStore.containsSecret(for: config)
     }
 
     public func saveNetworkSecretToKeychain(_ secret: String, for config: NetworkConfig) async throws {
         guard let secret = secret.nilIfEmpty else { return }
-        invalidatePendingSecretRead(for: config.network_name)
-        let store = networkSecretStore
-        try await Task.detached { @Sendable in
-            try store.save(secret, for: config)
-        }.value
+        let result = try await networkSecretStore.save(secret, for: config, purpose: .update)
+        handleNetworkSecretCleanup(result.cleanup)
     }
 
     public func removeNetworkSecretFromKeychain(for config: NetworkConfig) async throws {
-        invalidatePendingSecretRead(for: config.network_name)
-        let store = networkSecretStore
-        try await Task.detached { @Sendable in
-            try store.deleteSecret(for: config)
-        }.value
+        try await networkSecretStore.deleteSecret(for: config, purpose: .delete)
     }
 
     public func revealNetworkSecret(for config: NetworkConfig) async throws -> String? {
         try await configWithKeychainSecret(
             config,
+            purpose: .reveal,
             reason: "Unlock the saved network secret for \(config.network_name)."
         ).network_secret?.nilIfEmpty
     }
 
+    public func networkSecretAuthenticationCapability() -> NetworkSecretAuthenticationCapability {
+        networkSecretStore.authenticationCapability()
+    }
+
     public func lockNetworkSecretSession() {
         invalidateSecretAuthenticationSession()
+    }
+
+    public func handleApplicationDidBecomeActive() {
+        runtimeSession.setApplicationActive(true)
+    }
+
+    public func handleApplicationDidResignActive() {
+        networkSecretAccessGeneration &+= 1
+        networkSecretStore.invalidateAuthenticationSession()
+        runtimeSession.setApplicationActive(false)
     }
 
     public func startPolling() {
@@ -1247,7 +1313,11 @@ public final class EasyTierAppStore {
         log("Recovering \(config.network_name) after system wake...")
         let runningInstance = runningInstance(matching: config)
         try validateConfigForCurrentRuntime(config, replacing: runningInstance)
-        let keychainConfig = try await configWithKeychainSecret(config, reason: "Use the network secret to recover \(config.network_name) after system wake.")
+        let keychainConfig = try await configWithKeychainSecret(
+            config,
+            purpose: .wakeRecovery,
+            reason: "Use the network secret to recover \(config.network_name) after system wake."
+        )
         let cleanConfig = Self.configWithoutReversedPortForwards(keychainConfig, fingerprints: reversedPortForwardFingerprints)
         let targetClient = client(for: config)
 
@@ -1474,7 +1544,7 @@ public final class EasyTierAppStore {
     }
 
     private func stateForStorage() throws -> (snapshot: AppSnapshot, configs: [NetworkConfig]) {
-        let configs = try configsWithSecretsStored(configs)
+        let configs = configs.map(Self.configWithoutNetworkSecret)
         let snapshot = AppSnapshot(
             configIDs: configs.map(\.id),
             mode: mode,
@@ -1488,67 +1558,56 @@ public final class EasyTierAppStore {
         return (snapshot, configs)
     }
 
-    private func configsWithSecretsStored(_ configs: [NetworkConfig]) throws -> [NetworkConfig] {
+    private func configsWithSecretsStored(_ configs: [NetworkConfig]) async throws -> [NetworkConfig] {
         var configs = configs
         for index in configs.indices {
             guard let secret = configs[index].network_secret?.nilIfEmpty else { continue }
-            invalidatePendingSecretRead(for: configs[index].network_name)
-            try networkSecretStore.save(secret, for: configs[index])
+            let result = try await networkSecretStore.save(
+                secret,
+                for: configs[index],
+                purpose: .update
+            )
+            handleNetworkSecretCleanup(result.cleanup)
             configs[index].network_secret = nil
         }
         return configs
     }
 
-    private func configWithKeychainSecret(_ config: NetworkConfig, reason: String) async throws -> NetworkConfig {
+    private func configWithKeychainSecret(
+        _ config: NetworkConfig,
+        purpose: NetworkSecretAccessPurpose,
+        reason: String
+    ) async throws -> NetworkConfig {
         guard config.network_secret?.nilIfEmpty == nil else { return config }
-        let networkName = config.network_name
-        let pendingRead: PendingSecretRead
-        if let existing = pendingSecretReads[networkName],
-           existing.authenticationGeneration == networkSecretSessionRevision,
-           existing.revision == secretReadRevision(for: networkName)
-        {
-            pendingRead = existing
-        } else {
-            let store = networkSecretStore
-            let task = Task.detached { @Sendable in
-                try store.secret(for: config, reason: reason)
-            }
-            pendingRead = PendingSecretRead(
-                id: UUID(),
-                authenticationGeneration: networkSecretSessionRevision,
-                revision: secretReadRevision(for: networkName),
-                task: task
-            )
-            pendingSecretReads[networkName] = pendingRead
-        }
-
-        let secret: String?
-        do {
-            secret = try await pendingRead.task.value
-        } catch {
-            removePendingSecretReadIfMatching(pendingRead, for: networkName)
-            throw error
-        }
-        removePendingSecretReadIfMatching(pendingRead, for: networkName)
-        guard pendingRead.authenticationGeneration == networkSecretSessionRevision,
-              pendingRead.revision == secretReadRevision(for: networkName)
-        else {
+        let authenticationGeneration = networkSecretAccessGeneration
+        let result = try await networkSecretStore.secret(
+            for: config,
+            purpose: purpose,
+            reason: reason
+        )
+        guard authenticationGeneration == networkSecretAccessGeneration else {
             throw CancellationError()
         }
-        guard let secret else { return config }
+        guard let result else { return config }
+        handleNetworkSecretCleanup(result.cleanup)
         var config = config
-        config.network_secret = secret
+        config.network_secret = result.secret
         return config
     }
 
     private func configWithResolvedNetworkSecret(
         _ config: NetworkConfig,
         override: String?,
+        purpose: NetworkSecretAccessPurpose,
         reason: String,
         persistOverride: Bool = false
     ) async throws -> NetworkConfig {
         guard let override = override?.nilIfEmpty else {
-            return try await configWithKeychainSecret(config, reason: reason)
+            return try await configWithKeychainSecret(
+                config,
+                purpose: purpose,
+                reason: reason
+            )
         }
         if persistOverride {
             try await saveNetworkSecretToKeychain(override, for: config)
@@ -1558,25 +1617,24 @@ public final class EasyTierAppStore {
         return config
     }
 
-    private func secretReadRevision(for networkName: String) -> UInt64 {
-        secretReadRevisions[networkName, default: 0]
-    }
-
-    private func invalidatePendingSecretRead(for networkName: String) {
-        secretReadRevisions[networkName, default: 0] &+= 1
-        pendingSecretReads.removeValue(forKey: networkName)?.task.cancel()
-    }
-
-    private func removePendingSecretReadIfMatching(_ pendingRead: PendingSecretRead, for networkName: String) {
-        guard pendingSecretReads[networkName]?.id == pendingRead.id else { return }
-        pendingSecretReads.removeValue(forKey: networkName)
-    }
-
     private func invalidateSecretAuthenticationSession() {
         networkSecretSessionRevision &+= 1
-        pendingSecretReads.values.forEach { $0.task.cancel() }
-        pendingSecretReads.removeAll()
+        networkSecretAccessGeneration &+= 1
         networkSecretStore.invalidateAuthenticationSession()
+    }
+
+    private func handleNetworkSecretCleanup(_ cleanup: NetworkSecretCleanupState) {
+        guard !cleanup.issues.isEmpty else { return }
+        let statuses = cleanup.issues.map { "\($0.backend.rawValue):\($0.status)" }.joined(separator: ", ")
+        log("Saved the protected network secret; legacy Keychain cleanup is pending (\(statuses)).")
+        guard !didReportNetworkSecretCleanupIssue else { return }
+        didReportNetworkSecretCleanupIssue = true
+        networkSecretCleanupNotice = "The network password was saved securely, but an old Keychain entry could not be removed. EasyTier will retry automatically."
+    }
+
+    private static func secretNamespace(for config: NetworkConfig) -> String {
+        let trimmed = config.network_name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? config.network_name : trimmed
     }
 
     private func encodedTOML(for config: NetworkConfig) throws -> String {

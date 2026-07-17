@@ -163,6 +163,7 @@ struct NetworkSecretFieldState: Equatable {
     var operation: Operation? = .checking
     var isRevealed = false
     var errorMessage: String?
+    var authenticationGuidance: String?
 
     var hasSavedSecret: Bool { availability == .present }
     var blocksEditing: Bool { operation != nil && operation != .checking }
@@ -265,6 +266,14 @@ struct NetworkSecretFieldState: Equatable {
         isRevealed = false
     }
 
+    mutating func clearLoadedMaterial() {
+        guard material == .loaded else { return }
+        material = .none
+        operation = nil
+        isRevealed = false
+        errorMessage = nil
+    }
+
     mutating func cancelOperation() {
         operation = nil
         errorMessage = nil
@@ -314,7 +323,13 @@ struct NetworkSecretField: View {
             if focused == nil { state.hideSecret() }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { state.hideSecret() }
+            if phase != .active {
+                state.hideSecret()
+                if keychainEnabled, state.material == .loaded {
+                    secret = nil
+                    state.clearLoadedMaterial()
+                }
+            }
         }
         .onDisappear { state.hideSecret() }
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: state)
@@ -446,7 +461,7 @@ struct NetworkSecretField: View {
     }
 
     private var secretHelp: String {
-        switch (state.material, state.availability) {
+        let help = switch (state.material, state.availability) {
         case (.loaded, _):
             "The password is loaded for this network session. Use the eye to show or hide it."
         case (.draft, .present):
@@ -460,6 +475,8 @@ struct NetworkSecretField: View {
         default:
             "Enter a password. Enabling the network saves it in Keychain, or use the key button to save it now."
         }
+        guard let authenticationGuidance = state.authenticationGuidance else { return help }
+        return "\(help) \(authenticationGuidance)"
     }
 
     private var secretAccessibilityValue: String {
@@ -502,6 +519,7 @@ struct NetworkSecretField: View {
         }
 
         state.resetForLookup(hasValue: hasTransientSecret)
+        state.authenticationGuidance = store.networkSecretAuthenticationCapability().guidance
         do {
             let exists = try await store.hasSavedNetworkSecret(for: config)
             guard !Task.isCancelled, lookupID == keychainLookupID else { return }
@@ -521,8 +539,13 @@ struct NetworkSecretField: View {
             do {
                 try await store.saveNetworkSecretToKeychain(value, for: operationConfig)
                 guard operationID == keychainLookupID else { return }
-                secret = value
                 state.completeSave()
+                guard scenePhase == .active else {
+                    secret = nil
+                    state.clearLoadedMaterial()
+                    return
+                }
+                secret = value
                 store.recordNotice("Saved the network secret for \(operationConfig.network_name) in Keychain.")
             } catch {
                 guard operationID == keychainLookupID else { return }

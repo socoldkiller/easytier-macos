@@ -270,6 +270,14 @@ jobs:
           p12-password: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERTIFICATE_PASSWORD }}
           keychain-password: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
 
+      - name: Run signed Data Protection Keychain integration test
+        if: steps.context.outputs.should_publish == 'true'
+        env:
+          EASYTIER_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+          APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64 }}
+          EASYTIER_SWIFT_BUILD_DIR: ${{ github.workspace }}/.build/keychain-integration
+        run: ./scripts/test-keychain-integration.sh
+
       - name: Build signed and notarized release artifact
         if: steps.context.outputs.should_publish == 'true'
         env:

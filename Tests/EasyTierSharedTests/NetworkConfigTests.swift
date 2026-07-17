@@ -178,12 +178,12 @@ import Testing
 }
 
 @MainActor
-@Test func importTOMLGeneratesNewInstanceIDWhenImportedIDAlreadyExists() throws {
+@Test func importTOMLGeneratesNewInstanceIDWhenImportedIDAlreadyExists() async throws {
     let config = NetworkConfig(instance_id: "duplicate-id", network_name: "office")
     let store = EasyTierAppStore()
     store.configs = [config]
 
-    store.importTOML(try NetworkConfigTOMLCodec.encode(config))
+    await store.importTOML(try NetworkConfigTOMLCodec.encode(config))
 
     #expect(store.configs.count == 2)
     #expect(Set(store.configs.map(\.id)).count == 2)
@@ -588,7 +588,7 @@ import Testing
 }
 
 @MainActor
-@Test func appStoreSavesNetworkSecretInKeychainNotToml() throws {
+@Test func appStoreExplicitlySavesNetworkSecretInKeychainNotToml() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let storage = EasyTierStorage(baseDirectory: directory)
     let secrets = MemoryNetworkSecretStore()
@@ -599,7 +599,10 @@ import Testing
         networkSecretStore: secrets
     )
 
-    store.configs = [config]
+    try await store.saveNetworkSecretToKeychain("super-secret", for: config)
+    var persistedConfig = config
+    persistedConfig.network_secret = nil
+    store.configs = [persistedConfig]
     store.selectedConfigID = config.instance_id
     store.save()
 
@@ -608,6 +611,55 @@ import Testing
     #expect(secrets.secrets["lab"] == "super-secret")
     #expect(!toml.contains("super-secret"))
     #expect(store.configs.first?.network_secret?.nilIfEmpty == nil)
+}
+
+@MainActor
+@Test func genericConfigPersistenceNeverImplicitlyWritesKeychain() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let storage = EasyTierStorage(baseDirectory: directory)
+    let secrets = MemoryNetworkSecretStore()
+    let config = NetworkConfig(
+        instance_id: "sanitized-save-id",
+        network_name: "office",
+        network_secret: "must-not-be-written-implicitly"
+    )
+    let store = EasyTierAppStore(
+        client: RecordingToggleClient(),
+        storage: storage,
+        networkSecretStore: secrets
+    )
+    store.configs = [config]
+    store.selectedConfigID = config.id
+
+    store.save()
+
+    let toml = try String(
+        contentsOf: directory.appendingPathComponent("configs/sanitized-save-id.toml"),
+        encoding: .utf8
+    )
+    #expect(secrets.secrets.isEmpty)
+    #expect(!toml.contains("must-not-be-written-implicitly"))
+    #expect(store.configs.first?.network_secret?.nilIfEmpty == nil)
+}
+
+@MainActor
+@Test func verifiedSaveSurfacesLegacyCleanupAsANonblockingNotice() async throws {
+    let secrets = MemoryNetworkSecretStore()
+    secrets.saveCleanup = .pending([
+        NetworkSecretCleanupIssue(backend: .legacy, status: errSecAuthFailed),
+    ])
+    let config = NetworkConfig(instance_id: "cleanup-notice-id", network_name: "office")
+    let store = EasyTierAppStore(
+        client: RecordingToggleClient(),
+        networkSecretStore: secrets
+    )
+
+    try await store.saveNetworkSecretToKeychain("secret", for: config)
+
+    #expect(store.networkSecretCleanupNotice != nil)
+    #expect(store.lastError == nil)
+    store.dismissNetworkSecretCleanupNotice()
+    #expect(store.networkSecretCleanupNotice == nil)
 }
 
 @MainActor
@@ -745,7 +797,7 @@ import Testing
 }
 
 @MainActor
-@Test func applyConfigDraftDoesNotPersistEnteredSecretUntilTheNetworkStarts() async {
+@Test func applyConfigDraftPersistsEnteredSecretBeforeSavingAStoppedNetwork() async {
     let secrets = MemoryNetworkSecretStore()
     let original = NetworkConfig(instance_id: "transient-save-id", network_name: "office")
     var updated = original
@@ -764,7 +816,7 @@ import Testing
 
     #expect(result == .saved)
     #expect(store.configs.first?.network_secret?.nilIfEmpty == nil)
-    #expect(secrets.secrets.isEmpty)
+    #expect(secrets.secrets["office"] == "typed-secret")
 }
 
 @MainActor
@@ -1014,6 +1066,24 @@ import Testing
 }
 
 @MainActor
+@Test func exportSelectedTOMLIsRedactedByDefaultWithoutReadingKeychain() async throws {
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "export-secret"])
+    let config = NetworkConfig(instance_id: "redacted-export-id", network_name: "office")
+    let store = EasyTierAppStore(
+        client: RecordingToggleClient(),
+        networkSecretStore: secrets
+    )
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+
+    let toml = try await store.exportSelectedTOML()
+
+    #expect(!toml.contains("network_secret"))
+    #expect(!toml.contains("export-secret"))
+    #expect(secrets.readReasons.isEmpty)
+}
+
+@MainActor
 @Test func exportSelectedTOMLUsesKeychainNetworkSecret() async throws {
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "export-secret"])
     let config = NetworkConfig(instance_id: "export-id", network_name: "office", network_secret: nil)
@@ -1025,7 +1095,9 @@ import Testing
     store.configs = [config]
     store.selectedConfigID = config.instance_id
 
-    let toml = try await store.exportSelectedTOML()
+    let toml = try await store.exportSelectedTOML(
+        options: TOMLExportOptions(includeNetworkSecret: true)
+    )
 
     #expect(toml.contains("export-secret"))
 }
@@ -1042,11 +1114,15 @@ import Testing
     store.configs = [config]
     store.selectedConfigID = config.instance_id
 
-    let toml = try await store.exportSelectedTOML(networkSecretOverride: "typed-secret")
+    let toml = try await store.exportSelectedTOML(
+        options: TOMLExportOptions(includeNetworkSecret: true),
+        networkSecretOverride: "typed-secret"
+    )
 
     #expect(toml.contains("network_secret = \"typed-secret\""))
     #expect(!toml.contains("saved-secret"))
     #expect(secrets.readReasons.isEmpty)
+    #expect(secrets.authenticationPurposes == [.export])
 }
 
 @MainActor
@@ -1081,7 +1157,7 @@ import Testing
 }
 
 @MainActor
-@Test func importTOMLPromotesMagicDNSSuffixToAppSettings() throws {
+@Test func importTOMLPromotesMagicDNSSuffixToAppSettings() async throws {
     var config = NetworkConfig(instance_id: "dns-import-id", network_name: "office")
     config.enable_magic_dns = true
     let toml = try NetworkConfigTOMLCodec.encode(
@@ -1090,7 +1166,7 @@ import Testing
     )
     let store = EasyTierAppStore()
 
-    store.importTOML(toml)
+    await store.importTOML(toml)
 
     #expect(store.magicDNSSettings.dnsSuffix == "imported.internal.")
     #expect(store.configs.first?.enable_magic_dns == true)
@@ -1192,7 +1268,7 @@ import Testing
 }
 
 @MainActor
-@Test func concurrentSecretReadsShareOneKeychainRequest() async throws {
+@Test func concurrentSecretReadsUseIndependentAuthenticationActions() async throws {
     let config = NetworkConfig(instance_id: "concurrent-secret-id", network_name: "office")
     let secrets = BlockingNetworkSecretStore(secret: "shared-secret")
     let store = EasyTierAppStore(
@@ -1205,12 +1281,12 @@ import Testing
     defer { secrets.releaseReads() }
 
     let deadline = ContinuousClock.now.advanced(by: .seconds(1))
-    while secrets.readCount == 0, ContinuousClock.now < deadline {
+    while secrets.readCount < 2, ContinuousClock.now < deadline {
         try? await Task.sleep(for: .milliseconds(5))
     }
     try? await Task.sleep(for: .milliseconds(50))
 
-    #expect(secrets.readCount == 1, "concurrent callers should share the first Keychain read")
+    #expect(secrets.readCount == 2, "each user action must own its own Keychain authentication")
 
     secrets.releaseReads()
     #expect(try await first.value == "shared-secret")
@@ -1283,24 +1359,79 @@ import Testing
 }
 
 @MainActor
-@Test func applicationResignActiveDoesNotInvalidateNetworkSecretAuthenticationSession() async {
+@Test func applicationResignActiveInvalidatesAuthenticationWithoutClearingDraftRevision() {
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"])
     let store = EasyTierAppStore(
         client: RecordingToggleClient(),
         networkSecretStore: secrets
     )
-    store.startPolling()
-    defer { store.stopPolling() }
-    await Task.yield()
 
-    NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: nil)
-    try? await Task.sleep(for: .milliseconds(20))
+    store.handleApplicationDidResignActive()
 
-    #expect(secrets.authenticationInvalidationCount == 0)
+    #expect(secrets.authenticationInvalidationCount == 1)
+    #expect(store.networkSecretSessionRevision == 0)
 }
 
 @MainActor
-@Test func importTOMLMigratesNetworkSecretToKeychain() throws {
+@Test func wakeRecoveryWaitsUntilTheApplicationIsActive() async {
+    let client = RecordingToggleClient()
+    let controller = RuntimeSessionController(
+        privilegedClient: client,
+        inProcessClient: client,
+        helperRegistration: nil,
+        systemSleepPreventer: RecordingSystemSleepPreventer(),
+        wakeRecoveryDelay: .milliseconds(10)
+    )
+    var recoveryCount = 0
+    controller.startPolling(
+        refresh: {},
+        handleWillSleep: {},
+        handleSessionResign: {},
+        handleDidWake: { recoveryCount += 1 }
+    )
+    defer { controller.stopPolling() }
+
+    controller.setApplicationActive(false)
+    controller.handleSystemDidWakeNotification()
+    try? await Task.sleep(for: .milliseconds(30))
+    #expect(recoveryCount == 0)
+
+    controller.setApplicationActive(true)
+    try? await Task.sleep(for: .milliseconds(30))
+    #expect(recoveryCount == 1)
+}
+
+@MainActor
+@Test func wakeRecoveryWaitsUntilTheUserSessionIsActive() async {
+    let client = RecordingToggleClient()
+    let controller = RuntimeSessionController(
+        privilegedClient: client,
+        inProcessClient: client,
+        helperRegistration: nil,
+        systemSleepPreventer: RecordingSystemSleepPreventer(),
+        wakeRecoveryDelay: .milliseconds(10)
+    )
+    var recoveryCount = 0
+    controller.startPolling(
+        refresh: {},
+        handleWillSleep: {},
+        handleSessionResign: {},
+        handleDidWake: { recoveryCount += 1 }
+    )
+    defer { controller.stopPolling() }
+
+    controller.handleUserSessionDidResignActiveNotification()
+    controller.handleSystemDidWakeNotification()
+    try? await Task.sleep(for: .milliseconds(30))
+    #expect(recoveryCount == 0)
+
+    controller.handleUserSessionDidBecomeActiveNotification()
+    try? await Task.sleep(for: .milliseconds(30))
+    #expect(recoveryCount == 1)
+}
+
+@MainActor
+@Test func importTOMLMigratesNetworkSecretToKeychain() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let storage = EasyTierStorage(baseDirectory: directory)
     let secrets = MemoryNetworkSecretStore()
@@ -1311,7 +1442,7 @@ import Testing
         networkSecretStore: secrets
     )
 
-    store.importTOML(try NetworkConfigTOMLCodec.encode(config))
+    await store.importTOML(try NetworkConfigTOMLCodec.encode(config))
 
     let toml = try String(contentsOf: directory.appendingPathComponent("configs/import-id.toml"), encoding: .utf8)
 
@@ -1321,26 +1452,26 @@ import Testing
 }
 
 @MainActor
-@Test func importTOMLSurfacesReadableParserErrors() {
+@Test func importTOMLSurfacesReadableParserErrors() async {
     let store = EasyTierAppStore()
 
-    store.importTOML(#"instance_name = "broken"#)
+    await store.importTOML(#"instance_name = "broken"#)
 
     #expect(store.lastError?.contains("Invalid TOML syntax at line") == true)
 }
 
 @MainActor
-@Test func importTOMLReportsInvalidCharacterAtParserErrorLocation() {
+@Test func importTOMLReportsInvalidCharacterAtParserErrorLocation() async {
     let store = EasyTierAppStore()
 
-    store.importTOML("instance_name = \u{201C}broken\"")
+    await store.importTOML("instance_name = \u{201C}broken\"")
 
     #expect(store.lastError?.contains("Character at line 1, column 17") == true)
     #expect(store.lastError?.contains("U+201C") == true)
 }
 
 @MainActor
-@Test func deleteSelectedConfigKeepsKeychainNetworkSecret() async {
+@Test func deleteSelectedConfigRemovesTheLastSharedKeychainSecret() async {
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"])
     let config = NetworkConfig(instance_id: "delete-id", network_name: "office")
     let store = EasyTierAppStore(client: RecordingToggleClient(), networkSecretStore: secrets)
@@ -1350,11 +1481,26 @@ import Testing
 
     await store.deleteSelectedConfig()
 
-    #expect(secrets.secrets["office"] == "secret")
+    #expect(secrets.secrets["office"] == nil)
 }
 
 @MainActor
-@Test func keychainNetworkSecretsAreScopedByNetworkName() {
+@Test func deleteSelectedConfigKeepsASecretReferencedByAnotherConfig() async {
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"])
+    let first = NetworkConfig(instance_id: "delete-shared-first", network_name: "office")
+    let second = NetworkConfig(instance_id: "delete-shared-second", network_name: "office")
+    let store = EasyTierAppStore(client: RecordingToggleClient(), networkSecretStore: secrets)
+    store.configs = [first, second]
+    store.selectedConfigID = first.instance_id
+
+    await store.deleteSelectedConfig()
+
+    #expect(secrets.secrets["office"] == "secret")
+    #expect(store.configs.map(\.id) == [second.id])
+}
+
+@MainActor
+@Test func keychainNetworkSecretsAreScopedByNetworkName() async throws {
     let secrets = MemoryNetworkSecretStore()
     let first = NetworkConfig(instance_id: "first-id", network_name: "office", network_secret: "office-secret")
     let second = NetworkConfig(instance_id: "second-id", network_name: "lab", network_secret: "lab-secret")
@@ -1363,7 +1509,13 @@ import Testing
         networkSecretStore: secrets
     )
 
-    store.configs = [first, second]
+    try await store.saveNetworkSecretToKeychain("office-secret", for: first)
+    try await store.saveNetworkSecretToKeychain("lab-secret", for: second)
+    store.configs = [first, second].map {
+        var config = $0
+        config.network_secret = nil
+        return config
+    }
     store.save()
 
     #expect(secrets.secrets["office"] == "office-secret")
@@ -1371,7 +1523,7 @@ import Testing
 }
 
 @MainActor
-@Test func updateConfigMigratesKeychainSecretWhenNetworkNameChanges() {
+@Test func updateConfigMigratesKeychainSecretWhenNetworkNameChanges() async throws {
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "office-secret"])
     let original = NetworkConfig(instance_id: "rename-id", network_name: "office")
     let store = EasyTierAppStore(
@@ -1384,7 +1536,7 @@ import Testing
 
     var updated = original
     updated.network_name = "renamed"
-    store.updateConfig(id: original.instance_id, with: updated, saveImmediately: true)
+    try await store.updateConfig(id: original.instance_id, with: updated, saveImmediately: true)
 
     #expect(secrets.secrets["renamed"] == "office-secret")
     #expect(secrets.secrets["office"] == nil)
@@ -1676,7 +1828,7 @@ import Testing
 }
 
 @MainActor
-@Test func restartSelectedConfigStopsOldRuntimeNameBeforeRunningUpdatedConfig() async {
+@Test func restartSelectedConfigStopsOldRuntimeNameBeforeRunningUpdatedConfig() async throws {
     let original = NetworkConfig(instance_id: "config-id", network_name: "old-network")
     var updated = original
     updated.network_name = "new-network"
@@ -1687,7 +1839,7 @@ import Testing
     store.configs = [original]
     store.selectedConfigID = original.instance_id
     store.instances = [runningInstance]
-    store.updateConfig(id: original.instance_id, with: updated)
+    try await store.updateConfig(id: original.instance_id, with: updated)
 
     await store.restartSelectedConfig(replacing: runningInstance)
 
@@ -1846,7 +1998,7 @@ import Testing
     store.selectedConfigID = config.instance_id
     var updated = config
     updated.hostname = "desired"
-    store.updateConfig(id: config.instance_id, with: updated, saveImmediately: true)
+    try await store.updateConfig(id: config.instance_id, with: updated, saveImmediately: true)
     let running = NetworkInstance(
         instance_id: config.instance_id,
         name: config.network_name,
@@ -3710,31 +3862,70 @@ private final class MemoryNetworkSecretStore: NetworkSecretStore, @unchecked Sen
     var readError: Error?
     var saveError: Error?
     var containsError: Error?
+    var saveCleanup: NetworkSecretCleanupState = .notNeeded
+    var authenticationPurposes: [NetworkSecretAccessPurpose] = []
     private(set) var authenticationInvalidationCount = 0
 
     init(secrets: [String: String] = [:]) {
         self.secrets = secrets
     }
 
-    func save(_ secret: String, for config: NetworkConfig) throws {
+    func save(
+        _ secret: String,
+        for config: NetworkConfig,
+        purpose _: NetworkSecretAccessPurpose
+    ) async throws -> NetworkSecretWriteResult {
         if let saveError { throw saveError }
         secrets[config.network_name] = secret
+        return NetworkSecretWriteResult(cleanup: saveCleanup)
     }
 
-    func secret(for config: NetworkConfig, reason: String?) throws -> String? {
+    func secret(
+        for config: NetworkConfig,
+        purpose _: NetworkSecretAccessPurpose,
+        reason: String?
+    ) async throws -> NetworkSecretReadResult? {
         readReasons.append(reason)
         if let readError { throw readError }
-        return secrets[config.network_name]
+        return secrets[config.network_name].map {
+            NetworkSecretReadResult(secret: $0, cleanup: .notNeeded)
+        }
     }
 
-    func deleteSecret(for config: NetworkConfig) throws {
+    func deleteSecret(
+        for config: NetworkConfig,
+        purpose _: NetworkSecretAccessPurpose
+    ) async throws {
         deletedIDs.append(config.network_name)
         secrets.removeValue(forKey: config.network_name)
     }
 
-    func containsSecret(for config: NetworkConfig) throws -> Bool {
+    func presence(for config: NetworkConfig) async throws -> NetworkSecretPresence {
         if let containsError { throw containsError }
-        return secrets[config.network_name] != nil
+        return secrets[config.network_name] == nil ? .missing : .present
+    }
+
+    func migrateSecret(
+        from oldConfig: NetworkConfig,
+        to newConfig: NetworkConfig,
+        removeSource: Bool
+    ) async throws -> NetworkSecretWriteResult {
+        if secrets[newConfig.network_name] == nil,
+           let secret = secrets[oldConfig.network_name]
+        {
+            secrets[newConfig.network_name] = secret
+        }
+        if removeSource {
+            secrets.removeValue(forKey: oldConfig.network_name)
+        }
+        return NetworkSecretWriteResult(cleanup: .notNeeded)
+    }
+
+    func authenticate(
+        for _: NetworkConfig,
+        purpose: NetworkSecretAccessPurpose
+    ) async throws {
+        authenticationPurposes.append(purpose)
     }
 
     func invalidateAuthenticationSession() {
@@ -3743,42 +3934,63 @@ private final class MemoryNetworkSecretStore: NetworkSecretStore, @unchecked Sen
 }
 
 private final class BlockingNetworkSecretStore: NetworkSecretStore, @unchecked Sendable {
-    private let condition = NSCondition()
+    private let lock = NSLock()
     private let storedSecret: String
     private var storedReadCount = 0
-    private var readsReleased = false
+    private var readContinuations: [CheckedContinuation<Void, Never>] = []
 
     init(secret: String) {
         storedSecret = secret
     }
 
     var readCount: Int {
-        condition.lock()
-        defer { condition.unlock() }
-        return storedReadCount
+        lock.withLock { storedReadCount }
     }
 
-    func save(_: String, for _: NetworkConfig) throws {}
+    func save(
+        _: String,
+        for _: NetworkConfig,
+        purpose _: NetworkSecretAccessPurpose
+    ) async throws -> NetworkSecretWriteResult {
+        NetworkSecretWriteResult(cleanup: .notNeeded)
+    }
 
-    func secret(for _: NetworkConfig, reason _: String?) throws -> String? {
-        condition.lock()
-        storedReadCount += 1
-        condition.broadcast()
-        while !readsReleased {
-            condition.wait()
+    func secret(
+        for _: NetworkConfig,
+        purpose _: NetworkSecretAccessPurpose,
+        reason _: String?
+    ) async throws -> NetworkSecretReadResult? {
+        await withCheckedContinuation { continuation in
+            lock.withLock {
+                storedReadCount += 1
+                readContinuations.append(continuation)
+            }
         }
-        condition.unlock()
-        return storedSecret
+        return NetworkSecretReadResult(secret: storedSecret, cleanup: .notNeeded)
     }
 
-    func deleteSecret(for _: NetworkConfig) throws {}
-    func containsSecret(for _: NetworkConfig) throws -> Bool { true }
+    func deleteSecret(
+        for _: NetworkConfig,
+        purpose _: NetworkSecretAccessPurpose
+    ) async throws {}
+
+    func presence(for _: NetworkConfig) async throws -> NetworkSecretPresence { .present }
+
+    func migrateSecret(
+        from _: NetworkConfig,
+        to _: NetworkConfig,
+        removeSource _: Bool
+    ) async throws -> NetworkSecretWriteResult {
+        NetworkSecretWriteResult(cleanup: .notNeeded)
+    }
 
     func releaseReads() {
-        condition.lock()
-        readsReleased = true
-        condition.broadcast()
-        condition.unlock()
+        let continuations = lock.withLock {
+            let continuations = readContinuations
+            readContinuations.removeAll()
+            return continuations
+        }
+        continuations.forEach { $0.resume() }
     }
 }
 

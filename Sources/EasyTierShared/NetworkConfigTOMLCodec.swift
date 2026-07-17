@@ -12,12 +12,27 @@ public enum TOMLCodecError: LocalizedError, Equatable {
     }
 }
 
+public enum NetworkConfigTOMLEncodingMode: Sendable {
+    case runtime
+    case export
+}
+
 public enum NetworkConfigTOMLCodec {
-    public static func encode(_ config: NetworkConfig, magicDNSSettings: MagicDNSSettings? = nil) throws -> String {
+    public static func encode(
+        _ config: NetworkConfig,
+        magicDNSSettings: MagicDNSSettings? = nil,
+        mode: NetworkConfigTOMLEncodingMode = .runtime
+    ) throws -> String {
         let encoder = TOMLEncoder()
         encoder.outputFormatting = [.prettyPrinted]
 
-        let toml = try encoder.encodeToString(EasyTierTOMLDocument(config.normalized(), magicDNSSettings: magicDNSSettings))
+        let toml = try encoder.encodeToString(
+            EasyTierTOMLDocument(
+                config.normalized(),
+                magicDNSSettings: magicDNSSettings,
+                mode: mode
+            )
+        )
         return toml.hasSuffix("\n") ? toml : toml + "\n"
     }
 
@@ -63,7 +78,11 @@ private struct EasyTierTOMLDocument: Codable {
     var port_forward: [PortForwardTOML]?
     var flags: FlagsTOML?
 
-    init(_ config: NetworkConfig, magicDNSSettings: MagicDNSSettings? = nil) {
+    init(
+        _ config: NetworkConfig,
+        magicDNSSettings: MagicDNSSettings? = nil,
+        mode: NetworkConfigTOMLEncodingMode = .runtime
+    ) {
         instance_name = config.network_name.isEmpty ? config.instance_id : config.network_name
         instance_id = config.instance_id
         dhcp = config.dhcp
@@ -79,7 +98,7 @@ private struct EasyTierTOMLDocument: Codable {
         socks5_proxy = config.enable_socks5 == true ? "socks5://127.0.0.1:\(config.socks5_port)" : nil
         network_identity = NetworkIdentityTOML(
             network_name: config.network_name,
-            network_secret: config.network_secret ?? ""
+            network_secret: mode == .runtime ? (config.network_secret ?? "") : config.network_secret
         )
         peer = config.peer_urls.nilIfEmpty?.map { PeerTOML(uri: $0) }
         proxy_network = config.proxy_cidrs.nilIfEmpty?.map {
