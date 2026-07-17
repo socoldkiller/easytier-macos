@@ -81,6 +81,7 @@ public final class EasyTierAppStore {
     public let helperRegistration: HelperRegistrationService?
     private let storage: EasyTierStorage
     private let networkSecretStore: any NetworkSecretStore
+    private let peerSubscriptionDataLoader: any PeerSubscriptionDataLoading
     private let systemSleepPreventer: any SystemSleepPreventing
     @ObservationIgnored private var didReportNetworkSecretCleanupIssue = false
     private var lastErrorKind: LastErrorKind?
@@ -119,6 +120,9 @@ public final class EasyTierAppStore {
         helperRegistration: HelperRegistrationService? = nil,
         storage: EasyTierStorage = .default,
         networkSecretStore: any NetworkSecretStore = SystemNetworkSecretStore(),
+        peerSubscriptionDataLoader: any PeerSubscriptionDataLoading = URLSessionPeerSubscriptionDataLoader(
+            session: URLSession(configuration: .ephemeral)
+        ),
         systemSleepPreventer: any SystemSleepPreventing = IOKitSystemSleepPreventer()
     ) {
         self.privilegedClient = privilegedClient
@@ -126,6 +130,7 @@ public final class EasyTierAppStore {
         self.helperRegistration = helperRegistration
         self.storage = storage
         self.networkSecretStore = networkSecretStore
+        self.peerSubscriptionDataLoader = peerSubscriptionDataLoader
         self.systemSleepPreventer = systemSleepPreventer
     }
 
@@ -134,6 +139,9 @@ public final class EasyTierAppStore {
         client: any EasyTierCoreClient = PrivilegedEasyTierClient(),
         storage: EasyTierStorage = .isolatedForTesting(),
         networkSecretStore: any NetworkSecretStore = SystemNetworkSecretStore(),
+        peerSubscriptionDataLoader: any PeerSubscriptionDataLoading = URLSessionPeerSubscriptionDataLoader(
+            session: URLSession(configuration: .ephemeral)
+        ),
         systemSleepPreventer: any SystemSleepPreventing = IOKitSystemSleepPreventer()
     ) {
         self.init(
@@ -142,6 +150,7 @@ public final class EasyTierAppStore {
             helperRegistration: nil,
             storage: storage,
             networkSecretStore: networkSecretStore,
+            peerSubscriptionDataLoader: peerSubscriptionDataLoader,
             systemSleepPreventer: systemSleepPreventer
         )
     }
@@ -1783,7 +1792,10 @@ public final class EasyTierAppStore {
 
     public func addPeerSubscription(url: URL) async {
         do {
-            let fetched = try await PeerSubscriptionLibrary.fetch(from: url)
+            let fetched = try await PeerSubscriptionLibrary.fetch(
+                from: url,
+                using: peerSubscriptionDataLoader
+            )
             peerSubscriptions.append(contentsOf: fetched)
             saveInBackground()
             log("Added \(fetched.count) subscription(s) from \(url.absoluteString).")
@@ -1805,7 +1817,10 @@ public final class EasyTierAppStore {
         isRefreshingPeerSubscriptions = true
         defer { isRefreshingPeerSubscriptions = false }
 
-        let result = await PeerSubscriptionLibrary.refresh(peerSubscriptions)
+        let result = await PeerSubscriptionLibrary.refresh(
+            peerSubscriptions,
+            using: peerSubscriptionDataLoader
+        )
         peerSubscriptions = result.subscriptions
         for failure in result.failures {
             log("Failed to refresh subscription from \(failure.url.absoluteString): \(failure.message)")

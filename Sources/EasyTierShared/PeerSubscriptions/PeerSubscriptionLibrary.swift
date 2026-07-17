@@ -6,8 +6,12 @@ enum PeerSubscriptionLibrary {
         var failures: [(url: URL, message: String)]
     }
 
-    static func fetch(from url: URL, now: Date = Date()) async throws -> [PeerSubscription] {
-        let (data, _) = try await URLSession.shared.data(from: url)
+    static func fetch(
+        from url: URL,
+        using dataLoader: any PeerSubscriptionDataLoading,
+        now: Date = Date()
+    ) async throws -> [PeerSubscription] {
+        let data = try await dataLoader.data(from: url)
         return try decodedSubscriptions(from: data, sourceURL: url, fetchedAt: now)
     }
 
@@ -15,7 +19,10 @@ enum PeerSubscriptionLibrary {
         try PeerSubscriptionCodec.decode(json)
     }
 
-    static func refresh(_ subscriptions: [PeerSubscription]) async -> RefreshResult {
+    static func refresh(
+        _ subscriptions: [PeerSubscription],
+        using dataLoader: any PeerSubscriptionDataLoading
+    ) async -> RefreshResult {
         var refreshed = subscriptions
         var failures: [(url: URL, message: String)] = []
         var seenURLs: Set<URL> = []
@@ -23,7 +30,7 @@ enum PeerSubscriptionLibrary {
 
         for url in urls {
             do {
-                let fetched = try await fetch(from: url)
+                let fetched = try await fetch(from: url, using: dataLoader)
                 merge(fetched, from: url, into: &refreshed)
             } catch {
                 failures.append((url, error.localizedDescription))

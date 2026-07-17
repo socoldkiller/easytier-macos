@@ -259,6 +259,27 @@ func peerCardDecodesLossily(_ json: String) throws {
     #expect(existing[0].lastFetchedAt == fetchedAt)
 }
 
+@Test func peerSubscriptionLibraryUsesInjectedDataLoader() async throws {
+    let sourceURL = try #require(URL(string: "https://example.com/injected.json"))
+    let fetchedAt = Date(timeIntervalSince1970: 1_700_100_000)
+    let data = try #require(
+        #"{"outbounds":[{"type":"tcp","tag":"Injected","server":"peer.example.com","server_port":11010}]}"#
+            .data(using: .utf8)
+    )
+    let dataLoader = TestPeerSubscriptionDataLoader(data: data)
+
+    let fetched = try await PeerSubscriptionLibrary.fetch(
+        from: sourceURL,
+        using: dataLoader,
+        now: fetchedAt
+    )
+
+    #expect(await dataLoader.requestedURLs == [sourceURL])
+    #expect(fetched[0].subscriptionURL == sourceURL)
+    #expect(fetched[0].lastFetchedAt == fetchedAt)
+    #expect(fetched[0].cards[0].name == "Injected")
+}
+
 @Test func peerSubscriptionLibraryFindsLatencyAcrossTunnelEndpoints() {
     let card = PeerCard(name: "Peer", urls: ["tcp://peer.example.com:11010"])
     let details = [
@@ -293,4 +314,18 @@ func peerCardDecodesLossily(_ json: String) throws {
     )
 
     #expect(PeerSubscriptionLibrary.additionalURLCount(for: card, in: config) == 1)
+}
+
+private actor TestPeerSubscriptionDataLoader: PeerSubscriptionDataLoading {
+    private(set) var requestedURLs: [URL] = []
+    private let data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    func data(from url: URL) async throws -> Data {
+        requestedURLs.append(url)
+        return data
+    }
 }

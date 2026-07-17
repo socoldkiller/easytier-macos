@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import Testing
 @testable import EasyTierMac
 @testable import EasyTierShared
@@ -22,6 +23,29 @@ import Testing
     }
 
     #expect(!GlassSurfaceRole.windowBackdrop.configuration(reduceTransparency: true).isEnabled)
+}
+
+@MainActor
+@Test func windowGlassBackgroundRendersWithoutAppContextEnvironment() {
+    let coordinator = GlassRenderCoordinator()
+    let rootView = Text("Glass smoke test")
+        .easyTierWindowBackground(
+            glassEffectsEnabled: true,
+            renderCoordinator: coordinator
+        )
+        .frame(width: 320, height: 240)
+    let hostingView = NSHostingView(rootView: rootView)
+    let window = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
+        styleMask: [.titled],
+        backing: .buffered,
+        defer: false
+    )
+
+    window.contentView = hostingView
+    hostingView.layoutSubtreeIfNeeded()
+
+    #expect(window.contentView === hostingView)
 }
 
 @MainActor

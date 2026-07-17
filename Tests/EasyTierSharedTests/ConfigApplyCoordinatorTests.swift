@@ -1,3 +1,4 @@
+import Observation
 import Testing
 @testable import EasyTierShared
 
@@ -28,7 +29,7 @@ import Testing
         return .saved
     }
 
-    try await Task.sleep(for: .milliseconds(60))
+    await waitForPhase(.applied, in: coordinator)
 
     #expect(applied == [second])
     #expect(coordinator.phase == .applied)
@@ -92,7 +93,8 @@ import Testing
         successDisplayDuration: .seconds(1)
     )
     var appliedNames: [String] = []
-    var firstApplyStarted = false
+    let firstApplyStarted = OneShotEvent()
+    let allowFirstApplyToFinish = OneShotEvent()
     let first = LocalConfigApplyRequest(
         configID: "config-id",
         config: NetworkConfig(instance_id: "config-id", network_name: "first"),
@@ -106,24 +108,58 @@ import Testing
 
     coordinator.schedule(first) { request in
         appliedNames.append(request.config.network_name)
-        firstApplyStarted = true
-        try? await Task.sleep(for: .milliseconds(40))
+        await firstApplyStarted.signal()
+        await allowFirstApplyToFinish.wait()
         return .saved
     }
-    for _ in 0..<100 where !firstApplyStarted {
-        try await Task.sleep(for: .milliseconds(2))
-    }
-    #expect(firstApplyStarted)
+    await firstApplyStarted.wait()
 
     coordinator.schedule(second) { request in
         appliedNames.append(request.config.network_name)
         return .saved
     }
+    await allowFirstApplyToFinish.signal()
 
-    for _ in 0..<100 where appliedNames.count < 2 {
-        try await Task.sleep(for: .milliseconds(2))
-    }
+    await waitForPhase(.applied, in: coordinator)
 
     #expect(appliedNames == ["first", "second"])
     #expect(coordinator.phase == .applied)
+}
+
+@MainActor
+private func waitForPhase(
+    _ expectedPhase: ConfigApplyCoordinator.Phase,
+    in coordinator: ConfigApplyCoordinator
+) async {
+    while coordinator.phase != expectedPhase {
+        await withCheckedContinuation { continuation in
+            withObservationTracking {
+                _ = coordinator.phase
+            } onChange: {
+                continuation.resume()
+            }
+        }
+    }
+}
+
+private actor OneShotEvent {
+    private var isSignaled = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isSignaled else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func signal() {
+        guard !isSignaled else { return }
+        isSignaled = true
+        let pendingWaiters = waiters
+        waiters.removeAll()
+        for waiter in pendingWaiters {
+            waiter.resume()
+        }
+    }
 }

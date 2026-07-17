@@ -202,6 +202,9 @@ make dmg \
 
 RPC 远程调用也走 FFI：Swift 构造 JSON-RPC payload → C shim → Rust 发起 TCP 连接到远端 RPC Portal。
 
+SwiftUI 状态入口、Feature 目录边界、依赖注入规则及多 Agent 协作约定见
+[`Documentation/ARCHITECTURE.md`](Documentation/ARCHITECTURE.md)。
+
 ## Star 历史
 
 <div align="center">

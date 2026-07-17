@@ -57,7 +57,7 @@ import Testing
     )
 
     #expect(controller.updateTrack == .stable)
-    #expect(controller.allowedSparkleChannels.isEmpty)
+    #expect(controller.allowedChannels.isEmpty)
     #expect(fixture.defaults.string(forKey: updateTrackKey) == SoftwareUpdateTrack.stable.rawValue)
 }
 
@@ -74,7 +74,7 @@ import Testing
 
     controller.updateTrack = .nightly
 
-    #expect(controller.allowedSparkleChannels == ["nightly"])
+    #expect(controller.allowedChannels == ["nightly"])
     #expect(fixture.defaults.string(forKey: updateTrackKey) == SoftwareUpdateTrack.nightly.rawValue)
     #expect(client.resetUpdateCycleCount == 1)
 
@@ -95,9 +95,8 @@ import Testing
     )
 
     #expect(controller.updateTrack == .nightly)
-    #expect(controller.allowedSparkleChannels == ["nightly"])
+    #expect(controller.allowedChannels == ["nightly"])
     #expect(client.resetUpdateCycleCount == 0)
-    #expect(controller.responds(to: NSSelectorFromString("allowedChannelsForUpdater:")))
 }
 
 @MainActor

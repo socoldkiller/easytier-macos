@@ -9,41 +9,68 @@ import Testing
     let userDefaults = UserDefaults(suiteName: suiteName)!
     defer { userDefaults.removePersistentDomain(forName: suiteName) }
 
-    var appliedVisibility: [Bool] = []
+    let dockIconVisibility = TestDockIconVisibilityService()
     let settings = AppAppearanceSettings(
         userDefaults: userDefaults,
-        applyDockIconVisibility: { appliedVisibility.append($0) }
+        dockIconVisibility: dockIconVisibility
     )
 
     #expect(settings.showsDockIcon)
-    #expect(appliedVisibility.isEmpty)
+    #expect(dockIconVisibility.appliedVisibility.isEmpty)
 
     settings.showsDockIcon = false
 
     #expect(userDefaults.object(forKey: "EasyTierShowsDockIcon") as? Bool == false)
-    #expect(appliedVisibility == [false])
+    #expect(dockIconVisibility.appliedVisibility == [false])
 
     let restoredSettings = AppAppearanceSettings(
         userDefaults: userDefaults,
-        applyDockIconVisibility: { _ in }
+        dockIconVisibility: TestDockIconVisibilityService()
     )
     #expect(!restoredSettings.showsDockIcon)
 }
 
 @MainActor
 @Test func dockIconVisibilityMapsToExpectedActivationPolicy() {
-    #expect(AppAppearanceSettings.activationPolicy(showsDockIcon: true) == .regular)
-    #expect(AppAppearanceSettings.activationPolicy(showsDockIcon: false) == .accessory)
+    #expect(SystemDockIconVisibilityService.activationPolicy(showsDockIcon: true) == .regular)
+    #expect(SystemDockIconVisibilityService.activationPolicy(showsDockIcon: false) == .accessory)
+}
+
+@MainActor
+@Test func dockIconApplicationIsResolvedOnlyWhenVisibilityIsApplied() {
+    let application = TestDockIconApplication()
+    var resolutionCount = 0
+    let service = SystemDockIconVisibilityService {
+        resolutionCount += 1
+        return application
+    }
+
+    #expect(resolutionCount == 0)
+
+    service.applyDockIconVisibility(true)
+
+    #expect(resolutionCount == 1)
+    #expect(application.activationPolicies == [.regular])
 }
 
 @MainActor
 @Test func hidingDockIconKeepsApplicationInFront() {
     let application = TestDockIconApplication()
 
-    AppAppearanceSettings.applyDockIconVisibility(false, application: application)
+    SystemDockIconVisibilityService(application: application)
+        .applyDockIconVisibility(false)
 
     #expect(application.activationPolicies == [.accessory])
     #expect(application.activateIgnoringOtherAppsValues == [true])
+}
+
+@MainActor
+private final class TestDockIconVisibilityService: DockIconVisibilityApplying {
+    private(set) var appliedVisibility: [Bool] = []
+
+    func applyDockIconVisibility(_ showsDockIcon: Bool) {
+        appliedVisibility.append(showsDockIcon)
+    }
 }
 
 @MainActor
