@@ -3,7 +3,6 @@ import ServiceManagement
 
 package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelperShutdownClient, @unchecked Sendable {
     private static let defaultCallTimeout: Duration = .seconds(15)
-    private static let gatewayCallTimeout: Duration = .seconds(45)
     private static let registrationProbeTimeout: Duration = .seconds(3)
 
     // NSXPCConnection is not Sendable; every access to the cached connection is lock-protected.
@@ -138,57 +137,24 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
         }
     }
 
-    package func gatewayStart(configurationJSON: String) async throws {
-        try await callHelper(
-            timeout: Self.gatewayCallTimeout,
-            timeoutError: { Self.gatewayTimeoutError(operation: "start") },
-            retryOnUnavailable: false
-        ) { service, reply in
-            service.gatewayStart(configurationJSON: configurationJSON, reply: reply)
-        }
-    }
-
-    package func gatewayApply(configurationJSON: String) async throws {
-        try await callHelper(
-            timeout: Self.gatewayCallTimeout,
-            timeoutError: { Self.gatewayTimeoutError(operation: "apply") },
-            retryOnUnavailable: false
-        ) { service, reply in
-            service.gatewayApply(configurationJSON: configurationJSON, reply: reply)
-        }
-    }
-
-    package func gatewayStop() async throws {
-        try await callHelper(
-            timeout: Self.gatewayCallTimeout,
-            timeoutError: { Self.gatewayTimeoutError(operation: "stop") },
-            retryOnUnavailable: false
-        ) { service, reply in
-            service.gatewayStop(reply: reply)
-        }
-    }
-
-    package func gatewayStatusJSON() async throws -> String {
-        try await callHelperReturningPayload { service, reply in
-            service.gatewayStatus(reply: reply)
-        }
-    }
-
-    package func gatewayRequestRenewal(certificateID: String?) async throws {
-        try await callHelper(
-            timeout: Self.gatewayCallTimeout,
-            timeoutError: { Self.gatewayTimeoutError(operation: "renewal") },
-            retryOnUnavailable: false
-        ) { service, reply in
-            service.gatewayRequestRenewal(certificateID: certificateID, reply: reply)
-        }
-    }
-
     package func helperPingPayload() async throws -> String {
         try await helperPingPayload(
             timeout: Self.defaultCallTimeout,
             timeoutError: Self.timeoutError
         )
+    }
+
+    package func helperBuildInfo() async throws -> PrivilegedHelperBuildInfo {
+        _ = try await helperPingPayload()
+        let payload = try await callHelperReturningPayload { service, reply in
+            service.buildInfo(reply: reply)
+        }
+        guard let data = payload.data(using: .utf8),
+              let info = try? JSONDecoder().decode(PrivilegedHelperBuildInfo.self, from: data)
+        else {
+            throw PrivilegedHelperError.invalidPayload("Helper build information is not valid JSON.")
+        }
+        return info
     }
 
     package func probeHelperAvailability() async throws {
@@ -383,16 +349,6 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
                 code: "remoteRPCTimeout",
                 message: "Remote EasyTier RPC did not respond within 15 seconds.",
                 recoverySuggestion: "Check that the remote device is online, rpc_portal is enabled, and the RPC URL uses the EasyTier virtual IP."
-            )
-        )
-    }
-
-    private static func gatewayTimeoutError(operation: String) -> PrivilegedHelperError {
-        .helperReported(
-            PrivilegedHelperErrorPayload(
-                code: "gatewayTimeout",
-                message: "Gateway \(operation) did not complete within 45 seconds.",
-                recoverySuggestion: "Refresh Gateway status before retrying so an operation that completed after the timeout is not duplicated."
             )
         )
     }

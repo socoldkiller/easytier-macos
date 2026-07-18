@@ -21,7 +21,7 @@ final class GatewayRuntimeController {
 
     @ObservationIgnored private let client: any GatewayClient
     @ObservationIgnored private let configurationStore: any GatewayConfigurationStoring
-    @ObservationIgnored private let helperRegistration: HelperRegistrationService?
+    @ObservationIgnored let helperRegistration: HelperRegistrationService?
     @ObservationIgnored private let connectionMonitor: (any GatewayConnectionMonitoring)?
     @ObservationIgnored private var connectionTask: Task<Void, Never>?
     @ObservationIgnored private var recoveryEnabled = false

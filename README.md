@@ -128,7 +128,7 @@ git clone --recurse-submodules https://github.com/socoldkiller/easytier-macos.gi
 cd easytier-macos
 
 make bootstrap   # 检查工具链
-make ffi         # 编译当前 Mac 架构的 Rust FFI 静态库
+make ffi         # 编译当前 Mac 架构的 Core/Gateway 独立 FFI 静态库
 make test        # 运行 Swift 和 Rust 测试
 ```
 
@@ -138,7 +138,7 @@ make test        # 运行 Swift 和 Rust 测试
 open EasyTier.xcodeproj
 ```
 
-`EasyTierMac` Scheme 包含 macOS App、Privileged Helper 和 Rust FFI 构建依赖。Debug 可直接用于本地编译；`Product > Archive` 使用 Release 配置，需要 Developer ID 证书和匹配的 provisioning profile。SwiftPM 继续管理 Shared/Runtime 模块及测试，避免在 Xcode 中维护第二份业务依赖图。
+`EasyTierMac` Scheme 包含 macOS App、EasyTier/Gateway 两个 Privileged Helper 和 Rust FFI 构建依赖。Debug 可直接用于本地编译；`Product > Archive` 使用 Release 配置，需要 Developer ID 证书和匹配的 provisioning profile。SwiftPM 继续管理 Shared/Runtime 模块及测试，避免在 Xcode 中维护第二份业务依赖图。
 
 需要调试 Data Protection Keychain 时，先复制并填写本机签名配置：
 
@@ -151,7 +151,8 @@ cp Configurations/Signing.example.xcconfig Configurations/Signing.local.xcconfig
 产物路径：
 - App bundle：`.build/artifacts/EasyTier.app`
 - Xcode archive：`.build/AppProducts/EasyTier.xcarchive`
-- FFI 库：`Vendor/Frameworks/static/libeasytier_ffi.a`
+- EasyTier Core FFI：`Vendor/Frameworks/static/libeasytier_core_ffi.a`
+- Gateway FFI：`Vendor/Frameworks/static/libgateway_ffi.a`
 - DMG：`.build/artifacts/EasyTier-macOS-ARM64.dmg`
 
 Developer ID 打包：
@@ -186,17 +187,19 @@ make dmg \
 ├────────────────────────────────┤
 │  EasyTierShared (Models / RPC) │
 ├────────────────────────────────┤
-│  XPC Client                    │
+│  EasyTier XPC / Gateway XPC   │
 └───────────────┬────────────────┘
                 │ signed XPC
 ┌───────────────▼────────────────┐
-│  Privileged Helper            │
-│  EasyTierRuntime              │
-│  → CEasyTierFFI → Rust Core   │
+│ EasyTierPrivilegedHelper      │
+│ → EasyTier Core / RPC / DNS   │
+├────────────────────────────────┤
+│ GatewayPrivilegedHelper       │
+│ → Gateway / ACME / TLS        │
 └────────────────────────────────┘
 ```
 
-所有本地运行操作只有一条路径：Swift GUI → XPC → privileged helper daemon → C shim → Rust FFI → EasyTier Core。GUI 二进制不再链接 EasyTier FFI；`no_tun` 只改变 Core 是否创建 TUN 接口，不改变进程边界。
+EasyTier 网络操作走 `com.kkrainbow.easytier.mac.helper`，Gateway 操作走独立的 `com.coldkiller.gateway.helper`。两个 LaunchDaemon 分别注册、启动和探测，并分别链接 `libeasytier_core_ffi.a` 与 `libgateway_ffi.a`；任何 helper 都不会携带另一方的 FFI 入口，GUI 二进制也不直接链接 FFI。`no_tun` 只改变 EasyTier Core 是否创建 TUN 接口。
 
 RPC 远程调用同样经 XPC 交给 helper：Swift 构造 JSON-RPC payload → helper 中的 C shim → Rust 发起 TCP 连接到远端 RPC Portal。
 

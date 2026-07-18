@@ -81,9 +81,10 @@ package final class GatewayHelperController: @unchecked Sendable {
     package static let productionHTTPListener = "0.0.0.0:80"
     package static let productionHTTPSListener = "0.0.0.0:443"
 
-    private let queue = DispatchQueue(label: "com.kkrainbow.easytier.mac.helper.gateway")
+    private let queue = DispatchQueue(label: "com.coldkiller.gateway.helper.runtime")
     private let ffi: any GatewayFFIRuntimeClient
     private let storageRoot: URL
+    private let legacyStorageRoot: URL?
     private let httpListener: String
     private let httpsListener: String
     private let leaseDuration: TimeInterval
@@ -101,9 +102,10 @@ package final class GatewayHelperController: @unchecked Sendable {
     package init(
         ffi: any GatewayFFIRuntimeClient = StaticGatewayFFIClient(),
         storageRoot: URL = URL(
-            fileURLWithPath: "/Library/Application Support/EasyTier/Gateway",
+            fileURLWithPath: "/Library/Application Support/Coldkiller/Gateway",
             isDirectory: true
         ),
+        legacyStorageRoot: URL? = nil,
         httpListener: String = GatewayHelperController.productionHTTPListener,
         httpsListener: String = GatewayHelperController.productionHTTPSListener,
         leaseDuration: TimeInterval = 10,
@@ -113,6 +115,7 @@ package final class GatewayHelperController: @unchecked Sendable {
     ) {
         self.ffi = ffi
         self.storageRoot = storageRoot
+        self.legacyStorageRoot = legacyStorageRoot
         self.httpListener = httpListener
         self.httpsListener = httpsListener
         self.leaseDuration = leaseDuration
@@ -266,12 +269,27 @@ package final class GatewayHelperController: @unchecked Sendable {
     private func prepareStorageDirectory(_ runtimeDirectory: URL) throws {
         dispatchPrecondition(condition: .onQueue(queue))
         let userDirectory = runtimeDirectory.deletingLastPathComponent()
+        try migrateLegacyStorageIfNeeded()
         try FileManager.default.createDirectory(at: storageRoot, withIntermediateDirectories: true)
         try setPermissions(0o755, at: storageRoot)
         try FileManager.default.createDirectory(at: userDirectory, withIntermediateDirectories: true)
         try setPermissions(0o700, at: userDirectory)
         try FileManager.default.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true)
         try setPermissions(0o700, at: runtimeDirectory)
+    }
+
+    private func migrateLegacyStorageIfNeeded() throws {
+        guard let legacyStorageRoot,
+              legacyStorageRoot.standardizedFileURL != storageRoot.standardizedFileURL,
+              FileManager.default.fileExists(atPath: legacyStorageRoot.path),
+              !FileManager.default.fileExists(atPath: storageRoot.path)
+        else { return }
+
+        try FileManager.default.createDirectory(
+            at: storageRoot.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.moveItem(at: legacyStorageRoot, to: storageRoot)
     }
 
     private func reconcileStart(

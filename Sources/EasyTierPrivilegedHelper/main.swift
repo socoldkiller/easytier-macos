@@ -1,26 +1,10 @@
-import EasyTierRuntime
+import EasyTierCoreRuntime
 import EasyTierShared
 import Foundation
 
 final class PrivilegedRuntime: @unchecked Sendable {
     let client = StaticEasyTierFFIClient()
     let magicDNSResolverConfigurator = MagicDNSSystemResolverConfigurator()
-    let gateway: GatewayHelperController
-
-    init() {
-        let client = self.client
-        gateway = GatewayHelperController(
-            hasNetworkInstances: {
-                guard let infos = try? client.collectNetworkInfoPayloadsSync() else {
-                    return true
-                }
-                return !infos.isEmpty
-            },
-            idleExitHandler: {
-                Foundation.exit(EXIT_SUCCESS)
-            }
-        )
-    }
 }
 
 /// XPC reply blocks are invoked once, and the lock protects the only mutable field.
@@ -47,15 +31,23 @@ private final class XPCReplyBox: @unchecked Sendable {
 
 final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unchecked Sendable {
     private let runtime: PrivilegedRuntime
-    private let session: GatewayHelperSession
 
-    init(runtime: PrivilegedRuntime, session: GatewayHelperSession) {
+    init(runtime: PrivilegedRuntime) {
         self.runtime = runtime
-        self.session = session
     }
 
     func ping(reply: @escaping (String?, String?) -> Void) {
         reply(EasyTierPrivilegedHelperConstants.pingPayload, nil)
+    }
+
+    func buildInfo(reply: @escaping (String?, String?) -> Void) {
+        do {
+            let info = PrivilegedHelperBuildInfo(bundle: .main)
+            let data = try JSONEncoder().encode(info)
+            reply(String(decoding: data, as: UTF8.self), nil)
+        } catch {
+            replyFailure(error, code: "buildInfoFailed", reply: reply)
+        }
     }
 
     func validate(toml: String, reply: @escaping (String?, String?) -> Void) {
@@ -143,52 +135,11 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
         }
     }
 
-    func gatewayStart(configurationJSON: String, reply: @escaping (String?, String?) -> Void) {
-        runGateway(code: "gatewayStartFailed", reply: reply) { [runtime, session] in
-            try await runtime.gateway.start(configurationJSON: configurationJSON, session: session)
-            return "ok"
-        }
-    }
-
-    func gatewayApply(configurationJSON: String, reply: @escaping (String?, String?) -> Void) {
-        runGateway(code: "gatewayApplyFailed", reply: reply) { [runtime, session] in
-            try await runtime.gateway.apply(configurationJSON: configurationJSON, session: session)
-            return "ok"
-        }
-    }
-
-    func gatewayStop(reply: @escaping (String?, String?) -> Void) {
-        runGateway(code: "gatewayStopFailed", reply: reply) { [runtime, session] in
-            try await runtime.gateway.stop(session: session)
-            return "ok"
-        }
-    }
-
-    func gatewayStatus(reply: @escaping (String?, String?) -> Void) {
-        runGateway(code: "gatewayStatusFailed", reply: reply) { [runtime, session] in
-            try await runtime.gateway.status(session: session)
-        }
-    }
-
-    func gatewayRequestRenewal(
-        certificateID: String?,
-        reply: @escaping (String?, String?) -> Void
-    ) {
-        runGateway(code: "gatewayRenewalFailed", reply: reply) { [runtime, session] in
-            try await runtime.gateway.requestRenewal(
-                certificateID: certificateID,
-                session: session
-            )
-            return "ok"
-        }
-    }
-
     func shutdown(reply: @escaping (String?, String?) -> Void) {
         let replyBox = XPCReplyBox(reply)
         let runtime = runtime
         Task { @concurrent in
             do {
-                try await runtime.gateway.shutdown()
                 try runtime.magicDNSResolverConfigurator.removeManagedResolverFiles()
                 replyBox.call("ok", nil)
             } catch {
@@ -198,22 +149,6 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
             }
             try? await Task.sleep(for: .milliseconds(50))
             Foundation.exit(EXIT_SUCCESS)
-        }
-    }
-
-    private func runGateway(
-        code: String,
-        reply: @escaping (String?, String?) -> Void,
-        operation: @escaping @Sendable () async throws -> String
-    ) {
-        let replyBox = XPCReplyBox(reply)
-        Task { @concurrent in
-            do {
-                replyBox.call(try await operation(), nil)
-            } catch {
-                fputs("helper \(code) error: \(error.localizedDescription)\n", stderr)
-                replyBox.call(nil, Self.errorPayload(error, code: code).encodedString())
-            }
         }
     }
 
@@ -279,12 +214,8 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
             "Check that the selected RPC listen port is free, then try saving the mode again."
         case "callJSONRPCFailed":
             "Check that the remote device has rpc_portal enabled and that the RPC URL uses a private EasyTier IP address."
-        case "gatewayStartFailed", "gatewayApplyFailed":
-            "Check that ports 80 and 443 are free and that the Gateway configuration is valid."
-        case "gatewayStopFailed", "shutdownCleanupFailed":
+        case "shutdownCleanupFailed":
             "Quit EasyTier again; if the helper remains, reinstall it to release the privileged listeners."
-        case "gatewayRenewalFailed":
-            "Refresh Gateway status and verify the certificate ID before retrying renewal."
         default:
             nil
         }
@@ -298,22 +229,11 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, @unchecked Sendable
         _ listener: NSXPCListener,
         shouldAcceptNewConnection connection: NSXPCConnection
     ) -> Bool {
-        let session = GatewayHelperSession(userID: connection.effectiveUserIdentifier)
-        let service = PrivilegedService(runtime: runtime, session: session)
+        let service = PrivilegedService(runtime: runtime)
 
         connection.setCodeSigningRequirement(PrivilegedHelperClientRequirement.current)
         connection.exportedInterface = NSXPCInterface(with: EasyTierPrivilegedServiceProtocol.self)
         connection.exportedObject = service
-        connection.interruptionHandler = { [gateway = runtime.gateway] in
-            Task { @concurrent in
-                await gateway.sessionDidInvalidate(session)
-            }
-        }
-        connection.invalidationHandler = { [gateway = runtime.gateway] in
-            Task { @concurrent in
-                await gateway.sessionDidInvalidate(session)
-            }
-        }
         connection.activate()
         return true
     }

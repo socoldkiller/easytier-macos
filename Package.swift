@@ -9,9 +9,11 @@ let package = Package(
     ],
     products: [
         .library(name: "EasyTierShared", targets: ["EasyTierShared"]),
-        .library(name: "EasyTierRuntime", targets: ["EasyTierRuntime"]),
+        .library(name: "EasyTierCoreRuntime", targets: ["EasyTierCoreRuntime"]),
+        .library(name: "GatewayRuntime", targets: ["GatewayRuntime"]),
         .executable(name: "EasyTierMac", targets: ["EasyTierMac"]),
         .executable(name: "EasyTierPrivilegedHelper", targets: ["EasyTierPrivilegedHelper"]),
+        .executable(name: "GatewayPrivilegedHelper", targets: ["GatewayPrivilegedHelper"]),
         .executable(
             name: "EasyTierKeychainIntegrationHarness",
             targets: ["EasyTierKeychainIntegrationHarness"]
@@ -23,10 +25,22 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "CEasyTierFFI",
+            name: "CEasyTierCoreFFI",
             publicHeadersPath: "include",
             linkerSettings: [
-                .unsafeFlags(["-LVendor/Frameworks/static", "-leasytier_ffi"]),
+                .unsafeFlags(["-LVendor/Frameworks/static", "-leasytier_core_ffi"]),
+                .linkedLibrary("c++"),
+                .linkedLibrary("iconv"),
+                .linkedFramework("CoreFoundation"),
+                .linkedFramework("Security"),
+                .linkedFramework("SystemConfiguration"),
+            ]
+        ),
+        .target(
+            name: "CGatewayFFI",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .unsafeFlags(["-LVendor/Frameworks/static", "-lgateway_ffi"]),
                 .linkedLibrary("c++"),
                 .linkedLibrary("iconv"),
                 .linkedFramework("CoreFoundation"),
@@ -44,10 +58,20 @@ let package = Package(
             ]
         ),
         .target(
-            name: "EasyTierRuntime",
+            name: "EasyTierCoreRuntime",
             dependencies: [
                 "EasyTierShared",
-                "CEasyTierFFI",
+                "CEasyTierCoreFFI",
+            ],
+            linkerSettings: [
+                .linkedLibrary("System"),
+            ]
+        ),
+        .target(
+            name: "GatewayRuntime",
+            dependencies: [
+                "EasyTierShared",
+                "CGatewayFFI",
             ],
             linkerSettings: [
                 .linkedLibrary("System"),
@@ -71,13 +95,25 @@ let package = Package(
         ),
         .executableTarget(
             name: "EasyTierPrivilegedHelper",
-            dependencies: ["EasyTierShared", "EasyTierRuntime"],
+            dependencies: ["EasyTierShared", "EasyTierCoreRuntime"],
             linkerSettings: [
                 .unsafeFlags([
                     "-Xlinker", "-sectcreate",
                     "-Xlinker", "__TEXT",
                     "-Xlinker", "__info_plist",
                     "-Xlinker", "Packaging/EasyTierPrivilegedHelper-Info.plist",
+                ]),
+            ]
+        ),
+        .executableTarget(
+            name: "GatewayPrivilegedHelper",
+            dependencies: ["EasyTierShared", "GatewayRuntime"],
+            linkerSettings: [
+                .unsafeFlags([
+                    "-Xlinker", "-sectcreate",
+                    "-Xlinker", "__TEXT",
+                    "-Xlinker", "__info_plist",
+                    "-Xlinker", "Packaging/GatewayPrivilegedHelper-Info.plist",
                 ]),
             ]
         ),
@@ -90,8 +126,8 @@ let package = Package(
             dependencies: ["EasyTierShared"]
         ),
         .testTarget(
-            name: "EasyTierRuntimeTests",
-            dependencies: ["EasyTierRuntime", "EasyTierShared"]
+            name: "GatewayRuntimeTests",
+            dependencies: ["GatewayRuntime", "EasyTierShared"]
         ),
         .testTarget(
             name: "EasyTierMacTests",

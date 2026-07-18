@@ -3,15 +3,26 @@ import ServiceManagement
 
 @MainActor
 final class SystemPrivilegedHelperLifecycle: PrivilegedHelperLifecycle {
-    private let service: SMAppService
+    private let services: [SMAppService]
 
     init(
-        plistName: String = EasyTierPrivilegedHelperConstants.launchDaemonPlistName
+        plistNames: [String] = [
+            EasyTierPrivilegedHelperConstants.launchDaemonPlistName,
+            GatewayPrivilegedHelperConstants.launchDaemonPlistName,
+        ]
     ) {
-        service = .daemon(plistName: plistName)
+        services = plistNames.map { .daemon(plistName: $0) }
     }
 
     func unregister() async throws {
-        try await service.unregister()
+        var firstError: Error?
+        for service in services {
+            do {
+                try await service.unregister()
+            } catch {
+                firstError = firstError ?? error
+            }
+        }
+        if let firstError { throw firstError }
     }
 }

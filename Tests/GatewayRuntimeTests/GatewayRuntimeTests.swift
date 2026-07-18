@@ -1,7 +1,7 @@
 import Foundation
 import Synchronization
 import Testing
-@testable import EasyTierRuntime
+@testable import GatewayRuntime
 @testable import EasyTierShared
 
 @Suite(.serialized)
@@ -245,6 +245,36 @@ struct StaticGatewayFFITests {
     #expect(stopped.state == .stopped)
     #expect(fixture.ffi.callNames().filter { $0 == "stop" }.count == 2)
     #expect(idleExitCount.withLock { $0 } == 1)
+}
+
+@Test func helperControllerMigratesLegacyGatewayStorage() async throws {
+    let parent = FileManager.default.temporaryDirectory
+        .appendingPathComponent("GatewayStorageMigrationTests", isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let legacyRoot = parent.appendingPathComponent("legacy", isDirectory: true)
+    let newRoot = parent.appendingPathComponent("coldkiller/Gateway", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: parent) }
+
+    try FileManager.default.createDirectory(at: legacyRoot, withIntermediateDirectories: true)
+    let marker = legacyRoot.appendingPathComponent("existing-certificate.pem")
+    try Data("certificate".utf8).write(to: marker)
+
+    let controller = GatewayHelperController(
+        ffi: FakeGatewayFFI(),
+        storageRoot: newRoot,
+        legacyStorageRoot: legacyRoot
+    )
+    try await controller.start(
+        configurationJSON: encode(gatewayRuntimeTestConfiguration()),
+        session: GatewayHelperSession(userID: 501)
+    )
+
+    #expect(!FileManager.default.fileExists(atPath: legacyRoot.path))
+    #expect(
+        FileManager.default.fileExists(
+            atPath: newRoot.appendingPathComponent("existing-certificate.pem").path
+        )
+    )
 }
 
 private struct GatewayHelperFixture {

@@ -26,11 +26,15 @@
 		E70000000000000000000001 /* EasyTierShared in Frameworks */ = {isa = PBXBuildFile; productRef = E70000000000000000000082 /* EasyTierShared */; };
 		E70000000000000000000003 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = E70000000000000000000084 /* Sparkle */; };
 		E70000000000000000000004 /* EasyTierShared in Frameworks */ = {isa = PBXBuildFile; productRef = E70000000000000000000085 /* EasyTierShared */; };
-		E70000000000000000000005 /* EasyTierRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = E70000000000000000000086 /* EasyTierRuntime */; };
+		E70000000000000000000005 /* EasyTierCoreRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = E70000000000000000000086 /* EasyTierCoreRuntime */; };
 		E70000000000000000000006 /* EasyTierPrivilegedHelper in Embed Privileged Helper */ = {isa = PBXBuildFile; fileRef = E70000000000000000000012 /* EasyTierPrivilegedHelper */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		E70000000000000000000007 /* com.kkrainbow.easytier.mac.helper.plist in Copy LaunchDaemon */ = {isa = PBXBuildFile; fileRef = E70000000000000000000019 /* com.kkrainbow.easytier.mac.helper.plist */; };
 		E70000000000000000000009 /* easytier-icon.icns in Resources */ = {isa = PBXBuildFile; fileRef = E7000000000000000000001A /* easytier-icon.icns */; };
 		E7000000000000000000000A /* easytier-icon.png in Resources */ = {isa = PBXBuildFile; fileRef = E7000000000000000000001C /* easytier-icon.png */; };
+		E7000000000000000000000B /* EasyTierShared in Frameworks */ = {isa = PBXBuildFile; productRef = E70000000000000000000087 /* EasyTierShared */; };
+		E7000000000000000000000C /* GatewayRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = E70000000000000000000088 /* GatewayRuntime */; };
+		E7000000000000000000000D /* GatewayPrivilegedHelper in Embed Privileged Helper */ = {isa = PBXBuildFile; fileRef = E7000000000000000000001D /* GatewayPrivilegedHelper */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		E7000000000000000000000E /* com.coldkiller.gateway.helper.plist in Copy LaunchDaemon */ = {isa = PBXBuildFile; fileRef = E7000000000000000000001F /* com.coldkiller.gateway.helper.plist */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -48,6 +52,20 @@
 			remoteGlobalIDString = E70000000000000000000042;
 			remoteInfo = BuildEasyTierFFI;
 		};
+		E70000000000000000000056 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E70000000000000000000060 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E70000000000000000000043;
+			remoteInfo = GatewayPrivilegedHelper;
+		};
+		E70000000000000000000057 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E70000000000000000000060 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E70000000000000000000042;
+			remoteInfo = BuildEasyTierFFI;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -58,6 +76,7 @@
 			dstSubfolderSpec = 6;
 			files = (
 				E70000000000000000000006 /* EasyTierPrivilegedHelper in Embed Privileged Helper */,
+				E7000000000000000000000D /* GatewayPrivilegedHelper in Embed Privileged Helper */,
 			);
 			name = "Embed Privileged Helper";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -69,6 +88,7 @@
 			dstSubfolderSpec = 1;
 			files = (
 				E70000000000000000000007 /* com.kkrainbow.easytier.mac.helper.plist in Copy LaunchDaemon */,
+				E7000000000000000000000E /* com.coldkiller.gateway.helper.plist in Copy LaunchDaemon */,
 			);
 			name = "Copy LaunchDaemon";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -88,6 +108,9 @@
 		E7000000000000000000001A /* easytier-icon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; name = "easytier-icon.icns"; path = "Assets/easytier-icon.icns"; sourceTree = SOURCE_ROOT; };
 		E7000000000000000000001B /* Package.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Package.swift; sourceTree = "<group>"; };
 		E7000000000000000000001C /* easytier-icon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = "easytier-icon.png"; path = "Sources/EasyTierMac/Resources/easytier-icon.png"; sourceTree = SOURCE_ROOT; };
+		E7000000000000000000001D /* GatewayPrivilegedHelper */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = GatewayPrivilegedHelper; sourceTree = BUILT_PRODUCTS_DIR; };
+		E7000000000000000000001E /* GatewayPrivilegedHelper-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "GatewayPrivilegedHelper-Info.plist"; sourceTree = "<group>"; };
+		E7000000000000000000001F /* com.coldkiller.gateway.helper.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = com.coldkiller.gateway.helper.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -114,6 +137,11 @@
 			path = Sources/EasyTierPrivilegedHelper;
 			sourceTree = "<group>";
 		};
+		E70000000000000000000026 /* Sources/GatewayPrivilegedHelper */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Sources/GatewayPrivilegedHelper;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -131,7 +159,16 @@
 			buildActionMask = 2147483647;
 			files = (
 				E70000000000000000000004 /* EasyTierShared in Frameworks */,
-				E70000000000000000000005 /* EasyTierRuntime in Frameworks */,
+				E70000000000000000000005 /* EasyTierCoreRuntime in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7000000000000000000003A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E7000000000000000000000B /* EasyTierShared in Frameworks */,
+				E7000000000000000000000C /* GatewayRuntime in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -144,6 +181,7 @@
 				E7000000000000000000001B /* Package.swift */,
 				E70000000000000000000024 /* Sources/EasyTierMac */,
 				E70000000000000000000025 /* Sources/EasyTierPrivilegedHelper */,
+				E70000000000000000000026 /* Sources/GatewayPrivilegedHelper */,
 				E70000000000000000000022 /* Configurations */,
 				E70000000000000000000023 /* Packaging */,
 				E70000000000000000000021 /* Products */,
@@ -155,6 +193,7 @@
 			children = (
 				E70000000000000000000011 /* EasyTier.app */,
 				E70000000000000000000012 /* EasyTierPrivilegedHelper */,
+				E7000000000000000000001D /* GatewayPrivilegedHelper */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -174,8 +213,10 @@
 			children = (
 				E70000000000000000000017 /* EasyTierMac-Info.plist */,
 				E70000000000000000000018 /* EasyTierPrivilegedHelper-Info.plist */,
+				E7000000000000000000001E /* GatewayPrivilegedHelper-Info.plist */,
 				E70000000000000000000016 /* EasyTierMac.entitlements */,
 				E70000000000000000000019 /* com.kkrainbow.easytier.mac.helper.plist */,
+				E7000000000000000000001F /* com.coldkiller.gateway.helper.plist */,
 				E7000000000000000000001A /* easytier-icon.icns */,
 				E7000000000000000000001C /* easytier-icon.png */,
 			);
@@ -200,6 +241,7 @@
 			);
 			dependencies = (
 				E70000000000000000000050 /* PBXTargetDependency */,
+				E70000000000000000000052 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				E70000000000000000000024 /* Sources/EasyTierMac */,
@@ -231,10 +273,34 @@
 			name = EasyTierPrivilegedHelper;
 			packageProductDependencies = (
 				E70000000000000000000085 /* EasyTierShared */,
-				E70000000000000000000086 /* EasyTierRuntime */,
+				E70000000000000000000086 /* EasyTierCoreRuntime */,
 			);
 			productName = EasyTierPrivilegedHelper;
 			productReference = E70000000000000000000012 /* EasyTierPrivilegedHelper */;
+			productType = "com.apple.product-type.tool";
+		};
+		E70000000000000000000043 /* GatewayPrivilegedHelper */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E7000000000000000000007E /* Build configuration list for PBXNativeTarget "GatewayPrivilegedHelper" */;
+			buildPhases = (
+				E7000000000000000000003B /* Sources */,
+				E7000000000000000000003A /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E70000000000000000000058 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				E70000000000000000000026 /* Sources/GatewayPrivilegedHelper */,
+			);
+			name = GatewayPrivilegedHelper;
+			packageProductDependencies = (
+				E70000000000000000000087 /* EasyTierShared */,
+				E70000000000000000000088 /* GatewayRuntime */,
+			);
+			productName = GatewayPrivilegedHelper;
+			productReference = E7000000000000000000001D /* GatewayPrivilegedHelper */;
 			productType = "com.apple.product-type.tool";
 		};
 /* End PBXNativeTarget section */
@@ -254,6 +320,9 @@
 						CreatedOnToolsVersion = 16.0;
 					};
 					E70000000000000000000042 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					E70000000000000000000043 = {
 						CreatedOnToolsVersion = 16.0;
 					};
 				};
@@ -278,6 +347,7 @@
 			targets = (
 				E70000000000000000000040 /* EasyTierMac */,
 				E70000000000000000000041 /* EasyTierPrivilegedHelper */,
+				E70000000000000000000043 /* GatewayPrivilegedHelper */,
 				E70000000000000000000042 /* BuildEasyTierFFI */,
 			);
 		};
@@ -310,11 +380,12 @@
 			outputFileListPaths = (
 			);
 			outputPaths = (
-				"$(SRCROOT)/Vendor/Frameworks/static/libeasytier_ffi.a",
+				"$(SRCROOT)/Vendor/Frameworks/static/libeasytier_core_ffi.a",
+				"$(SRCROOT)/Vendor/Frameworks/static/libgateway_ffi.a",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/bash;
-			shellScript = "set -euo pipefail\nif [[ \"${EASYTIER_XCODE_SKIP_FFI_BUILD:-0}\" == \"1\" ]]; then\n  [[ -f \"$SRCROOT/Vendor/Frameworks/static/libeasytier_ffi.a\" ]] || {\n    echo \"Prebuilt Rust FFI archive is missing.\" >&2\n    exit 1\n  }\nelse\n  \"$SRCROOT/scripts/build-ffi.sh\"\nfi\n";
+			shellScript = "set -euo pipefail\nif [[ \"${EASYTIER_XCODE_SKIP_FFI_BUILD:-0}\" == \"1\" ]]; then\n  for archive in libeasytier_core_ffi.a libgateway_ffi.a; do\n    [[ -f \"$SRCROOT/Vendor/Frameworks/static/$archive\" ]] || {\n      echo \"Prebuilt Rust FFI archive is missing: $archive\" >&2\n      exit 1\n    }\n  done\nelse\n  \"$SRCROOT/scripts/build-ffi.sh\"\nfi\n";
 			showEnvVarsInLog = 0;
 		};
 		E70000000000000000000039 /* Sign Sparkle Components */ = {
@@ -355,6 +426,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E7000000000000000000003B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -367,6 +445,16 @@
 			isa = PBXTargetDependency;
 			target = E70000000000000000000042 /* BuildEasyTierFFI */;
 			targetProxy = E70000000000000000000055 /* PBXContainerItemProxy */;
+		};
+		E70000000000000000000052 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E70000000000000000000043 /* GatewayPrivilegedHelper */;
+			targetProxy = E70000000000000000000056 /* PBXContainerItemProxy */;
+		};
+		E70000000000000000000058 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E70000000000000000000042 /* BuildEasyTierFFI */;
+			targetProxy = E70000000000000000000057 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -487,6 +575,44 @@
 			};
 			name = Release;
 		};
+		E7000000000000000000007C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "$(EASYTIER_CODE_SIGN_IDENTITY)";
+				CODE_SIGN_STYLE = Manual;
+				CREATE_INFOPLIST_SECTION_IN_BINARY = YES;
+				DEVELOPMENT_TEAM = "$(EASYTIER_DEVELOPMENT_TEAM)";
+				ENABLE_HARDENED_RUNTIME = YES;
+				EXECUTABLE_NAME = GatewayPrivilegedHelper;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Packaging/GatewayPrivilegedHelper-Info.plist";
+				OTHER_CODE_SIGN_FLAGS = "$(inherited) $(EASYTIER_OTHER_CODE_SIGN_FLAGS)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.coldkiller.gateway.helper;
+				PRODUCT_NAME = GatewayPrivilegedHelper;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = macosx;
+			};
+			name = Debug;
+		};
+		E7000000000000000000007D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "$(EASYTIER_CODE_SIGN_IDENTITY)";
+				CODE_SIGN_STYLE = Manual;
+				CREATE_INFOPLIST_SECTION_IN_BINARY = YES;
+				DEVELOPMENT_TEAM = "$(EASYTIER_DEVELOPMENT_TEAM)";
+				ENABLE_HARDENED_RUNTIME = YES;
+				EXECUTABLE_NAME = GatewayPrivilegedHelper;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Packaging/GatewayPrivilegedHelper-Info.plist";
+				OTHER_CODE_SIGN_FLAGS = "$(inherited) $(EASYTIER_OTHER_CODE_SIGN_FLAGS)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.coldkiller.gateway.helper;
+				PRODUCT_NAME = GatewayPrivilegedHelper;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = macosx;
+			};
+			name = Release;
+		};
 		E70000000000000000000079 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -538,6 +664,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		E7000000000000000000007E /* Build configuration list for PBXNativeTarget "GatewayPrivilegedHelper" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E7000000000000000000007C /* Debug */,
+				E7000000000000000000007D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -574,10 +709,20 @@
 			package = E70000000000000000000080 /* XCLocalSwiftPackageReference "." */;
 			productName = EasyTierShared;
 		};
-		E70000000000000000000086 /* EasyTierRuntime */ = {
+		E70000000000000000000086 /* EasyTierCoreRuntime */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = E70000000000000000000080 /* XCLocalSwiftPackageReference "." */;
-			productName = EasyTierRuntime;
+			productName = EasyTierCoreRuntime;
+		};
+		E70000000000000000000087 /* EasyTierShared */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E70000000000000000000080 /* XCLocalSwiftPackageReference "." */;
+			productName = EasyTierShared;
+		};
+		E70000000000000000000088 /* GatewayRuntime */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E70000000000000000000080 /* XCLocalSwiftPackageReference "." */;
+			productName = GatewayRuntime;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

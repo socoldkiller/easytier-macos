@@ -6,10 +6,12 @@ EASYTIER_DIR="$ROOT_DIR/Vendor/EasyTier"
 GUI_FFI_DIR="$ROOT_DIR/Rust/EasyTierGuiFFI"
 OUT_DIR="$ROOT_DIR/Vendor/Frameworks"
 STATIC_DIR="$OUT_DIR/static"
-STATIC_LIBRARY="$STATIC_DIR/libeasytier_ffi.a"
-TRACKED_HEADER="$ROOT_DIR/Sources/CEasyTierFFI/include/EasyTierFFI.h"
+CORE_STATIC_LIBRARY="$STATIC_DIR/libeasytier_core_ffi.a"
+GATEWAY_STATIC_LIBRARY="$STATIC_DIR/libgateway_ffi.a"
+CORE_TRACKED_HEADER="$ROOT_DIR/Sources/CEasyTierCoreFFI/include/EasyTierCoreFFI.h"
+GATEWAY_TRACKED_HEADER="$ROOT_DIR/Sources/CGatewayFFI/include/GatewayFFI.h"
 FFI_CACHE_DIR="${EASYTIER_FFI_CACHE_DIR:-$HOME/Library/Caches/easytier-macos/ffi}"
-FFI_CACHE_VERSION="6"
+FFI_CACHE_VERSION="7"
 USE_FFI_CACHE="${EASYTIER_USE_FFI_CACHE:-1}"
 RUST_RELEASE_OPT_LEVEL="${EASYTIER_RUST_OPT_LEVEL:-z}"
 RUST_RELEASE_LTO="${EASYTIER_RUST_LTO:-fat}"
@@ -85,6 +87,54 @@ strip_static_library() {
   xcrun ranlib "$path"
 }
 
+archive_has_symbol() {
+  local path="$1"
+  local symbol="$2"
+  grep -E "[[:space:]]T _$symbol$" < <(nm -gU "$path" 2>/dev/null || true) >/dev/null
+}
+
+verify_archive_symbols() {
+  local symbol
+  local core_symbols=(
+    parse_config
+    run_network_instance
+    retain_network_instance
+    stop_network_instance
+    collect_network_infos
+    connect_rpc_client
+    call_json_rpc
+    configure_rpc_portal
+  )
+  local gateway_symbols=(
+    gateway_start
+    gateway_apply_config
+    gateway_stop
+    gateway_status
+    gateway_request_renewal
+  )
+
+  for symbol in "${core_symbols[@]}"; do
+    archive_has_symbol "$CORE_STATIC_LIBRARY" "$symbol" || {
+      echo "EasyTier Core FFI archive is missing symbol: $symbol" >&2
+      return 1
+    }
+    ! archive_has_symbol "$GATEWAY_STATIC_LIBRARY" "$symbol" || {
+      echo "Gateway FFI archive unexpectedly contains EasyTier Core symbol: $symbol" >&2
+      return 1
+    }
+  done
+  for symbol in "${gateway_symbols[@]}"; do
+    archive_has_symbol "$GATEWAY_STATIC_LIBRARY" "$symbol" || {
+      echo "Gateway FFI archive is missing symbol: $symbol" >&2
+      return 1
+    }
+    ! archive_has_symbol "$CORE_STATIC_LIBRARY" "$symbol" || {
+      echo "EasyTier Core FFI archive unexpectedly contains Gateway symbol: $symbol" >&2
+      return 1
+    }
+  done
+}
+
 sha256_files() {
   cat "$@" | shasum -a 256 | awk '{ print $1 }'
 }
@@ -123,7 +173,7 @@ ffi_cache_key() {
   core_rev="$(git -C "$EASYTIER_DIR" rev-parse HEAD)"
   cargo_lock_hash="$(sha256_files "$EASYTIER_DIR/Cargo.lock")"
   gui_ffi_hash="$(hash_gui_ffi_sources)"
-  header_hash="$(sha256_files "$TRACKED_HEADER")"
+  header_hash="$(sha256_files "$CORE_TRACKED_HEADER" "$GATEWAY_TRACKED_HEADER")"
   script_hash="$(sha256_files "$ROOT_DIR/scripts/build-ffi.sh")"
   rustc_hash="$(rustc -vV | shasum -a 256 | awk '{ print $1 }')"
   profile_hash="$(printf '%s\n' \
@@ -148,13 +198,17 @@ ffi_cache_key() {
 
 restore_cached_ffi() {
   local cache_path="$1"
-  if [[ "$USE_FFI_CACHE" != "1" || ! -f "$cache_path/libeasytier_ffi.a" ]]; then
+  if [[ "$USE_FFI_CACHE" != "1" \
+    || ! -f "$cache_path/libeasytier_core_ffi.a" \
+    || ! -f "$cache_path/libgateway_ffi.a" ]]; then
     return 1
   fi
 
   mkdir -p "$STATIC_DIR"
-  cp "$cache_path/libeasytier_ffi.a" "$STATIC_LIBRARY"
-  echo "Restored EasyTier FFI from cache: $cache_path"
+  cp "$cache_path/libeasytier_core_ffi.a" "$CORE_STATIC_LIBRARY"
+  cp "$cache_path/libgateway_ffi.a" "$GATEWAY_STATIC_LIBRARY"
+  verify_archive_symbols || return 1
+  echo "Restored isolated EasyTier Core and Gateway FFI archives from cache: $cache_path"
 }
 
 save_cached_ffi() {
@@ -168,7 +222,8 @@ save_cached_ffi() {
   tmp_path="$cache_path.tmp.$$"
   rm -rf "$tmp_path"
   mkdir -p "$tmp_path"
-  cp "$STATIC_LIBRARY" "$tmp_path/libeasytier_ffi.a"
+  cp "$CORE_STATIC_LIBRARY" "$tmp_path/libeasytier_core_ffi.a"
+  cp "$GATEWAY_STATIC_LIBRARY" "$tmp_path/libgateway_ffi.a"
   rm -rf "$cache_path"
   mv "$tmp_path" "$cache_path"
   echo "Saved EasyTier FFI cache: $cache_path"
@@ -176,10 +231,12 @@ save_cached_ffi() {
 
 cd "$ROOT_DIR"
 export MACOSX_DEPLOYMENT_TARGET=15.0
-[[ -f "$TRACKED_HEADER" ]] || {
-  echo "Tracked FFI header not found: $TRACKED_HEADER" >&2
-  exit 1
-}
+for tracked_header in "$CORE_TRACKED_HEADER" "$GATEWAY_TRACKED_HEADER"; do
+  [[ -f "$tracked_header" ]] || {
+    echo "Tracked FFI header not found: $tracked_header" >&2
+    exit 1
+  }
+done
 verify_core_gitlink
 verify_rust_build_tools
 configure_rust_release_profile
@@ -195,17 +252,38 @@ cargo build \
   --manifest-path "$GUI_FFI_DIR/Cargo.toml" \
   --release \
   --target "$TARGET_TRIPLE" \
+  --target-dir "$GUI_FFI_DIR/target/core" \
+  --no-default-features \
+  --features core \
   --lib
 
-BUILT_STATIC="$GUI_FFI_DIR/target/$TARGET_TRIPLE/release/libeasytier_ffi.a"
-[[ -f "$BUILT_STATIC" ]] || {
-  echo "Rust FFI archive not found after build: $BUILT_STATIC" >&2
+cargo build \
+  --manifest-path "$GUI_FFI_DIR/Cargo.toml" \
+  --release \
+  --target "$TARGET_TRIPLE" \
+  --target-dir "$GUI_FFI_DIR/target/gateway" \
+  --no-default-features \
+  --features gateway \
+  --lib
+
+BUILT_CORE_STATIC="$GUI_FFI_DIR/target/core/$TARGET_TRIPLE/release/libeasytier_ffi.a"
+BUILT_GATEWAY_STATIC="$GUI_FFI_DIR/target/gateway/$TARGET_TRIPLE/release/libeasytier_ffi.a"
+[[ -f "$BUILT_CORE_STATIC" ]] || {
+  echo "EasyTier Core Rust FFI archive not found after build: $BUILT_CORE_STATIC" >&2
+  exit 1
+}
+[[ -f "$BUILT_GATEWAY_STATIC" ]] || {
+  echo "Gateway Rust FFI archive not found after build: $BUILT_GATEWAY_STATIC" >&2
   exit 1
 }
 
 mkdir -p "$STATIC_DIR"
-cp "$BUILT_STATIC" "$STATIC_LIBRARY"
-strip_static_library "$STATIC_LIBRARY"
+cp "$BUILT_CORE_STATIC" "$CORE_STATIC_LIBRARY"
+cp "$BUILT_GATEWAY_STATIC" "$GATEWAY_STATIC_LIBRARY"
+strip_static_library "$CORE_STATIC_LIBRARY"
+strip_static_library "$GATEWAY_STATIC_LIBRARY"
+verify_archive_symbols
 save_cached_ffi "$CACHE_PATH"
 
-echo "Created $STATIC_LIBRARY for $TARGET_TRIPLE"
+echo "Created $CORE_STATIC_LIBRARY for $TARGET_TRIPLE"
+echo "Created $GATEWAY_STATIC_LIBRARY for $TARGET_TRIPLE"

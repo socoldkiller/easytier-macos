@@ -1,4 +1,4 @@
-import CEasyTierFFI
+import CEasyTierCoreFFI
 import EasyTierShared
 import Foundation
 

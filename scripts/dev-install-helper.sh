@@ -101,8 +101,16 @@ if ! ping_output="$($APP_BINARY --ping-helper 2>&1)"; then
 fi
 echo "$ping_output"
 
+if ! gateway_ping_output="$($APP_BINARY --ping-gateway-helper 2>&1)"; then
+  echo "$gateway_ping_output" >&2
+  echo "Gateway helper registration did not produce a responding XPC service." >&2
+  launchctl print system/com.coldkiller.gateway.helper 2>&1 | sed -n '1,120p' >&2 || true
+  exit 1
+fi
+echo "$gateway_ping_output"
+
 if [[ "$OPEN_APP" == "1" ]]; then
   open "$APP_PATH"
 fi
 
-echo "Privileged helper is installed and responding."
+echo "EasyTier and Gateway privileged helpers are installed and responding."

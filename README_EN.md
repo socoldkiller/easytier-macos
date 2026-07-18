@@ -132,7 +132,7 @@ Xcode 16+, Swift 6, Rust 1.95+ stable, and the Protocol Buffers compiler (`proto
 git clone --recurse-submodules https://github.com/socoldkiller/easytier-macos.git
 cd easytier-macos
 make bootstrap   # verify toolchain
-make ffi         # build the Rust FFI static lib for this Mac
+make ffi         # build isolated Core/Gateway FFI archives for this Mac
 make test        # run Swift and Rust tests
 ```
 
@@ -142,7 +142,7 @@ The distributable app is defined by a native Xcode project:
 open EasyTier.xcodeproj
 ```
 
-The `EasyTierMac` scheme includes the macOS app, privileged helper, and Rust FFI build dependency. Debug is available for local builds; `Product > Archive` uses Release and requires the Developer ID identity plus the matching provisioning profile. SwiftPM remains the owner of the Shared/Runtime modules and tests so the business dependency graph is not duplicated in Xcode.
+The `EasyTierMac` scheme includes the macOS app, separate EasyTier and Gateway privileged helpers, and the Rust FFI build dependency. Debug is available for local builds; `Product > Archive` uses Release and requires the Developer ID identity plus the matching provisioning profile. SwiftPM remains the owner of the Shared/Runtime modules and tests so the business dependency graph is not duplicated in Xcode.
 
 To debug the Data Protection Keychain, first create the ignored per-machine signing configuration:
 
@@ -156,7 +156,8 @@ Output paths:
 - App bundle: `.build/artifacts/EasyTier.app`
 - Xcode archive: `.build/AppProducts/EasyTier.xcarchive`
 - DMG: `.build/artifacts/EasyTier-macOS-ARM64.dmg`
-- FFI lib: `Vendor/Frameworks/static/libeasytier_ffi.a`
+- EasyTier Core FFI: `Vendor/Frameworks/static/libeasytier_core_ffi.a`
+- Gateway FFI: `Vendor/Frameworks/static/libgateway_ffi.a`
 
 Developer ID packaging:
 
@@ -183,7 +184,7 @@ See [`Packaging/RELEASE.md`](Packaging/RELEASE.md) for the complete local and CI
 
 ### Call path
 
-The SwiftUI app never links EasyTier Core directly. Every local runtime operation follows one signed boundary: Swift GUI → XPC → privileged helper → CEasyTierFFI → Rust EasyTier Core. `no_tun` only controls whether Core creates a TUN interface. Remote RPC payloads are built in Swift and sent over XPC so the helper can call the remote RPC Portal through the same Rust FFI layer.
+The SwiftUI app never links either runtime directly. EasyTier network and RPC operations use `com.kkrainbow.easytier.mac.helper`; Gateway, ACME, certificate, and TLS proxy operations use the independent `com.coldkiller.gateway.helper`. The two LaunchDaemons have separate registration, XPC protocols, lifecycles, and build metadata. `no_tun` affects only the EasyTier helper.
 
 ## Star History
 

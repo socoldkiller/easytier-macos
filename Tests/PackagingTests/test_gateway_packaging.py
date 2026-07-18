@@ -19,11 +19,15 @@ class GatewayPackagingTests(unittest.TestCase):
         self.assertIs(info["NSSupportsAutomaticTermination"], False)
         self.assertIs(info["NSSupportsSuddenTermination"], False)
 
-    def test_modern_and_legacy_helpers_are_both_on_demand(self) -> None:
+    def test_privileged_helpers_are_on_demand(self) -> None:
         with (
             ROOT_DIR / "Packaging" / "com.kkrainbow.easytier.mac.helper.plist"
         ).open("rb") as handle:
             modern = plistlib.load(handle)
+        with (
+            ROOT_DIR / "Packaging" / "com.coldkiller.gateway.helper.plist"
+        ).open("rb") as handle:
+            gateway = plistlib.load(handle)
         legacy_source = (
             ROOT_DIR
             / "Sources"
@@ -33,20 +37,60 @@ class GatewayPackagingTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIs(modern["RunAtLoad"], False)
+        self.assertIs(gateway["RunAtLoad"], False)
+        self.assertEqual(gateway["Label"], "com.coldkiller.gateway.helper")
         self.assertRegex(
             legacy_source,
             re.compile(r"<key>RunAtLoad</key>\s*<false/>", re.MULTILINE),
         )
 
-    def test_gateway_xpc_change_bumps_helper_protocol(self) -> None:
+    def test_gateway_uses_an_independent_xpc_protocol(self) -> None:
         source = (
+            ROOT_DIR
+            / "Sources"
+            / "EasyTierShared"
+            / "Privilege"
+            / "GatewayHelperTypes.swift"
+        ).read_text(encoding="utf-8")
+        self.assertIn('bundleIdentifier = "com.coldkiller.gateway.helper"', source)
+        self.assertIn('@objc(GatewayPrivilegedServiceProtocol)', source)
+
+        easytier_source = (
             ROOT_DIR
             / "Sources"
             / "EasyTierShared"
             / "Privilege"
             / "PrivilegedHelperTypes.swift"
         ).read_text(encoding="utf-8")
-        self.assertIn('protocolVersion = "11"', source)
+        self.assertNotIn("func gatewayStart", easytier_source)
+        self.assertNotIn("func gatewayApply", easytier_source)
+
+    def test_helpers_have_independent_native_linkage_chains(self) -> None:
+        package = (ROOT_DIR / "Package.swift").read_text(encoding="utf-8")
+        build_script = (ROOT_DIR / "scripts" / "build-ffi.sh").read_text(
+            encoding="utf-8"
+        )
+        core_client = (
+            ROOT_DIR
+            / "Sources"
+            / "EasyTierCoreRuntime"
+            / "StaticEasyTierFFIClient.swift"
+        ).read_text(encoding="utf-8")
+        gateway_client = (
+            ROOT_DIR
+            / "Sources"
+            / "GatewayRuntime"
+            / "StaticGatewayFFIClient.swift"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('name: "EasyTierCoreRuntime"', package)
+        self.assertIn('name: "GatewayRuntime"', package)
+        self.assertIn('"-leasytier_core_ffi"', package)
+        self.assertIn('"-lgateway_ffi"', package)
+        self.assertIn("--features core", build_script)
+        self.assertIn("--features gateway", build_script)
+        self.assertIn("import CEasyTierCoreFFI", core_client)
+        self.assertIn("import CGatewayFFI", gateway_client)
 
 
 if __name__ == "__main__":

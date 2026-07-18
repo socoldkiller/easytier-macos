@@ -36,7 +36,7 @@ help:
 	@printf '%s\n' 'EasyTier macOS build targets:'
 	@printf '%s\n' ''
 	@printf '%-24s %s\n' 'make bootstrap' 'Check local Swift/Xcode/Rust/protoc setup.'
-	@printf '%-24s %s\n' 'make ffi' 'Build the optimized Rust FFI static library for this Mac.'
+	@printf '%-24s %s\n' 'make ffi' 'Build the isolated EasyTier Core and Gateway FFI archives.'
 	@printf '%-24s %s\n' 'make test-swift' 'Run Swift package tests.'
 	@printf '%-24s %s\n' 'make test-rust' 'Run Rust FFI tests.'
 	@printf '%-24s %s\n' 'make test-packaging' 'Run credential-free release pipeline tests.'
@@ -153,11 +153,28 @@ app-release-signed: require-codesign-identity
 	./scripts/archive-app.sh
 
 debug-install:
+	@build_number="$$(date -u +%Y%m%d%H%M%S)"; \
+	build_time="$$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
+	gui_commit="$$(git -C "$(ROOT_DIR)" rev-parse HEAD 2>/dev/null || printf unknown)"; \
+	core_commit="$$(git -C "$(ROOT_DIR)/Vendor/EasyTier" rev-parse HEAD 2>/dev/null || printf unknown)"; \
+	core_tag="$$(git -C "$(ROOT_DIR)/Vendor/EasyTier" describe --tags --always 2>/dev/null || printf unknown)"; \
+	gateway_version="$$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$(ROOT_DIR)/Rust/EasyTierGuiFFI/Cargo.toml" | head -n 1)"; \
+	if test -n "$$(git -C "$(ROOT_DIR)" status --short --untracked-files=no --ignore-submodules=all 2>/dev/null)"; then gui_commit="$$gui_commit-dirty"; fi; \
+	if test -n "$$(git -C "$(ROOT_DIR)/Vendor/EasyTier" status --short --untracked-files=no 2>/dev/null)"; then core_commit="$$core_commit-dirty"; core_tag="$$core_tag-dirty"; fi; \
+	printf 'Building local Debug app: build=%s time=%s GUI/Gateway=%s Gateway=%s Core=%s (%s)\n' "$$build_number" "$$build_time" "$$gui_commit" "$$gateway_version" "$$core_tag" "$$core_commit"; \
 	xcodebuild -project EasyTier.xcodeproj \
 		-scheme EasyTierMac \
 		-configuration Debug \
 		-destination 'platform=macOS,arch=arm64' \
 		-derivedDataPath "$(APP_PRODUCTS_DIR)/DebugDerivedData" \
+		"CURRENT_PROJECT_VERSION=$$build_number" \
+		"EASYTIER_BUILD_TIME=$$build_time" \
+		"EASYTIER_GUI_COMMIT=$$gui_commit" \
+		"GATEWAY_BUILD_TIME=$$build_time" \
+		"GATEWAY_COMMIT=$$gui_commit" \
+		"GATEWAY_VERSION=$$gateway_version" \
+		"EASYTIER_CORE_TAG=$$core_tag" \
+		"EASYTIER_CORE_COMMIT=$$core_commit" \
 		build
 	EASYTIER_INSTALL_APP_PATH="$(INSTALL_APP_PATH)" \
 	EASYTIER_OPEN_APP=1 \

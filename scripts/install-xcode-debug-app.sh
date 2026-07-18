@@ -33,6 +33,7 @@ verify_signature() {
 [[ "$SOURCE_APP" != "$DESTINATION_APP" ]] || die "Source and destination app paths must differ."
 [[ -x "$SOURCE_APP/Contents/MacOS/EasyTierMac" ]] || die "EasyTierMac is missing from $SOURCE_APP"
 [[ -x "$SOURCE_APP/Contents/MacOS/EasyTierPrivilegedHelper" ]] || die "The privileged helper is missing from $SOURCE_APP"
+[[ -x "$SOURCE_APP/Contents/MacOS/GatewayPrivilegedHelper" ]] || die "The Gateway privileged helper is missing from $SOURCE_APP"
 [[ -f "$SOURCE_APP/Contents/embedded.provisionprofile" ]] \
   || die "The Debug app has no embedded provisioning profile. Configure Configurations/Signing.local.xcconfig."
 

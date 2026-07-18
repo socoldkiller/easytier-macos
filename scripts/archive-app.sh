@@ -17,6 +17,7 @@ BUILD_CHANNEL="${EASYTIER_BUILD_CHANNEL:-stable}"
 GUI_REVISION="${EASYTIER_GUI_REVISION:-}"
 CORE_REVISION="${EASYTIER_CORE_REVISION:-}"
 CORE_VERSION="${EASYTIER_CORE_VERSION:-}"
+GATEWAY_SOURCE_VERSION="${GATEWAY_VERSION:-}"
 CODE_SIGN_IDENTITY="${EASYTIER_CODESIGN_IDENTITY:-}"
 CODE_SIGN_KEYCHAIN="${EASYTIER_CODESIGN_KEYCHAIN:-}"
 PROVISIONING_PROFILE="${EASYTIER_PROVISIONING_PROFILE:-}"
@@ -241,10 +242,12 @@ archive_app() {
   [[ "$BUILD_CONFIGURATION" == "debug" || "$BUILD_CONFIGURATION" == "release" ]] \
     || die "EASYTIER_BUILD_CONFIGURATION must be 'debug' or 'release'."
 
-  local gui_commit core_version core_commit signing_flags=""
+  local gui_commit core_version core_commit gateway_version signing_flags=""
   gui_commit="$(git_revision "$ROOT_DIR" "$GUI_REVISION" 1)"
   core_version="${CORE_VERSION:-$(git_version "$ROOT_DIR/Vendor/EasyTier")}"
   core_commit="$(git_revision "$ROOT_DIR/Vendor/EasyTier" "$CORE_REVISION")"
+  gateway_version="${GATEWAY_SOURCE_VERSION:-$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$ROOT_DIR/Rust/EasyTierGuiFFI/Cargo.toml" | head -n 1)}"
+  [[ -n "$gateway_version" ]] || die "Could not determine the Gateway helper version."
   if [[ -n "$CODE_SIGN_KEYCHAIN" ]]; then
     signing_flags="--keychain $CODE_SIGN_KEYCHAIN"
   fi
@@ -267,6 +270,9 @@ archive_app() {
     "EASYTIER_BUILD_TIME=$BUILD_TIME_UTC"
     "EASYTIER_BUILD_CHANNEL=$BUILD_CHANNEL"
     "EASYTIER_GUI_COMMIT=$gui_commit"
+    "GATEWAY_BUILD_TIME=$BUILD_TIME_UTC"
+    "GATEWAY_COMMIT=$gui_commit"
+    "GATEWAY_VERSION=$gateway_version"
     "EASYTIER_CORE_TAG=$core_version"
     "EASYTIER_CORE_COMMIT=$core_commit"
     "EASYTIER_SPARKLE_FEED_URL=$SPARKLE_FEED_URL"

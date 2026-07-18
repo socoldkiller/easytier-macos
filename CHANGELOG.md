@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Split Gateway into its own `GatewayPrivilegedHelper` LaunchDaemon and XPC service (`com.coldkiller.gateway.helper`), with independent registration, lifecycle, protocol version, build metadata, and diagnostics from the EasyTier Core helper.
 - Added `Latest Stable` and opt-in `Nightly` software-update tracks. Nightly packages exact GUI and EasyTier Core `main` revisions in one signed, notarized DMG.
 
 ### Changed

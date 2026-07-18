@@ -34,11 +34,22 @@ SystemPrivilegedHelperLifecycle -> PrivilegedHelperLifecycle
 SparkleSoftwareUpdateClient     -> SoftwareUpdateClient
 ```
 
-EasyTier Core has one process owner. `EasyTierMac` depends on `EasyTierShared`
-and talks to `PrivilegedEasyTierClient`; the XPC helper alone depends on
-`EasyTierRuntime`, `CEasyTierFFI`, and the Rust Core. Both TUN and `no_tun`
-configurations use this path. `NetworkConfig.requiresTUN` controls runtime
-readiness and interface behavior, not dependency injection.
+EasyTier Core and Gateway have separate privileged process owners. `EasyTierMac`
+talks to `EasyTierPrivilegedHelper` through `com.kkrainbow.easytier.mac.helper`
+for network/RPC operations, and to `GatewayPrivilegedHelper` through
+`com.coldkiller.gateway.helper` for Gateway, ACME, certificate, and proxy
+operations. Both TUN and `no_tun` configurations use only the EasyTier helper.
+The two helpers have independent registration, XPC protocols, lifecycles, and
+build metadata. They also have independent native linkage chains:
+
+```text
+EasyTierPrivilegedHelper -> EasyTierCoreRuntime -> CEasyTierCoreFFI -> libeasytier_core_ffi.a
+GatewayPrivilegedHelper  -> GatewayRuntime      -> CGatewayFFI      -> libgateway_ffi.a
+```
+
+The two Rust archives are compiled from mutually exclusive Cargo features. The
+EasyTier helper does not contain Gateway entry points, the Gateway helper does
+not contain EasyTier Core entry points, and the GUI contains neither set.
 
 `AppContext` is concrete intentionally. SwiftUI can observe concrete `@Observable`
 models reached through it without existential type erasure. Replaceable capabilities

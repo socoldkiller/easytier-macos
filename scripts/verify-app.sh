@@ -4,6 +4,7 @@ set -euo pipefail
 APP_PATH="${1:-}"
 GUI_BINARY=""
 HELPER_BINARY=""
+GATEWAY_HELPER_BINARY=""
 SPARKLE_FRAMEWORK=""
 REQUIRED_FFI_SYMBOLS=(
   parse_config
@@ -15,6 +16,13 @@ REQUIRED_FFI_SYMBOLS=(
   connect_rpc_client
   call_json_rpc
   configure_rpc_portal
+)
+REQUIRED_GATEWAY_SYMBOLS=(
+  gateway_start
+  gateway_apply_config
+  gateway_stop
+  gateway_status
+  gateway_request_renewal
 )
 
 if [[ -z "$APP_PATH" ]]; then
@@ -116,6 +124,7 @@ verify_developer_id_signatures() {
   local signed_items=(
     "$APP_PATH"
     "$HELPER_BINARY"
+    "$GATEWAY_HELPER_BINARY"
     "$SPARKLE_FRAMEWORK/Versions/B/Autoupdate"
     "$SPARKLE_FRAMEWORK/Versions/B/Updater.app"
     "$SPARKLE_FRAMEWORK/Versions/B/XPCServices/Downloader.xpc"
@@ -141,13 +150,17 @@ verify_app_bundle() {
 
   GUI_BINARY="$APP_PATH/Contents/MacOS/EasyTierMac"
   HELPER_BINARY="$APP_PATH/Contents/MacOS/EasyTierPrivilegedHelper"
+  GATEWAY_HELPER_BINARY="$APP_PATH/Contents/MacOS/GatewayPrivilegedHelper"
   SPARKLE_FRAMEWORK="$APP_PATH/Contents/Frameworks/Sparkle.framework"
   local launch_daemon="$APP_PATH/Contents/Library/LaunchDaemons/com.kkrainbow.easytier.mac.helper.plist"
+  local gateway_launch_daemon="$APP_PATH/Contents/Library/LaunchDaemons/com.coldkiller.gateway.helper.plist"
 
   [[ -x "$GUI_BINARY" ]] || fail "Missing or non-executable GUI binary: $GUI_BINARY"
   [[ -x "$HELPER_BINARY" ]] || fail "Missing or non-executable privileged helper: $HELPER_BINARY"
+  [[ -x "$GATEWAY_HELPER_BINARY" ]] || fail "Missing or non-executable Gateway helper: $GATEWAY_HELPER_BINARY"
   [[ -d "$SPARKLE_FRAMEWORK" ]] || fail "Missing embedded Sparkle.framework: $SPARKLE_FRAMEWORK"
   [[ -e "$launch_daemon" ]] || fail "Missing LaunchDaemon plist: $launch_daemon"
+  [[ -e "$gateway_launch_daemon" ]] || fail "Missing Gateway LaunchDaemon plist: $gateway_launch_daemon"
   [[ ! -e "$APP_PATH/Contents/MacOS/EasyTierValidator" ]] || fail "Packaged app must not include the removed EasyTierValidator binary."
 
   local bundle_version
@@ -215,29 +228,47 @@ verify_app_bundle() {
   helper_bundle_identifier="$(sfltool csinfo "$HELPER_BINARY" 2>/dev/null | sed -n 's/^Bundle Identifier: //p')"
   [[ "$helper_bundle_identifier" == "com.kkrainbow.easytier.mac.helper" ]] || fail "Unexpected helper bundle identifier: $helper_bundle_identifier"
 
+  local gateway_helper_identifier gateway_helper_bundle_identifier gateway_helper_info_plist
+  gateway_helper_identifier="$(codesign -dv --verbose=4 "$GATEWAY_HELPER_BINARY" 2>&1 | sed -n 's/^Identifier=//p')"
+  [[ "$gateway_helper_identifier" == "com.coldkiller.gateway.helper" ]] || fail "Unexpected Gateway helper code signature identifier: $gateway_helper_identifier"
+  gateway_helper_info_plist="$(codesign -dv --verbose=4 "$GATEWAY_HELPER_BINARY" 2>&1 | sed -n '/^Info.plist/p')"
+  [[ -n "$gateway_helper_info_plist" && "$gateway_helper_info_plist" != *"not bound"* ]] || fail "Gateway helper must embed an Info.plist."
+  gateway_helper_bundle_identifier="$(sfltool csinfo "$GATEWAY_HELPER_BINARY" 2>/dev/null | sed -n 's/^Bundle Identifier: //p')"
+  [[ "$gateway_helper_bundle_identifier" == "com.coldkiller.gateway.helper" ]] || fail "Unexpected Gateway helper bundle identifier: $gateway_helper_bundle_identifier"
+
   verify_keychain_signing
   codesign --verify --deep --strict --verbose=2 "$APP_PATH" >/dev/null
   verify_developer_id_signatures
 }
 
 verify_binary_symbols() {
-  local gui_archs helper_archs
+  local gui_archs helper_archs gateway_helper_archs
   gui_archs="$(archs_for "$GUI_BINARY")"
   helper_archs="$(archs_for "$HELPER_BINARY")"
+  gateway_helper_archs="$(archs_for "$GATEWAY_HELPER_BINARY")"
   [[ -n "$gui_archs" ]] || fail "Could not determine architectures for $GUI_BINARY."
   [[ -n "$helper_archs" ]] || fail "Could not determine architectures for $HELPER_BINARY."
+  [[ -n "$gateway_helper_archs" ]] || fail "Could not determine architectures for $GATEWAY_HELPER_BINARY."
   [[ "$gui_archs" == "arm64" ]] || fail "EasyTierMac release must be ARM64-only; found: $gui_archs"
   [[ "$helper_archs" == "arm64" ]] || fail "EasyTierPrivilegedHelper release must be ARM64-only; found: $helper_archs"
+  [[ "$gateway_helper_archs" == "arm64" ]] || fail "GatewayPrivilegedHelper release must be ARM64-only; found: $gateway_helper_archs"
 
   for symbol in "${REQUIRED_FFI_SYMBOLS[@]}"; do
     ! has_symbol "$GUI_BINARY" "$symbol" "$gui_archs" || fail "EasyTierMac must not contain EasyTier FFI symbol: $symbol"
     has_symbol "$HELPER_BINARY" "$symbol" "$helper_archs" || fail "EasyTierPrivilegedHelper must contain EasyTier FFI symbol: $symbol"
+    ! has_symbol "$GATEWAY_HELPER_BINARY" "$symbol" "$gateway_helper_archs" || fail "GatewayPrivilegedHelper must not contain EasyTier FFI symbol: $symbol"
   done
 
-  echo "Binary symbol checks passed: only the privileged helper contains EasyTier FFI."
+  for symbol in "${REQUIRED_GATEWAY_SYMBOLS[@]}"; do
+    ! has_symbol "$GUI_BINARY" "$symbol" "$gui_archs" || fail "EasyTierMac must not contain Gateway FFI symbol: $symbol"
+    has_symbol "$GATEWAY_HELPER_BINARY" "$symbol" "$gateway_helper_archs" || fail "GatewayPrivilegedHelper must contain Gateway FFI symbol: $symbol"
+    ! has_symbol "$HELPER_BINARY" "$symbol" "$helper_archs" || fail "EasyTierPrivilegedHelper must not contain Gateway FFI symbol: $symbol"
+  done
+
+  echo "Binary symbol checks passed: the GUI is FFI-free and each helper contains only its own FFI entry points."
 }
 
 verify_app_bundle
 verify_binary_symbols
 
-echo "Packaged app contains an FFI-free GUI plus the expected helper-only EasyTier runtime linkage."
+echo "Packaged app contains an FFI-free GUI plus isolated EasyTier and Gateway privileged helpers."

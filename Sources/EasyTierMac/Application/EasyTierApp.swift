@@ -131,6 +131,12 @@ struct EasyTierApp: App {
             }
         }
 
+        if arguments.contains("--ping-gateway-helper") {
+            runAsyncHelperCommandAndExit {
+                try await PrivilegedGatewayClient().helperPingPayload()
+            }
+        }
+
         guard arguments.contains("--register-helper") || arguments.contains("--unregister-helper") || arguments.contains("--helper-status") else { return }
 
         if arguments.contains("--register-helper") || arguments.contains("--unregister-helper") || arguments.contains("--helper-status") {
@@ -142,8 +148,10 @@ struct EasyTierApp: App {
 
             runAsyncHelperCommandAndExit { @MainActor in
                 let service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
+                let gatewayService = SMAppService.daemon(plistName: GatewayPrivilegedHelperConstants.launchDaemonPlistName)
                 if arguments.contains("--unregister-helper") || arguments.contains("--register-helper") {
                     try? await service.unregister()
+                    try? await gatewayService.unregister()
                 }
                 if arguments.contains("--unregister-helper"),
                    LegacyPrivilegedHelperService.isInstalled,
@@ -151,12 +159,31 @@ struct EasyTierApp: App {
                     try LegacyPrivilegedHelperService.uninstallUsingAdministratorPrivileges()
                 }
                 let registration = HelperRegistrationService()
+                let gatewayRegistration = HelperRegistrationService(kind: .gateway)
                 if arguments.contains("--register-helper") {
-                    try await registration.ensureRegistered()
+                    var failures: [String] = []
+                    do {
+                        try await registration.ensureRegistered()
+                    } catch {
+                        failures.append("EasyTier: \(error.localizedDescription)")
+                    }
+                    do {
+                        try await gatewayRegistration.ensureRegistered()
+                    } catch {
+                        failures.append("Gateway: \(error.localizedDescription)")
+                    }
+                    if !failures.isEmpty {
+                        throw NSError(
+                            domain: "EasyTierHelperRegistration",
+                            code: 1,
+                            userInfo: [NSLocalizedDescriptionKey: failures.joined(separator: "\n")]
+                        )
+                    }
                 } else {
                     await registration.refresh()
+                    await gatewayRegistration.refresh()
                 }
-                return "helper status: \(Self.describe(registration.state))"
+                return "helper status: EasyTier=\(Self.describe(registration.state)) Gateway=\(Self.describe(gatewayRegistration.state))"
             }
         }
     }

@@ -8,30 +8,58 @@ rust-version = "1.95"
 name = "easytier_ffi"
 crate-type = ["staticlib"]
 
+[features]
+default = ["core", "gateway"]
+core = ["dep:dashmap", "dep:easytier", "dep:serde_json", "dep:tokio", "dep:url", "dep:uuid"]
+gateway = [
+    "dep:arc-swap",
+    "dep:async-trait",
+    "dep:bytes",
+    "dep:cloudflare",
+    "dep:dashmap",
+    "dep:hickory-resolver",
+    "dep:hex",
+    "dep:http",
+    "dep:instant-acme",
+    "dep:pingora",
+    "dep:rand",
+    "dep:rustls",
+    "dep:rustls-pki-types",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:sha2",
+    "dep:time",
+    "dep:tokio",
+    "dep:url",
+    "dep:uuid",
+    "dep:x509-parser",
+    "dep:zeroize",
+]
+
 [dependencies]
-arc-swap = "1.7"
-async-trait = "0.1"
-bytes = "1"
-cloudflare = { version = "0.14.0", default-features = false, features = ["rustls-tls"] }
-dashmap = "6.0"
-easytier = { path = "../../Vendor/EasyTier/easytier" }
-hex = "0.4"
-hickory-resolver = "0.25.2"
-http = "1"
-instant-acme = { version = "0.8.5", default-features = false, features = ["ring", "hyper-rustls", "rcgen", "time", "x509-parser"] }
-pingora = { version = "0.8.1", default-features = false, features = ["proxy", "boringssl"] }
-rand = "0.9"
-rustls = { version = "0.23.40", default-features = false, features = ["ring", "std", "tls12"] }
-rustls-pki-types = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.10"
-time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
-tokio = { version = "1", features = ["io-util", "net", "rt-multi-thread", "sync", "time"] }
-url = "2"
-uuid = "1.17.0"
-x509-parser = "0.18"
-zeroize = { version = "1", features = ["derive"] }
+arc-swap = { version = "1.7", optional = true }
+async-trait = { version = "0.1", optional = true }
+bytes = { version = "1", optional = true }
+cloudflare = { version = "0.14.0", default-features = false, features = ["rustls-tls"], optional = true }
+dashmap = { version = "6.0", optional = true }
+easytier = { path = "../../Vendor/EasyTier/easytier", optional = true }
+hickory-resolver = { version = "0.25.2", optional = true }
+hex = { version = "0.4", optional = true }
+http = { version = "1", optional = true }
+instant-acme = { version = "0.8.5", default-features = false, features = ["ring", "hyper-rustls", "rcgen", "time", "x509-parser"], optional = true }
+pingora = { version = "0.8.1", default-features = false, features = ["proxy", "boringssl"], optional = true }
+rand = { version = "0.9", optional = true }
+rustls = { version = "0.23.40", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+rustls-pki-types = { version = "1", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+sha2 = { version = "0.10", optional = true }
+time = { version = "0.3", features = ["formatting", "parsing", "serde"], optional = true }
+tokio = { version = "1", features = ["io-util", "net", "rt-multi-thread", "sync", "time"], optional = true }
+url = { version = "2", optional = true }
+uuid = { version = "1.17.0", optional = true }
+x509-parser = { version = "0.18", optional = true }
+zeroize = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
 base64 = "0.22"

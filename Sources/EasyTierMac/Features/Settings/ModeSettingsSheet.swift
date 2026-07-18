@@ -80,6 +80,7 @@ struct EasyTierSettingsSheet: View {
     @State private var magicDNSSuffix: String
     @State private var settingsError: String?
     @State private var showingDisableRPCListenWarning = false
+    @State private var helperDiagnostics = HelperDiagnosticsController()
     private let appInfo = AppVersionInfo.current
 
     var onChange: (AppMode, MagicDNSSettings) -> Void
@@ -256,6 +257,47 @@ struct EasyTierSettingsSheet: View {
                 ) {
                     Toggle("Keep Networks Running After Quit", isOn: vpnOnDemandBinding)
                 }
+
+                CardSection(
+                    "Helper Diagnostics",
+                    footer: helperDiagnostics.status
+                ) {
+                    SettingsInlineRow("EasyTier Helper") {
+                        Text(helperDiagnostics.displayedEasyTierHelper.easyTierHelperDisplay)
+                            .font(.callout.monospaced())
+                            .textSelection(.enabled)
+                    }
+                    SettingsRowDivider()
+                    SettingsInlineRow("Gateway Helper") {
+                        Text(helperDiagnostics.displayedGatewayHelper.componentDisplay)
+                            .font(.callout.monospaced())
+                            .textSelection(.enabled)
+                    }
+                    SettingsRowDivider()
+                    SettingsInlineRow("EasyTier Binary") {
+                        Text(helperDiagnostics.displayedEasyTierHelper.binaryDisplay)
+                            .font(.callout.monospaced())
+                            .textSelection(.enabled)
+                    }
+                    SettingsRowDivider()
+                    SettingsInlineRow("EasyTier Built") {
+                        Text(helperDiagnostics.displayedEasyTierHelper.buildTime)
+                            .font(.callout.monospaced())
+                            .textSelection(.enabled)
+                    }
+                    SettingsRowDivider()
+                    SettingsInlineRow("Gateway Binary") {
+                        Text(helperDiagnostics.displayedGatewayHelper.binaryDisplay)
+                            .font(.callout.monospaced())
+                            .textSelection(.enabled)
+                    }
+                    SettingsRowDivider()
+                    SettingsInlineRow("Gateway Built") {
+                        Text(helperDiagnostics.displayedGatewayHelper.buildTime)
+                            .font(.callout.monospaced())
+                            .textSelection(.enabled)
+                    }
+                }
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 18)
@@ -264,10 +306,18 @@ struct EasyTierSettingsSheet: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .scrollIndicators(.hidden, axes: .vertical)
         .hideScrollViewScrollers()
-        .task {
+        .task(id: helperDiagnosticsTaskID) {
             await Task.yield()
             loginItem.refresh()
+            await helperDiagnostics.refresh(
+                easyTierRegistration: store.helperRegistration,
+                gatewayRegistration: appContext.runtime.gateway.helperRegistration
+            )
         }
+    }
+
+    private var helperDiagnosticsTaskID: String {
+        "\(String(describing: store.helperRegistration?.state))-\(String(describing: appContext.runtime.gateway.helperRegistration?.state))"
     }
 
     @ViewBuilder

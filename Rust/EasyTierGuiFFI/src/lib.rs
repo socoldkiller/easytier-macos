@@ -1,11 +1,11 @@
 use std::{
     ffi::{CStr, CString, c_char, c_int},
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::{Arc, LazyLock, Mutex},
-    time::{Duration, Instant},
 };
 
+#[cfg(feature = "core")]
 use dashmap::DashMap;
+#[cfg(feature = "core")]
 use easytier::{
     common::config::{ConfigFileControl, ConfigLoader as _, TomlConfigLoader},
     instance_manager::NetworkInstanceManager,
@@ -20,44 +20,71 @@ use easytier::{
     rpc_service::ApiRpcServer,
     tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener},
 };
+#[cfg(feature = "core")]
 use serde_json::Value;
+#[cfg(feature = "core")]
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    time::{Duration, Instant},
+};
+use tokio::runtime::Runtime;
+#[cfg(feature = "core")]
 use tokio::{
-    runtime::Runtime,
     sync::{OwnedSemaphorePermit, Semaphore},
     time::timeout,
 };
+#[cfg(feature = "core")]
 use url::{Host, Url};
 
+#[cfg(feature = "gateway")]
 mod gateway;
 
+#[cfg(feature = "core")]
 type RpcPortalServer = ApiRpcServer<TcpTunnelListener>;
 
+#[cfg(feature = "core")]
 static INSTANCE_NAME_ID_MAP: LazyLock<DashMap<String, uuid::Uuid>> = LazyLock::new(DashMap::new);
+#[cfg(feature = "core")]
 static INSTANCE_MANAGER: LazyLock<Arc<NetworkInstanceManager>> =
     LazyLock::new(|| Arc::new(NetworkInstanceManager::new()));
+#[cfg(feature = "core")]
 static RPC_CLIENTS: LazyLock<DashMap<String, Arc<RpcEndpoint>>> = LazyLock::new(DashMap::new);
+#[cfg(feature = "core")]
 static RPC_PORTAL_SERVER: LazyLock<Mutex<Option<RpcPortalServer>>> =
     LazyLock::new(|| Mutex::new(None));
+#[cfg(feature = "gateway")]
 static GATEWAY: LazyLock<Mutex<Option<Arc<gateway::GatewayHandle>>>> =
     LazyLock::new(|| Mutex::new(None));
+#[cfg(feature = "gateway")]
 static GATEWAY_OPERATION: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 static RPC_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
+    #[cfg(feature = "gateway")]
     gateway::install_rustls_crypto_provider()
         .expect("failed to install the Rustls crypto provider");
     Runtime::new().expect("failed to create EasyTier RPC runtime")
 });
+#[cfg(feature = "core")]
 static RPC_TOTAL_LIMIT: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::new(RPC_MAX_CONCURRENT_TOTAL)));
+#[cfg(feature = "core")]
 static RPC_CONNECTING_LIMIT: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::new(RPC_MAX_CONNECTING_TOTAL)));
+#[cfg(feature = "core")]
 const RPC_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(feature = "core")]
 const RPC_CALL_TIMEOUT: Duration = Duration::from_secs(8);
+#[cfg(feature = "core")]
 const RPC_QUEUE_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(feature = "core")]
 const RPC_UNAVAILABLE_COOLDOWN: Duration = Duration::from_secs(5);
+#[cfg(feature = "core")]
 const RPC_MAX_CONCURRENT_PER_ENDPOINT: usize = 4;
+#[cfg(feature = "core")]
 const RPC_MAX_CONCURRENT_TOTAL: usize = 32;
+#[cfg(feature = "core")]
 const RPC_MAX_CONNECTING_TOTAL: usize = 8;
 
+#[cfg(feature = "core")]
 struct RpcEndpoint {
     url: String,
     limit: Arc<Semaphore>,
@@ -68,12 +95,14 @@ struct RpcEndpoint {
     client: tokio::sync::Mutex<StandAloneClient<TcpTunnelConnector>>,
 }
 
+#[cfg(feature = "core")]
 #[derive(Default)]
 struct RpcEndpointState {
     cooldown_until: Option<Instant>,
     last_error: Option<String>,
 }
 
+#[cfg(feature = "core")]
 impl RpcEndpoint {
     fn new(url: String, parsed_url: Url) -> Self {
         Self {
@@ -128,6 +157,7 @@ impl RpcEndpoint {
 }
 
 #[repr(C)]
+#[cfg(feature = "core")]
 pub struct KeyValuePair {
     pub key: *const c_char,
     pub value: *const c_char,
@@ -182,6 +212,7 @@ unsafe fn cstr_arg(ptr: *const c_char, name: &str) -> Result<String, String> {
 ///
 /// # Safety
 /// When `length > 0`, `inst_names` must point to `length` valid C string pointers.
+#[cfg(feature = "core")]
 unsafe fn instance_names_and_ids(
     inst_names: *const *const c_char,
     length: usize,
@@ -247,6 +278,7 @@ unsafe fn ffi_result_with_error(
     }
 }
 
+#[cfg(feature = "core")]
 fn validate_rpc_url(raw: &str) -> Result<Url, String> {
     let url = Url::parse(raw).map_err(|e| format!("invalid RPC URL: {e}"))?;
     if url.scheme() != "tcp" {
@@ -285,6 +317,7 @@ fn validate_rpc_url(raw: &str) -> Result<Url, String> {
     Ok(url)
 }
 
+#[cfg(feature = "core")]
 fn normalize_rpc_portal(raw: &str) -> Result<String, String> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -309,6 +342,7 @@ fn normalize_rpc_portal(raw: &str) -> Result<String, String> {
     }
 }
 
+#[cfg(feature = "core")]
 fn is_allowed_rpc_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(addr) => is_allowed_ipv4(addr),
@@ -316,6 +350,7 @@ fn is_allowed_rpc_ip(ip: IpAddr) -> bool {
     }
 }
 
+#[cfg(feature = "core")]
 fn is_allowed_ipv4(addr: Ipv4Addr) -> bool {
     let octets = addr.octets();
     match octets {
@@ -329,11 +364,13 @@ fn is_allowed_ipv4(addr: Ipv4Addr) -> bool {
     }
 }
 
+#[cfg(feature = "core")]
 fn is_allowed_ipv6(addr: Ipv6Addr) -> bool {
     let first = addr.segments()[0];
     addr.is_loopback() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
 }
 
+#[cfg(feature = "core")]
 fn is_allowed_service_method(service_name: &str, method_name: &str) -> bool {
     match service_name {
         "api.config.ConfigRpcService" => matches!(method_name, "patch_config" | "get_config"),
@@ -342,6 +379,7 @@ fn is_allowed_service_method(service_name: &str, method_name: &str) -> bool {
     }
 }
 
+#[cfg(feature = "core")]
 async fn acquire_rpc_permit(
     semaphore: Arc<Semaphore>,
     label: &str,
@@ -355,6 +393,7 @@ async fn acquire_rpc_permit(
         .map_err(|_| format!("EasyTier RPC {label} limiter is closed."))
 }
 
+#[cfg(feature = "core")]
 async fn call_rpc_by_service(
     endpoint: Arc<RpcEndpoint>,
     service_name: &str,
@@ -458,6 +497,7 @@ pub unsafe extern "C" fn free_string(s: *const c_char) {
 /// `config_json` and `secrets_json` must be valid NUL-terminated UTF-8 strings.
 /// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
 #[unsafe(no_mangle)]
+#[cfg(feature = "gateway")]
 pub unsafe extern "C" fn gateway_start(
     config_json: *const c_char,
     secrets_json: *const c_char,
@@ -500,6 +540,7 @@ pub unsafe extern "C" fn gateway_start(
 /// Non-null string pointers must reference valid NUL-terminated UTF-8 strings.
 /// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
 #[unsafe(no_mangle)]
+#[cfg(feature = "gateway")]
 pub unsafe extern "C" fn gateway_apply_config(
     config_json: *const c_char,
     secrets_json_or_null: *const c_char,
@@ -534,6 +575,7 @@ pub unsafe extern "C" fn gateway_apply_config(
 /// # Safety
 /// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
 #[unsafe(no_mangle)]
+#[cfg(feature = "gateway")]
 pub unsafe extern "C" fn gateway_stop(out_error: *mut *const c_char) -> c_int {
     // SAFETY: `out_error` is caller-owned storage or null.
     unsafe {
@@ -570,6 +612,7 @@ pub unsafe extern "C" fn gateway_stop(out_error: *mut *const c_char) -> c_int {
 /// `out_json` must point to caller-owned storage for one string pointer. The returned string must
 /// be released with `free_string`. `out_error` follows the same ownership convention.
 #[unsafe(no_mangle)]
+#[cfg(feature = "gateway")]
 pub unsafe extern "C" fn gateway_status(
     out_json: *mut *const c_char,
     out_error: *mut *const c_char,
@@ -600,6 +643,7 @@ pub unsafe extern "C" fn gateway_status(
 /// A non-null `certificate_id_or_null` must reference a valid NUL-terminated UTF-8 string.
 /// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
 #[unsafe(no_mangle)]
+#[cfg(feature = "gateway")]
 pub unsafe extern "C" fn gateway_request_renewal(
     certificate_id_or_null: *const c_char,
     out_error: *mut *const c_char,
@@ -631,6 +675,7 @@ pub unsafe extern "C" fn gateway_request_renewal(
 /// `cfg_str` must be a valid NUL-terminated C string pointer.
 /// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
 #[unsafe(no_mangle)]
+#[cfg(feature = "core")]
 pub unsafe extern "C" fn parse_config(
     cfg_str: *const c_char,
     out_error: *mut *const c_char,
@@ -651,6 +696,7 @@ pub unsafe extern "C" fn parse_config(
 /// `cfg_str` must be a valid NUL-terminated C string pointer.
 /// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
 #[unsafe(no_mangle)]
+#[cfg(feature = "core")]
 pub unsafe extern "C" fn run_network_instance(
     cfg_str: *const c_char,
     out_error: *mut *const c_char,
@@ -688,6 +734,7 @@ pub unsafe extern "C" fn run_network_instance(
 /// When `length > 0`, `inst_names` must point to an array of valid NUL-terminated C strings.
 /// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
 #[unsafe(no_mangle)]
+#[cfg(feature = "core")]
 pub unsafe extern "C" fn retain_network_instance(
     inst_names: *const *const c_char,
     length: usize,
@@ -719,6 +766,7 @@ pub unsafe extern "C" fn retain_network_instance(
 /// When `length > 0`, `inst_names` must point to an array of valid NUL-terminated C strings.
 /// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
 #[unsafe(no_mangle)]
+#[cfg(feature = "core")]
 pub unsafe extern "C" fn stop_network_instance(
     inst_names: *const *const c_char,
     length: usize,
@@ -746,6 +794,7 @@ pub unsafe extern "C" fn stop_network_instance(
 /// `infos` must point to writable storage for `max_length` `KeyValuePair` values.
 /// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
 #[unsafe(no_mangle)]
+#[cfg(feature = "core")]
 pub unsafe extern "C" fn collect_network_infos(
     infos: *mut KeyValuePair,
     max_length: usize,
@@ -825,6 +874,7 @@ pub unsafe extern "C" fn collect_network_infos(
 /// When `whitelist_count > 0`, `whitelist` must point to an array of valid C string pointers.
 /// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
 #[unsafe(no_mangle)]
+#[cfg(feature = "core")]
 pub unsafe extern "C" fn configure_rpc_portal(
     enabled: c_int,
     listen_addr: *const c_char,
@@ -892,6 +942,7 @@ pub unsafe extern "C" fn configure_rpc_portal(
 /// `client_id` and `url` must be valid NUL-terminated C string pointers.
 /// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
 #[unsafe(no_mangle)]
+#[cfg(feature = "core")]
 pub unsafe extern "C" fn connect_rpc_client(
     client_id: *const c_char,
     url: *const c_char,
@@ -912,6 +963,7 @@ pub unsafe extern "C" fn connect_rpc_client(
     }
 }
 
+#[cfg(feature = "core")]
 fn register_rpc_client(client_id: String, url_string: String) -> Result<(), String> {
     let url = validate_rpc_url(&url_string)?;
 
@@ -931,6 +983,7 @@ fn register_rpc_client(client_id: String, url_string: String) -> Result<(), Stri
 /// `out_error` must point to caller-owned storage for one `*const c_char`, or be null;
 /// on failure it owns a `CString` that must be released with `free_string`.
 #[unsafe(no_mangle)]
+#[cfg(feature = "core")]
 pub unsafe extern "C" fn call_json_rpc(
     client_id: *const c_char,
     service_name: *const c_char,
@@ -969,6 +1022,7 @@ pub unsafe extern "C" fn call_json_rpc(
     }
 }
 
+#[cfg(feature = "core")]
 fn call_json_rpc_inner(
     client_id: String,
     service_name: String,

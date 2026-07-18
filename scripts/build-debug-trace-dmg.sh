@@ -71,11 +71,12 @@ rm -rf "$DSYM_DIR"
 mkdir -p "$DSYM_DIR"
 make_dsym "$APP_PATH/Contents/MacOS/EasyTierMac" "$DSYM_DIR/EasyTierMac.dSYM"
 make_dsym "$APP_PATH/Contents/MacOS/EasyTierPrivilegedHelper" "$DSYM_DIR/EasyTierPrivilegedHelper.dSYM"
+make_dsym "$APP_PATH/Contents/MacOS/GatewayPrivilegedHelper" "$DSYM_DIR/GatewayPrivilegedHelper.dSYM"
 
 rm -f "$DSYM_ZIP"
 (
   cd "$DSYM_DIR"
-  zip -qry "$DSYM_ZIP" EasyTierMac.dSYM EasyTierPrivilegedHelper.dSYM
+  zip -qry "$DSYM_ZIP" EasyTierMac.dSYM EasyTierPrivilegedHelper.dSYM GatewayPrivilegedHelper.dSYM
 )
 
 echo "Creating debug trace DMG." >&2

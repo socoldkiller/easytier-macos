@@ -5,26 +5,24 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleExecutable</key>
-    <string>EasyTierPrivilegedHelper</string>
+    <string>GatewayPrivilegedHelper</string>
     <key>CFBundleIdentifier</key>
-    <string>com.kkrainbow.easytier.mac.helper</string>
+    <string>com.coldkiller.gateway.helper</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>EasyTierPrivilegedHelper</string>
+    <string>GatewayPrivilegedHelper</string>
     <key>CFBundlePackageType</key>
     <string>BNDL</string>
     <key>CFBundleShortVersionString</key>
-    <string>$(MARKETING_VERSION)</string>
+    <string>$(GATEWAY_VERSION)</string>
     <key>CFBundleVersion</key>
     <string>$(CURRENT_PROJECT_VERSION)</string>
-    <key>EasyTierBuildTime</key>
-    <string>$(EASYTIER_BUILD_TIME)</string>
-    <key>EasyTierCoreCommit</key>
-    <string>$(EASYTIER_CORE_COMMIT)</string>
-    <key>EasyTierCoreTag</key>
-    <string>$(EASYTIER_CORE_TAG)</string>
-    <key>EasyTierGUICommit</key>
-    <string>$(EASYTIER_GUI_COMMIT)</string>
+    <key>GatewayBuildTime</key>
+    <string>$(GATEWAY_BUILD_TIME)</string>
+    <key>GatewayCommit</key>
+    <string>$(GATEWAY_COMMIT)</string>
+    <key>GatewayVersion</key>
+    <string>$(GATEWAY_VERSION)</string>
 </dict>
 </plist>

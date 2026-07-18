@@ -11,6 +11,7 @@ public final class HelperRegistrationService {
     public private(set) var isBusy = false
 
     private let backend: Backend
+    private let helperName: String
 
     public enum State: Equatable, Sendable {
         case notRegistered
@@ -24,11 +25,30 @@ public final class HelperRegistrationService {
     public init() {
         let service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
         self.backend = Self.liveBackend(service: service)
+        self.helperName = "EasyTier helper"
+        Task { await refreshAsync() }
+    }
+
+    package init(kind: PrivilegedHelperKind) {
+        switch kind {
+        case .easyTier:
+            let service = SMAppService.daemon(
+                plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName
+            )
+            self.backend = Self.liveBackend(service: service)
+        case .gateway:
+            let service = SMAppService.daemon(
+                plistName: GatewayPrivilegedHelperConstants.launchDaemonPlistName
+            )
+            self.backend = Self.liveGatewayBackend(service: service)
+        }
+        self.helperName = kind.displayName
         Task { await refreshAsync() }
     }
 
     init(backend: Backend, refreshOnInit: Bool = true) {
         self.backend = backend
+        self.helperName = "Privileged helper"
         if refreshOnInit {
             Task { await refreshAsync() }
         }
@@ -77,7 +97,7 @@ public final class HelperRegistrationService {
         isBusy = true
         defer { isBusy = false }
         state = .registering
-        detail = "Registering privileged helper..."
+        detail = "Registering \(helperName)..."
 
         do {
             if useLegacy {
@@ -95,7 +115,7 @@ public final class HelperRegistrationService {
                 try await backend.register()
                 try await backend.probeHelper()
                 state = .enabled
-                detail = "Privileged helper is enabled."
+                detail = "\(helperName) is enabled."
             }
         } catch {
             await refreshAfterRegistrationFailure(error, useLegacy: useLegacy)
@@ -129,10 +149,10 @@ public final class HelperRegistrationService {
             let installed = await backend.legacyIsInstalled()
             if installed {
                 state = .enabled
-                detail = "Privileged helper is enabled."
+                detail = "\(helperName) is enabled."
             } else {
                 state = .notRegistered
-                detail = "Privileged helper is not installed. EasyTier will request administrator permission before running a network."
+                detail = "\(helperName) is not installed. The app will request permission when it is needed."
             }
             return
         }
@@ -141,10 +161,10 @@ public final class HelperRegistrationService {
         switch status {
         case .notRegistered:
             state = .notRegistered
-            detail = "Privileged helper is not installed. EasyTier will request permission before running a network."
+            detail = "\(helperName) is not installed. The app will request permission when it is needed."
         case .enabled:
             state = .enabled
-            detail = "Privileged helper is enabled."
+            detail = "\(helperName) is enabled."
         case .requiresApproval:
             state = .requiresApproval
             detail = "Approve EasyTier in System Settings to enable network runtime operations."
@@ -249,6 +269,22 @@ public final class HelperRegistrationService {
             installLegacy: { try await Self.installLegacy() },
             uninstallLegacy: { try await Self.uninstallLegacy() },
             probeHelper: { try await Self.probeModernHelper() }
+        )
+    }
+
+    private static func liveGatewayBackend(service: SMAppService) -> Backend {
+        let box = ServiceBox(service: service)
+        return Backend(
+            status: { await Self.readServiceStatus(box) },
+            register: { try await Self.serviceRegister(box) },
+            unregister: { try await Self.serviceUnregister(box) },
+            canInstallHelper: { Self.currentBundleCanInstallHelper },
+            useLegacyInstaller: { false },
+            legacyArtifactsExist: { false },
+            legacyIsInstalled: { false },
+            installLegacy: {},
+            uninstallLegacy: {},
+            probeHelper: { try await PrivilegedGatewayClient().probeHelperAvailability() }
         )
     }
 

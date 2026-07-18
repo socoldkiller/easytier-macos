@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>AssociatedBundleIdentifiers</key>
+    <array>
+        <string>com.kkrainbow.easytier.mac</string>
+    </array>
+    <key>BundleProgram</key>
+    <string>Contents/MacOS/GatewayPrivilegedHelper</string>
+    <key>Label</key>
+    <string>com.coldkiller.gateway.helper</string>
+    <key>MachServices</key>
+    <dict>
+        <key>com.coldkiller.gateway.helper</key>
+        <true/>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardErrorPath</key>
+    <string>/var/log/coldkiller-gateway-helper.log</string>
+    <key>StandardOutPath</key>
+    <string>/var/log/coldkiller-gateway-helper.log</string>
+</dict>
+</plist>

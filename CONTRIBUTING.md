@@ -11,7 +11,7 @@ git clone --recurse-submodules https://github.com/socoldkiller/easytier-macos.gi
 cd easytier-macos
 
 make bootstrap   # verify the toolchain
-make ffi         # build the current-architecture Rust FFI archive
+make ffi         # build the isolated Core/Gateway Rust FFI archives
 make test        # run the Swift and Rust test suites
 
 open EasyTier.xcodeproj  # run the native app or inspect Product > Archive
@@ -25,7 +25,8 @@ make dmg CODESIGN_IDENTITY="$CODESIGN_IDENTITY" PROVISIONING_PROFILE="$PROVISION
 
 Output paths:
 - App bundle: `.build/artifacts/EasyTier.app`
-- FFI library: `Vendor/Frameworks/static/libeasytier_ffi.a`
+- EasyTier Core FFI library: `Vendor/Frameworks/static/libeasytier_core_ffi.a`
+- Gateway FFI library: `Vendor/Frameworks/static/libgateway_ffi.a`
 - DMG: `.build/artifacts/EasyTier-macOS-ARM64.dmg`
 
 See the `Makefile` for the exact invocations.
@@ -50,9 +51,11 @@ Sources/
   EasyTierMac/              SwiftUI app, menu bar, settings, update flow
   EasyTierShared/           Models, RPC codec, persistence store (testable layer)
   EasyTierPrivilegedHelper/ XPC daemon running as root (LaunchDaemon) for TUN
-  EasyTierRuntime/          In-process EasyTier runtime glue
-  CEasyTierFFI/             C shim that exposes the Rust FFI
-Rust/EasyTierGuiFFI/        Rust crate that links against EasyTier Core
+  EasyTierCoreRuntime/      EasyTier Core runtime glue
+  GatewayRuntime/           Independent Gateway runtime glue
+  CEasyTierCoreFFI/         C shim exposing only EasyTier Core FFI
+  CGatewayFFI/              C shim exposing only Gateway FFI
+Rust/EasyTierGuiFFI/        Rust crate built as mutually exclusive Core/Gateway archives
 EasyTier.xcodeproj/         Native App/Helper/FFI assembly and Archive scheme
 Configurations/            Shared Xcode build and signing settings
 scripts/                    Packaging / signing / notarization / verification

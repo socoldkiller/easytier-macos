@@ -4,6 +4,7 @@ import Foundation
 extension AppContext {
     static func live(userDefaults: UserDefaults = .standard) -> AppContext {
         let helperRegistration = HelperRegistrationService()
+        let gatewayHelperRegistration = HelperRegistrationService(kind: .gateway)
         let authenticationPresentation = NetworkSecretAuthenticationPresentationCoordinator()
         let privilegedClient = PrivilegedEasyTierClient()
         let store = EasyTierAppStore(
@@ -16,11 +17,11 @@ extension AppContext {
                 session: URLSession(configuration: .default)
             )
         )
-        let gatewayClient = PrivilegedGatewayClient(helper: privilegedClient)
+        let gatewayClient = PrivilegedGatewayClient()
         let gateway = GatewayRuntimeController(
             client: gatewayClient,
             configurationStore: GatewayConfigurationStore(),
-            helperRegistration: helperRegistration,
+            helperRegistration: gatewayHelperRegistration,
             connectionMonitor: gatewayClient
         )
         let runtime = ApplicationRuntimeCoordinator(store: store, gateway: gateway)
