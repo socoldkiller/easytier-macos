@@ -230,14 +230,14 @@ verify_binary_symbols() {
   [[ "$helper_archs" == "arm64" ]] || fail "EasyTierPrivilegedHelper release must be ARM64-only; found: $helper_archs"
 
   for symbol in "${REQUIRED_FFI_SYMBOLS[@]}"; do
-    has_symbol "$GUI_BINARY" "$symbol" "$gui_archs" || fail "EasyTierMac must contain EasyTier FFI symbol: $symbol"
+    ! has_symbol "$GUI_BINARY" "$symbol" "$gui_archs" || fail "EasyTierMac must not contain EasyTier FFI symbol: $symbol"
     has_symbol "$HELPER_BINARY" "$symbol" "$helper_archs" || fail "EasyTierPrivilegedHelper must contain EasyTier FFI symbol: $symbol"
   done
 
-  echo "Binary symbol checks passed: both GUI and helper contain EasyTier FFI."
+  echo "Binary symbol checks passed: only the privileged helper contains EasyTier FFI."
 }
 
 verify_app_bundle
 verify_binary_symbols
 
-echo "Packaged app contains GUI, privileged helper, LaunchDaemon plist, and the expected FFI linkage split."
+echo "Packaged app contains an FFI-free GUI plus the expected helper-only EasyTier runtime linkage."

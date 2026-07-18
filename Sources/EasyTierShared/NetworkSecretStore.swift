@@ -172,6 +172,12 @@ public protocol NetworkSecretStore: Sendable {
     func invalidateAuthenticationSession()
 }
 
+@MainActor
+public protocol NetworkSecretAuthenticationActivityObserver: Sendable {
+    func networkSecretAuthenticationDidBegin(id: UUID)
+    func networkSecretAuthenticationDidEnd(id: UUID)
+}
+
 public extension NetworkSecretStore {
     func save(_ secret: String, for config: NetworkConfig) async throws -> NetworkSecretWriteResult {
         try await save(secret, for: config, purpose: .update)
@@ -351,18 +357,22 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
     private let authenticator: any NetworkSecretAuthenticating
     private let contextFactory: @Sendable () -> LAContext
     private let namespace: NetworkSecretKeychainNamespace
+    private let authenticationActivityObserver: (any NetworkSecretAuthenticationActivityObserver)?
     private let operationQueue: DispatchQueue
     private let contextLock = NSLock()
     private var activeAuthenticationContexts: [UUID: LAContext] = [:]
 
-    public convenience init() {
+    public convenience init(
+        authenticationActivityObserver: (any NetworkSecretAuthenticationActivityObserver)? = nil
+    ) {
         self.init(
             keychain: SystemNetworkSecretKeychainClient(),
             authenticator: SystemNetworkSecretAuthenticator(),
             namespace: NetworkSecretKeychainNamespace(
                 service: Self.service,
                 accessGroup: Self.currentAccessGroup()
-            )
+            ),
+            authenticationActivityObserver: authenticationActivityObserver
         )
     }
 
@@ -379,12 +389,14 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
         authenticator: any NetworkSecretAuthenticating = SystemNetworkSecretAuthenticator(),
         contextFactory: @escaping @Sendable () -> LAContext = LAContext.init,
         namespace: NetworkSecretKeychainNamespace = NetworkSecretKeychainNamespace(service: SystemNetworkSecretStore.service),
+        authenticationActivityObserver: (any NetworkSecretAuthenticationActivityObserver)? = nil,
         operationQueue: DispatchQueue? = nil
     ) {
         self.keychain = keychain
         self.authenticator = authenticator
         self.contextFactory = contextFactory
         self.namespace = namespace
+        self.authenticationActivityObserver = authenticationActivityObserver
         self.operationQueue = operationQueue ?? DispatchQueue(
             label: "com.kkrainbow.easytier.mac.network-secret-store",
             qos: .userInitiated
@@ -651,19 +663,21 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
         displayName: String,
         context: LAContext
     ) throws {
-        let attributes = try itemAttributes(data: Data(secret.utf8), displayName: displayName)
+        let data = Data(secret.utf8)
+        let updateAttributes = itemUpdateAttributes(data: data, displayName: displayName)
         var updateQuery = baseQuery(account: account, backend: .dataProtection)
         updateQuery[kSecUseAuthenticationContext as String] = context
 
-        let updateStatus = keychain.update(updateQuery, attributes: attributes)
+        let updateStatus = keychain.update(updateQuery, attributes: updateAttributes)
         if updateStatus == errSecSuccess { return }
         guard updateStatus == errSecItemNotFound else {
             try requireSuccess(updateStatus)
             return
         }
 
+        let addAttributes = try itemAddAttributes(data: data, displayName: displayName)
         var addQuery = baseQuery(account: account, backend: .dataProtection)
-        attributes.forEach { addQuery[$0.key] = $0.value }
+        addAttributes.forEach { addQuery[$0.key] = $0.value }
         let addStatus = keychain.add(addQuery)
         if addStatus == errSecSuccess { return }
         guard addStatus == errSecDuplicateItem else {
@@ -671,7 +685,7 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
             return
         }
 
-        try requireSuccess(keychain.update(updateQuery, attributes: attributes))
+        try requireSuccess(keychain.update(updateQuery, attributes: updateAttributes))
     }
 
     private func verifyModernItem(account: String) throws {
@@ -834,7 +848,7 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
         return query
     }
 
-    private func itemAttributes(data: Data, displayName: String) throws -> [String: Any] {
+    private func itemAddAttributes(data: Data, displayName: String) throws -> [String: Any] {
         var error: Unmanaged<CFError>?
         guard let access = SecAccessControlCreateWithFlags(
             nil,
@@ -847,11 +861,16 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
             )
         }
 
-        return [
+        var attributes = itemUpdateAttributes(data: data, displayName: displayName)
+        attributes[kSecAttrAccessControl as String] = access
+        return attributes
+    }
+
+    private func itemUpdateAttributes(data: Data, displayName: String) -> [String: Any] {
+        [
             kSecValueData as String: data,
             kSecAttrLabel as String: displayName,
             kSecAttrComment as String: "EasyTier network secret for \(displayName)",
-            kSecAttrAccessControl as String: access,
         ]
     }
 
@@ -885,11 +904,20 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
             activeAuthenticationContexts[id] = context
         }
 
-        defer { discardAuthenticationContext(id: id, matching: context) }
-        return try await withTaskCancellationHandler {
-            try await operation(context)
-        } onCancel: {
-            context.invalidate()
+        await authenticationActivityObserver?.networkSecretAuthenticationDidBegin(id: id)
+        do {
+            let result = try await withTaskCancellationHandler {
+                try await operation(context)
+            } onCancel: {
+                context.invalidate()
+            }
+            discardAuthenticationContext(id: id, matching: context)
+            await authenticationActivityObserver?.networkSecretAuthenticationDidEnd(id: id)
+            return result
+        } catch {
+            discardAuthenticationContext(id: id, matching: context)
+            await authenticationActivityObserver?.networkSecretAuthenticationDidEnd(id: id)
+            throw error
         }
     }
 

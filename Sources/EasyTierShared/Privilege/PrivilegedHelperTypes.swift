@@ -1,6 +1,7 @@
 import Foundation
 
 package enum EasyTierPrivilegedHelperConstants {
+    package static let appBundleIdentifier = "com.kkrainbow.easytier.mac"
     package static let bundleIdentifier = "com.kkrainbow.easytier.mac.helper"
     package static let machServiceName = "com.kkrainbow.easytier.mac.helper"
     package static let launchDaemonPlistName = "com.kkrainbow.easytier.mac.helper.plist"
@@ -67,9 +68,9 @@ package enum PrivilegedHelperError: LocalizedError, Equatable {
     package var errorDescription: String? {
         switch self {
         case .unavailable:
-            "EasyTier privileged helper is not installed or not enabled. Install the helper before starting TUN networking."
+            "EasyTier privileged helper is not installed or not enabled. Install the helper before starting a network."
         case .needsRegistration:
-            "EasyTier needs background permission to create a TUN interface. Approve EasyTier in System Settings > Login Items & Extensions, then start the network again."
+            "EasyTier needs background permission to run network instances. Approve EasyTier in System Settings > Login Items & Extensions, then start the network again."
         case let .helperReported(payload):
             if let recoverySuggestion = payload.recoverySuggestion?.trimmingCharacters(in: .whitespacesAndNewlines),
                !recoverySuggestion.isEmpty {

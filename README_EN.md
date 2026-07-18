@@ -105,7 +105,7 @@ App actions and EasyTier Core output go to a single panel. Search, clear, copy, 
 
 ### Privileged helper
 
-TUN interfaces need root. Starting a TUN network shows an inline prompt to install a privileged helper (LaunchDaemon) that communicates over XPC. Non-TUN mode doesn't need it.
+EasyTier Core runs exclusively in a privileged helper (LaunchDaemon), controlled by the app over XPC. TUN interfaces still require root; `no_tun` skips the TUN interface but uses the same helper so the GUI and daemon do not own separate Core runtimes.
 
 ## Install
 
@@ -119,7 +119,7 @@ Choose `Latest Stable` or `Nightly` under `Settings > General > Software Update`
 
 First launch:
 1. Release DMGs are Developer ID signed and Apple-notarized. If macOS cannot verify the developer, do not bypass Gatekeeper; download the DMG again and report the release issue.
-2. TUN mode prompts for the privileged helper → follow the dialogs
+2. EasyTier automatically checks and prompts for the privileged helper → follow the dialogs
 3. If your firewall is on → allow incoming connections for EasyTier
 
 ## Build
@@ -150,7 +150,7 @@ To debug the Data Protection Keychain, first create the ignored per-machine sign
 cp Configurations/Signing.example.xcconfig Configurations/Signing.local.xcconfig
 ```
 
-The regular `EasyTierMac` scheme supports GUI, Keychain, and `no_tun` debugging. A TUN network must register its privileged helper from a stable installed path; select `EasyTierMac-InstalledDebug` in Xcode to install the signed Debug app at `/Applications/EasyTier.app` and launch that copy under LLDB. The first helper installation still requires approval in System Settings → General → Login Items & Extensions. `make debug-install` provides the equivalent command-line flow.
+The regular `EasyTierMac` scheme supports GUI, Keychain, configuration, and Preview debugging, but no longer runs EasyTier Core inside the GUI process. Debugging any network mode requires the helper to be registered from a stable installed path; select `EasyTierMac-InstalledDebug` in Xcode to install the signed Debug app at `/Applications/EasyTier.app` and launch that copy under LLDB. The first helper installation still requires approval in System Settings → General → Login Items & Extensions. `make debug-install` provides the equivalent command-line flow.
 
 Output paths:
 - App bundle: `.build/artifacts/EasyTier.app`
@@ -183,7 +183,7 @@ See [`Packaging/RELEASE.md`](Packaging/RELEASE.md) for the complete local and CI
 
 ### Call path
 
-The SwiftUI app talks to EasyTier Core through a C shim (CEasyTierFFI) backed by a Rust FFI library. In TUN mode, the app communicates with a privileged helper over XPC, and the helper calls into the same FFI layer. Remote RPC builds JSON-RPC payloads in Swift and sends them through the C shim to a remote RPC Portal.
+The SwiftUI app never links EasyTier Core directly. Every local runtime operation follows one signed boundary: Swift GUI → XPC → privileged helper → CEasyTierFFI → Rust EasyTier Core. `no_tun` only controls whether Core creates a TUN interface. Remote RPC payloads are built in Swift and sent over XPC so the helper can call the remote RPC Portal through the same Rust FFI layer.
 
 ## Star History
 

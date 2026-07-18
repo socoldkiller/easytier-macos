@@ -34,14 +34,21 @@ public final class HelperRegistrationService {
         }
     }
 
-    /// Register the privileged helper only when it is about to be used.
-    /// Throws `PrivilegedHelperError.needsRegistration` if registration cannot complete.
+    /// Ensure the privileged helper is installed, approved, reachable, and protocol-compatible.
     public func ensureRegistered() async throws {
         let useLegacy = await backend.useLegacyInstaller()
         await refreshAsync(useLegacy: useLegacy)
         switch state {
         case .enabled:
-            return
+            do {
+                try await backend.probeHelper()
+                return
+            } catch where Self.isProtocolMismatch(error) {
+                break
+            } catch {
+                await refreshAfterRegistrationFailure(error, useLegacy: useLegacy)
+                throw error
+            }
         case .registering:
             await waitForBusy()
             await refreshAsync(useLegacy: useLegacy)
@@ -58,7 +65,13 @@ public final class HelperRegistrationService {
         guard backend.canInstallHelper() else {
             state = .error
             detail = Self.unstableBundleLocationMessage
-            throw PrivilegedHelperError.needsRegistration
+            throw PrivilegedHelperError.helperReported(
+                PrivilegedHelperErrorPayload(
+                    code: "helperUnstableBundleLocation",
+                    message: detail,
+                    recoverySuggestion: "Use the EasyTierMac-InstalledDebug scheme or move the signed app to /Applications/EasyTier.app."
+                )
+            )
         }
 
         isBusy = true
@@ -119,7 +132,7 @@ public final class HelperRegistrationService {
                 detail = "Privileged helper is enabled."
             } else {
                 state = .notRegistered
-                detail = "Privileged helper is not installed. Starting a TUN network will prompt for administrator permission."
+                detail = "Privileged helper is not installed. EasyTier will request administrator permission before running a network."
             }
             return
         }
@@ -128,16 +141,16 @@ public final class HelperRegistrationService {
         switch status {
         case .notRegistered:
             state = .notRegistered
-            detail = "Privileged helper is not installed. Starting a TUN network will prompt for permission."
+            detail = "Privileged helper is not installed. EasyTier will request permission before running a network."
         case .enabled:
             state = .enabled
             detail = "Privileged helper is enabled."
         case .requiresApproval:
             state = .requiresApproval
-            detail = "Approve EasyTier in System Settings to enable TUN networking."
+            detail = "Approve EasyTier in System Settings to enable network runtime operations."
         case .notFound:
             state = .notFound
-            detail = "Privileged helper registration is not initialized. Starting a TUN network will attempt to install it."
+            detail = "Privileged helper registration is not initialized. EasyTier will attempt to install it before running a network."
         @unknown default:
             state = .error
             detail = "Unknown privileged helper status."
@@ -154,11 +167,16 @@ public final class HelperRegistrationService {
         let status = await backend.status()
         if status == .requiresApproval || message.localizedCaseInsensitiveContains("operation not permitted") {
             state = .requiresApproval
-            detail = "Approve EasyTier in System Settings to enable TUN networking."
+            detail = "Approve EasyTier in System Settings to enable network runtime operations."
             return
         }
         state = .error
         detail = message
+    }
+
+    private static func isProtocolMismatch(_ error: Error) -> Bool {
+        guard case let PrivilegedHelperError.helperReported(payload) = error else { return false }
+        return payload.code == "protocolMismatch"
     }
 
     struct Backend {

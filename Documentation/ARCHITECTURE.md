@@ -34,6 +34,12 @@ SystemPrivilegedHelperLifecycle -> PrivilegedHelperLifecycle
 SparkleSoftwareUpdateClient     -> SoftwareUpdateClient
 ```
 
+EasyTier Core has one process owner. `EasyTierMac` depends on `EasyTierShared`
+and talks to `PrivilegedEasyTierClient`; the XPC helper alone depends on
+`EasyTierRuntime`, `CEasyTierFFI`, and the Rust Core. Both TUN and `no_tun`
+configurations use this path. `NetworkConfig.requiresTUN` controls runtime
+readiness and interface behavior, not dependency injection.
+
 `AppContext` is concrete intentionally. SwiftUI can observe concrete `@Observable`
 models reached through it without existential type erasure. Replaceable capabilities
 sit behind consumer-owned protocols instead of turning `AppContext` into a dynamic

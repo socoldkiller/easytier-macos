@@ -5,7 +5,7 @@ struct ConfigEditorView: View {
     @Environment(AppContext.self) private var appContext
     @Environment(\.openWindow) private var openWindow
     @Binding var config: NetworkConfig
-    @Binding private var networkSecretDraft: String?
+    @Binding private var networkSecretDraft: NetworkSecretInput?
     var members: [NetworkMemberStatus] = []
     var remoteSession: RemoteConfigSession? = nil
     var onScrolledPastTopChange: (Bool) -> Void = { _ in }
@@ -20,13 +20,20 @@ struct ConfigEditorView: View {
 
     init(
         config: Binding<NetworkConfig>,
-        networkSecretDraft: Binding<String?>? = nil,
+        networkSecretDraft: Binding<NetworkSecretInput?>? = nil,
         members: [NetworkMemberStatus] = [],
         remoteSession: RemoteConfigSession? = nil,
         onScrolledPastTopChange: @escaping (Bool) -> Void = { _ in }
     ) {
         _config = config
-        _networkSecretDraft = networkSecretDraft ?? config.network_secret
+        _networkSecretDraft = networkSecretDraft ?? Binding(
+            get: {
+                config.wrappedValue.network_secret?.nilIfEmpty.map(NetworkSecretInput.edited)
+            },
+            set: { input in
+                config.wrappedValue.network_secret = input?.value.nilIfEmpty
+            }
+        )
         self.members = members
         self.remoteSession = remoteSession
         self.onScrolledPastTopChange = onScrolledPastTopChange
@@ -256,7 +263,7 @@ struct ConfigEditorView: View {
                     FlagList {
                         FlagToggle("Latency first", isOn: $config.latency_first)
                         FlagToggle("Multi thread", isOn: optionalBool($config.multi_thread, defaultValue: true))
-                        FlagToggle("No TUN", isOn: optionalBool($config.no_tun, defaultValue: false), help: "Off uses TUN and needs helper/root permission.")
+                        FlagToggle("No TUN", isOn: optionalBool($config.no_tun, defaultValue: false), help: "Disables the TUN interface. All network modes still run through the privileged helper.")
                         FlagToggle("Bind device", isOn: optionalBool($config.bind_device, defaultValue: true), showsSeparator: false)
                     }
                 }

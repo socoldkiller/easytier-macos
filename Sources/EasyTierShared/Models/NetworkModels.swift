@@ -151,8 +151,8 @@ public struct NetworkConfig: Codable, Equatable, Identifiable, Sendable {
     public var bind_device: Bool?
     public var no_tun: Bool?
     /// True unless the config opts out of a TUN interface via `no_tun = true`.
-    /// Only TUN-requiring instances need the privileged helper; everything else
-    /// can run in-process without touching SMAppService or root.
+    /// Runtime execution is always helper-backed; this only controls readiness
+    /// rules and whether EasyTier creates a TUN interface.
     public var requiresTUN: Bool { no_tun != true }
     public var enable_exit_node: Bool?
     public var relay_all_peer_rpc: Bool?

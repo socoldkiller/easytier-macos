@@ -57,7 +57,6 @@ let package = Package(
             name: "EasyTierMac",
             dependencies: [
                 "EasyTierShared",
-                "EasyTierRuntime",
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
             resources: [

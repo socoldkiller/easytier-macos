@@ -186,16 +186,19 @@ import Testing
     foreign.identifier = NSUserInterfaceItemIdentifier("SUUpdateAlert")
     foreign.isOpaque = true
     foreign.backgroundColor = .controlBackgroundColor
+    foreign.hidesOnDeactivate = true
     let originalStyleMask = foreign.styleMask
 
     #expect(!EasyTierWindowConfigurator.configureIfOwned(foreign, effectiveGlass: true))
     #expect(foreign.styleMask == originalStyleMask)
     #expect(foreign.isOpaque)
     #expect(foreign.backgroundColor == .controlBackgroundColor)
+    #expect(foreign.hidesOnDeactivate)
 
     foreign.identifier = EasyTierWindowRole.main.identifier
     #expect(EasyTierWindowConfigurator.configureIfOwned(foreign, effectiveGlass: true))
     #expect(foreign.styleMask.contains(.fullSizeContentView))
     #expect(!foreign.isOpaque)
     #expect(foreign.backgroundColor == .clear)
+    #expect(!foreign.hidesOnDeactivate)
 }

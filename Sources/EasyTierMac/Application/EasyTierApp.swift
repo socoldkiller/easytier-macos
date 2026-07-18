@@ -48,6 +48,14 @@ struct EasyTierApp: App {
                 )
                 .frame(minWidth: 900, idealWidth: 1100, minHeight: 620, idealHeight: 720)
                 .task {
+                    appDelegate.installApplicationActivityHandlers(
+                        didBecomeActive: store.handleApplicationDidBecomeActive,
+                        didResignActive: store.handleApplicationDidResignActive,
+                        didHide: store.handleApplicationDidHide
+                    )
+                    if NSApplication.shared.isActive {
+                        store.handleApplicationDidBecomeActive()
+                    }
                     appDelegate.installQuitPreparation {
                         await appContext.prepareForAppQuit()
                     }

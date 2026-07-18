@@ -19,6 +19,11 @@ import Testing
     #expect(keychain.copyQueries.count == 1)
     #expect(keychain.deleteQueries.count == 1)
     #expect(keychain.updateQueries[0][kSecUseDataProtectionKeychain as String] as? Bool == true)
+    #expect(keychain.updateAttributes[0][kSecAttrAccessControl as String] == nil)
+    let updateContext = try #require(
+        keychain.updateQueries[0][kSecUseAuthenticationContext as String] as? LAContext
+    )
+    #expect(updateContext.touchIDAuthenticationAllowableReuseDuration == 0)
     #expect(keychain.copyQueries[0][kSecUseDataProtectionKeychain as String] as? Bool == true)
     #expect(keychain.deleteQueries[0][kSecUseDataProtectionKeychain as String] as? Bool == false)
     #expect(keychain.allQueries.allSatisfy {
@@ -45,6 +50,7 @@ import Testing
 
     #expect(keychain.addQueries.count == 1)
     #expect(keychain.addQueries[0][kSecAttrAccessControl as String] != nil)
+    #expect(keychain.updateAttributes[0][kSecAttrAccessControl as String] == nil)
     #expect(keychain.addQueries[0][kSecUseDataProtectionKeychain as String] as? Bool == true)
     #expect(keychain.deleteQueries.isEmpty)
 }
@@ -61,6 +67,10 @@ import Testing
 
     #expect(keychain.updateQueries.count == 2)
     #expect(keychain.addQueries.count == 1)
+    #expect(keychain.addQueries[0][kSecAttrAccessControl as String] != nil)
+    #expect(keychain.updateAttributes.allSatisfy {
+        $0[kSecAttrAccessControl as String] == nil
+    })
     #expect(keychain.updateQueries.allSatisfy {
         $0[kSecUseDataProtectionKeychain as String] as? Bool == true
     })
@@ -333,6 +343,59 @@ import Testing
     #expect(NetworkSecretStoreError.authentication(LAError.Code.userCancel.rawValue).isUserCancellation)
     #expect(!NetworkSecretStoreError.keychain(errSecAuthFailed).isUserCancellation)
     #expect(!NetworkSecretStoreError.invalidData.isUserCancellation)
+}
+
+@MainActor
+@Test func authenticationActivityObserverBalancesSuccessfulContextLifecycle() async throws {
+    let keychain = RecordingNetworkSecretKeychainClient()
+    keychain.copyResults = [(errSecSuccess, Data("secret".utf8) as CFData)]
+    let observer = RecordingNetworkSecretAuthenticationActivityObserver()
+    let store = SystemNetworkSecretStore(
+        keychain: keychain,
+        authenticationActivityObserver: observer
+    )
+    let config = NetworkConfig(instance_id: "activity-success-id", network_name: "office")
+
+    _ = try await store.secret(for: config, purpose: .reveal)
+
+    #expect(observer.beginIDs.count == 1)
+    #expect(observer.endIDs == observer.beginIDs)
+}
+
+@MainActor
+@Test func authenticationActivityObserverBalancesFailedContextLifecycle() async {
+    let keychain = RecordingNetworkSecretKeychainClient()
+    keychain.copyResults = [(errSecAuthFailed, nil)]
+    let observer = RecordingNetworkSecretAuthenticationActivityObserver()
+    let store = SystemNetworkSecretStore(
+        keychain: keychain,
+        authenticationActivityObserver: observer
+    )
+    let config = NetworkConfig(instance_id: "activity-failure-id", network_name: "office")
+
+    do {
+        _ = try await store.secret(for: config, purpose: .reveal)
+        Issue.record("expected the keychain read to fail")
+    } catch {
+        // The activity end event must still balance the failed authentication context.
+    }
+
+    #expect(observer.beginIDs.count == 1)
+    #expect(observer.endIDs == observer.beginIDs)
+}
+
+@MainActor
+private final class RecordingNetworkSecretAuthenticationActivityObserver: NetworkSecretAuthenticationActivityObserver {
+    private(set) var beginIDs: [UUID] = []
+    private(set) var endIDs: [UUID] = []
+
+    func networkSecretAuthenticationDidBegin(id: UUID) {
+        beginIDs.append(id)
+    }
+
+    func networkSecretAuthenticationDidEnd(id: UUID) {
+        endIDs.append(id)
+    }
 }
 
 private final class RecordingNetworkSecretAuthenticator: NetworkSecretAuthenticating, @unchecked Sendable {

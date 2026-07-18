@@ -1,4 +1,3 @@
-import EasyTierRuntime
 import EasyTierShared
 import Foundation
 
@@ -10,6 +9,9 @@ extension AppContext {
             privilegedClient: privilegedClient,
             inProcessClient: StaticEasyTierFFIClient(),
             helperRegistration: helperRegistration,
+            networkSecretStore: SystemNetworkSecretStore(
+                authenticationActivityObserver: authenticationPresentation
+            ),
             peerSubscriptionDataLoader: URLSessionPeerSubscriptionDataLoader(
                 session: URLSession(configuration: .default)
             )
@@ -37,10 +39,9 @@ extension AppContext {
     static func preview() -> AppContext {
         let suiteName = "com.kkrainbow.easytier.preview.\(UUID().uuidString)"
         let userDefaults = UserDefaults(suiteName: suiteName) ?? UserDefaults()
-        let client = StaticEasyTierFFIClient()
+        let client = PreviewEasyTierCoreClient()
         let store = EasyTierAppStore(
-            privilegedClient: client,
-            inProcessClient: client,
+            runtimeClient: client,
             helperRegistration: nil,
             storage: .isolatedForTesting(),
             peerSubscriptionDataLoader: URLSessionPeerSubscriptionDataLoader(

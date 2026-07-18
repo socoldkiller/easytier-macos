@@ -84,7 +84,9 @@ struct TOMLSheet: View {
         .presentedSurfaceMotion()
         .hideScrollViewScrollers()
         .onChange(of: scenePhase) { _, phase in
-            guard mode == .export, phase != .active else { return }
+            guard mode == .export,
+                  SensitivePresentationLifecyclePolicy.shouldClearMaterial(for: phase)
+            else { return }
             exportRefreshTask?.cancel()
             exportRefreshTask = nil
             text = ""

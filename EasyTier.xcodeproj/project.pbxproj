@@ -24,7 +24,6 @@
 
 /* Begin PBXBuildFile section */
 		E70000000000000000000001 /* EasyTierShared in Frameworks */ = {isa = PBXBuildFile; productRef = E70000000000000000000082 /* EasyTierShared */; };
-		E70000000000000000000002 /* EasyTierRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = E70000000000000000000083 /* EasyTierRuntime */; };
 		E70000000000000000000003 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = E70000000000000000000084 /* Sparkle */; };
 		E70000000000000000000004 /* EasyTierShared in Frameworks */ = {isa = PBXBuildFile; productRef = E70000000000000000000085 /* EasyTierShared */; };
 		E70000000000000000000005 /* EasyTierRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = E70000000000000000000086 /* EasyTierRuntime */; };
@@ -41,13 +40,6 @@
 			proxyType = 1;
 			remoteGlobalIDString = E70000000000000000000041;
 			remoteInfo = EasyTierPrivilegedHelper;
-		};
-		E70000000000000000000053 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = E70000000000000000000060 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = E70000000000000000000042;
-			remoteInfo = BuildEasyTierFFI;
 		};
 		E70000000000000000000055 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -130,7 +122,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				E70000000000000000000001 /* EasyTierShared in Frameworks */,
-				E70000000000000000000002 /* EasyTierRuntime in Frameworks */,
 				E70000000000000000000003 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -209,7 +200,6 @@
 			);
 			dependencies = (
 				E70000000000000000000050 /* PBXTargetDependency */,
-				E70000000000000000000052 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				E70000000000000000000024 /* Sources/EasyTierMac */,
@@ -217,7 +207,6 @@
 			name = EasyTierMac;
 			packageProductDependencies = (
 				E70000000000000000000082 /* EasyTierShared */,
-				E70000000000000000000083 /* EasyTierRuntime */,
 				E70000000000000000000084 /* Sparkle */,
 			);
 			productName = EasyTier;
@@ -373,11 +362,6 @@
 			isa = PBXTargetDependency;
 			target = E70000000000000000000041 /* EasyTierPrivilegedHelper */;
 			targetProxy = E70000000000000000000051 /* PBXContainerItemProxy */;
-		};
-		E70000000000000000000052 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = E70000000000000000000042 /* BuildEasyTierFFI */;
-			targetProxy = E70000000000000000000053 /* PBXContainerItemProxy */;
 		};
 		E70000000000000000000054 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -579,11 +563,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = E70000000000000000000080 /* XCLocalSwiftPackageReference "." */;
 			productName = EasyTierShared;
-		};
-		E70000000000000000000083 /* EasyTierRuntime */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = E70000000000000000000080 /* XCLocalSwiftPackageReference "." */;
-			productName = EasyTierRuntime;
 		};
 		E70000000000000000000084 /* Sparkle */ = {
 			isa = XCSwiftPackageProductDependency;

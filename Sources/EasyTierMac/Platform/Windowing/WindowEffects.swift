@@ -363,6 +363,7 @@ enum EasyTierWindowConfigurator {
     @MainActor
     private static func configure(_ window: NSWindow, effectiveGlass: Bool) {
         let frame = window.frame
+        window.hidesOnDeactivate = false
         if !window.styleMask.contains(.fullSizeContentView) {
             window.styleMask.insert(.fullSizeContentView)
         }
