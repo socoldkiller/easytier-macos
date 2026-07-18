@@ -9,7 +9,7 @@ struct MainWindowView: View {
     @Environment(AppContext.self) private var appContext
     @State private var tomlPresentation: TOMLPresentation?
     @State private var draftConfig = NetworkConfig()
-    @State private var draftNetworkSecret: String?
+    @State private var draftNetworkSecret: NetworkSecretInput?
     @State private var draftConfigID: String?
     @State private var draftIsDirty = false
     @State private var configApplyCoordinator = ConfigApplyCoordinator()
@@ -66,7 +66,6 @@ struct MainWindowView: View {
         .task {
             selectedTabLocal = store.selectedTab
             selectedConfigIDLocal = store.selectedConfigID
-            store.handleApplicationDidBecomeActive()
         }
         .onChange(of: store.selectedTab) { _, newTab in
             selectedTabLocal = newTab
@@ -80,7 +79,10 @@ struct MainWindowView: View {
             }
         }
         .onChange(of: store.networkSecretSessionRevision) { _, _ in
-            draftNetworkSecret = nil
+            draftNetworkSecret = draftNetworkSecret?.clearingSavedMaterial
+            if tomlPresentation?.mode == .export {
+                tomlPresentation = nil
+            }
         }
         .onChange(of: selectedConfigIDLocal) { _, newID in
             selectConfig(id: newID)
@@ -93,7 +95,6 @@ struct MainWindowView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
-                store.handleApplicationDidBecomeActive()
                 Task {
                     if let registration = store.helperRegistration {
                         await registration.refresh()
@@ -102,8 +103,9 @@ struct MainWindowView: View {
                         }
                     }
                 }
-            } else {
-                store.handleApplicationDidResignActive()
+            }
+            if SensitivePresentationLifecyclePolicy.shouldClearMaterial(for: phase) {
+                draftNetworkSecret = draftNetworkSecret?.clearingSavedMaterial
                 if tomlPresentation?.mode == .export {
                     tomlPresentation = nil
                 }
@@ -135,7 +137,7 @@ struct MainWindowView: View {
                         options: TOMLExportOptions(
                             includeNetworkSecret: includeNetworkSecret
                         ),
-                        networkSecretOverride: draftNetworkSecret?.nilIfEmpty
+                        networkSecretInput: draftNetworkSecret
                     )
                 }
             )
@@ -195,7 +197,7 @@ struct MainWindowView: View {
         }
         .onDisappear {
             flushPendingLocalDraft()
-            draftNetworkSecret = nil
+            draftNetworkSecret = draftNetworkSecret?.clearingSavedMaterial
             store.lockNetworkSecretSession()
         }
     }
@@ -976,7 +978,7 @@ struct MainWindowView: View {
     private func performSelectedConnectionAction() {
         let shouldStop = selectedConfigCanStop
         let pendingDraft: LocalConfigApplyRequest?
-        if (draftIsDirty || draftNetworkSecret?.nilIfEmpty != nil), let draftConfigID {
+        if draftIsDirty, let draftConfigID {
             pendingDraft = LocalConfigApplyRequest(
                 configID: draftConfigID,
                 config: currentLocalDraft(),
@@ -985,6 +987,8 @@ struct MainWindowView: View {
         } else {
             pendingDraft = nil
         }
+        let networkSecretInput = draftNetworkSecret
+        let networkSecretSessionRevision = store.networkSecretSessionRevision
         configApplyCoordinator.cancelPending()
         if pendingDraft != nil {
             draftIsDirty = false
@@ -1008,28 +1012,69 @@ struct MainWindowView: View {
                         replacing: nil
                     )
                     guard result.succeeded else {
+                        if draftConfigID == pendingDraft.configID,
+                           currentLocalDraft() == pendingDraft.config
+                        {
+                            draftIsDirty = true
+                        }
                         if case let .failed(message) = result { store.lastError = message }
                         return
                     }
                 }
-                await store.runSelectedConfig(
-                    networkSecretOverride: pendingDraft?.config.network_secret?.nilIfEmpty
-                        ?? draftNetworkSecret?.nilIfEmpty
+                let outcome = await store.runSelectedConfig(
+                    networkSecretInput: networkSecretInput
+                )
+                markNetworkSecretPersisted(
+                    networkSecretInput,
+                    outcome: outcome,
+                    sessionRevision: networkSecretSessionRevision
                 )
             }
         }
     }
 
     private func restartSelectedNetworkManually() {
-        if draftIsDirty {
-            flushPendingLocalDraft()
-            return
-        }
         guard let config = store.selectedConfig,
               let instance = store.runningInstance(matching: config)
         else { return }
+        let pendingDraft = draftIsDirty ? LocalConfigApplyRequest(
+            configID: config.id,
+            config: currentLocalDraft(),
+            replacing: nil
+        ) : nil
+        let networkSecretInput = draftNetworkSecret
+        let networkSecretSessionRevision = store.networkSecretSessionRevision
+        configApplyCoordinator.cancelPending()
+        if pendingDraft != nil {
+            draftIsDirty = false
+        }
         Task {
-            await store.restartSelectedConfig(replacing: instance, configID: config.id)
+            if let pendingDraft {
+                let result = await store.applyConfigDraft(
+                    configID: pendingDraft.configID,
+                    draft: pendingDraft.config,
+                    replacing: nil
+                )
+                guard result.succeeded else {
+                    if draftConfigID == pendingDraft.configID,
+                       currentLocalDraft() == pendingDraft.config
+                    {
+                        draftIsDirty = true
+                    }
+                    if case let .failed(message) = result { store.lastError = message }
+                    return
+                }
+            }
+            let outcome = await store.restartSelectedConfig(
+                replacing: instance,
+                configID: config.id,
+                networkSecretInput: networkSecretInput
+            )
+            markNetworkSecretPersisted(
+                networkSecretInput,
+                outcome: outcome,
+                sessionRevision: networkSecretSessionRevision
+            )
         }
     }
 
@@ -1052,8 +1097,22 @@ struct MainWindowView: View {
 
     private func currentLocalDraft() -> NetworkConfig {
         var config = draftConfig
-        config.network_secret = draftNetworkSecret?.nilIfEmpty
+        config.network_secret = nil
         return config
+    }
+
+    private func markNetworkSecretPersisted(
+        _ input: NetworkSecretInput?,
+        outcome: NetworkSecretOperationOutcome,
+        sessionRevision: UInt64
+    ) {
+        guard outcome.didPersistEditedSecret,
+              store.networkSecretSessionRevision == sessionRevision,
+              !SensitivePresentationLifecyclePolicy.shouldClearMaterial(for: scenePhase),
+              draftNetworkSecret == input,
+              let input
+        else { return }
+        draftNetworkSecret = input.applying(outcome)
     }
 
     private func openImportTOML() {
@@ -1065,7 +1124,7 @@ struct MainWindowView: View {
             tomlPresentation = TOMLPresentation(
                 mode: .export,
                 text: try await store.exportSelectedTOML(
-                    networkSecretOverride: draftNetworkSecret?.nilIfEmpty
+                    networkSecretInput: draftNetworkSecret
                 )
             )
         } catch {

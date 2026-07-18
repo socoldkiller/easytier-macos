@@ -5,9 +5,13 @@ import Foundation
 extension AppContext {
     static func live(userDefaults: UserDefaults = .standard) -> AppContext {
         let helperRegistration = HelperRegistrationService()
+        let authenticationPresentation = NetworkSecretAuthenticationPresentationCoordinator()
         let store = EasyTierAppStore(
             inProcessClient: StaticEasyTierFFIClient(),
             helperRegistration: helperRegistration,
+            networkSecretStore: SystemNetworkSecretStore(
+                authenticationActivityObserver: authenticationPresentation
+            ),
             peerSubscriptionDataLoader: URLSessionPeerSubscriptionDataLoader(
                 session: URLSession(configuration: .default)
             )

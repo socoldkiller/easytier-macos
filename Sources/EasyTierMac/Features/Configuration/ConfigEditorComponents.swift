@@ -274,6 +274,21 @@ struct NetworkSecretFieldState: Equatable {
         errorMessage = nil
     }
 
+    mutating func synchronizeMaterial(with input: NetworkSecretInput?) {
+        let updatedMaterial: Material = switch input {
+        case .saved?:
+            .loaded
+        case .edited?:
+            .draft
+        case nil:
+            .none
+        }
+        guard material != updatedMaterial else { return }
+        material = updatedMaterial
+        isRevealed = false
+        errorMessage = nil
+    }
+
     mutating func cancelOperation() {
         operation = nil
         errorMessage = nil
@@ -296,7 +311,7 @@ struct NetworkSecretField: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityShowButtonShapes) private var showButtonShapes
     var config: NetworkConfig
-    @Binding var secret: String?
+    @Binding var secret: NetworkSecretInput?
     var keychainEnabled = true
     @State private var state = NetworkSecretFieldState()
     @FocusState private var focusedControl: FocusTarget?
@@ -324,13 +339,19 @@ struct NetworkSecretField: View {
         .onChange(of: focusedControl) { _, focused in
             if focused == nil { state.hideSecret() }
         }
+        .onChange(of: secret) { _, input in
+            state.synchronizeMaterial(with: input)
+        }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active {
+            if SensitivePresentationLifecyclePolicy.shouldConcealMaterial(for: phase) {
                 state.hideSecret()
-                if keychainEnabled, state.material == .loaded {
-                    secret = nil
-                    state.clearLoadedMaterial()
-                }
+            }
+            if SensitivePresentationLifecyclePolicy.shouldClearMaterial(for: phase),
+               keychainEnabled,
+               secret?.isSaved == true
+            {
+                secret = nil
+                state.clearLoadedMaterial()
             }
         }
         .onDisappear { state.hideSecret() }
@@ -444,16 +465,16 @@ struct NetworkSecretField: View {
 
     private var editableSecret: Binding<String> {
         Binding(
-            get: { secret ?? "" },
+            get: { secret?.value ?? "" },
             set: { newValue in
-                secret = newValue.nilIfEmpty
+                secret = newValue.nilIfEmpty.map(NetworkSecretInput.edited)
                 state.userEdited(hasValue: newValue.nilIfEmpty != nil)
             }
         )
     }
 
     private var hasTransientSecret: Bool {
-        secret?.nilIfEmpty != nil
+        secret?.value.nilIfEmpty != nil
     }
 
     private var secretPlaceholder: String {
@@ -520,7 +541,10 @@ struct NetworkSecretField: View {
             return
         }
 
-        state.resetForLookup(hasValue: hasTransientSecret)
+        state.resetForLookup(
+            hasValue: hasTransientSecret,
+            treatsValueAsLoaded: secret?.isSaved == true
+        )
         state.authenticationGuidance = store.networkSecretAuthenticationCapability().guidance
         do {
             let exists = try await store.hasSavedNetworkSecret(for: config)
@@ -533,7 +557,7 @@ struct NetworkSecretField: View {
     }
 
     private func saveToKeychain() {
-        guard let value = secret?.nilIfEmpty else { return }
+        guard let value = secret?.value.nilIfEmpty else { return }
         let operationID = keychainLookupID
         let operationConfig = config
         state.beginSave()
@@ -542,12 +566,7 @@ struct NetworkSecretField: View {
                 try await store.saveNetworkSecretToKeychain(value, for: operationConfig)
                 guard operationID == keychainLookupID else { return }
                 state.completeSave()
-                guard scenePhase == .active else {
-                    secret = nil
-                    state.clearLoadedMaterial()
-                    return
-                }
-                secret = value
+                secret = .saved(value)
                 store.recordNotice("Saved the network secret for \(operationConfig.network_name) in Keychain.")
             } catch {
                 guard operationID == keychainLookupID else { return }
@@ -564,7 +583,7 @@ struct NetworkSecretField: View {
             do {
                 let value = try await store.revealNetworkSecret(for: operationConfig)
                 guard operationID == keychainLookupID else { return }
-                secret = value
+                secret = value?.nilIfEmpty.map(NetworkSecretInput.saved)
                 state.completeUnlock(foundSecret: value?.nilIfEmpty != nil)
             } catch {
                 guard operationID == keychainLookupID else { return }

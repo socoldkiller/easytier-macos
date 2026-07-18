@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import LocalAuthentication
 import Security
 import ServiceManagement
 import Testing
@@ -675,6 +676,8 @@ import Testing
     await store.runSelectedConfig()
 
     #expect(client.runConfigs.first?.network_secret == "run-secret")
+    #expect(secrets.readPurposes == [.run])
+    #expect(secrets.savePurposes.isEmpty)
 }
 
 @MainActor
@@ -688,10 +691,15 @@ import Testing
     firstStore.configs = [config]
     firstStore.selectedConfigID = config.instance_id
 
-    await firstStore.runSelectedConfig(networkSecretOverride: "typed-secret")
+    let outcome = await firstStore.runSelectedConfig(
+        networkSecretInput: .edited("typed-secret")
+    )
 
     #expect(firstClient.runConfigs.first?.network_secret == "typed-secret")
     #expect(secrets.secrets["office"] == "typed-secret")
+    #expect(outcome.didPersistEditedSecret)
+    #expect(secrets.savePurposes == [.update])
+    #expect(secrets.readPurposes.isEmpty)
 
     let relaunchedStore = EasyTierAppStore(client: secondClient, networkSecretStore: secrets)
     relaunchedStore.configs = [config]
@@ -721,6 +729,218 @@ import Testing
 }
 
 @MainActor
+@Test func runSelectedConfigUsesAnAlreadyLoadedSecretWithoutKeychainAccess() async {
+    let client = RecordingToggleClient()
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "keychain-secret"])
+    let config = NetworkConfig(instance_id: "loaded-secret-run-id", network_name: "office")
+    let store = EasyTierAppStore(client: client, networkSecretStore: secrets)
+    store.configs = [config]
+    store.selectedConfigID = config.id
+
+    let outcome = await store.runSelectedConfig(
+        networkSecretInput: .saved("loaded-secret")
+    )
+
+    #expect(client.runConfigs.first?.network_secret == "loaded-secret")
+    #expect(!outcome.didPersistEditedSecret)
+    #expect(secrets.savePurposes.isEmpty)
+    #expect(secrets.readPurposes.isEmpty)
+}
+
+@MainActor
+@Test func foregroundRestartReusesTheRuntimeSecretSessionCache() async {
+    let client = RecordingToggleClient()
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "saved-secret"])
+    let config = NetworkConfig(instance_id: "cached-restart-id", network_name: "office")
+    let running = NetworkInstance(
+        instance_id: config.id,
+        name: config.network_name,
+        running: true
+    )
+    let store = EasyTierAppStore(client: client, networkSecretStore: secrets)
+    store.configs = [config]
+    store.selectedConfigID = config.id
+
+    await store.runSelectedConfig()
+    store.instances = [running]
+    await store.stopSelectedConfig()
+    store.instances = []
+    await store.runSelectedConfig()
+    store.instances = [running]
+    await store.restartSelectedConfig(replacing: running, configID: config.id)
+
+    #expect(secrets.readPurposes == [.run])
+    #expect(secrets.savePurposes.isEmpty)
+    #expect(client.runConfigs.map(\.network_secret) == [
+        "saved-secret",
+        "saved-secret",
+        "saved-secret",
+    ])
+}
+
+@MainActor
+@Test func applicationFocusLossKeepsTheRuntimeSecretSessionCache() async {
+    let client = RecordingToggleClient()
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "saved-secret"])
+    let config = NetworkConfig(instance_id: "inactive-cache-id", network_name: "office")
+    let running = NetworkInstance(
+        instance_id: config.id,
+        name: config.network_name,
+        running: true
+    )
+    let store = EasyTierAppStore(client: client, networkSecretStore: secrets)
+    store.configs = [config]
+    store.selectedConfigID = config.id
+
+    await store.runSelectedConfig()
+    store.instances = [running]
+    await store.stopSelectedConfig()
+    store.instances = []
+    store.handleApplicationDidResignActive()
+    await store.runSelectedConfig()
+
+    #expect(secrets.readPurposes == [.run])
+    #expect(secrets.savePurposes.isEmpty)
+    #expect(secrets.authenticationInvalidationCount == 0)
+}
+
+@MainActor
+@Test func applicationHideClearsTheRuntimeSecretSessionCache() async {
+    let client = RecordingToggleClient()
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "saved-secret"])
+    let config = NetworkConfig(instance_id: "hidden-cache-id", network_name: "office")
+    let running = NetworkInstance(
+        instance_id: config.id,
+        name: config.network_name,
+        running: true
+    )
+    let store = EasyTierAppStore(client: client, networkSecretStore: secrets)
+    store.configs = [config]
+    store.selectedConfigID = config.id
+
+    await store.runSelectedConfig()
+    store.instances = [running]
+    await store.stopSelectedConfig()
+    store.instances = []
+    store.handleApplicationDidHide()
+    await store.runSelectedConfig()
+
+    #expect(secrets.readPurposes == [.run, .run])
+    #expect(secrets.authenticationInvalidationCount == 1)
+}
+
+@MainActor
+@Test func applicationFocusLossDoesNotCancelAnInFlightNetworkStartSecretRead() async {
+    let client = RecordingToggleClient()
+    let secrets = BlockingNetworkSecretStore(secret: "saved-secret")
+    let config = NetworkConfig(instance_id: "focus-loss-start-id", network_name: "office")
+    let store = EasyTierAppStore(client: client, networkSecretStore: secrets)
+    store.configs = [config]
+    store.selectedConfigID = config.id
+
+    let runTask = Task { await store.runSelectedConfig() }
+    defer { secrets.releaseReads() }
+
+    let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+    while secrets.readCount == 0, ContinuousClock.now < deadline {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(secrets.readCount == 1)
+
+    store.handleApplicationDidResignActive()
+    #expect(secrets.authenticationInvalidationCount == 0)
+    secrets.releaseReads()
+    _ = await runTask.value
+
+    #expect(client.runConfigs.first?.network_secret == "saved-secret")
+}
+
+@MainActor
+@Test func manualRestartPersistsAnEditedSecretExactlyOnce() async {
+    let client = RecordingToggleClient()
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "old-secret"])
+    let config = NetworkConfig(instance_id: "edited-restart-id", network_name: "office")
+    let running = NetworkInstance(
+        instance_id: config.id,
+        name: config.network_name,
+        running: true
+    )
+    let store = EasyTierAppStore(client: client, networkSecretStore: secrets)
+    store.configs = [config]
+    store.selectedConfigID = config.id
+    store.instances = [running]
+
+    let outcome = await store.restartSelectedConfig(
+        replacing: running,
+        configID: config.id,
+        networkSecretInput: .edited("new-secret")
+    )
+
+    #expect(outcome.didPersistEditedSecret)
+    #expect(secrets.savePurposes == [.update])
+    #expect(secrets.readPurposes.isEmpty)
+    #expect(secrets.secrets["office"] == "new-secret")
+    #expect(client.runConfigs.first?.network_secret == "new-secret")
+}
+
+@MainActor
+@Test func deletingASecretClearsTheRuntimeSecretSessionCache() async throws {
+    let client = RecordingToggleClient()
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "first-secret"])
+    let config = NetworkConfig(instance_id: "delete-cache-id", network_name: "office")
+    let running = NetworkInstance(
+        instance_id: config.id,
+        name: config.network_name,
+        running: true
+    )
+    let store = EasyTierAppStore(client: client, networkSecretStore: secrets)
+    store.configs = [config]
+    store.selectedConfigID = config.id
+
+    await store.runSelectedConfig()
+    store.instances = [running]
+    await store.stopSelectedConfig()
+    store.instances = []
+    try await store.removeNetworkSecretFromKeychain(for: config)
+    secrets.secrets["office"] = "replacement-secret"
+    await store.runSelectedConfig()
+
+    #expect(secrets.readPurposes == [.run, .run])
+    #expect(secrets.deletePurposes == [.delete])
+    #expect(client.runConfigs.last?.network_secret == "replacement-secret")
+}
+
+@MainActor
+@Test func applicationFocusLossDoesNotCancelAnInFlightNetworkDeletion() async {
+    let secrets = BlockingNetworkSecretStore(secret: "saved-secret")
+    let config = NetworkConfig(instance_id: "focus-loss-delete-id", network_name: "office")
+    let store = EasyTierAppStore(
+        client: RecordingToggleClient(),
+        networkSecretStore: secrets
+    )
+    store.configs = [config]
+    store.selectedConfigID = config.id
+
+    let deleteTask = Task { await store.deleteSelectedConfig() }
+    defer { secrets.releaseDeletes() }
+
+    let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+    while secrets.deleteCount == 0, ContinuousClock.now < deadline {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(secrets.deleteCount == 1)
+
+    store.handleApplicationDidResignActive()
+    #expect(secrets.authenticationInvalidationCount == 0)
+    secrets.releaseDeletes()
+    await deleteTask.value
+
+    #expect(store.configs.isEmpty)
+    #expect(store.lastError == nil)
+    #expect(secrets.authenticationInvalidationCount == 1)
+}
+
+@MainActor
 @Test func runSelectedConfigDoesNotStartWhenEnteredSecretCannotBeSaved() async {
     let client = RecordingToggleClient()
     let secrets = MemoryNetworkSecretStore()
@@ -731,10 +951,42 @@ import Testing
     store.configs = [config]
     store.selectedConfigID = config.instance_id
 
-    await store.runSelectedConfig(networkSecretOverride: "typed-secret")
+    let outcome = await store.runSelectedConfig(
+        networkSecretInput: .edited("typed-secret")
+    )
 
     #expect(client.runConfigs.isEmpty)
     #expect(store.lastError?.contains("keychain write failed") == true)
+    #expect(!outcome.didPersistEditedSecret)
+    #expect(secrets.savePurposes == [.update])
+    #expect(secrets.readPurposes.isEmpty)
+
+    secrets.saveError = nil
+    secrets.secrets["office"] = "saved-secret"
+    await store.runSelectedConfig()
+
+    #expect(secrets.readPurposes == [.run])
+    #expect(client.runConfigs.first?.network_secret == "saved-secret")
+}
+
+@MainActor
+@Test func canceledEditedSecretSavePreservesTheDraftAndDoesNotSurfaceAGlobalError() async {
+    let client = RecordingToggleClient()
+    let secrets = MemoryNetworkSecretStore()
+    secrets.saveError = NetworkSecretStoreError.keychain(errSecUserCanceled)
+    let config = NetworkConfig(instance_id: "canceled-edited-secret-id", network_name: "office")
+    let input = NetworkSecretInput.edited("typed-secret")
+    let store = EasyTierAppStore(client: client, networkSecretStore: secrets)
+    store.configs = [config]
+    store.selectedConfigID = config.id
+
+    let outcome = await store.runSelectedConfig(networkSecretInput: input)
+
+    #expect(!outcome.didPersistEditedSecret)
+    #expect(input.applying(outcome) == input)
+    #expect(store.lastError == nil)
+    #expect(client.runConfigs.isEmpty)
+    #expect(secrets.savePurposes == [.update])
 }
 
 @MainActor
@@ -778,10 +1030,11 @@ import Testing
 @MainActor
 @Test func applyConfigDraftSavesStoppedNetworkWithoutStartingIt() async {
     let client = RecordingToggleClient()
+    let secrets = MemoryNetworkSecretStore(secrets: ["before": "saved-secret"])
     let original = NetworkConfig(instance_id: "auto-save-id", network_name: "before")
     var updated = original
     updated.network_name = "after"
-    let store = EasyTierAppStore(client: client)
+    let store = EasyTierAppStore(client: client, networkSecretStore: secrets)
     store.configs = [original]
 
     let result = await store.applyConfigDraft(
@@ -794,10 +1047,11 @@ import Testing
     #expect(store.configs.first?.network_name == "after")
     #expect(client.stoppedInstanceNames.isEmpty)
     #expect(client.runConfigs.isEmpty)
+    #expect(secrets.savePurposes.isEmpty)
 }
 
 @MainActor
-@Test func applyConfigDraftPersistsEnteredSecretBeforeSavingAStoppedNetwork() async {
+@Test func applyConfigDraftNeverPersistsASecretEmbeddedInTheConfiguration() async {
     let secrets = MemoryNetworkSecretStore()
     let original = NetworkConfig(instance_id: "transient-save-id", network_name: "office")
     var updated = original
@@ -816,11 +1070,36 @@ import Testing
 
     #expect(result == .saved)
     #expect(store.configs.first?.network_secret?.nilIfEmpty == nil)
-    #expect(secrets.secrets["office"] == "typed-secret")
+    #expect(secrets.savePurposes.isEmpty)
+    #expect(secrets.secrets.isEmpty)
 }
 
 @MainActor
-@Test func applyConfigDraftRestartPersistsEnteredSecret() async {
+@Test func unrelatedConfigurationEditDoesNotWriteTheNetworkSecret() async {
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "saved-secret"])
+    let original = NetworkConfig(instance_id: "unrelated-edit-id", network_name: "office")
+    var updated = original
+    updated.hostname = "updated-host"
+    let store = EasyTierAppStore(
+        client: RecordingToggleClient(),
+        networkSecretStore: secrets
+    )
+    store.configs = [original]
+
+    let result = await store.applyConfigDraft(
+        configID: original.id,
+        draft: updated,
+        replacing: nil
+    )
+
+    #expect(result == .saved)
+    #expect(store.configs.first?.hostname == "updated-host")
+    #expect(secrets.savePurposes.isEmpty)
+    #expect(secrets.readPurposes.isEmpty)
+}
+
+@MainActor
+@Test func applyConfigDraftRestartUsesTheSavedSecretWithoutPersistingAnEmbeddedDraft() async {
     let client = RecordingToggleClient()
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "saved-secret"])
     let original = NetworkConfig(instance_id: "transient-restart-id", network_name: "office")
@@ -843,9 +1122,46 @@ import Testing
     )
 
     #expect(result == .restarted)
-    #expect(client.runConfigs.first?.network_secret == "typed-secret")
-    #expect(secrets.readReasons.isEmpty)
-    #expect(secrets.secrets["office"] == "typed-secret")
+    #expect(client.runConfigs.first?.network_secret == "saved-secret")
+    #expect(secrets.savePurposes.isEmpty)
+    #expect(secrets.readPurposes == [.restart])
+    #expect(secrets.secrets["office"] == "saved-secret")
+}
+
+@MainActor
+@Test func stopWithAnEditedSecretDraftDoesNotAccessKeychain() async {
+    let client = RecordingToggleClient()
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "saved-secret"])
+    let original = NetworkConfig(instance_id: "stop-secret-draft-id", network_name: "office")
+    var updated = original
+    updated.hostname = "updated-host"
+    updated.network_secret = "typed-secret"
+    let running = NetworkInstance(
+        instance_id: original.instance_id,
+        name: original.network_name,
+        running: true
+    )
+    let store = EasyTierAppStore(client: client, networkSecretStore: secrets)
+    store.configs = [original]
+    store.selectedConfigID = original.id
+    store.instances = [running]
+
+    await store.stopSelectedConfig()
+    let result = await store.applyConfigDraft(
+        configID: original.id,
+        draft: updated,
+        replacing: nil
+    )
+
+    #expect(result == .saved)
+    #expect(client.stoppedInstanceNames == [[original.network_name]])
+    #expect(store.configs.first?.hostname == "updated-host")
+    #expect(secrets.savePurposes.isEmpty)
+    #expect(secrets.readPurposes.isEmpty)
+    #expect(secrets.deletedIDs.isEmpty)
+    #expect(secrets.deletePurposes.isEmpty)
+    #expect(secrets.authenticationPurposes.isEmpty)
+    #expect(secrets.presenceCallCount == 0)
 }
 
 @MainActor
@@ -1103,6 +1419,58 @@ import Testing
 }
 
 @MainActor
+@Test func applicationFocusLossDoesNotStripAnInFlightPlaintextExport() async throws {
+    let secrets = BlockingNetworkSecretStore(secret: "export-secret")
+    let config = NetworkConfig(instance_id: "focus-loss-export-id", network_name: "office")
+    let store = EasyTierAppStore(
+        client: RecordingToggleClient(),
+        networkSecretStore: secrets
+    )
+    store.configs = [config]
+    store.selectedConfigID = config.id
+
+    let exportTask = Task {
+        try await store.exportSelectedTOML(
+            options: TOMLExportOptions(includeNetworkSecret: true)
+        )
+    }
+    defer { secrets.releaseReads() }
+
+    let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+    while secrets.readCount == 0, ContinuousClock.now < deadline {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(secrets.readCount == 1)
+
+    store.handleApplicationDidResignActive()
+    #expect(secrets.authenticationInvalidationCount == 0)
+    secrets.releaseReads()
+
+    let toml = try await exportTask.value
+    #expect(toml.contains("network_secret = \"export-secret\""))
+}
+
+@MainActor
+@Test func runtimeCacheNeverBypassesFreshRevealOrPlaintextExport() async throws {
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "saved-secret"])
+    let config = NetworkConfig(instance_id: "fresh-secret-action-id", network_name: "office")
+    let store = EasyTierAppStore(
+        client: RecordingToggleClient(),
+        networkSecretStore: secrets
+    )
+    store.configs = [config]
+    store.selectedConfigID = config.id
+
+    await store.runSelectedConfig()
+    _ = try await store.revealNetworkSecret(for: config)
+    _ = try await store.exportSelectedTOML(
+        options: TOMLExportOptions(includeNetworkSecret: true)
+    )
+
+    #expect(secrets.readPurposes == [.run, .reveal, .export])
+}
+
+@MainActor
 @Test func exportSelectedTOMLPrefersTransientSecretWithoutReadingKeychain() async throws {
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "saved-secret"])
     let config = NetworkConfig(instance_id: "transient-export-id", network_name: "office")
@@ -1116,7 +1484,7 @@ import Testing
 
     let toml = try await store.exportSelectedTOML(
         options: TOMLExportOptions(includeNetworkSecret: true),
-        networkSecretOverride: "typed-secret"
+        networkSecretInput: .edited("typed-secret")
     )
 
     #expect(toml.contains("network_secret = \"typed-secret\""))
@@ -1359,7 +1727,7 @@ import Testing
 }
 
 @MainActor
-@Test func applicationResignActiveInvalidatesAuthenticationWithoutClearingDraftRevision() {
+@Test func applicationFocusLossPreservesAuthenticationAndDraftRevision() {
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"])
     let store = EasyTierAppStore(
         client: RecordingToggleClient(),
@@ -1368,7 +1736,7 @@ import Testing
 
     store.handleApplicationDidResignActive()
 
-    #expect(secrets.authenticationInvalidationCount == 1)
+    #expect(secrets.authenticationInvalidationCount == 0)
     #expect(store.networkSecretSessionRevision == 0)
 }
 
@@ -1497,6 +1865,25 @@ import Testing
 
     #expect(secrets.secrets["office"] == "secret")
     #expect(store.configs.map(\.id) == [second.id])
+}
+
+@MainActor
+@Test func canceledKeychainAuthorizationLeavesTheNetworkWithoutShowingAnError() async {
+    let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"])
+    secrets.deleteError = NetworkSecretStoreError.authentication(LAError.Code.appCancel.rawValue)
+    let config = NetworkConfig(instance_id: "delete-app-cancel-id", network_name: "office")
+    let store = EasyTierAppStore(
+        client: RecordingToggleClient(),
+        networkSecretStore: secrets
+    )
+    store.configs = [config]
+    store.selectedConfigID = config.id
+
+    await store.deleteSelectedConfig()
+
+    #expect(store.configs == [config])
+    #expect(store.selectedConfigID == config.id)
+    #expect(store.lastError == nil)
 }
 
 @MainActor
@@ -2503,7 +2890,7 @@ import Testing
     #expect(countsBeforeRunCompletes.retains == 0)
 
     await client.resumeRun()
-    await runTask.value
+    _ = await runTask.value
     await quitTask.value
 
     let counts = await client.counts()
@@ -3325,12 +3712,14 @@ import Testing
     await store.retryStartAfterHelperApproval()
     #expect(client.runConfigs.isEmpty)
 
+    store.handleApplicationDidResignActive()
     backend.status = .enabled
     await store.retryStartAfterHelperApproval()
 
     #expect(client.runConfigs.map(\.instance_id) == [config.instance_id])
     #expect(client.runConfigs.first?.network_secret == "pending-secret")
-    #expect(secrets.readReasons.count == 2, "pending helper state must not retain the plaintext secret")
+    #expect(secrets.readPurposes == [.run])
+    #expect(secrets.savePurposes.isEmpty)
 }
 
 @MainActor
@@ -3352,17 +3741,23 @@ import Testing
     store.configs = [config]
     store.selectedConfigID = config.instance_id
 
-    await store.runSelectedConfig(networkSecretOverride: "typed-secret")
+    let outcome = await store.runSelectedConfig(
+        networkSecretInput: .edited("typed-secret")
+    )
 
     #expect(client.runConfigs.isEmpty)
     #expect(secrets.secrets[config.network_name] == "typed-secret")
     #expect(secrets.readReasons.isEmpty)
+    #expect(outcome.didPersistEditedSecret)
+    #expect(secrets.savePurposes == [.update])
 
+    store.handleApplicationDidResignActive()
     backend.status = .enabled
     await store.retryStartAfterHelperApproval()
 
     #expect(client.runConfigs.first?.network_secret == "typed-secret")
-    #expect(secrets.readReasons.count == 1, "pending helper state must reload the saved secret instead of retaining plaintext")
+    #expect(secrets.readPurposes.isEmpty)
+    #expect(secrets.savePurposes == [.update])
 }
 
 @MainActor
@@ -3858,12 +4253,17 @@ private func rpcPayloadObject(_ payload: String) throws -> [String: Any] {
 private final class MemoryNetworkSecretStore: NetworkSecretStore, @unchecked Sendable {
     var secrets: [String: String]
     var deletedIDs: [String] = []
+    var savePurposes: [NetworkSecretAccessPurpose] = []
+    var readPurposes: [NetworkSecretAccessPurpose] = []
+    var deletePurposes: [NetworkSecretAccessPurpose] = []
     var readReasons: [String?] = []
     var readError: Error?
     var saveError: Error?
+    var deleteError: Error?
     var containsError: Error?
     var saveCleanup: NetworkSecretCleanupState = .notNeeded
     var authenticationPurposes: [NetworkSecretAccessPurpose] = []
+    private(set) var presenceCallCount = 0
     private(set) var authenticationInvalidationCount = 0
 
     init(secrets: [String: String] = [:]) {
@@ -3873,8 +4273,9 @@ private final class MemoryNetworkSecretStore: NetworkSecretStore, @unchecked Sen
     func save(
         _ secret: String,
         for config: NetworkConfig,
-        purpose _: NetworkSecretAccessPurpose
+        purpose: NetworkSecretAccessPurpose
     ) async throws -> NetworkSecretWriteResult {
+        savePurposes.append(purpose)
         if let saveError { throw saveError }
         secrets[config.network_name] = secret
         return NetworkSecretWriteResult(cleanup: saveCleanup)
@@ -3882,9 +4283,10 @@ private final class MemoryNetworkSecretStore: NetworkSecretStore, @unchecked Sen
 
     func secret(
         for config: NetworkConfig,
-        purpose _: NetworkSecretAccessPurpose,
+        purpose: NetworkSecretAccessPurpose,
         reason: String?
     ) async throws -> NetworkSecretReadResult? {
+        readPurposes.append(purpose)
         readReasons.append(reason)
         if let readError { throw readError }
         return secrets[config.network_name].map {
@@ -3894,13 +4296,16 @@ private final class MemoryNetworkSecretStore: NetworkSecretStore, @unchecked Sen
 
     func deleteSecret(
         for config: NetworkConfig,
-        purpose _: NetworkSecretAccessPurpose
+        purpose: NetworkSecretAccessPurpose
     ) async throws {
+        deletePurposes.append(purpose)
+        if let deleteError { throw deleteError }
         deletedIDs.append(config.network_name)
         secrets.removeValue(forKey: config.network_name)
     }
 
     func presence(for config: NetworkConfig) async throws -> NetworkSecretPresence {
+        presenceCallCount += 1
         if let containsError { throw containsError }
         return secrets[config.network_name] == nil ? .missing : .present
     }
@@ -3937,7 +4342,10 @@ private final class BlockingNetworkSecretStore: NetworkSecretStore, @unchecked S
     private let lock = NSLock()
     private let storedSecret: String
     private var storedReadCount = 0
+    private var storedDeleteCount = 0
+    private var storedAuthenticationInvalidationCount = 0
     private var readContinuations: [CheckedContinuation<Void, Never>] = []
+    private var deleteContinuations: [CheckedContinuation<Void, Never>] = []
 
     init(secret: String) {
         storedSecret = secret
@@ -3945,6 +4353,14 @@ private final class BlockingNetworkSecretStore: NetworkSecretStore, @unchecked S
 
     var readCount: Int {
         lock.withLock { storedReadCount }
+    }
+
+    var authenticationInvalidationCount: Int {
+        lock.withLock { storedAuthenticationInvalidationCount }
+    }
+
+    var deleteCount: Int {
+        lock.withLock { storedDeleteCount }
     }
 
     func save(
@@ -3972,7 +4388,14 @@ private final class BlockingNetworkSecretStore: NetworkSecretStore, @unchecked S
     func deleteSecret(
         for _: NetworkConfig,
         purpose _: NetworkSecretAccessPurpose
-    ) async throws {}
+    ) async throws {
+        await withCheckedContinuation { continuation in
+            lock.withLock {
+                storedDeleteCount += 1
+                deleteContinuations.append(continuation)
+            }
+        }
+    }
 
     func presence(for _: NetworkConfig) async throws -> NetworkSecretPresence { .present }
 
@@ -3984,10 +4407,23 @@ private final class BlockingNetworkSecretStore: NetworkSecretStore, @unchecked S
         NetworkSecretWriteResult(cleanup: .notNeeded)
     }
 
+    func invalidateAuthenticationSession() {
+        lock.withLock { storedAuthenticationInvalidationCount += 1 }
+    }
+
     func releaseReads() {
         let continuations = lock.withLock {
             let continuations = readContinuations
             readContinuations.removeAll()
+            return continuations
+        }
+        continuations.forEach { $0.resume() }
+    }
+
+    func releaseDeletes() {
+        let continuations = lock.withLock {
+            let continuations = deleteContinuations
+            deleteContinuations.removeAll()
             return continuations
         }
         continuations.forEach { $0.resume() }

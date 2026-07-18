@@ -1,3 +1,4 @@
+import EasyTierShared
 import Testing
 @testable import EasyTierMac
 
@@ -89,7 +90,18 @@ import Testing
     #expect(!state.isRevealed)
 }
 
-@Test func ordinaryInactivityClearsLoadedMaterialButPreservesDrafts() {
+@Test func temporaryInactivityConcealsWithoutClearingLoadedMaterial() {
+    var state = NetworkSecretFieldState()
+    state.completeUnlock(foundSecret: true)
+    state.toggleReveal()
+
+    state.hideSecret()
+
+    #expect(state.material == .loaded)
+    #expect(!state.isRevealed)
+}
+
+@Test func securityBoundaryClearsLoadedMaterialButPreservesDrafts() {
     var loaded = NetworkSecretFieldState()
     loaded.completeUnlock(foundSecret: true)
     loaded.clearLoadedMaterial()
@@ -99,4 +111,22 @@ import Testing
     draft.userEdited(hasValue: true)
     draft.clearLoadedMaterial()
     #expect(draft.material == .draft)
+}
+
+@Test func sensitivePresentationLifecyclePreservesInactiveAndClearsBackground() {
+    #expect(!SensitivePresentationLifecyclePolicy.shouldClearMaterial(for: .active))
+    #expect(!SensitivePresentationLifecyclePolicy.shouldClearMaterial(for: .inactive))
+    #expect(SensitivePresentationLifecyclePolicy.shouldClearMaterial(for: .background))
+    #expect(SensitivePresentationLifecyclePolicy.shouldConcealMaterial(for: .inactive))
+}
+
+@Test func externalSecretPersistenceUpdatesTheFieldMaterialProvenance() {
+    var state = NetworkSecretFieldState()
+    state.userEdited(hasValue: true)
+
+    state.synchronizeMaterial(with: .saved("typed-secret"))
+    #expect(state.material == .loaded)
+
+    state.synchronizeMaterial(with: nil)
+    #expect(state.material == .none)
 }
