@@ -31,13 +31,28 @@ final class AppContext {
         hasStarted = true
 
         await runtime.load()
-        await softwareUpdate.controller.restorePendingRuntimeIfNeeded()
-        await runtime.startGatewayIfNeeded()
+        await prepareRuntimeService()
         softwareUpdate.controller.start()
+    }
+
+    func prepareRuntimeService() async {
+        guard await workspace.store.prepareRuntimeServiceAfterLaunch() else { return }
+        await restoreRuntimeAfterHelperPreparation()
+    }
+
+    func resumeRuntimeServiceIfApproved() async {
+        guard await workspace.store.resumeRuntimeServiceIfApproved() else { return }
+        await restoreRuntimeAfterHelperPreparation()
     }
 
     func prepareForAppQuit() async {
         await runtime.prepareForAppQuit()
+    }
+
+    private func restoreRuntimeAfterHelperPreparation() async {
+        await workspace.store.retryStartAfterHelperApproval()
+        await softwareUpdate.controller.restorePendingRuntimeIfNeeded()
+        await runtime.startGatewayIfNeeded()
     }
 
     var menuBarConnectionState: ConnectionGlyphState {

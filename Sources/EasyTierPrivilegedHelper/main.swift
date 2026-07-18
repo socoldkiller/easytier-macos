@@ -196,9 +196,8 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
                 fputs("helper shutdown cleanup error: \(error.localizedDescription)\n", stderr)
                 replyBox.call(nil, payload.encodedString())
             }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
-                Foundation.exit(EXIT_SUCCESS)
-            }
+            try? await Task.sleep(for: .milliseconds(50))
+            Foundation.exit(EXIT_SUCCESS)
         }
     }
 

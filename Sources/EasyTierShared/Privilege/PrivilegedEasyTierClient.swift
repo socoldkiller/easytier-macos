@@ -2,9 +2,9 @@ import Foundation
 import ServiceManagement
 
 package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelperShutdownClient, @unchecked Sendable {
-    private static let defaultCallTimeout: TimeInterval = 15
-    private static let gatewayCallTimeout: TimeInterval = 45
-    private static let registrationProbeTimeout: TimeInterval = 3
+    private static let defaultCallTimeout: Duration = .seconds(15)
+    private static let gatewayCallTimeout: Duration = .seconds(45)
+    private static let registrationProbeTimeout: Duration = .seconds(3)
 
     // NSXPCConnection is not Sendable; every access to the cached connection is lock-protected.
     private let connectionLock = NSLock()
@@ -44,7 +44,6 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
             guard let self, let conn else { return }
             handleConnectionEvent(.invalidated, connection: conn)
         }
-        conn.activate()
         _connection = conn
         conn.activate()
         return conn
@@ -230,7 +229,7 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
     }
 
     private func callHelper(
-        timeout: TimeInterval,
+        timeout: Duration,
         timeoutError: @escaping @Sendable () -> PrivilegedHelperError,
         retryOnUnavailable: Bool,
         _ body: @escaping (EasyTierPrivilegedServiceProtocol, @escaping (String?, String?) -> Void) -> Void

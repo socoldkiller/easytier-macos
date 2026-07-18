@@ -4,10 +4,10 @@ import Foundation
 extension AppContext {
     static func live(userDefaults: UserDefaults = .standard) -> AppContext {
         let helperRegistration = HelperRegistrationService()
+        let authenticationPresentation = NetworkSecretAuthenticationPresentationCoordinator()
         let privilegedClient = PrivilegedEasyTierClient()
         let store = EasyTierAppStore(
-            privilegedClient: privilegedClient,
-            inProcessClient: StaticEasyTierFFIClient(),
+            runtimeClient: privilegedClient,
             helperRegistration: helperRegistration,
             networkSecretStore: SystemNetworkSecretStore(
                 authenticationActivityObserver: authenticationPresentation
