@@ -9,9 +9,33 @@ name = "easytier_ffi"
 crate-type = ["staticlib"]
 
 [dependencies]
+arc-swap = "1.7"
+async-trait = "0.1"
+bytes = "1"
+cloudflare = { version = "0.14.0", default-features = false, features = ["rustls-tls"] }
 dashmap = "6.0"
 easytier = { path = "../../Vendor/EasyTier/easytier" }
+hex = "0.4"
+hickory-resolver = "0.25.2"
+http = "1"
+instant-acme = { version = "0.8.5", default-features = false, features = ["ring", "hyper-rustls", "rcgen", "time", "x509-parser"] }
+pingora = { version = "0.8.1", default-features = false, features = ["proxy", "boringssl"] }
+rand = "0.9"
+rustls = { version = "0.23.40", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = "1"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+sha2 = "0.10"
+time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
+tokio = { version = "1", features = ["io-util", "net", "rt-multi-thread", "sync", "time"] }
 url = "2"
 uuid = "1.17.0"
+x509-parser = "0.18"
+zeroize = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+base64 = "0.22"
+http-body-util = "0.1"
+rcgen = { version = "0.14.8", features = ["x509-parser"] }
+tempfile = "3"
+tokio-rustls = "0.26.4"

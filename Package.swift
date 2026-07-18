@@ -27,6 +27,10 @@ let package = Package(
             publicHeadersPath: "include",
             linkerSettings: [
                 .unsafeFlags(["-LVendor/Frameworks/static", "-leasytier_ffi"]),
+                .linkedLibrary("c++"),
+                .linkedLibrary("iconv"),
+                .linkedFramework("CoreFoundation"),
+                .linkedFramework("Security"),
                 .linkedFramework("SystemConfiguration"),
             ]
         ),

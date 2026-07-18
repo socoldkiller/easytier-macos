@@ -13,6 +13,22 @@ int32_t retain_network_instance(const char **inst_names, uintptr_t length, const
 int32_t stop_network_instance(const char **inst_names, uintptr_t length, const char **out_error);
 int32_t collect_network_infos(KeyValuePair *infos, uintptr_t max_length, const char **out_error);
 void free_string(const char *s);
+int32_t gateway_start(
+  const char *config_json,
+  const char *secrets_json,
+  const char **out_error
+);
+int32_t gateway_apply_config(
+  const char *config_json,
+  const char *secrets_json_or_null,
+  const char **out_error
+);
+int32_t gateway_stop(const char **out_error);
+int32_t gateway_status(const char **out_json, const char **out_error);
+int32_t gateway_request_renewal(
+  const char *certificate_id_or_null,
+  const char **out_error
+);
 int32_t connect_rpc_client(const char *client_id, const char *url, const char **out_error);
 int32_t call_json_rpc(
   const char *client_id,

@@ -28,6 +28,8 @@ use tokio::{
 };
 use url::{Host, Url};
 
+mod gateway;
+
 type RpcPortalServer = ApiRpcServer<TcpTunnelListener>;
 
 static INSTANCE_NAME_ID_MAP: LazyLock<DashMap<String, uuid::Uuid>> = LazyLock::new(DashMap::new);
@@ -36,8 +38,14 @@ static INSTANCE_MANAGER: LazyLock<Arc<NetworkInstanceManager>> =
 static RPC_CLIENTS: LazyLock<DashMap<String, Arc<RpcEndpoint>>> = LazyLock::new(DashMap::new);
 static RPC_PORTAL_SERVER: LazyLock<Mutex<Option<RpcPortalServer>>> =
     LazyLock::new(|| Mutex::new(None));
-static RPC_RUNTIME: LazyLock<Runtime> =
-    LazyLock::new(|| Runtime::new().expect("failed to create EasyTier RPC runtime"));
+static GATEWAY: LazyLock<Mutex<Option<Arc<gateway::GatewayHandle>>>> =
+    LazyLock::new(|| Mutex::new(None));
+static GATEWAY_OPERATION: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+static RPC_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
+    gateway::install_rustls_crypto_provider()
+        .expect("failed to install the Rustls crypto provider");
+    Runtime::new().expect("failed to create EasyTier RPC runtime")
+});
 static RPC_TOTAL_LIMIT: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::new(RPC_MAX_CONCURRENT_TOTAL)));
 static RPC_CONNECTING_LIMIT: LazyLock<Arc<Semaphore>> =
@@ -441,6 +449,184 @@ pub unsafe extern "C" fn free_string(s: *const c_char) {
     }
 }
 
+/// Start the TLS gateway from a versioned configuration and separate secrets document.
+///
+/// Certificate issuance continues asynchronously after the listeners have started. Use
+/// `gateway_status` to observe certificate readiness.
+///
+/// # Safety
+/// `config_json` and `secrets_json` must be valid NUL-terminated UTF-8 strings.
+/// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gateway_start(
+    config_json: *const c_char,
+    secrets_json: *const c_char,
+    out_error: *mut *const c_char,
+) -> c_int {
+    // SAFETY: `out_error` is caller-owned storage or null.
+    unsafe {
+        ffi_result_with_error(out_error, || {
+            let _operation = GATEWAY_OPERATION
+                .lock()
+                .map_err(|_| "gateway operation lock is poisoned".to_string())?;
+            if GATEWAY
+                .lock()
+                .map_err(|_| "gateway state lock is poisoned".to_string())?
+                .is_some()
+            {
+                return Err("gateway is already running".to_string());
+            }
+
+            // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
+            let config_json = cstr_arg(config_json, "config_json")?;
+            // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
+            let secrets_json = cstr_arg(secrets_json, "secrets_json")?;
+            let gateway = Arc::new(
+                RPC_RUNTIME.block_on(gateway::GatewayHandle::start(&config_json, &secrets_json))?,
+            );
+            *GATEWAY
+                .lock()
+                .map_err(|_| "gateway state lock is poisoned".to_string())? = Some(gateway);
+            Ok(())
+        })
+    }
+}
+
+/// Atomically replace the gateway route/certificate snapshot.
+///
+/// Passing a null `secrets_json_or_null` retains the currently loaded in-memory secrets.
+///
+/// # Safety
+/// Non-null string pointers must reference valid NUL-terminated UTF-8 strings.
+/// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gateway_apply_config(
+    config_json: *const c_char,
+    secrets_json_or_null: *const c_char,
+    out_error: *mut *const c_char,
+) -> c_int {
+    // SAFETY: `out_error` is caller-owned storage or null.
+    unsafe {
+        ffi_result_with_error(out_error, || {
+            let _operation = GATEWAY_OPERATION
+                .lock()
+                .map_err(|_| "gateway operation lock is poisoned".to_string())?;
+            let gateway = GATEWAY
+                .lock()
+                .map_err(|_| "gateway state lock is poisoned".to_string())?
+                .clone()
+                .ok_or_else(|| "gateway is not running".to_string())?;
+            // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
+            let config_json = cstr_arg(config_json, "config_json")?;
+            let secrets_json = if secrets_json_or_null.is_null() {
+                None
+            } else {
+                // SAFETY: The pointer is non-null and owned by the C ABI caller.
+                Some(cstr_arg(secrets_json_or_null, "secrets_json_or_null")?)
+            };
+            RPC_RUNTIME.block_on(gateway.apply_config(&config_json, secrets_json.as_deref()))
+        })
+    }
+}
+
+/// Stop the gateway. Calling this while already stopped succeeds.
+///
+/// # Safety
+/// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gateway_stop(out_error: *mut *const c_char) -> c_int {
+    // SAFETY: `out_error` is caller-owned storage or null.
+    unsafe {
+        ffi_result_with_error(out_error, || {
+            let _operation = GATEWAY_OPERATION
+                .lock()
+                .map_err(|_| "gateway operation lock is poisoned".to_string())?;
+            let gateway = GATEWAY
+                .lock()
+                .map_err(|_| "gateway state lock is poisoned".to_string())?
+                .clone();
+            let Some(gateway) = gateway else {
+                return Ok(());
+            };
+
+            let result = RPC_RUNTIME.block_on(gateway.stop());
+            let mut slot = GATEWAY
+                .lock()
+                .map_err(|_| "gateway state lock is poisoned".to_string())?;
+            if slot
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &gateway))
+            {
+                *slot = None;
+            }
+            result
+        })
+    }
+}
+
+/// Return the current versioned gateway status document.
+///
+/// # Safety
+/// `out_json` must point to caller-owned storage for one string pointer. The returned string must
+/// be released with `free_string`. `out_error` follows the same ownership convention.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gateway_status(
+    out_json: *mut *const c_char,
+    out_error: *mut *const c_char,
+) -> c_int {
+    // SAFETY: `out_error` is caller-owned storage or null.
+    unsafe {
+        ffi_result_with_error(out_error, || {
+            if !out_json.is_null() {
+                // SAFETY: `out_json` was checked for null and points to caller-owned storage.
+                *out_json = std::ptr::null();
+            }
+            let gateway = GATEWAY
+                .lock()
+                .map_err(|_| "gateway state lock is poisoned".to_string())?
+                .clone();
+            let status = match gateway {
+                Some(gateway) => gateway.status_json()?,
+                None => gateway::stopped_status_json()?,
+            };
+            write_cstring_out(status, out_json)
+        })
+    }
+}
+
+/// Queue renewal for one certificate, or all certificates for a null/empty identifier.
+///
+/// # Safety
+/// A non-null `certificate_id_or_null` must reference a valid NUL-terminated UTF-8 string.
+/// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gateway_request_renewal(
+    certificate_id_or_null: *const c_char,
+    out_error: *mut *const c_char,
+) -> c_int {
+    // SAFETY: `out_error` is caller-owned storage or null.
+    unsafe {
+        ffi_result_with_error(out_error, || {
+            let _operation = GATEWAY_OPERATION
+                .lock()
+                .map_err(|_| "gateway operation lock is poisoned".to_string())?;
+            let gateway = GATEWAY
+                .lock()
+                .map_err(|_| "gateway state lock is poisoned".to_string())?
+                .clone()
+                .ok_or_else(|| "gateway is not running".to_string())?;
+            let certificate_id = if certificate_id_or_null.is_null() {
+                None
+            } else {
+                // SAFETY: The pointer is non-null and owned by the C ABI caller.
+                let value = cstr_arg(certificate_id_or_null, "certificate_id_or_null")?;
+                (!value.is_empty()).then_some(value)
+            };
+            RPC_RUNTIME.block_on(gateway.request_renewal(certificate_id))
+        })
+    }
+}
+
 /// # Safety
 /// `cfg_str` must be a valid NUL-terminated C string pointer.
 /// `out_error` must point to caller-owned storage for one `*const c_char`, or be null.
@@ -821,6 +1007,17 @@ mod tests {
         config::PatchConfigRequest, instance::instance_identifier::Selector,
     };
 
+    static GATEWAY_FFI_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct GatewayTestCleanup;
+
+    impl Drop for GatewayTestCleanup {
+        fn drop(&mut self) {
+            // SAFETY: A null error out-param is allowed by the C ABI.
+            let _ = unsafe { gateway_stop(std::ptr::null_mut()) };
+        }
+    }
+
     #[test]
     fn rpc_url_validation_accepts_private_and_local_ips() {
         assert!(validate_rpc_url("tcp://10.0.0.1:15888").is_ok());
@@ -966,6 +1163,140 @@ mod tests {
     }
 
     #[test]
+    fn gateway_c_abi_lifecycle_is_atomic_and_redacts_secrets() {
+        let _serial = GATEWAY_FFI_TEST_LOCK.lock().unwrap();
+        let _cleanup = GatewayTestCleanup;
+        // SAFETY: A null error out-param is allowed, and stop is idempotent.
+        assert_eq!(unsafe { gateway_stop(std::ptr::null_mut()) }, 0);
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = serde_json::json!({
+            "schema_version": 1,
+            "storage_dir": temp.path().join("gateway"),
+            "listeners": {
+                "http": "127.0.0.1:0",
+                "https": "127.0.0.1:0"
+            },
+            "acme": {
+                "directory": { "kind": "letsencrypt_staging" },
+                "contact_email": null,
+                "terms_of_service_agreed": true
+            },
+            "certificates": [],
+            "routes": []
+        });
+        let secrets = serde_json::json!({
+            "schema_version": 1,
+            "cloudflare": {
+                "cf-main": { "api_token": "super-secret-cloudflare-token" }
+            }
+        });
+        let config_string = CString::new(config.to_string()).unwrap();
+        let secrets_string = CString::new(secrets.to_string()).unwrap();
+        let mut error = std::ptr::null();
+
+        // SAFETY: All pointers reference live C strings and writable out storage.
+        assert_eq!(
+            unsafe { gateway_start(config_string.as_ptr(), secrets_string.as_ptr(), &mut error,) },
+            0
+        );
+        assert!(error.is_null());
+
+        // SAFETY: All pointers reference live C strings and writable out storage.
+        assert_eq!(
+            unsafe { gateway_start(config_string.as_ptr(), secrets_string.as_ptr(), &mut error,) },
+            -1
+        );
+        assert!(take_ffi_string(error).contains("already running"));
+        error = std::ptr::null();
+
+        let mut status_json = std::ptr::null();
+        // SAFETY: Both out-parameters point to writable storage.
+        assert_eq!(unsafe { gateway_status(&mut status_json, &mut error) }, 0);
+        let status = take_ffi_string(status_json);
+        assert!(error.is_null());
+        assert!(!status.contains("super-secret-cloudflare-token"));
+        let status: Value = serde_json::from_str(&status).unwrap();
+        assert_eq!(status["state"], "running");
+        assert_eq!(status["config_generation"], 1);
+
+        config["acme"]["contact_email"] = serde_json::json!("ops@example.com");
+        let valid_update = CString::new(config.to_string()).unwrap();
+        // SAFETY: The config pointer is valid, null secrets retains current secrets, and the
+        // error out-parameter points to writable storage.
+        assert_eq!(
+            unsafe { gateway_apply_config(valid_update.as_ptr(), std::ptr::null(), &mut error) },
+            0
+        );
+        assert!(error.is_null());
+        status_json = std::ptr::null();
+        // SAFETY: Both out-parameters point to writable storage.
+        assert_eq!(unsafe { gateway_status(&mut status_json, &mut error) }, 0);
+        let status: Value = serde_json::from_str(&take_ffi_string(status_json)).unwrap();
+        assert_eq!(status["config_generation"], 2);
+
+        config["listeners"]["http"] = serde_json::json!("127.0.0.1:50080");
+        let immutable_update = CString::new(config.to_string()).unwrap();
+        // SAFETY: The config pointer is valid, null secrets retains current secrets, and the
+        // error out-parameter points to writable storage.
+        assert_eq!(
+            unsafe {
+                gateway_apply_config(immutable_update.as_ptr(), std::ptr::null(), &mut error)
+            },
+            -1
+        );
+        assert!(take_ffi_string(error).contains("listener changes require"));
+        error = std::ptr::null();
+        status_json = std::ptr::null();
+        // SAFETY: Both out-parameters point to writable storage.
+        assert_eq!(unsafe { gateway_status(&mut status_json, &mut error) }, 0);
+        let status: Value = serde_json::from_str(&take_ffi_string(status_json)).unwrap();
+        assert_eq!(status["config_generation"], 2);
+
+        // Null renewal identifier means all configured certificates (an empty set here).
+        // SAFETY: Null is explicitly supported for the optional identifier.
+        assert_eq!(
+            unsafe { gateway_request_renewal(std::ptr::null(), &mut error) },
+            0
+        );
+        let unknown_certificate = CString::new("missing-cert").unwrap();
+        // SAFETY: The identifier is a valid C string and the error slot is writable.
+        assert_eq!(
+            unsafe { gateway_request_renewal(unknown_certificate.as_ptr(), &mut error) },
+            -1
+        );
+        assert!(take_ffi_string(error).contains("unknown gateway certificate"));
+        error = std::ptr::null();
+
+        // SAFETY: The error out-parameter points to writable storage.
+        assert_eq!(unsafe { gateway_stop(&mut error) }, 0);
+        assert!(error.is_null());
+        assert_eq!(unsafe { gateway_stop(&mut error) }, 0);
+        assert!(error.is_null());
+
+        // Applying while stopped is rejected and status returns a valid stopped snapshot.
+        // SAFETY: The config pointer and error out-parameter are valid.
+        assert_eq!(
+            unsafe { gateway_apply_config(config_string.as_ptr(), std::ptr::null(), &mut error) },
+            -1
+        );
+        assert!(take_ffi_string(error).contains("gateway is not running"));
+        error = std::ptr::null();
+        status_json = std::ptr::null();
+        // SAFETY: Both out-parameters point to writable storage.
+        assert_eq!(unsafe { gateway_status(&mut status_json, &mut error) }, 0);
+        let status: Value = serde_json::from_str(&take_ffi_string(status_json)).unwrap();
+        assert_eq!(status["state"], "stopped");
+
+        // SAFETY: A null JSON out-parameter is intentionally supplied to exercise validation.
+        assert_eq!(
+            unsafe { gateway_status(std::ptr::null_mut(), &mut error) },
+            -1
+        );
+        assert!(take_ffi_string(error).contains("out_json must not be null"));
+    }
+
+    #[test]
     fn patch_config_payload_shape_matches_easytier_generated_type() {
         let payload = serde_json::json!({
             "patch": {
@@ -992,5 +1323,16 @@ mod tests {
         assert_eq!(request.patch.unwrap().hostname.as_deref(), Some("edge-mac"));
         let selector = request.instance.unwrap().selector.unwrap();
         assert!(matches!(selector, Selector::Id(_)));
+    }
+
+    fn take_ffi_string(pointer: *const c_char) -> String {
+        assert!(!pointer.is_null());
+        // SAFETY: The pointer is returned by this library and remains valid until free_string.
+        let value = unsafe { CStr::from_ptr(pointer) }
+            .to_string_lossy()
+            .into_owned();
+        // SAFETY: The pointer was allocated by this library and has not been freed yet.
+        unsafe { free_string(pointer) };
+        value
     }
 }

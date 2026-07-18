@@ -9,7 +9,7 @@ STATIC_DIR="$OUT_DIR/static"
 STATIC_LIBRARY="$STATIC_DIR/libeasytier_ffi.a"
 TRACKED_HEADER="$ROOT_DIR/Sources/CEasyTierFFI/include/EasyTierFFI.h"
 FFI_CACHE_DIR="${EASYTIER_FFI_CACHE_DIR:-$HOME/Library/Caches/easytier-macos/ffi}"
-FFI_CACHE_VERSION="5"
+FFI_CACHE_VERSION="6"
 USE_FFI_CACHE="${EASYTIER_USE_FFI_CACHE:-1}"
 RUST_RELEASE_OPT_LEVEL="${EASYTIER_RUST_OPT_LEVEL:-z}"
 RUST_RELEASE_LTO="${EASYTIER_RUST_LTO:-fat}"
@@ -89,11 +89,40 @@ sha256_files() {
   cat "$@" | shasum -a 256 | awk '{ print $1 }'
 }
 
+hash_gui_ffi_sources() {
+  {
+    printf '%s\0' 'Cargo.toml'
+    cat "$GUI_FFI_DIR/Cargo.toml"
+    printf '%s\0' 'Cargo.lock'
+    cat "$GUI_FFI_DIR/Cargo.lock"
+    find "$GUI_FFI_DIR/src" -type f -name '*.rs' -print \
+      | LC_ALL=C sort \
+      | while IFS= read -r source_file; do
+          printf '%s\0' "${source_file#"$GUI_FFI_DIR/"}"
+          cat "$source_file"
+        done
+  } | shasum -a 256 | awk '{ print $1 }'
+}
+
+verify_rust_build_tools() {
+  local tool
+  for tool in cargo rustc cmake xcrun; do
+    command -v "$tool" >/dev/null 2>&1 || {
+      echo "Required Rust FFI build tool is missing: $tool" >&2
+      exit 1
+    }
+  done
+  xcrun --sdk macosx --find clang >/dev/null 2>&1 || {
+    echo "Xcode Clang is unavailable; install or select Xcode Command Line Tools." >&2
+    exit 1
+  }
+}
+
 ffi_cache_key() {
   local core_rev cargo_lock_hash gui_ffi_hash header_hash script_hash rustc_hash profile_hash
   core_rev="$(git -C "$EASYTIER_DIR" rev-parse HEAD)"
   cargo_lock_hash="$(sha256_files "$EASYTIER_DIR/Cargo.lock")"
-  gui_ffi_hash="$(sha256_files "$GUI_FFI_DIR/Cargo.toml" "$GUI_FFI_DIR/Cargo.lock" "$GUI_FFI_DIR/src/lib.rs")"
+  gui_ffi_hash="$(hash_gui_ffi_sources)"
   header_hash="$(sha256_files "$TRACKED_HEADER")"
   script_hash="$(sha256_files "$ROOT_DIR/scripts/build-ffi.sh")"
   rustc_hash="$(rustc -vV | shasum -a 256 | awk '{ print $1 }')"
@@ -152,6 +181,7 @@ export MACOSX_DEPLOYMENT_TARGET=15.0
   exit 1
 }
 verify_core_gitlink
+verify_rust_build_tools
 configure_rust_release_profile
 
 CACHE_KEY="$(ffi_cache_key)"
