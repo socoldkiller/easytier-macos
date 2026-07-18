@@ -2,21 +2,20 @@ import Foundation
 import ServiceManagement
 
 package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelperShutdownClient, @unchecked Sendable {
-    private static let defaultCallTimeout: TimeInterval = 15
-    private static let registrationProbeTimeout: TimeInterval = 3
+    private static let defaultCallTimeout: Duration = .seconds(15)
+    private static let registrationProbeTimeout: Duration = .seconds(3)
 
+    // NSXPCConnection is not Sendable; every access to the cached connection is lock-protected.
     private let connectionLock = NSLock()
     private var _connection: NSXPCConnection?
 
     package init() {}
 
     deinit {
-        let conn = _connection
-        _connection = nil
-        conn?.invalidate()
+        dropConnection()
     }
 
-    private func acquireConnection() -> NSXPCConnection {
+    private func acquireConnection() throws -> NSXPCConnection {
         connectionLock.lock()
         defer { connectionLock.unlock() }
 
@@ -30,18 +29,43 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
             machServiceName: EasyTierPrivilegedHelperConstants.machServiceName,
             options: [.privileged]
         )
+        let requirement = try EasyTierXPCCodeSigningRequirements.requirement(
+            forPeerIdentifier: EasyTierPrivilegedHelperConstants.bundleIdentifier
+        )
+        conn.setCodeSigningRequirement(requirement)
         conn.remoteObjectInterface = NSXPCInterface(with: EasyTierPrivilegedServiceProtocol.self)
-        conn.resume()
+        conn.interruptionHandler = { [weak self, weak conn] in
+            guard let conn else { return }
+            self?.connectionDidEnd(conn)
+        }
+        conn.invalidationHandler = { [weak self, weak conn] in
+            guard let conn else { return }
+            self?.connectionDidEnd(conn)
+        }
         _connection = conn
+        conn.activate()
         return conn
     }
 
-    private func dropConnection() {
+    private func dropConnection(_ expectedConnection: NSXPCConnection? = nil) {
         connectionLock.lock()
-        let conn = _connection
-        _connection = nil
+        let conn: NSXPCConnection?
+        if let expectedConnection, _connection !== expectedConnection {
+            conn = expectedConnection
+        } else {
+            conn = _connection
+            _connection = nil
+        }
         connectionLock.unlock()
         conn?.invalidate()
+    }
+
+    private func connectionDidEnd(_ connection: NSXPCConnection) {
+        connectionLock.lock()
+        if _connection === connection {
+            _connection = nil
+        }
+        connectionLock.unlock()
     }
 
     package func validate(toml: String) async throws {
@@ -69,16 +93,14 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
     }
 
     package func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] {
-        try await Task.detached(priority: .userInitiated) { [self] in
-            do {
-                let payload = try await callHelperReturningPayload { service, reply in
-                    service.collectNetworkInfos(reply: reply)
-                }
-                return try JSONDecoder().decode([String: NetworkInstanceRunningInfo].self, from: Data(payload.utf8))
-            } catch let error as DecodingError {
-                throw PrivilegedHelperError.invalidPayload(String(describing: error))
+        do {
+            let payload = try await callHelperReturningPayload { service, reply in
+                service.collectNetworkInfos(reply: reply)
             }
-        }.value
+            return try JSONDecoder().decode([String: NetworkInstanceRunningInfo].self, from: Data(payload.utf8))
+        } catch let error as DecodingError {
+            throw PrivilegedHelperError.invalidPayload(String(describing: error))
+        }
     }
 
     package func configureRPCPortal(_ rpcPortal: String?, whitelist: [String]?) async throws {
@@ -123,7 +145,7 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
     }
 
     private func helperPingPayload(
-        timeout: TimeInterval,
+        timeout: Duration,
         timeoutError: @escaping @Sendable () -> PrivilegedHelperError
     ) async throws -> String {
         let payload = try await callHelperReturningPayload(timeout: timeout, timeoutError: timeoutError) { service, reply in
@@ -157,7 +179,7 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
     }
 
     private func callHelperReturningPayload(
-        timeout: TimeInterval,
+        timeout: Duration,
         timeoutError: @escaping @Sendable () -> PrivilegedHelperError,
         _ body: @escaping (EasyTierPrivilegedServiceProtocol, @escaping (String?, String?) -> Void) -> Void
     ) async throws -> String {
@@ -165,48 +187,56 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
             return try await performHelperCall(timeout: timeout, timeoutError: timeoutError, body: body, isRetry: false)
         } catch PrivilegedHelperError.unavailable {
             // Daemon may have idle-exited even though it is still registered.
-            // Drop the cached connection and retry once — launchd will relaunch the helper.
-            dropConnection()
+            // The failed call already invalidated its exact connection. Retry
+            // once so launchd can relaunch the registered helper.
             return try await performHelperCall(timeout: timeout, timeoutError: timeoutError, body: body, isRetry: true)
         }
     }
 
     private func performHelperCall(
-        timeout: TimeInterval,
+        timeout: Duration,
         timeoutError: @escaping @Sendable () -> PrivilegedHelperError,
         body: @escaping (EasyTierPrivilegedServiceProtocol, @escaping (String?, String?) -> Void) -> Void,
         isRetry: Bool
     ) async throws -> String {
-        let connection = acquireConnection()
+        let connection = try acquireConnection()
+        let state = HelperCallState()
 
-        return try await withCheckedThrowingContinuation { continuation in
-            let state = HelperCallState(continuation: continuation)
-            let timeoutWork = DispatchWorkItem { [weak state] in
-                state?.finish(.failure(timeoutError()))
-            }
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timeoutWork)
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard state.install(continuation) else { return }
+                // The timeout must not inherit a UI caller's MainActor isolation.
+                let timeoutTask = Task.detached { [weak state] in
+                    do {
+                        try await Task.sleep(for: timeout)
+                    } catch {
+                        return
+                    }
+                    state?.finish(.failure(timeoutError()))
+                }
+                state.setTimeoutTask(timeoutTask)
 
-            let proxy = connection.remoteObjectProxyWithErrorHandler { [weak self] _ in
-                timeoutWork.cancel()
-                self?.dropConnection()
-                state.finish(.failure(Self.connectionFailure(isRetry: isRetry)))
-            }
-            guard let service = proxy as? EasyTierPrivilegedServiceProtocol else {
-                timeoutWork.cancel()
-                dropConnection()
-                state.finish(.failure(Self.connectionFailure(isRetry: isRetry)))
-                return
-            }
-            body(service) { payload, error in
-                timeoutWork.cancel()
-                if let error, !error.isEmpty {
-                    state.finish(.failure(PrivilegedHelperError.helperReported(PrivilegedHelperErrorPayload.decode(from: error))))
-                } else if let payload {
-                    state.finish(.success(payload))
-                } else {
-                    state.finish(.failure(PrivilegedHelperError.invalidPayload("Helper returned no payload.")))
+                let proxy = connection.remoteObjectProxyWithErrorHandler { [weak self] _ in
+                    self?.dropConnection(connection)
+                    state.finish(.failure(Self.connectionFailure(isRetry: isRetry)))
+                }
+                guard let service = proxy as? EasyTierPrivilegedServiceProtocol else {
+                    dropConnection(connection)
+                    state.finish(.failure(Self.connectionFailure(isRetry: isRetry)))
+                    return
+                }
+                body(service) { payload, error in
+                    if let error, !error.isEmpty {
+                        state.finish(.failure(PrivilegedHelperError.helperReported(PrivilegedHelperErrorPayload.decode(from: error))))
+                    } else if let payload {
+                        state.finish(.success(payload))
+                    } else {
+                        state.finish(.failure(PrivilegedHelperError.invalidPayload("Helper returned no payload.")))
+                    }
                 }
             }
+        } onCancel: {
+            state.finish(.failure(CancellationError()))
         }
     }
 
@@ -325,7 +355,7 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
                 PrivilegedHelperErrorPayload(
                     code: "helperNotFound",
                     message: "Privileged helper registration is not initialized for this app bundle.",
-                    recoverySuggestion: "Click Install Helper before starting TUN networking."
+                    recoverySuggestion: "Click Install Helper before starting a network."
                 )
             )
         case .enabled:
@@ -345,10 +375,32 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
 private final class HelperCallState: @unchecked Sendable {
     private let lock = NSLock()
     private var didFinish = false
-    private let continuation: CheckedContinuation<String, Error>
+    private var continuation: CheckedContinuation<String, Error>?
+    private var pendingResult: Result<String, Error>?
+    private var timeoutTask: Task<Void, Never>?
 
-    init(continuation: CheckedContinuation<String, Error>) {
+    func install(_ continuation: CheckedContinuation<String, Error>) -> Bool {
+        lock.lock()
+        if let pendingResult {
+            self.pendingResult = nil
+            lock.unlock()
+            resume(continuation, with: pendingResult)
+            return false
+        }
         self.continuation = continuation
+        lock.unlock()
+        return true
+    }
+
+    func setTimeoutTask(_ task: Task<Void, Never>) {
+        lock.lock()
+        if didFinish {
+            lock.unlock()
+            task.cancel()
+            return
+        }
+        timeoutTask = task
+        lock.unlock()
     }
 
     func finish(_ result: Result<String, Error>) {
@@ -358,8 +410,24 @@ private final class HelperCallState: @unchecked Sendable {
             return
         }
         didFinish = true
+        let continuation = continuation
+        self.continuation = nil
+        if continuation == nil {
+            pendingResult = result
+        }
+        let timeoutTask = timeoutTask
+        self.timeoutTask = nil
         lock.unlock()
 
+        timeoutTask?.cancel()
+        guard let continuation else { return }
+        resume(continuation, with: result)
+    }
+
+    private func resume(
+        _ continuation: CheckedContinuation<String, Error>,
+        with result: Result<String, Error>
+    ) {
         switch result {
         case let .success(payload):
             continuation.resume(returning: payload)

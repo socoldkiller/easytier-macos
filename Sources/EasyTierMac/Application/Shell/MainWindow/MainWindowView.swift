@@ -96,12 +96,7 @@ struct MainWindowView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 Task {
-                    if let registration = store.helperRegistration {
-                        await registration.refresh()
-                        if registration.state == .enabled {
-                            await store.retryStartAfterHelperApproval()
-                        }
-                    }
+                    await appContext.resumeRuntimeServiceIfApproved()
                 }
             }
             if SensitivePresentationLifecyclePolicy.shouldClearMaterial(for: phase) {
@@ -170,16 +165,7 @@ struct MainWindowView: View {
                 Button("Install Helper") {
                     Task {
                         store.lastError = nil
-                        if let registration = store.helperRegistration {
-                            do {
-                                try await registration.ensureRegistered()
-                                if registration.state == .enabled {
-                                    await store.retryStartAfterHelperApproval()
-                                }
-                            } catch {
-                                store.lastError = error.localizedDescription
-                            }
-                        }
+                        await appContext.prepareRuntimeService()
                     }
                 }
             }

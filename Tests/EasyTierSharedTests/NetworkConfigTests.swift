@@ -536,7 +536,7 @@ import Testing
 }
 
 @MainActor
-@Test func appQuitStopsInProcessNetworkWhenVpnOnDemandIsOn() async {
+@Test func appQuitLeavesNoTunNetworkRunningWhenVpnOnDemandIsOn() async {
     let client = RecordingToggleClient()
     let config = NetworkConfig(instance_id: "quit-notun-id", network_name: "office", no_tun: true)
     let store = EasyTierAppStore(client: client)
@@ -548,9 +548,50 @@ import Testing
 
     await store.prepareForAppQuit()
 
-    #expect(client.stoppedInstanceNames == [[config.network_name]])
+    #expect(client.stoppedInstanceNames.isEmpty)
     #expect(client.retainedInstanceNames.isEmpty)
     #expect(client.shutdownCount == 0)
+}
+
+@MainActor
+@Test func noTunNetworkStillRequiresAndUsesTheRuntimeHelper() async {
+    let client = RecordingToggleClient()
+    let backend = HelperRegistrationBackendSpy(status: .enabled)
+    let registration = HelperRegistrationService(backend: backend.backend(), refreshOnInit: false)
+    let config = NetworkConfig(instance_id: "helper-no-tun-id", network_name: "helper-no-tun", no_tun: true)
+    let store = EasyTierAppStore(
+        runtimeClient: client,
+        helperRegistration: registration,
+        storage: .isolatedForTesting()
+    )
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+
+    await store.runSelectedConfig()
+
+    #expect(backend.probeCount == 1)
+    #expect(client.configuredRPCPortals == [AppMode.default.rpcPortal])
+    #expect(client.runConfigs.map(\.instance_id) == [config.instance_id])
+}
+
+@MainActor
+@Test func launchPreparationRegistersAndConfiguresTheRuntimeHelperOnce() async {
+    let client = RecordingToggleClient()
+    let backend = HelperRegistrationBackendSpy(status: .notRegistered)
+    backend.statusAfterRegister = .enabled
+    let registration = HelperRegistrationService(backend: backend.backend(), refreshOnInit: false)
+    let store = EasyTierAppStore(
+        runtimeClient: client,
+        helperRegistration: registration,
+        storage: .isolatedForTesting()
+    )
+
+    #expect(await store.prepareRuntimeServiceAfterLaunch())
+    #expect(await store.prepareRuntimeServiceAfterLaunch())
+
+    #expect(backend.registerCount == 1)
+    #expect(backend.probeCount == 2)
+    #expect(client.configuredRPCPortals == [AppMode.default.rpcPortal])
 }
 
 @MainActor
@@ -1741,21 +1782,25 @@ import Testing
 }
 
 @MainActor
-@Test func wakeRecoveryWaitsUntilTheApplicationIsActive() async {
+@Test(.timeLimit(.minutes(1))) func wakeRecoveryWaitsUntilTheApplicationIsActive() async {
     let client = RecordingToggleClient()
     let controller = RuntimeSessionController(
-        privilegedClient: client,
-        inProcessClient: client,
+        runtimeClient: client,
         helperRegistration: nil,
         systemSleepPreventer: RecordingSystemSleepPreventer(),
         wakeRecoveryDelay: .milliseconds(10)
     )
     var recoveryCount = 0
+    let (recoveryEvents, recoveryContinuation) = AsyncStream<Void>.makeStream()
+    defer { recoveryContinuation.finish() }
     controller.startPolling(
         refresh: {},
         handleWillSleep: {},
         handleSessionResign: {},
-        handleDidWake: { recoveryCount += 1 }
+        handleDidWake: {
+            recoveryCount += 1
+            recoveryContinuation.yield()
+        }
     )
     defer { controller.stopPolling() }
 
@@ -1765,26 +1810,30 @@ import Testing
     #expect(recoveryCount == 0)
 
     controller.setApplicationActive(true)
-    try? await Task.sleep(for: .milliseconds(30))
+    for await _ in recoveryEvents.prefix(1) {}
     #expect(recoveryCount == 1)
 }
 
 @MainActor
-@Test func wakeRecoveryWaitsUntilTheUserSessionIsActive() async {
+@Test(.timeLimit(.minutes(1))) func wakeRecoveryWaitsUntilTheUserSessionIsActive() async {
     let client = RecordingToggleClient()
     let controller = RuntimeSessionController(
-        privilegedClient: client,
-        inProcessClient: client,
+        runtimeClient: client,
         helperRegistration: nil,
         systemSleepPreventer: RecordingSystemSleepPreventer(),
         wakeRecoveryDelay: .milliseconds(10)
     )
     var recoveryCount = 0
+    let (recoveryEvents, recoveryContinuation) = AsyncStream<Void>.makeStream()
+    defer { recoveryContinuation.finish() }
     controller.startPolling(
         refresh: {},
         handleWillSleep: {},
         handleSessionResign: {},
-        handleDidWake: { recoveryCount += 1 }
+        handleDidWake: {
+            recoveryCount += 1
+            recoveryContinuation.yield()
+        }
     )
     defer { controller.stopPolling() }
 
@@ -1794,7 +1843,7 @@ import Testing
     #expect(recoveryCount == 0)
 
     controller.handleUserSessionDidBecomeActiveNotification()
-    try? await Task.sleep(for: .milliseconds(30))
+    for await _ in recoveryEvents.prefix(1) {}
     #expect(recoveryCount == 1)
 }
 
@@ -2463,7 +2512,14 @@ import Testing
 @Test func privilegedHelperUnavailableErrorIsActionable() {
     let message = PrivilegedHelperError.unavailable.localizedDescription
     #expect(message.contains("privileged helper"))
-    #expect(message.contains("TUN"))
+    #expect(message.contains("starting a network"))
+}
+
+@Test func privilegedHelperApprovalErrorAppliesToAllNetworkModes() {
+    let message = PrivilegedHelperError.needsRegistration.localizedDescription
+    #expect(message.contains("background permission"))
+    #expect(message.contains("run network instances"))
+    #expect(!message.contains("TUN"))
 }
 
 @Test func privilegedHelperErrorPayloadRoundTripsAndFeedsLocalizedDescription() {
@@ -2511,8 +2567,7 @@ import Testing
     let client = RecordingToggleClient()
     let sleepPreventer = RecordingSystemSleepPreventer()
     let controller = RuntimeSessionController(
-        privilegedClient: client,
-        inProcessClient: client,
+        runtimeClient: client,
         helperRegistration: nil,
         systemSleepPreventer: sleepPreventer
     )
@@ -2676,8 +2731,7 @@ import Testing
 @Test func staleRuntimeRefreshDoesNotClearNewPendingStart() async throws {
     let client = RecordingToggleClient()
     let controller = RuntimeSessionController(
-        privilegedClient: client,
-        inProcessClient: client,
+        runtimeClient: client,
         helperRegistration: nil,
         systemSleepPreventer: RecordingSystemSleepPreventer()
     )
@@ -2721,8 +2775,7 @@ import Testing
 @Test func noTunRuntimeClearsPendingWithoutWaitingForVirtualIPv4() async throws {
     let client = RecordingToggleClient()
     let controller = RuntimeSessionController(
-        privilegedClient: client,
-        inProcessClient: client,
+        runtimeClient: client,
         helperRegistration: nil,
         systemSleepPreventer: RecordingSystemSleepPreventer()
     )
@@ -2762,6 +2815,30 @@ import Testing
     )
     let stoppedChange = try #require(stoppedResult)
     #expect(stoppedChange.state.instances.isEmpty)
+}
+
+@MainActor
+@Test func runtimeSessionDoesNotPollXPCWhileHelperApprovalIsPending() async throws {
+    let client = RecordingToggleClient()
+    let backend = HelperRegistrationBackendSpy(status: .requiresApproval)
+    let registration = HelperRegistrationService(backend: backend.backend(), refreshOnInit: false)
+    await registration.refresh()
+    let controller = RuntimeSessionController(
+        runtimeClient: client,
+        helperRegistration: registration,
+        systemSleepPreventer: RecordingSystemSleepPreventer()
+    )
+
+    _ = try await controller.refreshRuntime(
+        currentInstances: [],
+        currentRuntimeDetails: [:],
+        currentStatusMetrics: [:],
+        currentTrafficSamples: [:],
+        currentTrafficSamplingStatus: [:],
+        selectedTab: .status
+    )
+
+    #expect(client.collectCount == 0)
 }
 
 @MainActor
@@ -3694,8 +3771,7 @@ import Testing
     let secrets = MemoryNetworkSecretStore(secrets: [config.network_name: "pending-secret"])
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let store = EasyTierAppStore(
-        privilegedClient: client,
-        inProcessClient: client,
+        runtimeClient: client,
         helperRegistration: registration,
         storage: EasyTierStorage(baseDirectory: directory),
         networkSecretStore: secrets
@@ -3731,8 +3807,7 @@ import Testing
     let secrets = MemoryNetworkSecretStore()
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let store = EasyTierAppStore(
-        privilegedClient: client,
-        inProcessClient: client,
+        runtimeClient: client,
         helperRegistration: registration,
         storage: EasyTierStorage(baseDirectory: directory),
         networkSecretStore: secrets
@@ -3764,8 +3839,7 @@ import Testing
 @Test func olderHelperApprovalRetryDoesNotOverwriteNewerPendingConfig() throws {
     let client = RecordingToggleClient()
     let controller = RuntimeSessionController(
-        privilegedClient: client,
-        inProcessClient: client,
+        runtimeClient: client,
         helperRegistration: nil,
         systemSleepPreventer: RecordingSystemSleepPreventer()
     )
@@ -3797,6 +3871,78 @@ import Testing
     #expect(registration.state == .requiresApproval)
     #expect(backend.registerCount == 0)
     #expect(backend.unregisterCount == 0)
+}
+
+@MainActor
+@Test func ensureRegisteredProbesAnAlreadyEnabledHelper() async throws {
+    let backend = HelperRegistrationBackendSpy(status: .enabled)
+    let registration = HelperRegistrationService(backend: backend.backend(), refreshOnInit: false)
+
+    try await registration.ensureRegistered()
+
+    #expect(backend.probeCount == 1)
+    #expect(backend.registerCount == 0)
+    #expect(backend.unregisterCount == 0)
+    #expect(registration.state == .enabled)
+}
+
+@MainActor
+@Test func ensureRegisteredReplacesAProtocolMismatchedHelper() async throws {
+    let backend = HelperRegistrationBackendSpy(status: .enabled)
+    backend.statusAfterRegister = .enabled
+    backend.probeErrors = [
+        PrivilegedHelperError.helperReported(
+            PrivilegedHelperErrorPayload(code: "protocolMismatch", message: "old helper")
+        ),
+    ]
+    let registration = HelperRegistrationService(backend: backend.backend(), refreshOnInit: false)
+
+    try await registration.ensureRegistered()
+
+    #expect(backend.probeCount == 2)
+    #expect(backend.unregisterCount == 1)
+    #expect(backend.registerCount == 1)
+    #expect(registration.state == .enabled)
+}
+
+@Test func xpcCodeSigningRequirementRequiresTheExpectedPeerAndTeam() throws {
+    let requirement = try EasyTierXPCCodeSigningRequirements.requirement(
+        peerIdentifier: EasyTierPrivilegedHelperConstants.bundleIdentifier,
+        teamIdentifier: "TEAM123456",
+        allowIdentifierOnly: false
+    )
+
+    #expect(requirement.contains(#"identifier "com.kkrainbow.easytier.mac.helper""#))
+    #expect(requirement.contains("anchor apple generic"))
+    #expect(requirement.contains(#"certificate leaf[subject.OU] = "TEAM123456""#))
+    var compiledRequirement: SecRequirement?
+    #expect(SecRequirementCreateWithString(requirement as CFString, [], &compiledRequirement) == errSecSuccess)
+    #expect(compiledRequirement != nil)
+}
+
+@Test func xpcCodeSigningRequirementOnlyAllowsMissingTeamForDebugFallback() throws {
+    let fallback = try EasyTierXPCCodeSigningRequirements.requirement(
+        peerIdentifier: EasyTierPrivilegedHelperConstants.appBundleIdentifier,
+        teamIdentifier: nil,
+        allowIdentifierOnly: true
+    )
+
+    #expect(fallback == #"identifier "com.kkrainbow.easytier.mac""#)
+    #expect(throws: EasyTierXPCCodeSigningRequirementError.self) {
+        try EasyTierXPCCodeSigningRequirements.requirement(
+            peerIdentifier: EasyTierPrivilegedHelperConstants.appBundleIdentifier,
+            teamIdentifier: nil,
+            allowIdentifierOnly: false
+        )
+    }
+}
+
+@Test func xpcCodeSigningRequirementReadsTheCurrentDebugSignature() throws {
+    let requirement = try EasyTierXPCCodeSigningRequirements.requirement(
+        forPeerIdentifier: EasyTierPrivilegedHelperConstants.bundleIdentifier
+    )
+
+    #expect(requirement.contains(EasyTierPrivilegedHelperConstants.bundleIdentifier))
 }
 
 @MainActor
@@ -4466,6 +4612,7 @@ private final class RecordingToggleClient: EasyTierCoreClient, EasyTierHelperShu
     var stopError: Error?
     var collectError: Error?
     var jsonRPCError: Error?
+    var collectCount = 0
 
     func validate(toml _: String) async throws {}
 
@@ -4487,6 +4634,7 @@ private final class RecordingToggleClient: EasyTierCoreClient, EasyTierHelperShu
     }
 
     func collectNetworkInfos() async throws -> [String: NetworkInstanceRunningInfo] {
+        collectCount += 1
         if let collectError { throw collectError }
         return networkInfos
     }
@@ -4689,6 +4837,7 @@ private final class HelperRegistrationBackendSpy {
     var uninstallLegacyCount = 0
     var probeCount = 0
     var probeError: Error?
+    var probeErrors: [Error] = []
 
     init(status: SMAppService.Status) {
         self.status = status
@@ -4721,6 +4870,9 @@ private final class HelperRegistrationBackendSpy {
             },
             probeHelper: {
                 self.probeCount += 1
+                if !self.probeErrors.isEmpty {
+                    throw self.probeErrors.removeFirst()
+                }
                 if let probeError = self.probeError {
                     throw probeError
                 }

@@ -98,7 +98,8 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
     func shutdown(reply: @escaping (String?, String?) -> Void) {
         try? magicDNSResolverConfigurator.removeManagedResolverFiles()
         reply("ok", nil)
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
+        Task {
+            try? await Task.sleep(for: .milliseconds(50))
             Foundation.exit(EXIT_SUCCESS)
         }
     }
@@ -150,9 +151,21 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, @unchecked Sendable
     private let service = PrivilegedService()
 
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
+        do {
+            let requirement = try EasyTierXPCCodeSigningRequirements.requirement(
+                forPeerIdentifier: EasyTierPrivilegedHelperConstants.appBundleIdentifier
+            )
+            connection.setCodeSigningRequirement(requirement)
+        } catch {
+            fputs(
+                "helper rejected XPC connection from pid \(connection.processIdentifier), uid \(connection.effectiveUserIdentifier): \(error.localizedDescription)\n",
+                stderr
+            )
+            return false
+        }
         connection.exportedInterface = NSXPCInterface(with: EasyTierPrivilegedServiceProtocol.self)
         connection.exportedObject = service
-        connection.resume()
+        connection.activate()
         return true
     }
 }

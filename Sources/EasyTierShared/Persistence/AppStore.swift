@@ -77,8 +77,7 @@ public final class EasyTierAppStore {
         "\(rule.bind_ip):\(rule.bind_port)-\(rule.dst_ip):\(rule.dst_port)-\(rule.proto)"
     }
 
-    private let privilegedClient: any EasyTierCoreClient
-    private let inProcessClient: any EasyTierCoreClient
+    private let runtimeClient: any EasyTierCoreClient
     public let helperRegistration: HelperRegistrationService?
     private let storage: EasyTierStorage
     private let networkSecretStore: any NetworkSecretStore
@@ -88,8 +87,7 @@ public final class EasyTierAppStore {
     private var lastErrorKind: LastErrorKind?
 
     @ObservationIgnored private lazy var runtimeSession = RuntimeSessionController(
-        privilegedClient: privilegedClient,
-        inProcessClient: inProcessClient,
+        runtimeClient: runtimeClient,
         helperRegistration: helperRegistration,
         systemSleepPreventer: systemSleepPreventer
     )
@@ -102,6 +100,7 @@ public final class EasyTierAppStore {
     @ObservationIgnored private var runtimePresentationActivity: RuntimePresentationActivity = .interactive
     @ObservationIgnored private var runtimeMutationWaiters: [CheckedContinuation<Void, Never>] = []
     @ObservationIgnored private var busyOperationCount = 0
+    @ObservationIgnored private var runtimeServiceConfigured = false
 
     @ObservationIgnored public private(set) var runtimeDetailsWriteCount = 0
     @ObservationIgnored public private(set) var instancesWriteCount = 0
@@ -136,8 +135,7 @@ public final class EasyTierAppStore {
     }
 
     package init(
-        privilegedClient: any EasyTierCoreClient = PrivilegedEasyTierClient(),
-        inProcessClient: (any EasyTierCoreClient)? = nil,
+        runtimeClient: any EasyTierCoreClient = PrivilegedEasyTierClient(),
         helperRegistration: HelperRegistrationService? = nil,
         storage: EasyTierStorage = .default,
         networkSecretStore: any NetworkSecretStore = SystemNetworkSecretStore(),
@@ -146,8 +144,7 @@ public final class EasyTierAppStore {
         ),
         systemSleepPreventer: any SystemSleepPreventing = IOKitSystemSleepPreventer()
     ) {
-        self.privilegedClient = privilegedClient
-        self.inProcessClient = inProcessClient ?? privilegedClient
+        self.runtimeClient = runtimeClient
         self.helperRegistration = helperRegistration
         self.storage = storage
         self.networkSecretStore = networkSecretStore
@@ -166,22 +163,13 @@ public final class EasyTierAppStore {
         systemSleepPreventer: any SystemSleepPreventing = IOKitSystemSleepPreventer()
     ) {
         self.init(
-            privilegedClient: client,
-            inProcessClient: client,
+            runtimeClient: client,
             helperRegistration: nil,
             storage: storage,
             networkSecretStore: networkSecretStore,
             peerSubscriptionDataLoader: peerSubscriptionDataLoader,
             systemSleepPreventer: systemSleepPreventer
         )
-    }
-
-    private func client(for config: NetworkConfig) -> any EasyTierCoreClient {
-        runtimeSession.client(for: config)
-    }
-
-    private func setRuntimeClientKind(for config: NetworkConfig) {
-        runtimeSession.setClientKind(for: config)
     }
 
     private func withRuntimeMutation(
@@ -387,6 +375,44 @@ public final class EasyTierAppStore {
         startPolling()
     }
 
+    @discardableResult
+    public func prepareRuntimeServiceAfterLaunch() async -> Bool {
+        await prepareRuntimeService(surfaceError: true)
+    }
+
+    @discardableResult
+    public func resumeRuntimeServiceIfApproved() async -> Bool {
+        guard let helperRegistration else { return true }
+        await helperRegistration.refresh()
+        guard helperRegistration.state == .enabled else {
+            runtimeServiceConfigured = false
+            return false
+        }
+        return await prepareRuntimeService(surfaceError: true)
+    }
+
+    private func prepareRuntimeService(surfaceError: Bool) async -> Bool {
+        do {
+            try await ensureRuntimeServiceReady()
+            await refreshRuntime()
+            return true
+        } catch {
+            if surfaceError {
+                setLastError(error)
+                log("Runtime helper preparation failed: \(Self.errorMessage(for: error))")
+            }
+            return false
+        }
+    }
+
+    private func ensureRuntimeServiceReady() async throws {
+        guard let helperRegistration else { return }
+        try await helperRegistration.ensureRegistered()
+        guard !runtimeServiceConfigured else { return }
+        try await runtimeClient.configureRPCPortal(mode.rpcPortal, whitelist: mode.rpcPortalWhitelist)
+        runtimeServiceConfigured = true
+    }
+
     public func save() {
         do {
             let state = try stateForStorage()
@@ -443,7 +469,7 @@ public final class EasyTierAppStore {
             let config = configs[index]
             if let runningInstance = runningInstance(matching: config) {
                 do {
-                    try await client(for: config).stop(instanceNames: [runningInstance.name])
+                    try await runtimeClient.stop(instanceNames: [runningInstance.name])
                     runtimeSession.clearTrafficTracking(instanceName: runningInstance.name)
                 } catch {
                     setLastError(error)
@@ -468,7 +494,7 @@ public final class EasyTierAppStore {
                     return
                 }
             }
-            runtimeSession.clearClientKind(for: config)
+            runtimeSession.clearConfigTracking(for: config)
             runtimeSession.clearPendingStart(for: config)
             runtimeIntents.removeAll { intent in
                 intent.target.isLocal && (intent.target.instanceID == config.instance_id || intent.target.networkName == config.network_name)
@@ -576,17 +602,14 @@ public final class EasyTierAppStore {
             secretOutcome = resolution.outcome
             let keychainConfig = resolution.config
             let cleanConfig = Self.configWithoutReversedPortForwards(keychainConfig, fingerprints: reversedPortForwardFingerprints)
-            if config.requiresTUN, let helperRegistration {
-                do {
-                    try await helperRegistration.ensureRegistered()
-                } catch {
-                    runtimeSession.setPendingStartAfterApproval(Self.configWithoutNetworkSecret(cleanConfig))
-                    throw error
-                }
+            do {
+                try await ensureRuntimeServiceReady()
+            } catch {
+                runtimeSession.setPendingStartAfterApproval(Self.configWithoutNetworkSecret(cleanConfig))
+                throw error
             }
             guard !isQuitting else { return }
-            try await client(for: config).run(toml: try encodedTOML(for: cleanConfig))
-            setRuntimeClientKind(for: cleanConfig)
+            try await runtimeClient.run(toml: try encodedTOML(for: cleanConfig))
             runtimeSession.recordPendingStart(for: config)
             log("Start requested for \(config.network_name).")
         }
@@ -611,13 +634,18 @@ public final class EasyTierAppStore {
                   configs.contains(where: { $0.instance_id == config.instance_id })
             else { return }
             await busy {
+                do {
+                    try await ensureRuntimeServiceReady()
+                } catch {
+                    runtimeSession.restorePendingStartAfterApprovalIfEmpty(config)
+                    throw error
+                }
                 let keychainConfig = try await configWithKeychainSecret(
                     config,
                     purpose: .run,
                     reason: "Use the network secret to start \(config.network_name) after helper approval."
                 )
-                try await client(for: config).run(toml: try encodedTOML(for: keychainConfig))
-                setRuntimeClientKind(for: keychainConfig)
+                try await runtimeClient.run(toml: try encodedTOML(for: keychainConfig))
                 runtimeSession.recordPendingStart(for: config)
                 log("Start requested for \(config.network_name) after helper approval.")
             }
@@ -639,10 +667,10 @@ public final class EasyTierAppStore {
                 return
             }
             persistRuntimeHostname(from: runningInstance, forConfigID: config.instance_id)
-            try await client(for: config).stop(instanceNames: [runningInstance.name])
+            try await runtimeClient.stop(instanceNames: [runningInstance.name])
             runtimeSession.clearTrafficTracking(instanceName: runningInstance.name)
             runtimeSession.clearPendingStart(for: config)
-            runtimeSession.clearClientKind(for: config)
+            runtimeSession.clearConfigTracking(for: config)
             log("Stopped \(config.network_name).")
         }
     }
@@ -716,23 +744,19 @@ public final class EasyTierAppStore {
                 secretOutcome = resolution.outcome
                 let keychainConfig = resolution.config
                 let cleanConfig = Self.configWithoutReversedPortForwards(keychainConfig, fingerprints: reversedPortForwardFingerprints)
-                let targetClient = client(for: config)
-                try await targetClient.validate(toml: try encodedTOML(for: cleanConfig))
+                do {
+                    try await ensureRuntimeServiceReady()
+                } catch {
+                    runtimeSession.setPendingStartAfterApproval(Self.configWithoutNetworkSecret(cleanConfig))
+                    throw error
+                }
+                try await runtimeClient.validate(toml: try encodedTOML(for: cleanConfig))
                 guard !isQuitting else { return }
-                try await targetClient.stop(instanceNames: [instance.name])
+                try await runtimeClient.stop(instanceNames: [instance.name])
                 runtimeSession.clearTrafficTracking(instanceName: instance.name)
                 runtimeSession.clearPendingStart(for: config)
-                if config.requiresTUN, let helperRegistration {
-                    do {
-                        try await helperRegistration.ensureRegistered()
-                    } catch {
-                        runtimeSession.setPendingStartAfterApproval(Self.configWithoutNetworkSecret(cleanConfig))
-                        throw error
-                    }
-                }
                 guard !isQuitting else { return }
-                try await targetClient.run(toml: try encodedTOML(for: cleanConfig))
-                setRuntimeClientKind(for: cleanConfig)
+                try await runtimeClient.run(toml: try encodedTOML(for: cleanConfig))
                 runtimeSession.recordPendingStart(for: config)
                 log("Restart requested for \(config.network_name).")
             }
@@ -785,21 +809,11 @@ public final class EasyTierAppStore {
     public func stopAll() async {
         await withRuntimeMutation {
             await busy {
-                // Stop privileged instances via the daemon's retain-by-allowlist call.
-                if runtimeSession.hasPrivilegedInstances(in: instances) {
+                if helperRegistration == nil || helperRegistration?.state == .enabled {
                     do {
-                        try await privilegedClient.retain(instanceNames: [])
+                        try await runtimeClient.retain(instanceNames: [])
                     } catch {
-                        log("Failed to retain privileged instance allowlist during stopAll: \(error.localizedDescription)")
-                    }
-                }
-                // Stop in-process instances individually (no retain API).
-                let inProcessInstanceNames = runtimeSession.inProcessInstanceNames(in: instances)
-                if !inProcessInstanceNames.isEmpty {
-                    do {
-                        try await inProcessClient.stop(instanceNames: inProcessInstanceNames)
-                    } catch {
-                        log("Failed to stop in-process instances \(inProcessInstanceNames) during stopAll: \(error.localizedDescription)")
+                        log("Failed to stop helper-managed instances during stopAll: \(error.localizedDescription)")
                     }
                 }
                 runtimeSession.clearRuntimeTracking()
@@ -814,9 +828,7 @@ public final class EasyTierAppStore {
         invalidateSecretAuthenticationSession()
 
         if vpnOnDemandEnabled {
-            await withRuntimeMutation {
-                await stopInProcessInstancesBeforeQuit()
-            }
+            await withRuntimeMutation {}
             log("Quit requested with VPN On Demand enabled; leaving EasyTier network running.")
             stopPolling()
             return
@@ -824,7 +836,8 @@ public final class EasyTierAppStore {
 
         await stopAll()
         stopPolling()
-        if let shutdownClient = privilegedClient as? EasyTierHelperShutdownClient {
+        runtimeServiceConfigured = false
+        if let shutdownClient = runtimeClient as? EasyTierHelperShutdownClient {
             do {
                 try await shutdownClient.shutdownHelper()
                 log("Privileged helper shutdown requested.")
@@ -846,8 +859,9 @@ public final class EasyTierAppStore {
         invalidateSecretAuthenticationSession()
         await stopAll()
         stopPolling()
+        runtimeServiceConfigured = false
 
-        if let shutdownClient = privilegedClient as? EasyTierHelperShutdownClient {
+        if let shutdownClient = runtimeClient as? EasyTierHelperShutdownClient {
             do {
                 try await shutdownClient.shutdownHelper()
                 log("Privileged helper shutdown requested for software update.")
@@ -871,21 +885,6 @@ public final class EasyTierAppStore {
                     log("Could not restore \(config.network_name) after software update.")
                 }
             }
-        }
-    }
-
-    private func stopInProcessInstancesBeforeQuit() async {
-        let names = instances.compactMap { instance -> String? in
-            guard let config = config(matching: instance), !config.requiresTUN else { return nil }
-            return instance.name
-        }
-        guard !names.isEmpty else { return }
-
-        do {
-            try await inProcessClient.stop(instanceNames: names)
-            log("Stopped \(names.count) in-process EasyTier instance(s); VPN On Demand only keeps helper-backed VPN instances running after quit.")
-        } catch {
-            log("Could not stop in-process EasyTier instance(s) before quit: \(error.localizedDescription)")
         }
     }
 
@@ -1014,7 +1013,7 @@ public final class EasyTierAppStore {
 
         let loaded = await RemoteConfigSessionCoordinator.load(
             prepared,
-            client: EasyTierRemoteRPCClient(rpcURL: prepared.rpcURL, client: privilegedClient)
+            client: EasyTierRemoteRPCClient(rpcURL: prepared.rpcURL, client: runtimeClient)
         )
         guard remoteConfigSession?.requestID == prepared.requestID else { return }
         remoteConfigSession = loaded
@@ -1035,7 +1034,7 @@ public final class EasyTierAppStore {
         var applying = session
         applying.applyState = .applying
         remoteConfigSession = applying
-        let rpcClient = EasyTierRemoteRPCClient(rpcURL: applying.rpcURL, client: privilegedClient)
+        let rpcClient = EasyTierRemoteRPCClient(rpcURL: applying.rpcURL, client: runtimeClient)
 
         do {
             try await RemoteConfigSessionCoordinator.validate(applying, client: rpcClient)
@@ -1088,7 +1087,7 @@ public final class EasyTierAppStore {
             }
 
             for rpcURL in rpcURLs {
-                if let document = try? await EasyTierRemoteRPCClient(rpcURL: rpcURL, client: privilegedClient)
+                if let document = try? await EasyTierRemoteRPCClient(rpcURL: rpcURL, client: runtimeClient)
                     .getConfigDocument(instanceID: session.instanceID),
                    document.config == session.config
                 {
@@ -1150,12 +1149,14 @@ public final class EasyTierAppStore {
         // The RPC portal is daemon-side. Only route it through the privileged
         // client when the helper is enabled; tests may configure it directly.
         if let helperRegistration, helperRegistration.state != .enabled {
+            runtimeServiceConfigured = false
             if mode.rpcPortal == nil { log("RPC portal disabled.") }
             return
         }
 
         await busy {
-            try await privilegedClient.configureRPCPortal(mode.rpcPortal, whitelist: mode.rpcPortalWhitelist)
+            try await runtimeClient.configureRPCPortal(mode.rpcPortal, whitelist: mode.rpcPortalWhitelist)
+            runtimeServiceConfigured = true
             if let rpcPortal = mode.rpcPortal {
                 log("RPC portal listening: \(rpcPortal)")
             } else {
@@ -1400,25 +1401,20 @@ public final class EasyTierAppStore {
             reason: "Use the network secret to recover \(config.network_name) after system wake."
         )
         let cleanConfig = Self.configWithoutReversedPortForwards(keychainConfig, fingerprints: reversedPortForwardFingerprints)
-        let targetClient = client(for: config)
-
+        do {
+            try await ensureRuntimeServiceReady()
+        } catch {
+            runtimeSession.setPendingStartAfterApproval(Self.configWithoutNetworkSecret(cleanConfig))
+            throw error
+        }
         if let runningInstance {
             persistRuntimeHostname(from: runningInstance, forConfigID: config.instance_id)
-            try await targetClient.stop(instanceNames: [runningInstance.name])
+            try await runtimeClient.stop(instanceNames: [runningInstance.name])
             runtimeSession.clearTrafficTracking(instanceName: runningInstance.name)
             runtimeSession.clearPendingStart(for: config)
         }
-        if config.requiresTUN, let helperRegistration {
-            do {
-                try await helperRegistration.ensureRegistered()
-            } catch {
-                runtimeSession.setPendingStartAfterApproval(Self.configWithoutNetworkSecret(cleanConfig))
-                throw error
-            }
-        }
         guard !isQuitting else { return }
-        try await targetClient.run(toml: try encodedTOML(for: cleanConfig))
-        setRuntimeClientKind(for: cleanConfig)
+        try await runtimeClient.run(toml: try encodedTOML(for: cleanConfig))
         runtimeSession.recordPendingStart(for: config)
         log("Recovery start requested for \(config.network_name) after system wake.")
     }
@@ -1591,7 +1587,7 @@ public final class EasyTierAppStore {
         guard !observation.instanceID.isEmpty else {
             throw EasyTierCoreError.invalidResponse("runtime RPC target is missing")
         }
-        let transport = EasyTierCoreRPCTransport(client: privilegedClient, rpcURL: rpcURL)
+        let transport = EasyTierCoreRPCTransport(client: runtimeClient, rpcURL: rpcURL)
         try await EasyTierRemoteRPCClient(transport: transport).patchHostname(
             instanceID: observation.instanceID,
             hostname: hostname

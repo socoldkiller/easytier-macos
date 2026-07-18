@@ -28,8 +28,20 @@ final class AppContext {
         hasStarted = true
 
         await workspace.store.load()
-        await softwareUpdate.controller.restorePendingRuntimeIfNeeded()
+        await prepareRuntimeService()
         softwareUpdate.controller.start()
+    }
+
+    func prepareRuntimeService() async {
+        guard await workspace.store.prepareRuntimeServiceAfterLaunch() else { return }
+        await workspace.store.retryStartAfterHelperApproval()
+        await softwareUpdate.controller.restorePendingRuntimeIfNeeded()
+    }
+
+    func resumeRuntimeServiceIfApproved() async {
+        guard await workspace.store.resumeRuntimeServiceIfApproved() else { return }
+        await workspace.store.retryStartAfterHelperApproval()
+        await softwareUpdate.controller.restorePendingRuntimeIfNeeded()
     }
 
     var menuBarConnectionState: ConnectionGlyphState {

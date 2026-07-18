@@ -252,9 +252,9 @@ struct EasyTierSettingsSheet: View {
 
                 CardSection(
                     "Quit Behavior",
-                    footer: "Only helper-backed VPN networks can keep running after the app quits. no_tun networks stop with the app."
+                    footer: "All running networks are helper-managed and can remain active after the EasyTier window and menu bar app quit."
                 ) {
-                    Toggle("Keep VPN Running After Quit", isOn: vpnOnDemandBinding)
+                    Toggle("Keep Networks Running After Quit", isOn: vpnOnDemandBinding)
                 }
             }
             .padding(.horizontal, 20)

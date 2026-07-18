@@ -3,13 +3,7 @@ import Foundation
 
 @MainActor
 final class RuntimeSessionController {
-    enum ClientKind: Sendable {
-        case inProcess
-        case privileged
-    }
-
-    private let privilegedClient: any EasyTierCoreClient
-    private let inProcessClient: any EasyTierCoreClient
+    private let runtimeClient: any EasyTierCoreClient
     private let helperRegistration: HelperRegistrationService?
     private let systemSleepPreventer: any SystemSleepPreventing
 
@@ -18,7 +12,6 @@ final class RuntimeSessionController {
     private var trafficBaselinesNeedingReset: Set<String> = []
     private var pendingStarts: [String: PendingNetworkStart] = [:]
     private var pollingEnabled = true
-    private var instanceClientKind: [String: ClientKind] = [:]
     private var pendingStartAfterApproval: NetworkConfig?
     private var sleepStartedAt: Date?
     private var runningConfigIDsBeforeSleep: [String] = []
@@ -32,33 +25,18 @@ final class RuntimeSessionController {
     private let wakeRecoveryDelay: Duration
 
     init(
-        privilegedClient: any EasyTierCoreClient,
-        inProcessClient: any EasyTierCoreClient,
+        runtimeClient: any EasyTierCoreClient,
         helperRegistration: HelperRegistrationService?,
         systemSleepPreventer: any SystemSleepPreventing,
         wakeRecoveryDelay: Duration = .seconds(3)
     ) {
-        self.privilegedClient = privilegedClient
-        self.inProcessClient = inProcessClient
+        self.runtimeClient = runtimeClient
         self.helperRegistration = helperRegistration
         self.systemSleepPreventer = systemSleepPreventer
         self.wakeRecoveryDelay = wakeRecoveryDelay
     }
 
-    func client(for config: NetworkConfig) -> any EasyTierCoreClient {
-        config.requiresTUN ? privilegedClient : inProcessClient
-    }
-
-    func clientKind(for config: NetworkConfig) -> ClientKind {
-        config.requiresTUN ? .privileged : .inProcess
-    }
-
-    func setClientKind(for config: NetworkConfig) {
-        instanceClientKind[config.instance_id] = clientKind(for: config)
-    }
-
-    func clearClientKind(for config: NetworkConfig) {
-        instanceClientKind.removeValue(forKey: config.instance_id)
+    func clearConfigTracking(for config: NetworkConfig) {
         trafficCountersByInstance.removeValue(forKey: config.network_name)
         trafficBaselinesNeedingReset.remove(config.network_name)
     }
@@ -68,18 +46,7 @@ final class RuntimeSessionController {
         trafficBaselinesNeedingReset.remove(instanceName)
     }
 
-    func hasPrivilegedInstances(in instances: [NetworkInstance]) -> Bool {
-        instances.contains { instanceClientKind[$0.instance_id] != .inProcess }
-    }
-
-    func inProcessInstanceNames(in instances: [NetworkInstance]) -> [String] {
-        instances
-            .filter { instanceClientKind[$0.instance_id] == .inProcess }
-            .map(\.name)
-    }
-
     func clearRuntimeTracking() {
-        instanceClientKind.removeAll()
         pendingStarts.removeAll()
         trafficCountersByInstance.removeAll()
         trafficBaselinesNeedingReset.removeAll()
@@ -122,17 +89,9 @@ final class RuntimeSessionController {
         presentationActivity: RuntimePresentationActivity = .interactive,
         shouldApply: @escaping @MainActor () -> Bool = { true }
     ) async throws -> RuntimePresentationChange? {
-        // Merge runtime info from both the privileged daemon (TUN instances) and
-        // the in-process client (no_tun instances). Failures from either side
-        // are tolerated so a missing/unapproved helper does not break no_tun.
         var infos: [String: NetworkInstanceRunningInfo] = [:]
-        if helperRegistration?.state == .enabled {
-            if let daemonInfos = try? await privilegedClient.collectNetworkInfos() {
-                infos.merge(daemonInfos) { _, new in new }
-            }
-        }
-        if let inProcessInfos = try? await inProcessClient.collectNetworkInfos() {
-            infos.merge(inProcessInfos) { _, new in new }
+        if helperRegistration == nil || helperRegistration?.state == .enabled {
+            infos = (try? await runtimeClient.collectNetworkInfos()) ?? [:]
         }
 
         guard shouldApply() else { return nil }

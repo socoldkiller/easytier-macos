@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `Latest Stable` and opt-in `Nightly` software-update tracks. Nightly packages exact GUI and EasyTier Core `main` revisions in one signed, notarized DMG.
 
 ### Changed
+- Moved all EasyTier Core execution behind the privileged XPC helper. The GUI no longer links the Rust FFI, while `no_tun` remains supported through the same helper and can now remain running after the GUI quits.
+- The app now checks, installs, and version-probes the helper after launch; stale helper protocol versions are replaced automatically before runtime restoration.
 - TOML export now omits `network_secret` by default without opening Keychain. Including it requires an explicit plaintext warning and fresh authentication.
 - Keychain authentication is scoped to each action: start/restart/wake may reuse a recent Touch ID device unlock for 10 seconds, while reveal, export, update, and delete require a fresh context.
 - Extended the signed Sparkle appcast to preserve one Stable and one Nightly channel item, with immutable daily prereleases, duplicate-source suppression, and retention of the newest 14 Nightly builds.
@@ -21,13 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replaced the generated XCFramework/header pipeline with one current-architecture Rust static library and the tracked C header.
 
 ### Fixed
+- Restricted the root helper's XPC interface to the matching EasyTier app/helper bundle identifiers and Apple Team ID, with an identifier-only fallback limited to Debug builds.
 - Fixed a macOS Keychain routing bug where legacy cleanup could also match and delete the newly saved Data Protection Keychain item. Modern and legacy operations now select their backends explicitly, verify protected writes before cleanup, and run through a signed release-gate integration harness.
 - Legacy network-password entries now migrate in the safe order of read, protected write, verification, then precise legacy deletion. Cleanup failures no longer discard a verified modern password and are retried later.
 - Sleep/wake recovery waits until both the macOS user session and the app are active before requesting authentication, and transient Keychain-loaded plaintext is cleared when the app becomes inactive.
 - Passwords that were already deleted by version 1.4.1 cannot be recovered and must be entered again after installing this update.
 - Corrected the License string in the About pane: the app is MIT-licensed, not LGPL-3.0.
 - Unified the minimum supported macOS version to 15.0 across `Package.swift`, the generated `Info.plist` (`LSMinimumSystemVersion`), the README badges, and the update-feed `minimumSystemVersion`. Previously the badge/prose/Info.plist claimed macOS 14+ while `Package.swift` required macOS 15.
-- The privileged helper `LaunchDaemon` now ships with `RunAtLoad=false` so the daemon only starts on demand when a TUN network is requested, matching the README's description of helper behavior. Previously the helper launched at every login.
+- The privileged helper `LaunchDaemon` now ships with `RunAtLoad=false` so it starts when the app establishes its signed XPC runtime session instead of launching at every login.
 
 ## [1.4.1] — 2026-07-16
 
@@ -66,7 +69,7 @@ Initial production release of EasyTier for macOS.
 - **Workspace tabs**: Status / Traffic / Config / Peers / Logs.
 - **Peers view**: per-peer state with outbound subscription import and protocol allowlist.
 - **Local runtime**: run local EasyTier nodes with their own listeners and an optional RPC portal.
-- **Privileged helper**: guided install of a `LaunchDaemon` (via `SMAppService`) for TUN. Non-TUN mode (`no_tun`) does not require the helper. Helper launches on demand only when a TUN network is requested.
+- **Privileged helper**: all EasyTier Core execution runs in a signed `LaunchDaemon` controlled through XPC. TUN and `no_tun` share the same runtime boundary, and the app activates the helper after launch.
 - **Software update**: manifest-driven update flow with SHA256 verification, DMG install, skip/remind-me controls, and auto-check on launch. CI publishes the signed update feed.
 - **Logging panel**: combined EasyTier Core output and app-level action log with search/filter, copy-to-clipboard, and export to file.
 - **Launch at login**: `SMAppService.mainApp`-based login item toggle.
