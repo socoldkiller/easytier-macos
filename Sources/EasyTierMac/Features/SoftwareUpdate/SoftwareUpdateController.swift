@@ -37,8 +37,10 @@ final class SoftwareUpdateController: SoftwareUpdateClientDelegate {
     private let currentBuild: String
     private let preparationTimeout: Duration
     private let captureRunningConfigIDs: @MainActor () -> [String]
+    private let captureGatewayDesiredEnabled: @MainActor () -> Bool
     private let prepareForInstallation: @MainActor () async -> Void
     private let restoreRunningConfigIDs: @MainActor ([String]) async -> Void
+    private let restoreGatewayDesiredEnabled: @MainActor (Bool) async -> Void
     private let recordNotice: @MainActor (String) -> Void
 
     init(
@@ -47,8 +49,10 @@ final class SoftwareUpdateController: SoftwareUpdateClientDelegate {
         preparationTimeout: Duration = .seconds(30),
         clientFactory: ClientFactory,
         captureRunningConfigIDs: @escaping @MainActor () -> [String] = { [] },
+        captureGatewayDesiredEnabled: @escaping @MainActor () -> Bool = { false },
         prepareForInstallation: @escaping @MainActor () async -> Void = {},
         restoreRunningConfigIDs: @escaping @MainActor ([String]) async -> Void = { _ in },
+        restoreGatewayDesiredEnabled: @escaping @MainActor (Bool) async -> Void = { _ in },
         recordNotice: @escaping @MainActor (String) -> Void = { _ in }
     ) {
         let storedTrack = userDefaults.string(forKey: Self.updateTrackKey)
@@ -58,8 +62,10 @@ final class SoftwareUpdateController: SoftwareUpdateClientDelegate {
         updateTrack = storedTrack
         self.preparationTimeout = preparationTimeout
         self.captureRunningConfigIDs = captureRunningConfigIDs
+        self.captureGatewayDesiredEnabled = captureGatewayDesiredEnabled
         self.prepareForInstallation = prepareForInstallation
         self.restoreRunningConfigIDs = restoreRunningConfigIDs
+        self.restoreGatewayDesiredEnabled = restoreGatewayDesiredEnabled
         self.recordNotice = recordNotice
         migrateLegacyPreferencesIfNeeded()
         userDefaults.set(updateTrack.rawValue, forKey: Self.updateTrackKey)
@@ -100,6 +106,7 @@ final class SoftwareUpdateController: SoftwareUpdateClientDelegate {
             recordNotice("Restoring \(state.configIDs.count) network configuration(s) after software update.")
         }
         await restoreRunningConfigIDs(state.configIDs)
+        await restoreGatewayDesiredEnabled(state.gatewayDesiredEnabled)
     }
 
     func shouldPostponeInstallation(
@@ -142,6 +149,7 @@ final class SoftwareUpdateController: SoftwareUpdateClientDelegate {
             sourceBuild: currentBuild,
             targetBuild: targetBuild,
             configIDs: captureRunningConfigIDs().sorted(),
+            gatewayDesiredEnabled: captureGatewayDesiredEnabled(),
             createdAt: Date()
         )
         preparedRestoreState = state
@@ -177,6 +185,7 @@ final class SoftwareUpdateController: SoftwareUpdateClientDelegate {
         didPrepareForInstallation = false
         guard let state else { return }
         await restoreRunningConfigIDs(state.configIDs)
+        await restoreGatewayDesiredEnabled(state.gatewayDesiredEnabled)
     }
 
     private func synchronizeState() {

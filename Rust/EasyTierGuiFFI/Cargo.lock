@@ -1601,6 +1601,7 @@ dependencies = [
  "cloudflare",
  "dashmap",
  "easytier",
+ "h2",
  "hex",
  "hickory-resolver",
  "http",

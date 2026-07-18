@@ -3,10 +3,12 @@ import ServiceManagement
 
 package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelperShutdownClient, @unchecked Sendable {
     private static let defaultCallTimeout: TimeInterval = 15
+    private static let gatewayCallTimeout: TimeInterval = 45
     private static let registrationProbeTimeout: TimeInterval = 3
 
     private let connectionLock = NSLock()
     private var _connection: NSXPCConnection?
+    private var eventContinuations: [UUID: AsyncStream<PrivilegedHelperConnectionEvent>.Continuation] = [:]
 
     package init() {}
 
@@ -31,7 +33,15 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
             options: [.privileged]
         )
         conn.remoteObjectInterface = NSXPCInterface(with: EasyTierPrivilegedServiceProtocol.self)
-        conn.resume()
+        conn.interruptionHandler = { [weak self, weak conn] in
+            guard let self, let conn else { return }
+            handleConnectionEvent(.interrupted, connection: conn)
+        }
+        conn.invalidationHandler = { [weak self, weak conn] in
+            guard let self, let conn else { return }
+            handleConnectionEvent(.invalidated, connection: conn)
+        }
+        conn.activate()
         _connection = conn
         return conn
     }
@@ -41,7 +51,21 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
         let conn = _connection
         _connection = nil
         connectionLock.unlock()
+        conn?.interruptionHandler = nil
+        conn?.invalidationHandler = nil
         conn?.invalidate()
+    }
+
+    package func connectionEvents() -> AsyncStream<PrivilegedHelperConnectionEvent> {
+        let id = UUID()
+        return AsyncStream { continuation in
+            connectionLock.lock()
+            eventContinuations[id] = continuation
+            connectionLock.unlock()
+            continuation.onTermination = { [weak self] _ in
+                self?.removeEventContinuation(id: id)
+            }
+        }
     }
 
     package func validate(toml: String) async throws {
@@ -108,6 +132,52 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
         }
     }
 
+    package func gatewayStart(configurationJSON: String) async throws {
+        try await callHelper(
+            timeout: Self.gatewayCallTimeout,
+            timeoutError: { Self.gatewayTimeoutError(operation: "start") },
+            retryOnUnavailable: false
+        ) { service, reply in
+            service.gatewayStart(configurationJSON: configurationJSON, reply: reply)
+        }
+    }
+
+    package func gatewayApply(configurationJSON: String) async throws {
+        try await callHelper(
+            timeout: Self.gatewayCallTimeout,
+            timeoutError: { Self.gatewayTimeoutError(operation: "apply") },
+            retryOnUnavailable: false
+        ) { service, reply in
+            service.gatewayApply(configurationJSON: configurationJSON, reply: reply)
+        }
+    }
+
+    package func gatewayStop() async throws {
+        try await callHelper(
+            timeout: Self.gatewayCallTimeout,
+            timeoutError: { Self.gatewayTimeoutError(operation: "stop") },
+            retryOnUnavailable: false
+        ) { service, reply in
+            service.gatewayStop(reply: reply)
+        }
+    }
+
+    package func gatewayStatusJSON() async throws -> String {
+        try await callHelperReturningPayload { service, reply in
+            service.gatewayStatus(reply: reply)
+        }
+    }
+
+    package func gatewayRequestRenewal(certificateID: String?) async throws {
+        try await callHelper(
+            timeout: Self.gatewayCallTimeout,
+            timeoutError: { Self.gatewayTimeoutError(operation: "renewal") },
+            retryOnUnavailable: false
+        ) { service, reply in
+            service.gatewayRequestRenewal(certificateID: certificateID, reply: reply)
+        }
+    }
+
     package func helperPingPayload() async throws -> String {
         try await helperPingPayload(
             timeout: Self.defaultCallTimeout,
@@ -152,6 +222,20 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
         _ = try await callHelperReturningPayload(body)
     }
 
+    private func callHelper(
+        timeout: TimeInterval,
+        timeoutError: @escaping @Sendable () -> PrivilegedHelperError,
+        retryOnUnavailable: Bool,
+        _ body: @escaping (EasyTierPrivilegedServiceProtocol, @escaping (String?, String?) -> Void) -> Void
+    ) async throws {
+        _ = try await callHelperReturningPayload(
+            timeout: timeout,
+            timeoutError: timeoutError,
+            retryOnUnavailable: retryOnUnavailable,
+            body
+        )
+    }
+
     private func callHelperReturningPayload(_ body: @escaping (EasyTierPrivilegedServiceProtocol, @escaping (String?, String?) -> Void) -> Void) async throws -> String {
         try await callHelperReturningPayload(timeout: Self.defaultCallTimeout, timeoutError: Self.timeoutError, body)
     }
@@ -159,11 +243,12 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
     private func callHelperReturningPayload(
         timeout: TimeInterval,
         timeoutError: @escaping @Sendable () -> PrivilegedHelperError,
+        retryOnUnavailable: Bool = true,
         _ body: @escaping (EasyTierPrivilegedServiceProtocol, @escaping (String?, String?) -> Void) -> Void
     ) async throws -> String {
         do {
             return try await performHelperCall(timeout: timeout, timeoutError: timeoutError, body: body, isRetry: false)
-        } catch PrivilegedHelperError.unavailable {
+        } catch PrivilegedHelperError.unavailable where retryOnUnavailable {
             // Daemon may have idle-exited even though it is still registered.
             // Drop the cached connection and retry once — launchd will relaunch the helper.
             dropConnection()
@@ -288,6 +373,16 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
         )
     }
 
+    private static func gatewayTimeoutError(operation: String) -> PrivilegedHelperError {
+        .helperReported(
+            PrivilegedHelperErrorPayload(
+                code: "gatewayTimeout",
+                message: "Gateway \(operation) did not complete within 45 seconds.",
+                recoverySuggestion: "Refresh Gateway status before retrying so an operation that completed after the timeout is not duplicated."
+            )
+        )
+    }
+
     private static func helperUnavailableError() -> PrivilegedHelperError {
         .helperReported(
             PrivilegedHelperErrorPayload(
@@ -339,6 +434,25 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
                 )
             )
         }
+    }
+
+    private func handleConnectionEvent(
+        _ event: PrivilegedHelperConnectionEvent,
+        connection: NSXPCConnection
+    ) {
+        connectionLock.lock()
+        if _connection === connection {
+            _connection = nil
+        }
+        let continuations = Array(eventContinuations.values)
+        connectionLock.unlock()
+        continuations.forEach { $0.yield(event) }
+    }
+
+    private func removeEventContinuation(id: UUID) {
+        connectionLock.lock()
+        eventContinuations.removeValue(forKey: id)
+        connectionLock.unlock()
     }
 }
 

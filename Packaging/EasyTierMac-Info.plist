@@ -37,9 +37,9 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSSupportsAutomaticTermination</key>
-    <true/>
+    <false/>
     <key>NSSupportsSuddenTermination</key>
-    <true/>
+    <false/>
     <key>SUAllowsAutomaticUpdates</key>
     <false/>
     <key>SUAutomaticallyUpdate</key>

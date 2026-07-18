@@ -35,6 +35,7 @@ zeroize = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 base64 = "0.22"
+h2 = "0.4"
 http-body-util = "0.1"
 rcgen = { version = "0.14.8", features = ["x509-parser"] }
 tempfile = "3"

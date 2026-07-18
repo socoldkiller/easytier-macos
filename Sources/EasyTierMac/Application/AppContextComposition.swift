@@ -5,15 +5,25 @@ import Foundation
 extension AppContext {
     static func live(userDefaults: UserDefaults = .standard) -> AppContext {
         let helperRegistration = HelperRegistrationService()
+        let privilegedClient = PrivilegedEasyTierClient()
         let store = EasyTierAppStore(
+            privilegedClient: privilegedClient,
             inProcessClient: StaticEasyTierFFIClient(),
             helperRegistration: helperRegistration,
             peerSubscriptionDataLoader: URLSessionPeerSubscriptionDataLoader(
                 session: URLSession(configuration: .default)
             )
         )
+        let gatewayClient = PrivilegedGatewayClient(helper: privilegedClient)
+        let gateway = GatewayRuntimeController(
+            client: gatewayClient,
+            configurationStore: GatewayConfigurationStore(),
+            helperRegistration: helperRegistration,
+            connectionMonitor: gatewayClient
+        )
+        let runtime = ApplicationRuntimeCoordinator(store: store, gateway: gateway)
         return make(
-            store: store,
+            runtime: runtime,
             userDefaults: userDefaults,
             loginItemService: SystemLoginItemService(),
             privilegedHelper: SystemPrivilegedHelperLifecycle(),
@@ -37,8 +47,18 @@ extension AppContext {
                 session: URLSession(configuration: .ephemeral)
             )
         )
+        let gatewayConfigurationURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("easytier-gateway-preview", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("config.json", isDirectory: false)
+        let gateway = GatewayRuntimeController(
+            client: DisabledGatewayClient(),
+            configurationStore: GatewayConfigurationStore(fileURL: gatewayConfigurationURL),
+            helperRegistration: nil
+        )
+        let runtime = ApplicationRuntimeCoordinator(store: store, gateway: gateway)
         return make(
-            store: store,
+            runtime: runtime,
             userDefaults: userDefaults,
             loginItemService: InMemoryLoginItemService(),
             privilegedHelper: NoOpPrivilegedHelperLifecycle(),
@@ -48,13 +68,14 @@ extension AppContext {
     }
 
     private static func make(
-        store: EasyTierAppStore,
+        runtime: ApplicationRuntimeCoordinator,
         userDefaults: UserDefaults,
         loginItemService: any LoginItemService,
         privilegedHelper: any PrivilegedHelperLifecycle,
         softwareUpdateClientFactory: @escaping SoftwareUpdateController.ClientFactory,
         dockIconVisibility: any DockIconVisibilityApplying
     ) -> AppContext {
+        let store = runtime.store
         let workspace = WorkspaceFeature(store: store)
         let settings = SettingsFeature(
             appearance: AppAppearanceSettings(
@@ -68,7 +89,7 @@ extension AppContext {
             userDefaults: userDefaults
         )
         let softwareUpdate = SoftwareUpdateFeature(
-            runtime: store,
+            runtime: runtime,
             privilegedHelper: privilegedHelper,
             userDefaults: userDefaults,
             clientFactory: softwareUpdateClientFactory
@@ -79,6 +100,7 @@ extension AppContext {
             mainWindow: WindowPresentationModel()
         )
         return AppContext(
+            runtime: runtime,
             workspace: workspace,
             settings: settings,
             softwareUpdate: softwareUpdate,

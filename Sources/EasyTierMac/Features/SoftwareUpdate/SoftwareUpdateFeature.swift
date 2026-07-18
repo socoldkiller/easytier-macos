@@ -18,6 +18,9 @@ struct SoftwareUpdateFeature {
             captureRunningConfigIDs: {
                 runtime.runningConfigIDsForSoftwareUpdate()
             },
+            captureGatewayDesiredEnabled: {
+                runtime.gatewayDesiredEnabledForSoftwareUpdate()
+            },
             prepareForInstallation: {
                 await runtime.prepareForSoftwareUpdate()
                 do {
@@ -31,6 +34,11 @@ struct SoftwareUpdateFeature {
             },
             restoreRunningConfigIDs: { configIDs in
                 await runtime.restoreConfigsAfterSoftwareUpdate(configIDs: configIDs)
+            },
+            restoreGatewayDesiredEnabled: { desiredEnabled in
+                await runtime.restoreGatewayAfterSoftwareUpdate(
+                    desiredEnabled: desiredEnabled
+                )
             },
             recordNotice: { message in
                 runtime.recordNotice(message)

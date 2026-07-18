@@ -1254,6 +1254,68 @@ mod tests {
         });
     }
 
+    #[test]
+    fn gateway_routes_http2_authority() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let storage_dir = temp.path().join("gateway");
+            let domain = "h2.gateway.test";
+            let (certificate_pem, private_key_pem, certificate_der) =
+                test_certificate(&[domain]);
+            GatewayStorage::initialize(storage_dir.clone())
+                .unwrap()
+                .store_certificate(
+                    "gateway-cert",
+                    &[domain.to_string()],
+                    &certificate_pem,
+                    &private_key_pem,
+                )
+                .unwrap();
+
+            let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let upstream_addr = upstream.local_addr().unwrap();
+            let (request_sender, request_receiver) = oneshot::channel();
+            let upstream_task = tokio::spawn(async move {
+                let (mut stream, _) = upstream.accept().await.unwrap();
+                let request = read_http_headers(&mut stream).await;
+                let _ = request_sender.send(request);
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nh2-proxied",
+                    )
+                    .await
+                    .unwrap();
+            });
+
+            let config = gateway_config(
+                &storage_dir,
+                upstream_addr,
+                &[domain],
+                "127.0.0.1:0",
+                "127.0.0.1:0",
+            );
+            let gateway = GatewayHandle::start(&config.to_string(), &empty_secrets().to_string())
+                .await
+                .unwrap();
+            let status: Value = serde_json::from_str(&gateway.status_json().unwrap()).unwrap();
+            let https_addr = status["listeners"]["https"].as_str().unwrap();
+
+            let (response_status, response_body) =
+                tls_h2_request(https_addr, domain, "/through-h2", certificate_der).await;
+            assert_eq!(response_status, http::StatusCode::OK);
+            assert_eq!(response_body, "h2-proxied");
+
+            let upstream_request = request_receiver.await.unwrap().to_ascii_lowercase();
+            assert!(upstream_request.contains("host: h2.gateway.test"));
+            assert!(upstream_request.contains("x-forwarded-proto: https"));
+            assert!(upstream_request.contains("x-forwarded-host: h2.gateway.test"));
+
+            gateway.stop().await.unwrap();
+            upstream_task.await.unwrap();
+        });
+    }
+
     fn gateway_config(
         storage_dir: &Path,
         upstream_addr: std::net::SocketAddr,
@@ -1336,6 +1398,49 @@ mod tests {
         let server_name = ServerName::try_from(server_name.to_string()).unwrap();
         let stream = connector.connect(server_name, stream).await.unwrap();
         send_http_request(stream, host, path).await
+    }
+
+    async fn tls_h2_request(
+        address: &str,
+        server_name: &str,
+        path: &str,
+        root_certificate: CertificateDer<'static>,
+    ) -> (http::StatusCode, String) {
+        let mut roots = RootCertStore::empty();
+        roots.add(root_certificate).unwrap();
+        let mut config = ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        config.alpn_protocols = vec![b"h2".to_vec()];
+        let connector = TlsConnector::from(Arc::new(config));
+        let stream = TcpStream::connect(address).await.unwrap();
+        let tls_server_name = ServerName::try_from(server_name.to_string()).unwrap();
+        let stream = connector.connect(tls_server_name, stream).await.unwrap();
+        assert_eq!(stream.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+
+        let (client, connection) = h2::client::handshake(stream).await.unwrap();
+        let connection_task = tokio::spawn(async move { connection.await });
+        let request = http::Request::builder()
+            .method(http::Method::GET)
+            .uri(format!("https://{server_name}{path}"))
+            .body(())
+            .unwrap();
+        let (response, _) = client
+            .ready()
+            .await
+            .unwrap()
+            .send_request(request, true)
+            .unwrap();
+        let response = response.await.unwrap();
+        let status = response.status();
+        let mut body = response.into_body();
+        let mut bytes = Vec::new();
+        while let Some(chunk) = body.data().await {
+            bytes.extend_from_slice(&chunk.unwrap());
+        }
+        connection_task.abort();
+
+        (status, String::from_utf8(bytes).unwrap())
     }
 
     async fn send_http_request<S>(mut stream: S, host: &str, path: &str) -> String

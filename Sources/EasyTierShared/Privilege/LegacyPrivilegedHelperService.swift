@@ -113,7 +113,7 @@ public enum LegacyPrivilegedHelperService {
                 <true/>
             </dict>
             <key>RunAtLoad</key>
-            <true/>
+            <false/>
             <key>StandardOutPath</key>
             <string>/var/log/easytier-helper.log</string>
             <key>StandardErrorPath</key>

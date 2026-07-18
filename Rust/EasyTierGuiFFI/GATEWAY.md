@@ -123,11 +123,12 @@ storage directory or status JSON.
 ## ACME reachability
 
 For HTTP-01, the public domain must resolve to the gateway and public TCP port 80 must reach the
-configured HTTP listener. A high local listener port is supported, but an external port forward or
-future privileged-helper binding must map port 80 to it.
+configured HTTP listener. The macOS Swift integration binds port 80 in its privileged helper;
+standalone high-port deployments still require an external port forward.
 
 For normal HTTPS traffic, public TCP port 443 must similarly reach the configured HTTPS listener.
-DNS-01 does not require inbound port 80 and is required for wildcard certificates.
+The macOS helper binds port 443 directly. DNS-01 does not require inbound port 80 and is required
+for wildcard certificates.
 
 ## C ABI
 
@@ -167,11 +168,25 @@ Return value `0` means success and `-1` means failure. Strings returned through 
 - Stop is idempotent.
 - Status while stopped returns a versioned stopped snapshot.
 
-## Deferred work
+## macOS Swift and privileged-helper integration
 
-The first version intentionally does not modify SwiftUI, Magic DNS configuration, or the
-privileged helper. GUI domain-prefix mapping, certificate approval controls, and direct privileged
-80/443 binding can be layered on the C ABI after the internal flow is adopted by the app.
+The macOS app wraps the C ABI through a dedicated `GatewayClient`. The GUI-owned configuration
+contains only ACME, certificate, and route fields; the privileged helper injects the security-
+sensitive runtime fields before calling Rust:
+
+- HTTP listens on `0.0.0.0:80` and HTTPS listens on `0.0.0.0:443`.
+- Runtime storage is `/Library/Application Support/EasyTier/Gateway/<uid>/runtime`.
+- The first Swift integration accepts HTTP-01 with Let's Encrypt staging or production only.
+- DNS-01 secrets and custom ACME CA paths remain Rust capabilities but are not exposed by Swift v1.
+
+The user's desired state is stored at
+`~/Library/Application Support/com.kkrainbow.easytier.mac/gateway/config.json`. The helper validates
+the app's code signature, binds Gateway ownership to the initiating GUI UID, serializes all Gateway
+FFI calls, and stops the listeners when the owning GUI exits or its XPC lease expires. Gateway
+runtime data is preserved across normal quit and software updates so ACME accounts and certificates
+can be reused.
+
+SwiftUI editing, DNS-01 credential management, and custom CA import are deferred.
 
 The automated tests run the ACME protocol, Cloudflare API shape, challenge ordering, certificate
 issuance, ARI replacement, cleanup persistence, TLS termination, and proxying against controlled

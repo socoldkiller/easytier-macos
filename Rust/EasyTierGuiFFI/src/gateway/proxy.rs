@@ -356,10 +356,15 @@ fn build_upstream_peer(route: &RuntimeRoute) -> HttpPeer {
 }
 
 fn request_host(request: &RequestHeader) -> Result<String, String> {
+    // HTTP/2 carries :authority in the URI and may omit the Host header.
+    if let Some(authority) = request.uri.authority() {
+        return normalize_domain(authority.host());
+    }
+
     let host = request
         .headers
         .get(header::HOST)
-        .ok_or_else(|| "request does not contain Host".to_string())?
+        .ok_or_else(|| "request does not contain an authority or Host".to_string())?
         .to_str()
         .map_err(|error| format!("request Host is not valid text: {error}"))?;
     let authority = http::uri::Authority::from_str(host)
@@ -435,6 +440,38 @@ async fn respond_with_headers(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_host_uses_http1_host_header() {
+        let mut request = RequestHeader::build(Method::GET, b"/", Some(1)).unwrap();
+        request
+            .insert_header(header::HOST, "App.Example.com:8443")
+            .unwrap();
+
+        assert_eq!(request_host(&request).unwrap(), "app.example.com");
+    }
+
+    #[test]
+    fn request_host_uses_http2_authority_before_host_header() {
+        let mut request = RequestHeader::build_no_case(Method::GET, b"/path", Some(1)).unwrap();
+        request.uri = "https://H2.Example.com:443/path".parse().unwrap();
+        request.set_version(http::Version::HTTP_2);
+        request
+            .insert_header(header::HOST, "ignored.example.com")
+            .unwrap();
+
+        assert_eq!(request_host(&request).unwrap(), "h2.example.com");
+    }
+
+    #[test]
+    fn request_host_rejects_requests_without_authority_or_host() {
+        let request = RequestHeader::build(Method::GET, b"/", None).unwrap();
+
+        assert_eq!(
+            request_host(&request).unwrap_err(),
+            "request does not contain an authority or Host"
+        );
+    }
 
     #[test]
     fn parses_http01_token_strictly() {

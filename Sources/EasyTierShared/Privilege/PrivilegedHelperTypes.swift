@@ -4,7 +4,7 @@ package enum EasyTierPrivilegedHelperConstants {
     package static let bundleIdentifier = "com.kkrainbow.easytier.mac.helper"
     package static let machServiceName = "com.kkrainbow.easytier.mac.helper"
     package static let launchDaemonPlistName = "com.kkrainbow.easytier.mac.helper.plist"
-    package static let protocolVersion = "10"
+    package static let protocolVersion = "11"
     package static let pingPayload = "pong:\(protocolVersion)"
 }
 
@@ -45,7 +45,17 @@ package protocol EasyTierPrivilegedServiceProtocol {
     func collectNetworkInfos(reply: @escaping (String?, String?) -> Void)
     func configureRPCPortal(rpcPortal: String?, whitelist: [String]?, reply: @escaping (String?, String?) -> Void)
     func callJSONRPC(clientID: String, url: String, service: String, method: String, domain: String?, payload: String, reply: @escaping (String?, String?) -> Void)
+    func gatewayStart(configurationJSON: String, reply: @escaping (String?, String?) -> Void)
+    func gatewayApply(configurationJSON: String, reply: @escaping (String?, String?) -> Void)
+    func gatewayStop(reply: @escaping (String?, String?) -> Void)
+    func gatewayStatus(reply: @escaping (String?, String?) -> Void)
+    func gatewayRequestRenewal(certificateID: String?, reply: @escaping (String?, String?) -> Void)
     func shutdown(reply: @escaping (String?, String?) -> Void)
+}
+
+package enum PrivilegedHelperConnectionEvent: Sendable {
+    case interrupted
+    case invalidated
 }
 
 package enum PrivilegedHelperError: LocalizedError, Equatable {

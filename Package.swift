@@ -91,6 +91,10 @@ let package = Package(
             dependencies: ["EasyTierShared"]
         ),
         .testTarget(
+            name: "EasyTierRuntimeTests",
+            dependencies: ["EasyTierRuntime", "EasyTierShared"]
+        ),
+        .testTarget(
             name: "EasyTierMacTests",
             dependencies: ["EasyTierMac", "EasyTierShared"]
         ),

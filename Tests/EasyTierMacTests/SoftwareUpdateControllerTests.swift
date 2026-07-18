@@ -191,6 +191,34 @@ import Testing
 }
 
 @MainActor
+@Test func abortedInstallationRestoresGatewayAfterNetworks() async throws {
+    let fixture = makeUserDefaults()
+    defer { fixture.clear() }
+
+    var restoreOrder: [String] = []
+    let controller = SoftwareUpdateController(
+        userDefaults: fixture.defaults,
+        currentBuild: "100",
+        clientFactory: { _ in TestSoftwareUpdateClient() },
+        captureRunningConfigIDs: { ["network-a"] },
+        captureGatewayDesiredEnabled: { true },
+        restoreRunningConfigIDs: { _ in restoreOrder.append("networks") },
+        restoreGatewayDesiredEnabled: { enabled in
+            restoreOrder.append(enabled ? "gateway-enabled" : "gateway-disabled")
+        }
+    )
+
+    let preparation = try #require(controller.beginInstallationPreparation(targetBuild: "200") {})
+    await preparation.value
+    let restoration = try #require(
+        controller.handleInstallationAbort(TestUpdateError.installationStopped)
+    )
+    await restoration.value
+
+    #expect(restoreOrder == ["networks", "gateway-enabled"])
+}
+
+@MainActor
 @Test func abortedInstallationRestoresLifecycleWhenNoNetworksWereRunning() async throws {
     let fixture = makeUserDefaults()
     defer { fixture.clear() }
@@ -240,6 +268,21 @@ import Testing
     #expect(restoreCount == 0)
     #expect(notices == ["Discarded software update recovery state for an unrelated build."])
     #expect(fixture.defaults.data(forKey: pendingRestoreKey) == nil)
+}
+
+@Test func legacySoftwareUpdateRestoreStateDefaultsGatewayToDisabled() throws {
+    struct LegacyState: Encodable {
+        var sourceBuild = "100"
+        var targetBuild = "200"
+        var configIDs = ["network-a"]
+        var createdAt = Date(timeIntervalSince1970: 1_700_000_000)
+    }
+
+    let data = try JSONEncoder().encode(LegacyState())
+    let state = try JSONDecoder().decode(SoftwareUpdateRuntimeRestoreState.self, from: data)
+
+    #expect(!state.gatewayDesiredEnabled)
+    #expect(state.configIDs == ["network-a"])
 }
 
 @MainActor

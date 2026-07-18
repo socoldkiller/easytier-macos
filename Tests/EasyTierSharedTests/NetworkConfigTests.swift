@@ -1383,21 +1383,26 @@ import Testing
         wakeRecoveryDelay: .milliseconds(10)
     )
     var recoveryCount = 0
+    var wakeContinuation: AsyncStream<Void>.Continuation?
+    let wakeEvents = AsyncStream<Void> { wakeContinuation = $0 }
     controller.startPolling(
         refresh: {},
         handleWillSleep: {},
         handleSessionResign: {},
-        handleDidWake: { recoveryCount += 1 }
+        handleDidWake: {
+            recoveryCount += 1
+            wakeContinuation?.yield()
+            wakeContinuation?.finish()
+        }
     )
     defer { controller.stopPolling() }
 
     controller.setApplicationActive(false)
     controller.handleSystemDidWakeNotification()
-    try? await Task.sleep(for: .milliseconds(30))
     #expect(recoveryCount == 0)
 
     controller.setApplicationActive(true)
-    try? await Task.sleep(for: .milliseconds(30))
+    for await _ in wakeEvents { break }
     #expect(recoveryCount == 1)
 }
 
@@ -1412,21 +1417,26 @@ import Testing
         wakeRecoveryDelay: .milliseconds(10)
     )
     var recoveryCount = 0
+    var wakeContinuation: AsyncStream<Void>.Continuation?
+    let wakeEvents = AsyncStream<Void> { wakeContinuation = $0 }
     controller.startPolling(
         refresh: {},
         handleWillSleep: {},
         handleSessionResign: {},
-        handleDidWake: { recoveryCount += 1 }
+        handleDidWake: {
+            recoveryCount += 1
+            wakeContinuation?.yield()
+            wakeContinuation?.finish()
+        }
     )
     defer { controller.stopPolling() }
 
     controller.handleUserSessionDidResignActiveNotification()
     controller.handleSystemDidWakeNotification()
-    try? await Task.sleep(for: .milliseconds(30))
     #expect(recoveryCount == 0)
 
     controller.handleUserSessionDidBecomeActiveNotification()
-    try? await Task.sleep(for: .milliseconds(30))
+    for await _ in wakeEvents { break }
     #expect(recoveryCount == 1)
 }
 
