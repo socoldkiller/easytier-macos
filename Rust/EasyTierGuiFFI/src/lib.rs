@@ -12,7 +12,9 @@ use easytier::{
     proto::{
         api::{
             config::{ConfigRpc, ConfigRpcClientFactory},
-            instance::{PortForwardManageRpc, PortForwardManageRpcClientFactory},
+            instance::{
+                InstanceIdentifier, PortForwardManageRpc, PortForwardManageRpcClientFactory,
+            },
         },
         rpc_impl::standalone::StandAloneClient,
         rpc_types::controller::BaseController,
@@ -1032,6 +1034,7 @@ fn call_json_rpc_inner(
 ) -> Result<String, String> {
     let payload = serde_json::from_str::<Value>(&payload_json)
         .map_err(|e| format!("payload_json must be valid JSON: {e}"))?;
+    let payload = normalize_instance_identifier_payload(payload);
 
     if !is_allowed_service_method(&service_name, &method_name) {
         return Err(format!(
@@ -1052,6 +1055,41 @@ fn call_json_rpc_inner(
         payload,
     ))?;
     serde_json::to_string(&response).map_err(|e| format!("failed to serialize RPC response: {e}"))
+}
+
+#[cfg(feature = "core")]
+fn normalize_instance_identifier_payload(mut payload: Value) -> Value {
+    let Some(instance) = payload.get_mut("instance") else {
+        return payload;
+    };
+    let Value::Object(instance) = instance else {
+        return payload;
+    };
+    let Some(selector) = instance.get("selector").cloned() else {
+        return payload;
+    };
+
+    let legacy_identifier = Value::Object(instance.clone());
+    let legacy_is_supported = serde_json::from_value::<InstanceIdentifier>(legacy_identifier)
+        .is_ok_and(|identifier| identifier.selector.is_some());
+    if !legacy_is_supported {
+        let Value::Object(mut selector) = selector else {
+            return payload;
+        };
+        let replacement = if let Some(id) = selector.remove("Id") {
+            Some(("id", id))
+        } else {
+            selector
+                .remove("InstanceSelector")
+                .map(|value| ("instanceSelector", value))
+        };
+        if let Some((key, value)) = replacement {
+            instance.remove("selector");
+            instance.insert(key.to_string(), value);
+        }
+    }
+
+    payload
 }
 
 #[cfg(test)]
@@ -1357,7 +1395,7 @@ mod tests {
     }
 
     #[test]
-    fn patch_config_payload_shape_matches_easytier_generated_type() {
+    fn legacy_patch_config_payload_is_adapted_to_easytier_generated_type() {
         let payload = serde_json::json!({
             "patch": {
                 "hostname": "edge-mac",
@@ -1379,7 +1417,8 @@ mod tests {
                 }
             }
         });
-        let request: PatchConfigRequest = serde_json::from_value(payload).unwrap();
+        let request: PatchConfigRequest =
+            serde_json::from_value(normalize_instance_identifier_payload(payload)).unwrap();
         assert_eq!(request.patch.unwrap().hostname.as_deref(), Some("edge-mac"));
         let selector = request.instance.unwrap().selector.unwrap();
         assert!(matches!(selector, Selector::Id(_)));
