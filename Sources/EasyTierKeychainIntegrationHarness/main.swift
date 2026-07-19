@@ -17,6 +17,7 @@ struct EasyTierKeychainIntegrationHarness {
 
     private static func run() async throws {
         let environment = ProcessInfo.processInfo.environment
+        let runsLegacyMigration = environment["EASYTIER_KEYCHAIN_TEST_LEGACY_MIGRATION"] != "0"
         let service = environment["EASYTIER_KEYCHAIN_TEST_SERVICE"]
             ?? "com.kkrainbow.easytier.mac.keychain-test.\(UUID().uuidString.lowercased())"
         let accessGroup = environment["EASYTIER_KEYCHAIN_ACCESS_GROUP"]?.nilIfEmpty
@@ -65,30 +66,34 @@ struct EasyTierKeychainIntegrationHarness {
             accessGroup: accessGroup
         )
 
-        try addLegacyFixture(
-            "integration-migration-secret",
-            service: service,
-            account: migrationConfig.network_name,
-            accessGroup: accessGroup
-        )
-        let migrated = try await store.secret(
-            for: migrationConfig,
-            purpose: .reveal,
-            reason: "Migrate an EasyTier Keychain integration fixture."
-        )
-        guard migrated?.secret == "integration-migration-secret" else {
-            throw HarnessError("legacy migration returned an unexpected value")
+        if runsLegacyMigration {
+            try addLegacyFixture(
+                "integration-migration-secret",
+                service: service,
+                account: migrationConfig.network_name,
+                accessGroup: accessGroup
+            )
+            let migrated = try await store.secret(
+                for: migrationConfig,
+                purpose: .reveal,
+                reason: "Migrate an EasyTier Keychain integration fixture."
+            )
+            guard migrated?.secret == "integration-migration-secret" else {
+                throw HarnessError("legacy migration returned an unexpected value")
+            }
+            try requireModernItem(
+                service: service,
+                account: migrationConfig.network_name,
+                accessGroup: accessGroup
+            )
+            try requireLegacyItemAbsent(
+                service: service,
+                account: migrationConfig.network_name,
+                accessGroup: accessGroup
+            )
+        } else {
+            print("Legacy Keychain migration skipped because this runner has no interactive user session.")
         }
-        try requireModernItem(
-            service: service,
-            account: migrationConfig.network_name,
-            accessGroup: accessGroup
-        )
-        try requireLegacyItemAbsent(
-            service: service,
-            account: migrationConfig.network_name,
-            accessGroup: accessGroup
-        )
 
         for account in accounts {
             try requireDeleteSucceeded(
