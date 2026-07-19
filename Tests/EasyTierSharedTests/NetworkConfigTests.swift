@@ -3976,6 +3976,7 @@ import Testing
     }
 }
 
+#if DEBUG
 @Test func xpcCodeSigningRequirementReadsTheCurrentDebugSignature() throws {
     let requirement = try EasyTierXPCCodeSigningRequirements.requirement(
         forPeerIdentifier: EasyTierPrivilegedHelperConstants.bundleIdentifier
@@ -3983,6 +3984,7 @@ import Testing
 
     #expect(requirement.contains(EasyTierPrivilegedHelperConstants.bundleIdentifier))
 }
+#endif
 
 @MainActor
 @Test func ensureRegisteredRemovesLegacyHelperBeforeModernRegistration() async throws {
