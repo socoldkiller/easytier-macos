@@ -20,13 +20,16 @@ public struct MagicDNSSystemResolverConfigurator {
 
     private let resolverDirectory: URL
     private let fileManager: FileManager
+    private let cacheRefresher: (any MagicDNSCacheRefreshing)?
 
     public init(
         resolverDirectory: URL = URL(fileURLWithPath: "/etc/resolver", isDirectory: true),
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        cacheRefresher: (any MagicDNSCacheRefreshing)? = nil
     ) {
         self.resolverDirectory = resolverDirectory
         self.fileManager = fileManager
+        self.cacheRefresher = cacheRefresher
     }
 
     public func apply(from toml: String) throws {
@@ -57,11 +60,14 @@ public struct MagicDNSSystemResolverConfigurator {
             named: Self.searchResolverFileName,
             content: "\(Self.resolverFileHeader)search \(resolverName)\n"
         )
-        try removeStaleManagedResolverFiles(keeping: keep)
+        _ = try removeStaleManagedResolverFiles(keeping: keep)
+        try cacheRefresher?.refresh()
     }
 
     public func removeManagedResolverFiles() throws {
-        try removeStaleManagedResolverFiles(keeping: [])
+        if try removeStaleManagedResolverFiles(keeping: []) {
+            try cacheRefresher?.refresh()
+        }
     }
 
     private func writeResolverFile(named name: String, content: String) throws {
@@ -70,9 +76,10 @@ public struct MagicDNSSystemResolverConfigurator {
         try fileManager.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
     }
 
-    private func removeStaleManagedResolverFiles(keeping keep: Set<String>) throws {
-        guard fileManager.fileExists(atPath: resolverDirectory.path) else { return }
+    private func removeStaleManagedResolverFiles(keeping keep: Set<String>) throws -> Bool {
+        guard fileManager.fileExists(atPath: resolverDirectory.path) else { return false }
 
+        var removedManagedFile = false
         let entries = try fileManager.contentsOfDirectory(
             at: resolverDirectory,
             includingPropertiesForKeys: [.isRegularFileKey],
@@ -86,6 +93,8 @@ public struct MagicDNSSystemResolverConfigurator {
             let content = try String(contentsOf: url, encoding: .utf8)
             guard content.hasPrefix(Self.resolverFileHeader) else { continue }
             try fileManager.removeItem(at: url)
+            removedManagedFile = true
         }
+        return removedManagedFile
     }
 }

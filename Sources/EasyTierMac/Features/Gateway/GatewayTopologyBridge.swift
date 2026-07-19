@@ -51,6 +51,31 @@ enum GatewayTopologyBridge {
         ) != nil
     }
 
+    static func networkName(
+        for networkConfigID: String?,
+        store: EasyTierAppStore
+    ) -> String {
+        guard let networkConfigID,
+              let config = store.configs.first(where: { $0.instance_id == networkConfigID })
+        else { return "Unavailable" }
+        return config.network_name
+    }
+
+    static func members(
+        for networkConfigID: String?,
+        store: EasyTierAppStore
+    ) -> [NetworkMemberStatus] {
+        guard let networkConfigID,
+              let config = store.configs.first(where: { $0.instance_id == networkConfigID })
+        else { return [] }
+        let instance = store.runningInstance(matching: config)
+        let detail = instance.flatMap { store.runtimeDetails[$0.name] ?? $0.detail }
+        if store.selectedConfig?.instance_id == networkConfigID {
+            return store.selectedStatusSnapshot.members
+        }
+        return detail?.memberStatuses ?? []
+    }
+
     private static func topology(
         gateway: GatewayRuntimeController,
         store: EasyTierAppStore

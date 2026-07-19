@@ -338,7 +338,7 @@ mod tests {
         store.install("app-cert".to_string(), test_material("old.example.com"));
         let config = GatewayConfig::parse(
             &json!({
-                "schema_version": 2,
+                "schema_version": 3,
                 "storage_dir": PathBuf::from("/tmp/easytier-gateway-tls-test"),
                 "listeners": {
                     "http": "127.0.0.1:5002",

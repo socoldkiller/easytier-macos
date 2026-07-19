@@ -13,6 +13,7 @@ import Testing
     #expect(presentation.statusLabel == "Off")
     #expect(presentation.tone == .neutral)
     #expect(presentation.serviceCountLabel == "No Services")
+    #expect(!presentation.isInProgress)
 
     presentation = GatewayRuntimePresentation(
         status: status,
@@ -29,6 +30,7 @@ import Testing
     )
     #expect(presentation.statusLabel == "Starting")
     #expect(presentation.tone == .neutral)
+    #expect(presentation.isInProgress)
 
     status.state = .running
     presentation = GatewayRuntimePresentation(
@@ -39,6 +41,7 @@ import Testing
     #expect(presentation.statusLabel == "Running")
     #expect(presentation.tone == .positive)
     #expect(presentation.serviceCountLabel == "1 Service")
+    #expect(!presentation.isInProgress)
 
     status.state = .stopping
     presentation = GatewayRuntimePresentation(
@@ -48,6 +51,7 @@ import Testing
     )
     #expect(presentation.statusLabel == "Stopping")
     #expect(presentation.tone == .neutral)
+    #expect(presentation.isInProgress)
 
     status.state = .failed
     presentation = GatewayRuntimePresentation(
@@ -58,6 +62,22 @@ import Testing
     #expect(presentation.statusLabel == "Failed")
     #expect(presentation.tone == .warning)
     #expect(presentation.serviceCountLabel == "2 Services")
+}
+
+@Test func gatewayRuntimePresentationKeepsConvergingRoutesInStartingState() throws {
+    var status = GatewayStatus.stopped
+    status.state = .running
+    status.routes = [try presentationRoute(state: .resolving)]
+
+    let presentation = GatewayRuntimePresentation(
+        status: status,
+        desiredEnabled: true,
+        services: [presentationTestService()]
+    )
+
+    #expect(presentation.statusLabel == "Starting")
+    #expect(presentation.tone == .neutral)
+    #expect(presentation.isInProgress)
 }
 
 @Test func publishedServicePresentationPrioritizesActionableStates() throws {
@@ -73,7 +93,9 @@ import Testing
         tlsConfigured: true
     )
     #expect(presentation.statusLabel == "Live")
+    #expect(presentation.detailLabel == "Enabled")
     #expect(presentation.tone == .positive)
+    #expect(!presentation.isInProgress)
     #expect(presentation.canToggleEnabled)
     #expect(presentation.canOpen)
     #expect(presentation.canRetryCertificate)
@@ -85,7 +107,7 @@ import Testing
         gatewayEnabled: true,
         tlsConfigured: false
     )
-    #expect(presentation.statusLabel == "TLS Required")
+    #expect(presentation.statusLabel == "SSL Required")
     #expect(presentation.tone == .warning)
 
     presentation = PublishedServicePresentation(
@@ -96,7 +118,9 @@ import Testing
         tlsConfigured: true
     )
     #expect(presentation.statusLabel == "Starting")
+    #expect(presentation.detailLabel == "Applying configuration")
     #expect(presentation.tone == .neutral)
+    #expect(presentation.isInProgress)
 
     presentation = PublishedServicePresentation(
         service: service,
@@ -105,7 +129,7 @@ import Testing
         gatewayEnabled: true,
         tlsConfigured: true
     )
-    #expect(presentation.statusLabel == "TLS Warning")
+    #expect(presentation.statusLabel == "SSL Warning")
     #expect(presentation.errorMessage == "Renewal delayed")
 
     presentation = PublishedServicePresentation(
@@ -115,7 +139,7 @@ import Testing
         gatewayEnabled: true,
         tlsConfigured: true
     )
-    #expect(presentation.statusLabel == "TLS Error")
+    #expect(presentation.statusLabel == "SSL Error")
     #expect(presentation.errorMessage == "ACME failed")
     #expect(presentation.certificateActionTitle == "Retry Certificate")
     #expect(!presentation.canOpen)
@@ -129,6 +153,45 @@ import Testing
     )
     #expect(presentation.statusLabel == "Target Offline")
     #expect(presentation.errorMessage == "Target offline")
+}
+
+@Test func publishedServicePresentationExplainsAutomaticRecoveryProgress() throws {
+    let service = presentationTestService()
+    let activeCertificate = try presentationCertificate(state: .active)
+
+    var presentation = PublishedServicePresentation(
+        service: service,
+        certificate: activeCertificate,
+        route: nil,
+        gatewayEnabled: true,
+        tlsConfigured: true,
+        magicDNSState: .loading
+    )
+    #expect(presentation.statusLabel == "Loading")
+    #expect(presentation.detailLabel == "Checking Magic DNS")
+    #expect(presentation.isInProgress)
+
+    presentation = PublishedServicePresentation(
+        service: service,
+        certificate: activeCertificate,
+        route: try presentationRoute(state: .waiting),
+        gatewayEnabled: true,
+        tlsConfigured: true
+    )
+    #expect(presentation.statusLabel == "Starting")
+    #expect(presentation.detailLabel == "Waiting for Magic DNS")
+    #expect(presentation.isInProgress)
+
+    presentation = PublishedServicePresentation(
+        service: service,
+        certificate: activeCertificate,
+        route: try presentationRoute(state: .resolving),
+        gatewayEnabled: true,
+        tlsConfigured: true
+    )
+    #expect(presentation.statusLabel == "Starting")
+    #expect(presentation.detailLabel == "Resolving target")
+    #expect(presentation.isInProgress)
 }
 
 @Test func publishedServicePresentationHidesStaleErrorsWhileWaiting() throws {
@@ -156,6 +219,16 @@ import Testing
         tlsConfigured: false
     )
     #expect(!presentation.canToggleEnabled)
+
+    presentation = PublishedServicePresentation(
+        service: disabledService,
+        certificate: nil,
+        route: nil,
+        gatewayEnabled: true,
+        tlsConfigured: true,
+        magicDNSState: .loading
+    )
+    #expect(presentation.canToggleEnabled)
 
     presentation = PublishedServicePresentation(
         service: presentationTestService(),
@@ -214,6 +287,7 @@ private func presentationRoute(
         "certificate_id": "service-a",
         "resolution_state": state.rawValue,
         "last_resolved_at": nil,
+        "last_online_at": nil,
         "last_error": error,
     ]
     return try decodePresentationFixture(payload)

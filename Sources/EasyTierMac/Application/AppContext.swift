@@ -11,7 +11,6 @@ final class AppContext {
     let presentation: AppPresentation
 
     @ObservationIgnored private var hasStarted = false
-    @ObservationIgnored private var gatewayTopologyTask: Task<Void, Never>?
 
     init(
         runtime: ApplicationRuntimeCoordinator,
@@ -32,7 +31,6 @@ final class AppContext {
         hasStarted = true
 
         await runtime.load()
-        startGatewayTopologyReconciliation()
         await prepareRuntimeService()
         softwareUpdate.controller.start()
     }
@@ -48,8 +46,6 @@ final class AppContext {
     }
 
     func prepareForAppQuit() async {
-        gatewayTopologyTask?.cancel()
-        gatewayTopologyTask = nil
         await runtime.prepareForAppQuit()
     }
 
@@ -57,32 +53,6 @@ final class AppContext {
         await workspace.store.retryStartAfterHelperApproval()
         await softwareUpdate.controller.restorePendingRuntimeIfNeeded()
         await runtime.startGatewayIfNeeded()
-    }
-
-    private func startGatewayTopologyReconciliation() {
-        guard gatewayTopologyTask == nil else { return }
-        gatewayTopologyTask = Task { [runtime, workspace] in
-            var previousFingerprint: String?
-            while !Task.isCancelled {
-                let store = workspace.store
-                let fingerprint = GatewayTopologyBridge.fingerprint(
-                    gateway: runtime.gateway,
-                    store: store
-                )
-                if fingerprint != previousFingerprint {
-                    previousFingerprint = fingerprint
-                    await GatewayTopologyBridge.reconcile(
-                        gateway: runtime.gateway,
-                        store: store
-                    )
-                }
-                do {
-                    try await Task.sleep(for: .seconds(2))
-                } catch {
-                    return
-                }
-            }
-        }
     }
 
     var menuBarConnectionState: ConnectionGlyphState {

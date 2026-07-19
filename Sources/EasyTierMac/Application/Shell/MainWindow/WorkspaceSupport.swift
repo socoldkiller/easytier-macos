@@ -9,10 +9,9 @@ struct TOMLPresentation: Identifiable {
 }
 struct WorkspaceTabPicker: View {
     @Binding var selection: WorkspaceTab
+    var tabs: [WorkspaceTab]
 
-    private static let preferredWidth: CGFloat = 300
-    private let tabs = WorkspaceTab.displayOrder
-
+    private static let preferredWidth: CGFloat = 360
     var body: some View {
         Picker("Workspace", selection: $selection) {
             ForEach(tabs) { tab in
@@ -246,7 +245,7 @@ private extension NSEvent.ModifierFlags {
 }
 
 extension WorkspaceTab {
-    static let displayOrder: [WorkspaceTab] = [.status, .view, .config, .peers, .logs]
+    static let displayOrder: [WorkspaceTab] = [.status, .services, .view, .config, .peers, .logs]
 
     var motionIndex: Int {
         WorkspaceTab.displayOrder.firstIndex(where: { $0.id == id }) ?? 0
@@ -256,6 +255,8 @@ extension WorkspaceTab {
         switch self {
         case .status:
             return "dot.radiowaves.left.and.right"
+        case .services:
+            return "network.badge.shield.half.filled"
         case .view:
             return "chart.xyaxis.line"
         case .config:

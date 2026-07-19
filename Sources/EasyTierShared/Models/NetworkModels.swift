@@ -493,12 +493,15 @@ public struct NetworkInstanceRunningInfo: Codable, Equatable, Sendable {
     public var peer_route_pairs: [PeerRoutePair]?
     public var running: Bool?
     public var error_msg: String?
+    public var applied_magic_dns_enabled: Bool?
+    public var applied_magic_dns_suffix: String?
     /// UUID injected by the FFI layer so callers can match running instances
     /// against `NetworkConfig.instance_id` without relying on the instance name.
     public var instance_id: String?
 
     enum CodingKeys: String, CodingKey {
-        case dev_name, my_node_info, events, routes, peers, peer_route_pairs, running, error_msg, instance_id
+        case dev_name, my_node_info, events, routes, peers, peer_route_pairs, running, error_msg
+        case applied_magic_dns_enabled, applied_magic_dns_suffix, instance_id
     }
 
     public init(
@@ -510,6 +513,8 @@ public struct NetworkInstanceRunningInfo: Codable, Equatable, Sendable {
         peer_route_pairs: [PeerRoutePair]? = nil,
         running: Bool? = nil,
         error_msg: String? = nil,
+        applied_magic_dns_enabled: Bool? = nil,
+        applied_magic_dns_suffix: String? = nil,
         instance_id: String? = nil
     ) {
         self.dev_name = dev_name
@@ -520,6 +525,8 @@ public struct NetworkInstanceRunningInfo: Codable, Equatable, Sendable {
         self.peer_route_pairs = peer_route_pairs
         self.running = running
         self.error_msg = error_msg
+        self.applied_magic_dns_enabled = applied_magic_dns_enabled
+        self.applied_magic_dns_suffix = applied_magic_dns_suffix
         self.instance_id = instance_id
     }
 
@@ -533,6 +540,14 @@ public struct NetworkInstanceRunningInfo: Codable, Equatable, Sendable {
         peer_route_pairs = try container.decodeLossyArray(PeerRoutePair.self, forKey: .peer_route_pairs)
         running = try container.decodeIfPresent(Bool.self, forKey: .running)
         error_msg = try container.decodeIfPresent(String.self, forKey: .error_msg)
+        applied_magic_dns_enabled = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .applied_magic_dns_enabled
+        )
+        applied_magic_dns_suffix = try container.decodeIfPresent(
+            String.self,
+            forKey: .applied_magic_dns_suffix
+        )
         instance_id = try container.decodeIfPresent(String.self, forKey: .instance_id)
     }
 }
@@ -1012,7 +1027,7 @@ public extension NetworkInstanceRunningInfo {
                 id: "local-\(peerID)",
                 isLocal: true,
                 peerID: peerID,
-                instanceID: nil,
+                instanceID: instance_id?.nilIfEmpty,
                 virtualIPv4: myNode.displayIPv4,
                 hostname: myNode.hostname?.nilIfEmpty ?? "Local Node",
                 version: myNode.version?.nilIfEmpty ?? "unknown",

@@ -47,7 +47,7 @@ struct PublishServiceSheet: View {
     }
 
     private var trimmedDNSSuffix: String {
-        let suffix = store.magicDNSSettings.dnsSuffix
+        let suffix = gateway.appliedMagicDNSSuffix ?? store.magicDNSSettings.dnsSuffix
         return suffix.hasSuffix(".") ? String(suffix.dropLast()) : suffix
     }
 
@@ -58,7 +58,9 @@ struct PublishServiceSheet: View {
             && (1 ... 65_535).contains(port)
             && gateway.isTLSConfigured
             && store.selectedConfig != nil
-            && GatewayTopologyBridge.canPublish(member, store: store)
+            && gateway.magicDNSState == .ready
+            && member.isLive
+            && member.peerID != "-"
     }
 
     var body: some View {
@@ -143,7 +145,12 @@ struct PublishServiceSheet: View {
             do {
                 guard gateway.isTLSConfigured else {
                     throw GatewayConfigurationValidationError.invalid(
-                        "Configure TLS in Settings > Gateway before publishing a service."
+                        "Configure SSL in Settings > Gateway before publishing a service."
+                    )
+                }
+                guard gateway.magicDNSState == .ready else {
+                    throw GatewayConfigurationValidationError.invalid(
+                        "Wait for Magic DNS to become ready before publishing a service."
                     )
                 }
                 guard let config = store.selectedConfig,
@@ -160,15 +167,16 @@ struct PublishServiceSheet: View {
                     let draft = try await gateway.createDraft(
                         networkConfigID: config.instance_id,
                         targetPeerID: member.peerID,
+                        targetInstanceID: member.instanceID,
                         targetHostname: member.hostname,
-                        magicDNSSuffix: store.magicDNSSettings.dnsSuffix,
+                        magicDNSSuffix: gateway.appliedMagicDNSSuffix
+                            ?? store.magicDNSSettings.dnsSuffix,
                         serviceLabel: serviceLabel,
                         targetPort: port
                     )
                     draftID = draft.id
                     serviceID = draft.id
                 }
-                await GatewayTopologyBridge.reconcile(gateway: gateway, store: store)
                 try await gateway.setServiceEnabled(true, serviceID: serviceID)
                 dismiss()
             } catch {

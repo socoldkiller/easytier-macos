@@ -8,7 +8,7 @@ use http::HeaderValue;
 use serde::{Deserialize, Serialize};
 use url::{Host, Url};
 
-pub const GATEWAY_SCHEMA_VERSION: u32 = 2;
+pub const GATEWAY_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -136,6 +136,17 @@ pub struct UpstreamConfig {
     pub host_header: Option<String>,
     pub tls_server_name: Option<String>,
     pub allowed_ipv4_cidr: Option<String>,
+    pub availability: UpstreamAvailability,
+    pub expected_ipv4: Option<Ipv4Addr>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UpstreamAvailability {
+    Waiting,
+    Unavailable,
+    #[default]
+    Ready,
 }
 
 #[derive(Deserialize)]
@@ -192,6 +203,8 @@ pub struct ParsedUpstream {
     pub host_header: Option<String>,
     pub tls_server_name: Option<String>,
     pub allowed_ipv4_cidr: Option<Ipv4Cidr>,
+    pub availability: UpstreamAvailability,
+    pub expected_ipv4: Option<Ipv4Addr>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -498,6 +511,19 @@ fn parse_upstream(config: &UpstreamConfig) -> Result<ParsedUpstream, String> {
         .as_deref()
         .map(parse_ipv4_cidr)
         .transpose()?;
+    match config.availability {
+        UpstreamAvailability::Waiting | UpstreamAvailability::Unavailable
+            if config.expected_ipv4.is_some() =>
+        {
+            return Err("a non-ready upstream must not include expected_ipv4".to_string());
+        }
+        _ => {}
+    }
+    if let (Some(cidr), Some(expected)) = (allowed_ipv4_cidr, config.expected_ipv4) {
+        if !cidr.contains(expected) {
+            return Err("expected_ipv4 must be inside allowed_ipv4_cidr".to_string());
+        }
+    }
 
     Ok(ParsedUpstream {
         original_url: config.url.clone(),
@@ -507,6 +533,8 @@ fn parse_upstream(config: &UpstreamConfig) -> Result<ParsedUpstream, String> {
         host_header,
         tls_server_name,
         allowed_ipv4_cidr,
+        availability: config.availability,
+        expected_ipv4: config.expected_ipv4,
     })
 }
 
@@ -630,6 +658,8 @@ mod tests {
                     host_header: None,
                     tls_server_name: None,
                     allowed_ipv4_cidr: None,
+                    availability: UpstreamAvailability::Ready,
+                    expected_ipv4: None,
                 },
             }],
         }

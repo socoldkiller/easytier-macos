@@ -5,6 +5,7 @@ package enum GatewayPublishedServicesValidator {
     package static func makeDraft(
         networkConfigID: String,
         targetPeerID: String,
+        targetInstanceID: String? = nil,
         targetHostname: String,
         magicDNSSuffix: String,
         serviceLabel: String,
@@ -17,6 +18,7 @@ package enum GatewayPublishedServicesValidator {
         return GatewayPublishedService(
             networkConfigID: try required(networkConfigID, field: "Network ID"),
             targetPeerID: try required(targetPeerID, field: "Target Peer ID"),
+            targetInstanceID: targetInstanceID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
             publicNodeLabel: nodeLabel,
             publicDNSSuffix: suffix,
             lastKnownTargetHostname: nodeLabel,
@@ -32,7 +34,7 @@ package enum GatewayPublishedServicesValidator {
     }
 
     package static func validate(_ state: GatewayPersistedState) throws -> GatewayPersistedState {
-        guard state.schemaVersion == GatewaySchema.version else {
+        guard state.schemaVersion == GatewaySchema.persistedVersion else {
             throw invalid("Unsupported Gateway schema version \(state.schemaVersion).")
         }
 
@@ -66,6 +68,9 @@ package enum GatewayPublishedServicesValidator {
             }
             service.networkConfigID = try required(service.networkConfigID, field: "Network ID")
             service.targetPeerID = try required(service.targetPeerID, field: "Target Peer ID")
+            service.targetInstanceID = service.targetInstanceID?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .nilIfEmpty
             service.serviceLabel = try normalizeLabel(service.serviceLabel, field: "Service name")
             service.publicNodeLabel = try normalizeLabel(service.publicNodeLabel, field: "Public node label")
             service.publicDNSSuffix = try MagicDNSSettings.normalizedDNSSuffix(service.publicDNSSuffix)
@@ -203,7 +208,10 @@ package enum GatewayPublishedServicesValidator {
 
 package enum GatewayConfigurationFactory {
     package static func makeRuntimeConfiguration(
-        from state: GatewayPersistedState
+        from state: GatewayPersistedState,
+        routeAvailability: GatewayUpstreamAvailability = .ready,
+        routeAvailabilityByServiceID: [String: GatewayUpstreamAvailability] = [:],
+        expectedIPv4ByServiceID: [String: String] = [:]
     ) throws -> GatewayConfiguration {
         let state = try GatewayPublishedServicesValidator.validate(state)
         let enabledServices = state.services.filter(\.desiredEnabled)
@@ -233,12 +241,21 @@ package enum GatewayConfigurationFactory {
                     )
                 },
                 routes: enabledServices.map { service in
-                    GatewayRouteConfiguration(
+                    let serviceAvailability = routeAvailabilityByServiceID[service.id]
+                        ?? routeAvailability
+                    return GatewayRouteConfiguration(
                         domain: service.publicHostname,
                         certificateID: service.id,
                         upstream: GatewayUpstreamConfiguration(
                             url: "http://\(service.targetDomain):\(service.targetPort)",
-                            allowedIPv4CIDR: allowedIPv4CIDR
+                            allowedIPv4CIDR: allowedIPv4CIDR,
+                            availability: serviceAvailability == .ready
+                                && expectedIPv4ByServiceID[service.id] == nil
+                                ? .unavailable
+                                : serviceAvailability,
+                            expectedIPv4: serviceAvailability == .ready
+                                ? expectedIPv4ByServiceID[service.id]
+                                : nil
                         )
                     )
                 },

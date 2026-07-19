@@ -1,0 +1,251 @@
+import AppKit
+import EasyTierShared
+import SwiftUI
+
+struct ServicesView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.windowPresentationActivity) private var presentationActivity
+    @Environment(AppContext.self) private var appContext
+
+    @State private var searchText = ""
+    @State private var serviceGridIsScrolling = false
+    @State private var workingServiceID: String?
+    @State private var editingService: GatewayPublishedService?
+    @State private var deletionCandidate: GatewayPublishedService?
+    @State private var errorMessage: String?
+
+    private var store: EasyTierAppStore { appContext.workspace.store }
+    private var gateway: GatewayRuntimeController { appContext.runtime.gateway }
+
+    private var displayedError: String? {
+        errorMessage ?? gateway.lastError ?? gateway.status.lastError
+    }
+
+    var body: some View {
+        @Bindable var store = self.store
+        let members = gateway.topologyMembers
+        let display = PublishedServicesDisplayModel(
+            services: gateway.services,
+            status: gateway.status,
+            gatewayEnabled: gateway.desiredEnabled,
+            acmeConfiguration: gateway.acmeConfiguration,
+            networkName: gateway.publishingNetworkName,
+            members: members,
+            searchText: searchText,
+            magicDNSState: gateway.magicDNSState,
+            magicDNSStateByServiceID: gateway.magicDNSStateByServiceID
+        )
+
+        VStack(alignment: .leading, spacing: 14) {
+            ServicesHeader(
+                gatewayStatus: display.runtimePresentation.statusLabel,
+                gatewayIsInProgress: display.runtimePresentation.isInProgress,
+                serviceCount: display.rows.count,
+                liveCount: display.liveCount,
+                networkName: display.networkName
+            )
+
+            if !display.rows.isEmpty || display.searchIsActive {
+                WorkspaceSearchField(
+                    text: $searchText,
+                    prompt: "Search domains, IPv4 addresses, ports, protocols, SSL, or status",
+                    resultCount: display.filteredRows.count,
+                    totalCount: display.rows.count
+                )
+            }
+
+            if !gateway.isTLSConfigured {
+                GatewayTLSRequirementBanner(action: openGatewaySettings)
+                    .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 8))
+            }
+
+            if let displayedError {
+                ErrorBanner(message: displayedError)
+                    .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 8))
+            }
+
+            MotionSwitch(id: display.contentMotionID, insertionEdge: .bottom) {
+                if display.rows.isEmpty {
+                    ContentUnavailableView(
+                        "No Published Services",
+                        systemImage: "rectangle.stack.badge.plus",
+                        description: Text(
+                            "Right-click an online member in Status and choose Publish Service…"
+                        )
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if display.searchIsActive, display.filteredRows.isEmpty {
+                    ContentUnavailableView(
+                        "No Search Results",
+                        systemImage: "magnifyingglass",
+                        description: Text(
+                            "Try a domain, IPv4 address, port, protocol, SSL provider, or service status."
+                        )
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    PublishedServicesGrid(
+                        rows: display.filteredRows,
+                        isScrolling: $serviceGridIsScrolling,
+                        globalScrolling: $store.isAnyViewScrolling,
+                        gatewayBusy: gateway.isBusy,
+                        workingServiceID: workingServiceID,
+                        onSetEnabled: setEnabled,
+                        onOpen: open,
+                        onCopyDomain: copyDomain,
+                        onCopyProxyIPv4: copyProxyIPv4,
+                        onEditService: editService,
+                        onConfigureSSL: openGatewaySettings,
+                        onRetryCertificate: retryCertificate,
+                        onDelete: requestDeletion
+                    )
+                }
+            }
+        }
+        .padding()
+        .animation(
+            presentationActivity.allowsAnimations
+                ? EasyTierMotion.content(reduceMotion: reduceMotion)
+                : nil,
+            value: displayedError
+        )
+        .task(prepare)
+        .sheet(item: $editingService) { service in
+            let row = display.rows.first { $0.id == service.id }
+            EditPublishedServiceSheet(
+                service: service,
+                targetOptions: PublishedServiceTargetOption.options(
+                    for: service,
+                    currentIPv4: row?.proxyIPv4 ?? "—",
+                    members: members
+                ),
+                sslProvider: row?.sslProvider
+                    ?? PublishedServiceSSLProvider(acmeConfiguration: gateway.acmeConfiguration),
+                onConfigureSSL: openGatewaySettings
+            ) { target, port in
+                updateService(target: target, port: port, service: service)
+            }
+        }
+        .alert(
+            "Delete Published Service?",
+            isPresented: deletionAlertBinding,
+            presenting: deletionCandidate
+        ) { service in
+            Button("Delete \(service.publicHostname)", role: .destructive) {
+                delete(service)
+            }
+            Button("Cancel", role: .cancel) {
+                deletionCandidate = nil
+            }
+        } message: { _ in
+            Text("The public domain and its certificate configuration will be removed.")
+        }
+    }
+
+    private var deletionAlertBinding: Binding<Bool> {
+        Binding(
+            get: { deletionCandidate != nil },
+            set: { isPresented in
+                if !isPresented { deletionCandidate = nil }
+            }
+        )
+    }
+
+    private func prepare() async {
+        await gateway.refreshStatus()
+    }
+
+    private func setEnabled(_ enabled: Bool, service: GatewayPublishedService) {
+        perform(service) {
+            if enabled {
+                guard gateway.magicDNSState != .disabled else {
+                    throw GatewayConfigurationValidationError.invalid(
+                        "Turn on Magic DNS before enabling this service."
+                    )
+                }
+            }
+            try await gateway.setServiceEnabled(enabled, serviceID: service.id)
+        }
+    }
+
+    private func editService(_ service: GatewayPublishedService) {
+        editingService = service
+    }
+
+    private func updateService(
+        target: PublishedServiceTargetOption,
+        port: Int,
+        service: GatewayPublishedService
+    ) {
+        perform(service) {
+            try await gateway.updateService(
+                serviceID: service.id,
+                targetPeerID: target.peerID,
+                targetInstanceID: target.instanceID,
+                targetHostname: target.hostname,
+                magicDNSSuffix: gateway.appliedMagicDNSSuffix
+                    ?? store.magicDNSSettings.dnsSuffix,
+                port: port
+            )
+        }
+    }
+
+    private func retryCertificate(_ service: GatewayPublishedService) {
+        Task {
+            workingServiceID = service.id
+            errorMessage = nil
+            await gateway.requestRenewal(certificateID: service.id)
+            errorMessage = gateway.lastError
+            workingServiceID = nil
+        }
+    }
+
+    private func open(_ row: PublishedServiceTableRow) {
+        guard let url = row.publicURL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func copyDomain(_ service: GatewayPublishedService) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(service.publicHostname, forType: .string)
+    }
+
+    private func copyProxyIPv4(_ row: PublishedServiceTableRow) {
+        guard row.proxyIPv4 != "—" else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(row.proxyIPv4, forType: .string)
+    }
+
+    private func requestDeletion(_ service: GatewayPublishedService) {
+        deletionCandidate = service
+    }
+
+    private func delete(_ service: GatewayPublishedService) {
+        deletionCandidate = nil
+        perform(service) {
+            try await gateway.deleteService(service.id)
+        }
+    }
+
+    private func openGatewaySettings() {
+        appContext.settings.request(.gateway)
+        openWindow(id: EasyTierWindowID.settings)
+    }
+
+    private func perform(
+        _ service: GatewayPublishedService,
+        operation: @escaping @MainActor () async throws -> Void
+    ) {
+        Task {
+            workingServiceID = service.id
+            errorMessage = nil
+            defer { workingServiceID = nil }
+            do {
+                try await operation()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+}

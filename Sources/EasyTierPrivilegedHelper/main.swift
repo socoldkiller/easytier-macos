@@ -4,7 +4,10 @@ import Foundation
 
 final class PrivilegedRuntime: @unchecked Sendable {
     let client = StaticEasyTierFFIClient()
-    let magicDNSResolverConfigurator = MagicDNSSystemResolverConfigurator()
+    let magicDNSResolverConfigurator = MagicDNSSystemResolverConfigurator(
+        cacheRefresher: SystemMagicDNSCacheRefresher()
+    )
+    let appliedMagicDNSRegistry = AppliedMagicDNSRegistry()
 }
 
 /// XPC reply blocks are invoked once, and the lock protects the only mutable field.
@@ -61,9 +64,21 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
 
     func run(configTOML: String, reply: @escaping (String?, String?) -> Void) {
         do {
+            let appliedMagicDNS = try AppliedMagicDNSConfiguration(runtimeTOML: configTOML)
             try runtime.client.runSync(toml: configTOML)
+            runtime.appliedMagicDNSRegistry.record(appliedMagicDNS)
             try runtime.magicDNSResolverConfigurator.apply(from: configTOML)
             reply("ok", nil)
+
+            guard appliedMagicDNS.enabled else { return }
+            let runtime = runtime
+            Task { @concurrent in
+                await Self.stabilizeMagicDNSResolver(
+                    runtime: runtime,
+                    configTOML: configTOML,
+                    configuration: appliedMagicDNS
+                )
+            }
         } catch {
             fputs("helper run error: \(error.localizedDescription)\n", stderr)
             replyFailure(error, code: "runFailed", reply: reply)
@@ -73,6 +88,7 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
     func stop(instanceNames: [String], reply: @escaping (String?, String?) -> Void) {
         run(reply: reply) {
             try runtime.client.stopSync(instanceNames: instanceNames)
+            runtime.appliedMagicDNSRegistry.remove(instanceNames: instanceNames)
             try removeMagicDNSResolverFilesIfNoInstancesRemain()
         }
     }
@@ -80,6 +96,7 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
     func retain(instanceNames: [String], reply: @escaping (String?, String?) -> Void) {
         run(reply: reply) {
             try runtime.client.retainSync(instanceNames: instanceNames)
+            runtime.appliedMagicDNSRegistry.retain(instanceNames: instanceNames)
             try removeMagicDNSResolverFilesIfNoInstancesRemain()
         }
     }
@@ -154,7 +171,11 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
 
     private func buildCollectNetworkInfoJSON(from pairs: [(key: String, value: String)]) throws -> String {
         let encoder = JSONEncoder()
-        let entries = try pairs.map { pair in
+        let augmentedPairs = try NetworkInfoMagicDNSAugmenter.augment(
+            payloads: pairs,
+            using: runtime.appliedMagicDNSRegistry
+        )
+        let entries = try augmentedPairs.map { pair in
             let data = try encoder.encode(pair.key)
             guard let keyJSON = String(data: data, encoding: .utf8) else {
                 throw NSError(
@@ -173,6 +194,58 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
     private func removeMagicDNSResolverFilesIfNoInstancesRemain() throws {
         if try runtime.client.collectNetworkInfoPayloadsSync().isEmpty {
             try runtime.magicDNSResolverConfigurator.removeManagedResolverFiles()
+        }
+    }
+
+    private static func stabilizeMagicDNSResolver(
+        runtime: PrivilegedRuntime,
+        configTOML: String,
+        configuration: AppliedMagicDNSConfiguration
+    ) async {
+        for _ in 0 ..< 60 {
+            guard runtime.appliedMagicDNSRegistry.configuration(
+                instanceName: configuration.instanceName,
+                instanceID: configuration.instanceID
+            ) == configuration else { return }
+
+            if let payloads = try? runtime.client.collectNetworkInfoPayloadsSync(),
+               runtimePayloads(payloads, contain: configuration)
+            {
+                // EasyTier updates /etc/resolver asynchronously after runSync returns.
+                try? await Task.sleep(for: .milliseconds(500))
+                guard runtime.appliedMagicDNSRegistry.configuration(
+                    instanceName: configuration.instanceName,
+                    instanceID: configuration.instanceID
+                ) == configuration else { return }
+                do {
+                    try runtime.magicDNSResolverConfigurator.apply(from: configTOML)
+                } catch {
+                    fputs(
+                        "helper Magic DNS resolver stabilization error: \(error.localizedDescription)\n",
+                        stderr
+                    )
+                }
+                return
+            }
+
+            do {
+                try await Task.sleep(for: .milliseconds(250))
+            } catch {
+                return
+            }
+        }
+    }
+
+    private static func runtimePayloads(
+        _ payloads: [(key: String, value: String)],
+        contain configuration: AppliedMagicDNSConfiguration
+    ) -> Bool {
+        payloads.contains { payload in
+            if payload.key == configuration.instanceName { return true }
+            guard let data = payload.value.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return false }
+            return object["instance_id"] as? String == configuration.instanceID
         }
     }
 

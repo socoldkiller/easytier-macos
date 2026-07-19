@@ -1,7 +1,9 @@
 import Foundation
 
 package enum GatewaySchema {
-    package static let version: UInt32 = 2
+    package static let version: UInt32 = 3
+    package static let persistedVersion: UInt32 = 2
+    package static let runtimeVersion: UInt32 = version
 }
 
 package struct GatewayConfiguration: Codable, Equatable, Sendable {
@@ -12,7 +14,7 @@ package struct GatewayConfiguration: Codable, Equatable, Sendable {
     package var localDomains: [String]
 
     package init(
-        schemaVersion: UInt32 = GatewaySchema.version,
+        schemaVersion: UInt32 = GatewaySchema.runtimeVersion,
         acme: GatewayACMEConfiguration,
         certificates: [GatewayCertificateConfiguration] = [],
         routes: [GatewayRouteConfiguration] = [],
@@ -157,17 +159,23 @@ package struct GatewayUpstreamConfiguration: Codable, Equatable, Sendable {
     package var hostHeader: String?
     package var tlsServerName: String?
     package var allowedIPv4CIDR: String?
+    package var availability: GatewayUpstreamAvailability
+    package var expectedIPv4: String?
 
     package init(
         url: String,
         hostHeader: String? = nil,
         tlsServerName: String? = nil,
-        allowedIPv4CIDR: String? = nil
+        allowedIPv4CIDR: String? = nil,
+        availability: GatewayUpstreamAvailability = .ready,
+        expectedIPv4: String? = nil
     ) {
         self.url = url
         self.hostHeader = hostHeader
         self.tlsServerName = tlsServerName
         self.allowedIPv4CIDR = allowedIPv4CIDR
+        self.availability = availability
+        self.expectedIPv4 = expectedIPv4
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -175,7 +183,15 @@ package struct GatewayUpstreamConfiguration: Codable, Equatable, Sendable {
         case hostHeader = "host_header"
         case tlsServerName = "tls_server_name"
         case allowedIPv4CIDR = "allowed_ipv4_cidr"
+        case availability
+        case expectedIPv4 = "expected_ipv4"
     }
+}
+
+package enum GatewayUpstreamAvailability: String, Codable, Equatable, Sendable {
+    case waiting
+    case unavailable
+    case ready
 }
 
 package struct GatewayPersistedState: Codable, Equatable, Sendable {
@@ -187,7 +203,7 @@ package struct GatewayPersistedState: Codable, Equatable, Sendable {
     package var services: [GatewayPublishedService]
 
     package init(
-        schemaVersion: UInt32 = GatewaySchema.version,
+        schemaVersion: UInt32 = GatewaySchema.persistedVersion,
         gatewayEnabled: Bool = false,
         acmeAccount: GatewayACMEConfiguration? = nil,
         publishingNetworkConfigID: String? = nil,
@@ -261,6 +277,7 @@ package struct GatewayPublishedService: Codable, Equatable, Identifiable, Sendab
     package var id: String
     package var networkConfigID: String
     package var targetPeerID: String
+    package var targetInstanceID: String?
     package var publicNodeLabel: String
     package var publicDNSSuffix: String
     package var lastKnownTargetHostname: String
@@ -276,6 +293,7 @@ package struct GatewayPublishedService: Codable, Equatable, Identifiable, Sendab
         id: String = UUID().uuidString.lowercased(),
         networkConfigID: String,
         targetPeerID: String,
+        targetInstanceID: String? = nil,
         publicNodeLabel: String,
         publicDNSSuffix: String,
         lastKnownTargetHostname: String,
@@ -290,6 +308,7 @@ package struct GatewayPublishedService: Codable, Equatable, Identifiable, Sendab
         self.id = id
         self.networkConfigID = networkConfigID
         self.targetPeerID = targetPeerID
+        self.targetInstanceID = targetInstanceID
         self.publicNodeLabel = publicNodeLabel
         self.publicDNSSuffix = publicDNSSuffix
         self.lastKnownTargetHostname = lastKnownTargetHostname
@@ -313,6 +332,7 @@ package struct GatewayPublishedService: Codable, Equatable, Identifiable, Sendab
         case id
         case networkConfigID = "network_config_id"
         case targetPeerID = "target_peer_id"
+        case targetInstanceID = "target_instance_id"
         case publicNodeLabel = "public_node_label"
         case publicDNSSuffix = "public_dns_suffix"
         case lastKnownTargetHostname = "last_known_target_hostname"
@@ -422,7 +442,7 @@ package struct GatewayStatus: Codable, Equatable, Sendable {
     package var lastError: String?
 
     package static let stopped = GatewayStatus(
-        schemaVersion: GatewaySchema.version,
+        schemaVersion: GatewaySchema.runtimeVersion,
         state: .stopped,
         configGeneration: 0,
         listeners: GatewayListenerStatus(http: nil, https: nil),
@@ -465,8 +485,10 @@ package struct GatewayListenerStatus: Codable, Equatable, Sendable {
 }
 
 package enum GatewayRouteResolutionState: String, Codable, Equatable, Sendable {
+    case waiting
     case resolving
     case ready
+    case mismatch
     case unavailable
 }
 
@@ -474,18 +496,62 @@ package struct GatewayRouteStatus: Codable, Equatable, Sendable {
     package var domain: String
     package var upstream: String
     package var resolvedAddresses: [String]
+    package var resolvedIPv4s: [String]
+    package var expectedIPv4: String?
     package var certificateID: String
     package var resolutionState: GatewayRouteResolutionState
     package var lastResolvedAt: String?
+    package var lastOnlineAt: String?
     package var lastError: String?
+
+    package init(
+        domain: String,
+        upstream: String,
+        resolvedAddresses: [String],
+        resolvedIPv4s: [String] = [],
+        expectedIPv4: String? = nil,
+        certificateID: String,
+        resolutionState: GatewayRouteResolutionState,
+        lastResolvedAt: String? = nil,
+        lastOnlineAt: String? = nil,
+        lastError: String? = nil
+    ) {
+        self.domain = domain
+        self.upstream = upstream
+        self.resolvedAddresses = resolvedAddresses
+        self.resolvedIPv4s = resolvedIPv4s
+        self.expectedIPv4 = expectedIPv4
+        self.certificateID = certificateID
+        self.resolutionState = resolutionState
+        self.lastResolvedAt = lastResolvedAt
+        self.lastOnlineAt = lastOnlineAt
+        self.lastError = lastError
+    }
+
+    package init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        domain = try container.decode(String.self, forKey: .domain)
+        upstream = try container.decode(String.self, forKey: .upstream)
+        resolvedAddresses = try container.decodeIfPresent([String].self, forKey: .resolvedAddresses) ?? []
+        resolvedIPv4s = try container.decodeIfPresent([String].self, forKey: .resolvedIPv4s) ?? []
+        expectedIPv4 = try container.decodeIfPresent(String.self, forKey: .expectedIPv4)
+        certificateID = try container.decode(String.self, forKey: .certificateID)
+        resolutionState = try container.decode(GatewayRouteResolutionState.self, forKey: .resolutionState)
+        lastResolvedAt = try container.decodeIfPresent(String.self, forKey: .lastResolvedAt)
+        lastOnlineAt = try container.decodeIfPresent(String.self, forKey: .lastOnlineAt)
+        lastError = try container.decodeIfPresent(String.self, forKey: .lastError)
+    }
 
     private enum CodingKeys: String, CodingKey {
         case domain
         case upstream
         case resolvedAddresses = "resolved_addresses"
+        case resolvedIPv4s = "resolved_ipv4s"
+        case expectedIPv4 = "expected_ipv4"
         case certificateID = "certificate_id"
         case resolutionState = "resolution_state"
         case lastResolvedAt = "last_resolved_at"
+        case lastOnlineAt = "last_online_at"
         case lastError = "last_error"
     }
 }

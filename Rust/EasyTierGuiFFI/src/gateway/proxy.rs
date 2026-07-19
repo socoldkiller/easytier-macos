@@ -22,11 +22,16 @@ use pingora::{
     upstreams::peer::HttpPeer,
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
-use tokio::{sync::watch, task::JoinHandle, time::sleep};
+use tokio::{
+    sync::{Mutex as AsyncMutex, watch},
+    task::JoinHandle,
+    time::sleep,
+};
 
 use super::{
     config::{
-        ParsedUpstream, UpstreamScheme, ValidatedGatewayConfig, normalize_domain, socket_host_port,
+        ParsedUpstream, UpstreamAvailability, UpstreamScheme, ValidatedGatewayConfig,
+        normalize_domain, socket_host_port,
     },
     status::{RouteResolutionState, RouteStatus},
     tls::{DynamicCertificateStore, SniConnectionInfo},
@@ -79,6 +84,7 @@ pub struct RuntimeRoute {
     pub upstream: ParsedUpstream,
     addresses: ArcSwap<Vec<SocketAddr>>,
     resolution: Mutex<RouteResolution>,
+    resolution_lock: AsyncMutex<()>,
     next_address: AtomicUsize,
 }
 
@@ -86,6 +92,7 @@ pub struct RuntimeRoute {
 struct RouteResolution {
     state: RouteResolutionState,
     last_resolved_at: Option<String>,
+    last_online_at: Option<String>,
     last_error: Option<String>,
 }
 
@@ -99,6 +106,23 @@ impl RuntimeRoute {
         Some(addresses[index % addresses.len()])
     }
 
+    async fn address_for_request(&self) -> Option<SocketAddr> {
+        if self.upstream.availability != UpstreamAvailability::Ready {
+            return None;
+        }
+        if let Some(address) = self.address() {
+            return Some(address);
+        }
+
+        let _guard = self.resolution_lock.lock().await;
+        if let Some(address) = self.address() {
+            return Some(address);
+        }
+
+        self.resolve_locked().await;
+        self.address()
+    }
+
     pub fn status(&self) -> RouteStatus {
         let addresses = self.addresses.load();
         let resolution = self.resolution.lock().unwrap();
@@ -106,17 +130,63 @@ impl RuntimeRoute {
             domain: self.domain.clone(),
             upstream: self.upstream.original_url.clone(),
             resolved_addresses: addresses.iter().map(ToString::to_string).collect(),
+            resolved_ipv4s: addresses
+                .iter()
+                .map(|address| address.ip().to_string())
+                .collect(),
+            expected_ipv4: self
+                .upstream
+                .expected_ipv4
+                .map(|address| address.to_string()),
             certificate_id: self.certificate_id.clone(),
             resolution_state: resolution.state,
             last_resolved_at: resolution.last_resolved_at.clone(),
+            last_online_at: resolution.last_online_at.clone(),
             last_error: resolution.last_error.clone(),
         }
     }
 
     async fn resolve(&self) -> bool {
+        let _guard = self.resolution_lock.lock().await;
+        self.resolve_locked().await
+    }
+
+    async fn resolve_locked(&self) -> bool {
+        match self.upstream.availability {
+            UpstreamAvailability::Waiting => {
+                self.set_state(RouteResolutionState::Waiting, None);
+                return false;
+            }
+            UpstreamAvailability::Unavailable => {
+                self.set_state(
+                    RouteResolutionState::Unavailable,
+                    Some("target is unavailable".to_string()),
+                );
+                return false;
+            }
+            UpstreamAvailability::Ready => {}
+        }
+        let should_record_online = {
+            let mut resolution = self.resolution.lock().unwrap();
+            let should_record_online = resolution.state != RouteResolutionState::Ready;
+            if self.addresses.load().is_empty() {
+                resolution.state = RouteResolutionState::Resolving;
+                resolution.last_error = None;
+            }
+            should_record_online
+        };
+
         let target = socket_host_port(&self.upstream.host, self.upstream.port);
         let result = tokio::net::lookup_host(&target).await.map(|addresses| {
+            let addresses = addresses.collect::<Vec<_>>();
+            let has_mismatch = self.upstream.expected_ipv4.is_some_and(|expected| {
+                addresses.iter().any(|address| match address.ip() {
+                    std::net::IpAddr::V4(ipv4) => ipv4 != expected,
+                    std::net::IpAddr::V6(_) => false,
+                })
+            });
             let mut addresses = addresses
+                .into_iter()
                 .filter(
                     |address| match (self.upstream.allowed_ipv4_cidr, address.ip()) {
                         (Some(cidr), std::net::IpAddr::V4(ipv4)) => cidr.contains(ipv4),
@@ -127,41 +197,70 @@ impl RuntimeRoute {
                 .collect::<Vec<_>>();
             addresses.sort_unstable();
             addresses.dedup();
-            addresses
+            (addresses, has_mismatch)
         });
 
         match result {
-            Ok(addresses) if !addresses.is_empty() => {
+            Ok((_, true)) => {
+                self.set_state(
+                    RouteResolutionState::Mismatch,
+                    Some("upstream DNS did not resolve exclusively to expected_ipv4".to_string()),
+                );
+                false
+            }
+            Ok((addresses, false)) if !addresses.is_empty() => {
                 self.addresses.store(Arc::new(addresses));
                 let mut resolution = self.resolution.lock().unwrap();
+                let resolved_at = current_timestamp();
                 resolution.state = RouteResolutionState::Ready;
-                resolution.last_resolved_at = Some(
-                    OffsetDateTime::now_utc()
-                        .format(&Rfc3339)
-                        .unwrap_or_else(|_| OffsetDateTime::now_utc().unix_timestamp().to_string()),
-                );
+                resolution.last_resolved_at = Some(resolved_at.clone());
+                if should_record_online {
+                    resolution.last_online_at = Some(resolved_at);
+                }
                 resolution.last_error = None;
                 true
             }
             Ok(_) => {
-                self.mark_unavailable(format!(
+                self.mark_resolution_failure(format!(
                     "upstream {target} did not resolve inside the allowed EasyTier network"
                 ));
                 false
             }
             Err(error) => {
-                self.mark_unavailable(format!("failed to resolve upstream {target}: {error}"));
+                self.mark_resolution_failure(format!(
+                    "failed to resolve upstream {target}: {error}"
+                ));
                 false
             }
         }
     }
 
+    fn mark_resolution_failure(&self, error: String) {
+        let state = if self.resolution.lock().unwrap().last_online_at.is_none() {
+            RouteResolutionState::Resolving
+        } else {
+            RouteResolutionState::Unavailable
+        };
+        self.set_state(state, Some(error));
+    }
+
+    #[cfg(test)]
     fn mark_unavailable(&self, error: String) {
+        self.set_state(RouteResolutionState::Unavailable, Some(error));
+    }
+
+    fn set_state(&self, state: RouteResolutionState, error: Option<String>) {
         self.addresses.store(Arc::new(Vec::new()));
         let mut resolution = self.resolution.lock().unwrap();
-        resolution.state = RouteResolutionState::Unavailable;
-        resolution.last_error = Some(error);
+        resolution.state = state;
+        resolution.last_error = error;
     }
+}
+
+fn current_timestamp() -> String {
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| OffsetDateTime::now_utc().unix_timestamp().to_string())
 }
 
 #[derive(Default)]
@@ -193,7 +292,15 @@ pub fn build_route_table(config: &ValidatedGatewayConfig) -> Arc<RouteTable> {
                 certificate_id: route.certificate_id.clone(),
                 upstream: route.upstream.clone(),
                 addresses: ArcSwap::from_pointee(Vec::new()),
-                resolution: Mutex::new(RouteResolution::default()),
+                resolution: Mutex::new(RouteResolution {
+                    state: match route.upstream.availability {
+                        UpstreamAvailability::Waiting => RouteResolutionState::Waiting,
+                        UpstreamAvailability::Unavailable => RouteResolutionState::Unavailable,
+                        UpstreamAvailability::Ready => RouteResolutionState::Resolving,
+                    },
+                    ..RouteResolution::default()
+                }),
+                resolution_lock: AsyncMutex::new(()),
                 next_address: AtomicUsize::new(0),
             }),
         );
@@ -265,6 +372,13 @@ impl SharedRouteTable {
 
     pub fn snapshot(&self) -> Arc<RouteTable> {
         self.current.load_full()
+    }
+
+    #[cfg(test)]
+    pub(super) fn mark_unavailable_for_test(&self, domain: &str) {
+        self.get(domain)
+            .expect("test route must exist")
+            .mark_unavailable("target network stopped".to_string());
     }
 
     fn get(&self, domain: &str) -> Option<Arc<RuntimeRoute>> {
@@ -354,12 +468,19 @@ impl ProxyHttp for GatewayProxy {
                 .await?;
                 return Ok(true);
             }
-            let Some(address) = route.address() else {
+            let Some(address) = route.address_for_request().await else {
+                let (message, retry_after) = match route.status().resolution_state {
+                    RouteResolutionState::Waiting | RouteResolutionState::Resolving => {
+                        ("Target is starting", "2")
+                    }
+                    RouteResolutionState::Mismatch => ("Target DNS mismatch", "5"),
+                    _ => ("Target is unavailable", "5"),
+                };
                 respond_with_headers(
                     session,
                     StatusCode::SERVICE_UNAVAILABLE,
-                    "Target is unavailable".to_string(),
-                    &[("Retry-After", "5")],
+                    message.to_string(),
+                    &[("Retry-After", retry_after)],
                 )
                 .await?;
                 return Ok(true);
@@ -640,9 +761,12 @@ mod tests {
                 host_header: None,
                 tls_server_name: Some("internal.example.com".to_string()),
                 allowed_ipv4_cidr: None,
+                availability: UpstreamAvailability::Ready,
+                expected_ipv4: None,
             },
             addresses: ArcSwap::from_pointee(vec!["10.0.0.10:8443".parse().unwrap()]),
             resolution: Mutex::new(RouteResolution::default()),
+            resolution_lock: AsyncMutex::new(()),
             next_address: AtomicUsize::new(0),
         };
 
@@ -652,5 +776,123 @@ mod tests {
         assert!(peer.options.verify_cert);
         assert!(peer.options.verify_hostname);
         assert_eq!(peer.options.alpn, ALPN::H2H1);
+    }
+
+    #[test]
+    fn request_resolves_route_before_background_resolver_has_completed() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let route = unresolved_loopback_route();
+
+            assert_eq!(
+                route.address_for_request().await,
+                Some("127.0.0.1:3000".parse().unwrap())
+            );
+            assert_eq!(route.status().resolution_state, RouteResolutionState::Ready);
+            assert!(route.status().last_online_at.is_some());
+
+            route.resolution.lock().unwrap().last_online_at = Some("first-online".to_string());
+            assert!(route.resolve().await);
+            assert_eq!(
+                route.status().last_online_at.as_deref(),
+                Some("first-online")
+            );
+        });
+    }
+
+    #[test]
+    fn request_retries_route_after_target_network_recovers() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let route = unresolved_loopback_route();
+            route.resolution.lock().unwrap().last_online_at = Some("first-online".to_string());
+            route.mark_unavailable("target network stopped".to_string());
+            assert_eq!(
+                route.status().resolution_state,
+                RouteResolutionState::Unavailable
+            );
+            assert_eq!(
+                route.status().last_online_at.as_deref(),
+                Some("first-online")
+            );
+
+            assert_eq!(
+                route.address_for_request().await,
+                Some("127.0.0.1:3000".parse().unwrap())
+            );
+            assert_eq!(route.status().resolution_state, RouteResolutionState::Ready);
+            assert_ne!(
+                route.status().last_online_at.as_deref(),
+                Some("first-online")
+            );
+        });
+    }
+
+    #[test]
+    fn waiting_route_does_not_resolve_or_reuse_addresses() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let mut route = unresolved_loopback_route();
+            route.upstream.availability = UpstreamAvailability::Waiting;
+            route
+                .addresses
+                .store(Arc::new(vec!["127.0.0.1:3000".parse().unwrap()]));
+
+            assert_eq!(route.address_for_request().await, None);
+        });
+    }
+
+    #[test]
+    fn expected_ipv4_rejects_a_same_cidr_wrong_answer() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let mut route = unresolved_loopback_route();
+            route.upstream.host = "localhost".to_string();
+            route.upstream.expected_ipv4 = Some("127.0.0.2".parse().unwrap());
+
+            assert_eq!(route.address_for_request().await, None);
+            assert_eq!(
+                route.status().resolution_state,
+                RouteResolutionState::Mismatch
+            );
+            assert!(route.status().resolved_addresses.is_empty());
+        });
+    }
+
+    #[test]
+    fn initial_lookup_failure_remains_resolving() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let mut route = unresolved_loopback_route();
+            route.upstream.host = "invalid..hostname".to_string();
+
+            assert_eq!(route.address_for_request().await, None);
+            assert_eq!(
+                route.status().resolution_state,
+                RouteResolutionState::Resolving
+            );
+        });
+    }
+
+    fn unresolved_loopback_route() -> RuntimeRoute {
+        RuntimeRoute {
+            domain: "app.example.com".to_string(),
+            certificate_id: "app-cert".to_string(),
+            upstream: ParsedUpstream {
+                original_url: "http://127.0.0.1:3000".to_string(),
+                scheme: UpstreamScheme::Http,
+                host: "127.0.0.1".to_string(),
+                port: 3000,
+                host_header: None,
+                tls_server_name: None,
+                allowed_ipv4_cidr: None,
+                availability: UpstreamAvailability::Ready,
+                expected_ipv4: None,
+            },
+            addresses: ArcSwap::from_pointee(Vec::new()),
+            resolution: Mutex::new(RouteResolution::default()),
+            resolution_lock: AsyncMutex::new(()),
+            next_address: AtomicUsize::new(0),
+        }
     }
 }

@@ -32,7 +32,7 @@ struct GatewayTLSSettingsSection: View {
             }
 
             CardSection(
-                "TLS Certificate",
+                "SSL Certificate",
                 systemImage: "lock.shield",
                 footer: "Certificates are requested automatically when a Published Service is enabled."
             ) {

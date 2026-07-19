@@ -14,7 +14,10 @@ public struct TOMLExportOptions: Equatable, Sendable {
 @Observable
 public final class EasyTierAppStore {
     public var configs: [NetworkConfig] = [] {
-        didSet { refreshSelectedRuntimeSnapshotsIfNeeded() }
+        didSet {
+            refreshSelectedRuntimeSnapshotsIfNeeded()
+            notifyRuntimeEnvironmentDidChange()
+        }
     }
     public var selectedConfigID: String? {
         didSet {
@@ -22,6 +25,7 @@ public final class EasyTierAppStore {
                 invalidateSecretAuthenticationSession()
             }
             refreshSelectedRuntimeSnapshotsIfNeeded()
+            notifyRuntimeEnvironmentDidChange()
         }
     }
     public var mode: AppMode = .default
@@ -29,12 +33,14 @@ public final class EasyTierAppStore {
         didSet {
             instancesWriteCount += 1
             refreshSelectedRuntimeSnapshotsIfNeeded()
+            notifyRuntimeEnvironmentDidChange()
         }
     }
     public var runtimeDetails: [String: NetworkInstanceRunningInfo] = [:] {
         didSet {
             runtimeDetailsWriteCount += 1
             refreshSelectedRuntimeSnapshotsIfNeeded()
+            notifyRuntimeEnvironmentDidChange()
         }
     }
     public var selectedTab: WorkspaceTab = .status
@@ -62,12 +68,15 @@ public final class EasyTierAppStore {
     public var runtimeIntents: [RuntimeIntent] = []
     public var reversedPortForwardFingerprints: [String: Set<String>] = [:]
     public var vpnOnDemandEnabled = false
-    public var magicDNSSettings: MagicDNSSettings = .default
+    public var magicDNSSettings: MagicDNSSettings = .default {
+        didSet { notifyRuntimeEnvironmentDidChange() }
+    }
     public var remoteConfigSession: RemoteConfigSession?
     public var peerSubscriptions: [PeerSubscription] = []
     public var isRefreshingPeerSubscriptions = false
     public var pendingPeerCardMerge: PeerCard?
     public private(set) var networkSecretCleanupNotice: String?
+    public private(set) var runtimeTransitionsByConfigID: [String: NetworkRuntimeTransition] = [:]
 
     /// Presentation-only scroll state. Runtime collection must continue while
     /// this is true so topology changes are not hidden behind a stale gesture.
@@ -101,6 +110,7 @@ public final class EasyTierAppStore {
     @ObservationIgnored private var runtimeMutationWaiters: [CheckedContinuation<Void, Never>] = []
     @ObservationIgnored private var busyOperationCount = 0
     @ObservationIgnored private var runtimeServiceConfigured = false
+    @ObservationIgnored package var runtimeEnvironmentDidChange: (@MainActor @Sendable () -> Void)?
 
     @ObservationIgnored public private(set) var runtimeDetailsWriteCount = 0
     @ObservationIgnored public private(set) var instancesWriteCount = 0
@@ -211,6 +221,22 @@ public final class EasyTierAppStore {
             setLastError(error)
             log("Runtime refresh failed after operation: \(error.localizedDescription)")
         }
+        if !runtimeTransitionsByConfigID.isEmpty {
+            runtimeTransitionsByConfigID.removeAll()
+            notifyRuntimeEnvironmentDidChange()
+        }
+    }
+
+    private func setRuntimeTransition(
+        _ transition: NetworkRuntimeTransition,
+        for configID: String
+    ) {
+        runtimeTransitionsByConfigID[configID] = transition
+        notifyRuntimeEnvironmentDidChange()
+    }
+
+    private func notifyRuntimeEnvironmentDidChange() {
+        runtimeEnvironmentDidChange?()
     }
 
     public var selectedConfig: NetworkConfig? {
@@ -468,6 +494,7 @@ public final class EasyTierAppStore {
             guard let selectedConfigID, let index = configs.firstIndex(where: { $0.id == selectedConfigID }) else { return }
             let config = configs[index]
             if let runningInstance = runningInstance(matching: config) {
+                setRuntimeTransition(.stopping, for: config.instance_id)
                 do {
                     try await runtimeClient.stop(instanceNames: [runningInstance.name])
                     runtimeSession.clearTrafficTracking(instanceName: runningInstance.name)
@@ -589,6 +616,7 @@ public final class EasyTierAppStore {
             log("Start skipped because \(config.network_name) is already tracked.")
             return RuntimeStartResult(error: nil, secretOutcome: .none)
         }
+        setRuntimeTransition(.starting, for: config.instance_id)
         var secretOutcome = NetworkSecretOperationOutcome.none
         let error = await busy {
             log("Starting \(config.network_name)...")
@@ -633,6 +661,7 @@ public final class EasyTierAppStore {
             guard !isQuitting,
                   configs.contains(where: { $0.instance_id == config.instance_id })
             else { return }
+            setRuntimeTransition(.starting, for: config.instance_id)
             await busy {
                 do {
                     try await ensureRuntimeServiceReady()
@@ -660,6 +689,7 @@ public final class EasyTierAppStore {
 
     private func stopSelectedConfigWithoutMutationLock() async {
         guard let config = selectedConfig else { return }
+        setRuntimeTransition(.stopping, for: config.instance_id)
         await busy {
             log("Stopping \(config.network_name)...")
             guard let runningInstance = runningInstance(matching: config) else {
@@ -732,6 +762,7 @@ public final class EasyTierAppStore {
                 return
             }
             guard let config = configs.first(where: { $0.id == targetConfigID }) else { return }
+            setRuntimeTransition(.restarting, for: config.instance_id)
             let error = await busy(surfaceError: surfaceError) {
                 log("Restarting \(config.network_name)...")
                 try validateConfigForCurrentRuntime(config, replacing: instance)
@@ -808,6 +839,9 @@ public final class EasyTierAppStore {
 
     public func stopAll() async {
         await withRuntimeMutation {
+            for config in configs where runningInstance(matching: config) != nil {
+                setRuntimeTransition(.stopping, for: config.instance_id)
+            }
             await busy {
                 if helperRegistration == nil || helperRegistration?.state == .enabled {
                     do {
@@ -1392,6 +1426,7 @@ public final class EasyTierAppStore {
     }
 
     private func recoverConfigAfterWake(_ config: NetworkConfig) async throws {
+        setRuntimeTransition(.restarting, for: config.instance_id)
         log("Recovering \(config.network_name) after system wake...")
         let runningInstance = runningInstance(matching: config)
         try validateConfigForCurrentRuntime(config, replacing: runningInstance)

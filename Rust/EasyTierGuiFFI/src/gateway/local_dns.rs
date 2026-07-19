@@ -327,7 +327,7 @@ mod tests {
     fn test_config(domain: &str) -> super::ValidatedGatewayConfig {
         GatewayConfig::parse(
             &serde_json::json!({
-                "schema_version": 2,
+                "schema_version": 3,
                 "storage_dir": "/tmp/easytier-local-dns-test",
                 "listeners": {
                     "http": "127.0.0.1:0",
@@ -356,7 +356,9 @@ mod tests {
                         "url": "http://127.0.0.1:3000",
                         "host_header": null,
                         "tls_server_name": null,
-                        "allowed_ipv4_cidr": null
+                        "allowed_ipv4_cidr": null,
+                        "availability": "ready",
+                        "expected_ipv4": null
                     }
                 }]
             })

@@ -5,9 +5,13 @@ struct EditPublishedServiceSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     let service: GatewayPublishedService
-    let onSave: (Int) -> Void
+    let targetOptions: [PublishedServiceTargetOption]
+    let sslProvider: PublishedServiceSSLProvider
+    let onConfigureSSL: () -> Void
+    let onSave: (PublishedServiceTargetOption, Int) -> Void
 
     @State private var portText: String
+    @State private var selectedTargetPeerID: String
     @FocusState private var portFocused: Bool
 
     private var parsedPort: Int? {
@@ -16,13 +20,37 @@ struct EditPublishedServiceSheet: View {
     }
 
     private var canSave: Bool {
-        parsedPort != nil && parsedPort != service.targetPort
+        guard parsedPort != nil, let selectedTarget else { return false }
+        return parsedPort != service.targetPort
+            || selectedTarget.peerID != service.targetPeerID
+            || selectedTarget.instanceID != service.targetInstanceID
+            || selectedTarget.hostname != service.lastKnownTargetHostname
     }
 
-    init(service: GatewayPublishedService, onSave: @escaping (Int) -> Void) {
+    private var selectedTarget: PublishedServiceTargetOption? {
+        targetOptions.first { $0.peerID == selectedTargetPeerID }
+    }
+
+    init(
+        service: GatewayPublishedService,
+        targetOptions: [PublishedServiceTargetOption],
+        sslProvider: PublishedServiceSSLProvider,
+        onConfigureSSL: @escaping () -> Void,
+        onSave: @escaping (PublishedServiceTargetOption, Int) -> Void
+    ) {
         self.service = service
+        self.targetOptions = targetOptions
+        self.sslProvider = sslProvider
+        self.onConfigureSSL = onConfigureSSL
         self.onSave = onSave
         _portText = State(initialValue: String(service.targetPort))
+        let currentPeerID = targetOptions.first { option in
+            guard let targetInstanceID = service.targetInstanceID else {
+                return option.peerID == service.targetPeerID
+            }
+            return option.instanceID == targetInstanceID
+        }?.peerID ?? service.targetPeerID
+        _selectedTargetPeerID = State(initialValue: currentPeerID)
     }
 
     var body: some View {
@@ -38,11 +66,16 @@ struct EditPublishedServiceSheet: View {
             }
 
             SettingsCard {
-                SettingsInlineRow("Target") {
-                    Text(service.targetDomain)
-                        .font(.callout.monospaced())
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
+                SettingsInlineRow("Proxy IPv4") {
+                    Picker("Proxy IPv4", selection: $selectedTargetPeerID) {
+                        ForEach(targetOptions) { target in
+                            Text(target.label)
+                                .tag(target.peerID)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 250)
+                    .help("Choose the EasyTier member that receives this service's proxy traffic.")
                 }
                 SettingsRowDivider()
                 SettingsInlineRow("Port") {
@@ -52,6 +85,15 @@ struct EditPublishedServiceSheet: View {
                         .frame(width: 120)
                         .focused($portFocused)
                         .onSubmit(save)
+                }
+                SettingsRowDivider()
+                SettingsInlineRow("SSL") {
+                    HStack(spacing: 8) {
+                        Text(sslProvider.label)
+                            .foregroundStyle(sslProvider.isSecure ? .primary : .secondary)
+                        Button("Settings…", systemImage: "lock.shield", action: configureSSL)
+                            .buttonStyle(.borderless)
+                    }
                 }
             }
 
@@ -72,8 +114,13 @@ struct EditPublishedServiceSheet: View {
     }
 
     private func save() {
-        guard let parsedPort, canSave else { return }
-        onSave(parsedPort)
+        guard let parsedPort, let selectedTarget, canSave else { return }
+        onSave(selectedTarget, parsedPort)
         dismiss()
+    }
+
+    private func configureSSL() {
+        dismiss()
+        onConfigureSSL()
     }
 }

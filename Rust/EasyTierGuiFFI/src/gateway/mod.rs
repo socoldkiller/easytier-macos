@@ -53,6 +53,7 @@ const RETRY_DELAY_SECONDS: &[u64] = &[60, 300, 900, 3_600, 7_200, 14_400, 21_600
 pub struct GatewayHandle {
     commands: mpsc::Sender<GatewayCommand>,
     status: Arc<ArcSwap<GatewayStatusSnapshot>>,
+    routes: Arc<SharedRouteTable>,
     #[cfg(test)]
     challenges: Arc<Http01ChallengeStore>,
 }
@@ -101,7 +102,9 @@ impl GatewayHandle {
     }
 
     pub fn status_json(&self) -> Result<String, String> {
-        serde_json::to_string(self.status.load().as_ref())
+        let mut status = self.status.load_full().as_ref().clone();
+        status.routes = self.routes.statuses();
+        serde_json::to_string(&status)
             .map_err(|error| format!("failed to serialize gateway status: {error}"))
     }
 
@@ -351,7 +354,7 @@ impl GatewayInstance {
             acme_events,
             acme_event_sender,
             certificates,
-            routes,
+            routes: routes.clone(),
             local_dns,
             proxy,
             shutdown,
@@ -381,6 +384,7 @@ impl GatewayInstance {
         Ok(GatewayHandle {
             commands,
             status,
+            routes,
             #[cfg(test)]
             challenges,
         })
@@ -1184,7 +1188,7 @@ mod tests {
         runtime.block_on(async {
             let temp = tempfile::tempdir().unwrap();
             let config = json!({
-                "schema_version": 2,
+                "schema_version": 3,
                 "storage_dir": temp.path().join("gateway"),
                 "listeners": {
                     "http": "127.0.0.1:0",
@@ -1283,6 +1287,17 @@ mod tests {
                     .contains("location: https://app.gateway.test/hello?q=1")
             );
 
+            gateway.routes.mark_unavailable_for_test(domains[0]);
+            let unavailable_status: Value =
+                serde_json::from_str(&gateway.status_json().unwrap()).unwrap();
+            let unavailable_route = unavailable_status["routes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|route| route["domain"] == domains[0])
+                .unwrap();
+            assert_eq!(unavailable_route["resolution_state"], "unavailable");
+
             let proxied = tls_http_request(
                 https_addr,
                 domains[0],
@@ -1297,6 +1312,41 @@ mod tests {
             assert!(upstream_request.contains("host: app.gateway.test"));
             assert!(upstream_request.contains("x-forwarded-proto: https"));
             assert!(upstream_request.contains("x-forwarded-host: app.gateway.test"));
+
+            let recovered_status: Value =
+                serde_json::from_str(&gateway.status_json().unwrap()).unwrap();
+            let recovered_route = recovered_status["routes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|route| route["domain"] == domains[0])
+                .unwrap();
+            assert_eq!(recovered_route["resolution_state"], "ready");
+
+            let mut stale_status = gateway.status.load_full().as_ref().clone();
+            let stale_route = stale_status
+                .routes
+                .iter_mut()
+                .find(|route| route.domain == domains[0])
+                .unwrap();
+            stale_route.resolution_state = status::RouteResolutionState::Resolving;
+            stale_route.resolved_addresses.clear();
+            stale_route.last_resolved_at = None;
+            gateway.status.store(Arc::new(stale_status));
+
+            let refreshed_status: Value =
+                serde_json::from_str(&gateway.status_json().unwrap()).unwrap();
+            let resolved_route = refreshed_status["routes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|route| route["domain"] == domains[0])
+                .unwrap();
+            assert_eq!(resolved_route["resolution_state"], "ready");
+            assert_eq!(
+                resolved_route["resolved_addresses"],
+                json!([upstream_addr.to_string()])
+            );
 
             let mismatch =
                 tls_http_request(https_addr, domains[0], domains[1], "/", certificate_der).await;
@@ -1424,7 +1474,7 @@ mod tests {
         https_listener: &str,
     ) -> Value {
         json!({
-            "schema_version": 2,
+            "schema_version": 3,
             "storage_dir": storage_dir,
             "listeners": {
                 "http": http_listener,
@@ -1453,14 +1503,16 @@ mod tests {
                     "url": format!("http://{upstream_addr}"),
                     "host_header": null,
                     "tls_server_name": null,
-                    "allowed_ipv4_cidr": null
+                    "allowed_ipv4_cidr": null,
+                    "availability": "ready",
+                    "expected_ipv4": null
                 }
             })).collect::<Vec<_>>()
         })
     }
 
     fn empty_secrets() -> Value {
-        json!({ "schema_version": 2, "cloudflare": {} })
+        json!({ "schema_version": 3, "cloudflare": {} })
     }
 
     fn test_certificate(domains: &[&str]) -> (String, String, CertificateDer<'static>) {

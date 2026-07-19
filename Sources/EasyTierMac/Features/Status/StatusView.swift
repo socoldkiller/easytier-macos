@@ -12,7 +12,6 @@ struct StatusView: View {
     @State private var memberTableIsScrolling = false
     @State private var displayedMembers: [NetworkMemberStatus] = []
     @State private var publishServiceMember: NetworkMemberStatus?
-    @State private var isShowingPublishedServices = false
 
     var highlightedMemberPeerID: String? = nil
     var onRenameLocalHostname: (String) -> Void = { _ in }
@@ -39,8 +38,9 @@ struct StatusView: View {
             header(display)
 
             if display.instance != nil, !display.members.isEmpty || !display.memberSearchQuery.isEmpty {
-                MemberSearchField(
+                WorkspaceSearchField(
                     text: $memberSearchText,
+                    prompt: "Search networks, hostnames, servers, IPs, Peer IDs",
                     resultCount: display.filteredMembers.count,
                     totalCount: display.members.count
                 )
@@ -97,12 +97,6 @@ struct StatusView: View {
         }
         .sheet(item: $publishServiceMember) { member in
             PublishServiceSheet(member: member)
-        }
-        .sheet(isPresented: $isShowingPublishedServices) {
-            PublishedServicesSheet()
-        }
-        .task(id: GatewayTopologyBridge.fingerprint(gateway: gateway, store: store)) {
-            await GatewayTopologyBridge.reconcile(gateway: gateway, store: store)
         }
     }
 
@@ -161,19 +155,6 @@ struct StatusView: View {
                 width: 152
             )
             StatusBadge(title: "Mode", value: display.modeLabel, systemImage: "slider.horizontal.3")
-            Button {
-                isShowingPublishedServices = true
-            } label: {
-                StatusBadge(
-                    title: "Services",
-                    value: servicesBadgeValue,
-                    systemImage: "network.badge.shield.half.filled",
-                    width: 130
-                )
-            }
-            .buttonStyle(.plain)
-            .pointingHandOnHover()
-            .help("Manage Published Services")
             Spacer(minLength: 0)
         }
     }
@@ -193,15 +174,6 @@ struct StatusView: View {
                 publishServiceMember = member
             }
         )
-    }
-
-    private var servicesBadgeValue: String {
-        if gateway.status.state == .failed { return "Error" }
-        guard gateway.desiredEnabled else { return "Off" }
-        let total = gateway.services.count
-        guard total > 0 else { return "On" }
-        let enabled = gateway.services.filter(\.desiredEnabled).count
-        return "\(enabled)/\(total)"
     }
 
     private var statusDisplay: StatusDisplayModel {

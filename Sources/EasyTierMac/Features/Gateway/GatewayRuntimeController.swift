@@ -16,6 +16,13 @@ final class GatewayRuntimeController {
     private(set) var status: GatewayStatus = .stopped
     private(set) var lastError: String?
     private(set) var isBusy = false
+    private(set) var magicDNSState: MagicDNSOperationalState = .disabled
+    private(set) var magicDNSStateByServiceID: [String: MagicDNSOperationalState] = [:]
+    private(set) var servicesVisible = false
+    private(set) var publishingNetworkName = "Unavailable"
+    private(set) var appliedMagicDNSSuffix: String?
+    private(set) var topologyMembers: [NetworkMemberStatus] = []
+    private(set) var expectedIPv4ByServiceID: [String: String] = [:]
 
     var desiredEnabled: Bool { persistedState?.desiredEnabled == true }
     var services: [GatewayPublishedService] { persistedState?.services ?? [] }
@@ -23,12 +30,21 @@ final class GatewayRuntimeController {
     var acmeConfiguration: GatewayACMEConfiguration? { persistedState?.acmeAccount }
     var isTLSConfigured: Bool { acmeConfiguration?.termsOfServiceAgreed == true }
 
+    func magicDNSState(for serviceID: String) -> MagicDNSOperationalState {
+        magicDNSStateByServiceID[serviceID] ?? magicDNSState
+    }
+
     @ObservationIgnored private let client: any GatewayClient
     @ObservationIgnored private let configurationStore: any GatewayConfigurationStoring
     @ObservationIgnored let helperRegistration: HelperRegistrationService?
     @ObservationIgnored private let connectionMonitor: (any GatewayConnectionMonitoring)?
+    @ObservationIgnored private let magicDNSResolver: any MagicDNSResolving
+    @ObservationIgnored private weak var store: EasyTierAppStore?
+    @ObservationIgnored private var environmentTask: Task<Void, Never>?
+    @ObservationIgnored private var environmentGeneration: UInt64 = 0
     @ObservationIgnored private var connectionTask: Task<Void, Never>?
     @ObservationIgnored private var statusTask: Task<Void, Never>?
+    @ObservationIgnored private var activeStatusPollingInterval: Duration?
     @ObservationIgnored private var recoveryEnabled = false
     @ObservationIgnored private var retainsRuntimeAfterDisconnect = false
     @ObservationIgnored private var lastAppliedConfiguration: GatewayConfiguration?
@@ -39,12 +55,33 @@ final class GatewayRuntimeController {
         client: any GatewayClient,
         configurationStore: any GatewayConfigurationStoring,
         helperRegistration: HelperRegistrationService?,
-        connectionMonitor: (any GatewayConnectionMonitoring)? = nil
+        connectionMonitor: (any GatewayConnectionMonitoring)? = nil,
+        magicDNSResolver: any MagicDNSResolving = SystemMagicDNSResolver()
     ) {
         self.client = client
         self.configurationStore = configurationStore
         self.helperRegistration = helperRegistration
         self.connectionMonitor = connectionMonitor
+        self.magicDNSResolver = magicDNSResolver
+    }
+
+    func bind(to store: EasyTierAppStore) {
+        self.store = store
+        store.runtimeEnvironmentDidChange = { [weak self, weak store] in
+            guard let self, let store else { return }
+            self.environmentDidChange(store: store)
+        }
+        environmentDidChange(store: store)
+    }
+
+    func environmentDidChange(store: EasyTierAppStore) {
+        environmentGeneration &+= 1
+        let generation = environmentGeneration
+        environmentTask?.cancel()
+        environmentTask = Task { [weak self, weak store] in
+            guard let self, let store else { return }
+            await self.monitorEnvironment(store: store, generation: generation)
+        }
     }
 
     func load() async {
@@ -58,6 +95,7 @@ final class GatewayRuntimeController {
                 lastError = error.localizedDescription
             }
         }
+        if let store { environmentDidChange(store: store) }
     }
 
     func startConnectionRecovery() {
@@ -75,14 +113,21 @@ final class GatewayRuntimeController {
     func createDraft(
         networkConfigID: String,
         targetPeerID: String,
+        targetInstanceID: String? = nil,
         targetHostname: String,
         magicDNSSuffix: String,
         serviceLabel: String,
         targetPort: Int
     ) async throws -> GatewayPublishedService {
+        guard store == nil || magicDNSState == .ready else {
+            throw GatewayConfigurationValidationError.invalid(
+                "Wait for Magic DNS to become ready before publishing a service."
+            )
+        }
         let draft = try GatewayPublishedServicesValidator.makeDraft(
             networkConfigID: networkConfigID,
             targetPeerID: targetPeerID,
+            targetInstanceID: targetInstanceID,
             targetHostname: targetHostname,
             magicDNSSuffix: magicDNSSuffix,
             serviceLabel: serviceLabel,
@@ -120,7 +165,7 @@ final class GatewayRuntimeController {
                 await reconcileWithoutLock()
                 if status.state == .failed {
                     throw EasyTierCoreError.operationFailed(
-                        lastError ?? "Gateway failed to apply the TLS settings."
+                        lastError ?? "Gateway failed to apply the SSL settings."
                     )
                 }
             }
@@ -154,6 +199,11 @@ final class GatewayRuntimeController {
             }
             guard state.services[index].desiredEnabled != enabled else { return }
             if enabled {
+                guard store == nil || magicDNSState != .disabled else {
+                    throw GatewayConfigurationValidationError.invalid(
+                        "Turn on Magic DNS before enabling this service."
+                    )
+                }
                 guard let acme = state.acmeAccount, acme.termsOfServiceAgreed else {
                     throw GatewayConfigurationValidationError.invalid(
                         "Accept the Let's Encrypt terms before enabling this service."
@@ -185,6 +235,35 @@ final class GatewayRuntimeController {
             }
             var updated = state.services[index]
             updated.targetPort = port
+            state.services[index] = updated
+            try await save(state)
+            await reconcileWithoutLock()
+        }
+    }
+
+    func updateService(
+        serviceID: String,
+        targetPeerID: String,
+        targetInstanceID: String? = nil,
+        targetHostname: String,
+        magicDNSSuffix: String,
+        port: Int
+    ) async throws {
+        try await withMutation {
+            guard var state = persistedState,
+                  let index = state.services.firstIndex(where: { $0.id == serviceID })
+            else {
+                throw GatewayConfigurationValidationError.invalid("Published service was not found.")
+            }
+
+            var updated = state.services[index]
+            updated.targetPeerID = targetPeerID
+            updated.targetInstanceID = targetInstanceID
+            updated.lastKnownTargetHostname = targetHostname
+            updated.lastKnownMagicDNSSuffix = magicDNSSuffix
+            updated.targetPort = port
+            guard updated != state.services[index] else { return }
+
             state.services[index] = updated
             try await save(state)
             await reconcileWithoutLock()
@@ -312,7 +391,10 @@ final class GatewayRuntimeController {
     }
 
     private func reconcileWithoutLock() async {
-        guard let state = persistedState, state.desiredEnabled else {
+        guard let state = persistedState,
+              state.desiredEnabled,
+              (store == nil || magicDNSState != .disabled)
+        else {
             if status.state != .stopped || lastAppliedConfiguration != nil {
                 await stopWithoutLock()
             } else {
@@ -321,8 +403,22 @@ final class GatewayRuntimeController {
             return
         }
         do {
-            let configuration = try GatewayConfigurationFactory.makeRuntimeConfiguration(from: state)
+            let availability = Self.upstreamAvailability(for: magicDNSState)
+            let availabilityByServiceID = magicDNSStateByServiceID.mapValues(
+                Self.upstreamAvailability(for:)
+            )
+            let configuration = try GatewayConfigurationFactory.makeRuntimeConfiguration(
+                from: state,
+                routeAvailability: availability,
+                routeAvailabilityByServiceID: availabilityByServiceID,
+                expectedIPv4ByServiceID: expectedIPv4ByServiceID
+            )
             let shouldStart = lastAppliedConfiguration == nil || status.state == .stopped
+            let configurationChanged = lastAppliedConfiguration != configuration
+            if !shouldStart, !configurationChanged, status.state == .running {
+                startStatusPolling()
+                return
+            }
             isBusy = true
             status.state = .starting
             defer { isBusy = false }
@@ -331,7 +427,7 @@ final class GatewayRuntimeController {
             try await client.setRetainsRuntimeAfterDisconnect(retainsRuntimeAfterDisconnect)
             if shouldStart {
                 try await client.start(configuration: configuration)
-            } else if lastAppliedConfiguration != configuration {
+            } else if configurationChanged {
                 try await client.apply(configuration: configuration)
             }
             lastAppliedConfiguration = configuration
@@ -370,6 +466,8 @@ final class GatewayRuntimeController {
             if status.state == .stopped, recoveryEnabled {
                 lastAppliedConfiguration = nil
                 await reconcileWithoutLock()
+            } else {
+                startStatusPolling()
             }
         } catch {
             status.state = .failed
@@ -379,17 +477,17 @@ final class GatewayRuntimeController {
     }
 
     private func startStatusPolling() {
-        guard statusTask == nil else { return }
+        let interval = Self.statusPollingInterval(for: status)
+        guard statusTask == nil || activeStatusPollingInterval != interval else { return }
+        statusTask?.cancel()
+        activeStatusPollingInterval = interval
         statusTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                let fast = self.status.certificates.contains { certificate in
-                    certificate.state == .pending
-                        || certificate.state == .issuing
-                        || certificate.state == .renewing
-                }
+                let interval = Self.statusPollingInterval(for: self.status)
+                self.activeStatusPollingInterval = interval
                 do {
-                    try await Task.sleep(for: fast ? .seconds(2) : .seconds(10))
+                    try await Task.sleep(for: interval)
                 } catch {
                     return
                 }
@@ -398,9 +496,24 @@ final class GatewayRuntimeController {
         }
     }
 
+    static func statusPollingInterval(for status: GatewayStatus) -> Duration {
+        let routesAreConverging = status.routes.contains { route in
+            route.resolutionState == .waiting || route.resolutionState == .resolving
+        }
+        if routesAreConverging { return .seconds(1) }
+
+        let certificatesAreConverging = status.certificates.contains { certificate in
+            certificate.state == .pending
+                || certificate.state == .issuing
+                || certificate.state == .renewing
+        }
+        return certificatesAreConverging ? .seconds(2) : .seconds(10)
+    }
+
     private func stopStatusPolling() {
         statusTask?.cancel()
         statusTask = nil
+        activeStatusPollingInterval = nil
     }
 
     private func recoverAfterConnectionEvent() async {
@@ -423,6 +536,368 @@ final class GatewayRuntimeController {
         recoveryEnabled = false
         connectionTask?.cancel()
         connectionTask = nil
+    }
+
+    private func monitorEnvironment(store: EasyTierAppStore, generation: UInt64) async {
+        while !Task.isCancelled, generation == environmentGeneration {
+            let probe = environmentProbe(store: store)
+            servicesVisible = probe.servicesVisible
+            publishingNetworkName = probe.networkName
+            topologyMembers = probe.members
+
+            let states = await resolveMagicDNSStates(for: probe)
+            guard !Task.isCancelled, generation == environmentGeneration else { return }
+            let nextState = states.aggregate
+            let nextStatesByServiceID = states.byServiceID
+            expectedIPv4ByServiceID = states.expectedIPv4ByServiceID
+            appliedMagicDNSSuffix = probe.appliedSuffix
+                ?? (nextState == .ready ? probe.desiredSuffix : nil)
+
+            magicDNSState = nextState
+            magicDNSStateByServiceID = nextStatesByServiceID
+            await reconcileTopologyFromEnvironment(
+                probe,
+                resolvedTargetsByServiceID: states.resolvedTargetsByServiceID
+            )
+            await reconcile()
+
+            do {
+                let isStable = nextState == .ready && status.state == .running
+                try await Task.sleep(for: isStable ? .seconds(5) : .seconds(1))
+            } catch {
+                return
+            }
+        }
+    }
+
+    private struct EnvironmentProbe {
+        var networkConfigID: String?
+        var desiredMagicDNSEnabled: Bool
+        var desiredSuffix: String
+        var appliedMagicDNSEnabled: Bool?
+        var servicesVisible: Bool
+        var isTransitioning: Bool
+        var networkName: String
+        var allowedIPv4CIDR: String?
+        var appliedSuffix: String?
+        var localProbe: MagicDNSProbeTarget?
+        var enabledServices: [GatewayPublishedService]
+        var serviceHostnamesByID: [String: String]
+        var identityMatchedMembersByServiceID: [String: NetworkMemberStatus]
+        var liveMembers: [NetworkMemberStatus]
+        var members: [NetworkMemberStatus]
+    }
+
+    private struct MagicDNSProbeTarget: Equatable, Sendable {
+        var hostname: String
+        var expectedIPv4: String
+    }
+
+    private struct ResolvedMagicDNSStates: Sendable {
+        var aggregate: MagicDNSOperationalState
+        var byServiceID: [String: MagicDNSOperationalState]
+        var expectedIPv4ByServiceID: [String: String]
+        var resolvedTargetsByServiceID: [String: ResolvedGatewayServiceTarget]
+    }
+
+    private func environmentProbe(store: EasyTierAppStore) -> EnvironmentProbe {
+        let configID = publishingNetworkConfigID ?? store.selectedConfig?.instance_id
+        let config = configID.flatMap { id in store.configs.first { $0.instance_id == id } }
+        let desiredEnabled = config?.enable_magic_dns == true
+        let desiredSuffix = store.magicDNSSettings.dnsSuffix
+        let servicesVisible = config.map { $0.enable_magic_dns == true }
+            ?? (publishingNetworkConfigID != nil && !services.isEmpty)
+        let transition = configID.flatMap { store.runtimeTransitionsByConfigID[$0] }
+        let instance = config.flatMap { store.runningInstance(matching: $0) }
+        let detail = instance.flatMap { store.runtimeDetails[$0.name] ?? $0.detail }
+        let members = configID == store.selectedConfig?.instance_id
+            ? store.selectedStatusSnapshot.members
+            : detail?.memberStatuses ?? []
+        let appliedSuffix = detail?.applied_magic_dns_enabled == true
+            ? detail?.applied_magic_dns_suffix
+            : nil
+        let runtimeHostname = detail?.my_node_info?.hostname?.nilIfEmpty
+            ?? config?.hostname?.nilIfEmpty
+        let runtimeCIDR = detail?.my_node_info?.virtual_ipv4?.displayString.nilIfEmpty
+        let configuredCIDR = config?.virtual_ipv4.nilIfEmpty.map { address in
+            address.contains("/") ? address : "\(address)/\(config?.network_length ?? 24)"
+        }
+        let localCIDR = runtimeCIDR ?? configuredCIDR
+        let localIPv4 = localCIDR?.split(separator: "/", maxSplits: 1).first.map(String.init)
+        let localProbe = runtimeHostname.flatMap { hostname in
+            localIPv4.map { expectedIPv4 in
+                MagicDNSProbeTarget(
+                    hostname: Self.magicDNSHostname(label: hostname, suffix: desiredSuffix),
+                    expectedIPv4: expectedIPv4
+                )
+            }
+        }
+        let liveMembers = members.filter { member in
+            member.isLive && member.copyableIPv4Address != nil
+        }
+        let enabledServices = services.filter(\.desiredEnabled)
+        var serviceHostnamesByID: [String: String] = [:]
+        var identityMatchedMembersByServiceID: [String: NetworkMemberStatus] = [:]
+        for service in enabledServices {
+            let matchedMember = Self.identityMatchedMember(for: service, members: liveMembers)
+            if let matchedMember {
+                identityMatchedMembersByServiceID[service.id] = matchedMember
+            }
+            serviceHostnamesByID[service.id] = Self.magicDNSHostname(
+                label: matchedMember?.hostname ?? service.lastKnownTargetHostname,
+                suffix: desiredSuffix
+            )
+        }
+        return EnvironmentProbe(
+            networkConfigID: configID,
+            desiredMagicDNSEnabled: desiredEnabled,
+            desiredSuffix: desiredSuffix,
+            appliedMagicDNSEnabled: detail?.applied_magic_dns_enabled,
+            servicesVisible: servicesVisible,
+            isTransitioning: transition != nil,
+            networkName: config?.network_name ?? "Unavailable",
+            allowedIPv4CIDR: localCIDR,
+            appliedSuffix: appliedSuffix,
+            localProbe: localProbe,
+            enabledServices: enabledServices,
+            serviceHostnamesByID: serviceHostnamesByID,
+            identityMatchedMembersByServiceID: identityMatchedMembersByServiceID,
+            liveMembers: liveMembers,
+            members: members
+        )
+    }
+
+    private func reconcileTopologyFromEnvironment(
+        _ probe: EnvironmentProbe,
+        resolvedTargetsByServiceID: [String: ResolvedGatewayServiceTarget]
+    ) async {
+        guard let networkConfigID = probe.networkConfigID,
+              probe.desiredMagicDNSEnabled
+        else { return }
+        await withMutation {
+            guard var state = persistedState,
+                  state.publishingNetworkConfigID == networkConfigID
+            else { return }
+
+            var changed = false
+            if let allowedIPv4CIDR = probe.allowedIPv4CIDR,
+               let normalizedCIDR = try? GatewayPublishedServicesValidator.normalizeIPv4CIDR(
+                   allowedIPv4CIDR
+               ),
+               state.lastKnownNetworkIPv4CIDR != normalizedCIDR
+            {
+                state.lastKnownNetworkIPv4CIDR = normalizedCIDR
+                changed = true
+            }
+
+            let suffix = try? MagicDNSSettings.normalizedDNSSuffix(
+                probe.appliedSuffix ?? probe.desiredSuffix
+            )
+            for index in state.services.indices {
+                guard let target = resolvedTargetsByServiceID[state.services[index].id] else {
+                    continue
+                }
+                if state.services[index].targetPeerID != target.member.peerID {
+                    state.services[index].targetPeerID = target.member.peerID
+                    changed = true
+                }
+                if state.services[index].targetInstanceID != target.member.instanceID {
+                    state.services[index].targetInstanceID = target.member.instanceID
+                    changed = true
+                }
+                if let normalizedHostname = try? GatewayPublishedServicesValidator.normalizeLabel(
+                    target.member.hostname,
+                    field: "Target hostname"
+                ), state.services[index].lastKnownTargetHostname != normalizedHostname {
+                    state.services[index].lastKnownTargetHostname = normalizedHostname
+                    changed = true
+                }
+                if let suffix, state.services[index].lastKnownMagicDNSSuffix != suffix {
+                    state.services[index].lastKnownMagicDNSSuffix = suffix
+                    changed = true
+                }
+            }
+
+            guard changed else { return }
+            do {
+                try await save(state)
+                await reconcileWithoutLock()
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    private func resolveMagicDNSStates(
+        for probe: EnvironmentProbe
+    ) async -> ResolvedMagicDNSStates {
+        let fallbackByServiceID = Dictionary(
+            uniqueKeysWithValues: probe.enabledServices.map { ($0.id, MagicDNSOperationalState.loading) }
+        )
+        guard probe.desiredMagicDNSEnabled else {
+            return ResolvedMagicDNSStates(
+                aggregate: .disabled,
+                byServiceID: fallbackByServiceID.mapValues { _ in .disabled },
+                expectedIPv4ByServiceID: [:],
+                resolvedTargetsByServiceID: [:]
+            )
+        }
+        guard !probe.isTransitioning,
+              probe.appliedMagicDNSEnabled != false,
+              probe.appliedSuffix == nil || probe.appliedSuffix == probe.desiredSuffix
+        else {
+            return ResolvedMagicDNSStates(
+                aggregate: .loading,
+                byServiceID: fallbackByServiceID,
+                expectedIPv4ByServiceID: [:],
+                resolvedTargetsByServiceID: [:]
+            )
+        }
+
+        let serviceHostnames = probe.enabledServices.compactMap {
+            probe.serviceHostnamesByID[$0.id]
+        }
+        let hostnames = Set(serviceHostnames + [probe.localProbe?.hostname].compactMap(\.self))
+        let resolvedByHostname = await resolveIPv4(hostnames: hostnames)
+
+        if !probe.enabledServices.isEmpty {
+            var byServiceID: [String: MagicDNSOperationalState] = [:]
+            var expectedIPv4ByServiceID: [String: String] = [:]
+            var resolvedTargetsByServiceID: [String: ResolvedGatewayServiceTarget] = [:]
+            for service in probe.enabledServices {
+                guard let hostname = probe.serviceHostnamesByID[service.id] else {
+                    byServiceID[service.id] = .loading
+                    continue
+                }
+                let resolved = resolvedByHostname[hostname] ?? []
+                let identityMatchedMember = probe.identityMatchedMembersByServiceID[service.id]
+                let member = identityMatchedMember
+                    ?? Self.uniqueLegacyMember(for: service, members: probe.liveMembers)
+                guard let member, let expectedIPv4 = member.copyableIPv4Address else {
+                    byServiceID[service.id] = .loading
+                    continue
+                }
+
+                let state = Self.magicDNSState(
+                    target: MagicDNSProbeTarget(hostname: hostname, expectedIPv4: expectedIPv4),
+                    resolved: resolved
+                )
+                byServiceID[service.id] = state
+                expectedIPv4ByServiceID[service.id] = expectedIPv4
+                if identityMatchedMember != nil || state == .ready {
+                    resolvedTargetsByServiceID[service.id] = ResolvedGatewayServiceTarget(
+                        member: member
+                    )
+                }
+            }
+            return ResolvedMagicDNSStates(
+                aggregate: Self.aggregateMagicDNSState(byServiceID),
+                byServiceID: byServiceID,
+                expectedIPv4ByServiceID: expectedIPv4ByServiceID,
+                resolvedTargetsByServiceID: resolvedTargetsByServiceID
+            )
+        }
+
+        guard let localProbe = probe.localProbe else {
+            return ResolvedMagicDNSStates(
+                aggregate: .loading,
+                byServiceID: [:],
+                expectedIPv4ByServiceID: [:],
+                resolvedTargetsByServiceID: [:]
+            )
+        }
+        return ResolvedMagicDNSStates(
+            aggregate: Self.magicDNSState(
+                target: localProbe,
+                resolved: resolvedByHostname[localProbe.hostname] ?? []
+            ),
+            byServiceID: [:],
+            expectedIPv4ByServiceID: [:],
+            resolvedTargetsByServiceID: [:]
+        )
+    }
+
+    private func resolveIPv4(hostnames: Set<String>) async -> [String: Set<String>] {
+        let resolver = magicDNSResolver
+        return await withTaskGroup(of: (String, Set<String>).self) { group in
+            for hostname in hostnames {
+                group.addTask {
+                    (hostname, await resolver.resolveIPv4(hostname: hostname))
+                }
+            }
+            var resolvedByHostname: [String: Set<String>] = [:]
+            for await (hostname, addresses) in group {
+                resolvedByHostname[hostname] = addresses
+            }
+            return resolvedByHostname
+        }
+    }
+
+    private static func magicDNSState(
+        target: MagicDNSProbeTarget,
+        resolved: Set<String>
+    ) -> MagicDNSOperationalState {
+        if resolved.isEmpty { return .loading }
+        if resolved == [target.expectedIPv4] { return .ready }
+        return .mismatch(expected: target.expectedIPv4, resolved: resolved)
+    }
+
+    private static func identityMatchedMember(
+        for service: GatewayPublishedService,
+        members: [NetworkMemberStatus]
+    ) -> NetworkMemberStatus? {
+        if let targetInstanceID = service.targetInstanceID {
+            return members.first { $0.instanceID == targetInstanceID }
+        }
+        return members.first { $0.peerID == service.targetPeerID }
+    }
+
+    private static func uniqueLegacyMember(
+        for service: GatewayPublishedService,
+        members: [NetworkMemberStatus]
+    ) -> NetworkMemberStatus? {
+        guard service.targetInstanceID == nil,
+              let targetHostname = try? GatewayPublishedServicesValidator.normalizeLabel(
+                  service.lastKnownTargetHostname,
+                  field: "Target hostname"
+              )
+        else { return nil }
+        let candidates = members.filter { member in
+            guard let hostname = try? GatewayPublishedServicesValidator.normalizeLabel(
+                member.hostname,
+                field: "Target hostname"
+            ) else { return false }
+            return hostname == targetHostname
+        }
+        return candidates.count == 1 ? candidates[0] : nil
+    }
+
+    private static func aggregateMagicDNSState(
+        _ statesByServiceID: [String: MagicDNSOperationalState]
+    ) -> MagicDNSOperationalState {
+        for serviceID in statesByServiceID.keys.sorted() {
+            if case let .mismatch(expected, resolved) = statesByServiceID[serviceID] {
+                return .mismatch(expected: expected, resolved: resolved)
+            }
+        }
+        if statesByServiceID.values.contains(.loading) { return .loading }
+        return statesByServiceID.isEmpty ? .loading : .ready
+    }
+
+    private static func magicDNSHostname(label: String, suffix: String) -> String {
+        let label = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let suffix = suffix.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        return "\(label).\(suffix)"
+    }
+
+    private static func upstreamAvailability(
+        for state: MagicDNSOperationalState
+    ) -> GatewayUpstreamAvailability {
+        switch state {
+        case .ready: .ready
+        case .mismatch: .unavailable
+        case .loading, .disabled: .waiting
+        }
     }
 
     private func withMutation<T>(

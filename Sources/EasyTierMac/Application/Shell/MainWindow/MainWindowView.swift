@@ -31,6 +31,9 @@ struct MainWindowView: View {
 
     private var store: EasyTierAppStore { appContext.workspace.store }
     private var appearanceSettings: AppAppearanceSettings { appContext.settings.appearance }
+    private var allowedWorkspaceTabs: [WorkspaceTab] {
+        WorkspaceTab.displayOrder.filter { $0 != .services || appContext.runtime.gateway.servicesVisible }
+    }
 
     var body: some View {
         @Bindable var store = store
@@ -89,6 +92,11 @@ struct MainWindowView: View {
         }
         .onChange(of: selectedTabLocal) { _, newTab in
             selectWorkspaceTab(newTab)
+        }
+        .onChange(of: appContext.runtime.gateway.servicesVisible) { _, isVisible in
+            if !isVisible, store.selectedTab == .services {
+                selectWorkspaceTab(.status)
+            }
         }
         .onChange(of: store.pendingPeerCardMerge) { _, card in
             handlePendingPeerCardMerge(card)
@@ -199,6 +207,8 @@ struct MainWindowView: View {
                 onConfigureLocalMember: { selectWorkspaceTab(.config) },
                 onConfigureRemoteMember: configureRemoteMember
             )
+        case .services:
+            ServicesView()
         case .view:
             TrafficView()
         case .config:
@@ -340,7 +350,7 @@ struct MainWindowView: View {
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .principal) {
-            WorkspaceTabPicker(selection: $selectedTabLocal)
+            WorkspaceTabPicker(selection: $selectedTabLocal, tabs: allowedWorkspaceTabs)
                 .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
         }
 
@@ -492,6 +502,9 @@ struct MainWindowView: View {
     private var workspaceMotionID: String {
         if let session = store.remoteConfigSession {
             return "\(store.selectedTab.id)-remote-\(session.member.id)"
+        }
+        if store.selectedTab == .services {
+            return store.selectedTab.id
         }
         return "\(store.selectedTab.id)-\(store.selectedConfigID ?? "none")"
     }
@@ -703,6 +716,11 @@ struct MainWindowView: View {
     }
 
     private func selectWorkspaceTab(_ tab: WorkspaceTab) {
+        guard allowedWorkspaceTabs.contains(tab) else {
+            selectedTabLocal = store.selectedTab == .services ? .status : store.selectedTab
+            if store.selectedTab == .services { store.selectedTab = .status }
+            return
+        }
         guard tab != store.selectedTab else { return }
         flushPendingLocalDraft()
         EasyTierPerformanceSignposts.workspaceTransition()

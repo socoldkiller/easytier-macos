@@ -4,7 +4,6 @@ struct GeneralGatewaySettingsSection: View {
     @Environment(AppContext.self) private var appContext
 
     @State private var isChangingGateway = false
-    @State private var isShowingPublishedServices = false
     @State private var errorMessage: String?
 
     private var gateway: GatewayRuntimeController { appContext.runtime.gateway }
@@ -13,7 +12,8 @@ struct GeneralGatewaySettingsSection: View {
         GatewayRuntimePresentation(
             status: gateway.status,
             desiredEnabled: gateway.desiredEnabled,
-            services: gateway.services
+            services: gateway.services,
+            magicDNSState: gateway.magicDNSState
         )
     }
 
@@ -30,24 +30,12 @@ struct GeneralGatewaySettingsSection: View {
                     HStack(spacing: 10) {
                         StatusPill(
                             presentation.statusLabel,
-                            tone: presentation.tone.statusPillTone
+                            tone: presentation.tone.statusPillTone,
+                            showsProgress: presentation.isInProgress
                         )
                         Toggle("Gateway", isOn: gatewayEnabledBinding)
                             .labelsHidden()
                             .disabled(isChangingGateway || gateway.isBusy)
-                    }
-                }
-                SettingsRowDivider()
-                SettingsInlineRow("Published Services") {
-                    HStack(spacing: 10) {
-                        Text(presentation.serviceCountLabel)
-                            .foregroundStyle(.secondary)
-                        Button(
-                            "Manage…",
-                            systemImage: "rectangle.stack",
-                            action: showPublishedServices
-                        )
-                        .controlSize(.small)
                     }
                 }
             }
@@ -55,9 +43,6 @@ struct GeneralGatewaySettingsSection: View {
             if let displayedError {
                 ErrorBanner(message: displayedError)
             }
-        }
-        .sheet(isPresented: $isShowingPublishedServices) {
-            PublishedServicesSheet()
         }
     }
 
@@ -68,10 +53,6 @@ struct GeneralGatewaySettingsSection: View {
                 setGatewayEnabled(enabled)
             }
         )
-    }
-
-    private func showPublishedServices() {
-        isShowingPublishedServices = true
     }
 
     private func setGatewayEnabled(_ enabled: Bool) {

@@ -41,6 +41,7 @@ private struct MemberStatusIdentity: View {
     var publishAction: (() -> Void)? = nil
 
     private var store: EasyTierAppStore { appContext.workspace.store }
+    private var gateway: GatewayRuntimeController { appContext.runtime.gateway }
 
     var body: some View {
         if let configureAction {
@@ -152,7 +153,10 @@ private struct MemberStatusIdentity: View {
     }
 
     private var canPublish: Bool {
-        publishAction != nil && GatewayTopologyBridge.canPublish(member, store: store)
+        publishAction != nil
+            && gateway.magicDNSState == .ready
+            && member.isLive
+            && member.peerID != "-"
     }
 
     private var memberSubtitle: String {
@@ -163,18 +167,6 @@ private struct MemberStatusIdentity: View {
 }
 
 extension View {
-    func trackScrollPhase(isScrolling: Binding<Bool>) -> some View {
-        onScrollPhaseChange { _, phase in
-            isScrolling.wrappedValue = phase.isScrolling
-        }
-    }
-
-    func reflectScrollPhase(to globalScrolling: Binding<Bool>) -> some View {
-        onScrollPhaseChange { _, phase in
-            globalScrolling.wrappedValue = phase.isScrolling
-        }
-    }
-
     func pointingHandOnHover() -> some View {
         onHover { hovering in
             if hovering {

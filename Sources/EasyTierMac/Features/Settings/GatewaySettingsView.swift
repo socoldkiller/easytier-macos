@@ -11,7 +11,7 @@ struct GatewaySettingsView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Gateway")
                         .font(.title2.weight(.semibold))
-                    Text("TLS for Published Services.")
+                    Text("SSL for Published Services.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }

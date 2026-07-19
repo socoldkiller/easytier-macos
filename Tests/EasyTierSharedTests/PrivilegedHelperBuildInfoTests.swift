@@ -14,7 +14,7 @@ import Testing
     )
 
     #expect(info.easyTierHelperDisplay == "v2.4.5 · fedcba98")
-    #expect(info.binaryDisplay == "1.4.0 (20260718124530) · protocol 13")
+    #expect(info.binaryDisplay == "1.4.0 (20260718124530) · protocol 17")
     #expect(info.buildTime == "2026-07-18T12:45:30Z")
 }
 
@@ -37,6 +37,6 @@ import Testing
         ]
     )
 
-    #expect(info.componentDisplay == "0.1.0 · 01234567-dirty · schema 2")
-    #expect(info.binaryDisplay == "0.1.0 (20260718124530) · protocol 3")
+    #expect(info.componentDisplay == "0.1.0 · 01234567-dirty · schema 3")
+    #expect(info.binaryDisplay == "0.1.0 (20260718124530) · protocol 4")
 }

@@ -8,14 +8,14 @@ struct GatewayTLSRequirementBanner: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 2) {
-                Text("TLS Setup Required")
+                Text("SSL Setup Required")
                     .bold()
                 Text("Configure Let’s Encrypt before publishing services.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
-            Button("Configure TLS…", systemImage: "gearshape", action: action)
+            Button("Configure SSL…", systemImage: "gearshape", action: action)
                 .controlSize(.small)
         }
         .padding(12)

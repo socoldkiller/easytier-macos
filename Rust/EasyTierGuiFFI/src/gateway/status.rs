@@ -52,8 +52,10 @@ pub struct ListenerStatus {
 #[serde(rename_all = "snake_case")]
 pub enum RouteResolutionState {
     #[default]
+    Waiting,
     Resolving,
     Ready,
+    Mismatch,
     Unavailable,
 }
 
@@ -62,9 +64,12 @@ pub struct RouteStatus {
     pub domain: String,
     pub upstream: String,
     pub resolved_addresses: Vec<String>,
+    pub resolved_ipv4s: Vec<String>,
+    pub expected_ipv4: Option<String>,
     pub certificate_id: String,
     pub resolution_state: RouteResolutionState,
     pub last_resolved_at: Option<String>,
+    pub last_online_at: Option<String>,
     pub last_error: Option<String>,
 }
 

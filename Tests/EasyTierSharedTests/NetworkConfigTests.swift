@@ -2978,6 +2978,24 @@ import Testing
 }
 
 @MainActor
+@Test func runtimeTransitionIsPublishedBeforeStartRPCAndClearedAfterRefresh() async {
+    let client = BlockingRuntimeMutationClient(blocksRun: true)
+    var config = NetworkConfig(instance_id: "transition-id", network_name: "transition-network")
+    config.enable_magic_dns = true
+    let store = EasyTierAppStore(client: client, storage: .isolatedForTesting())
+    store.configs = [config]
+    store.selectedConfigID = config.instance_id
+
+    let runTask = Task { await store.runSelectedConfig() }
+    await client.waitForRunRequest()
+    #expect(store.runtimeTransitionsByConfigID[config.instance_id] == .starting)
+
+    await client.resumeRun()
+    _ = await runTask.value
+    #expect(store.runtimeTransitionsByConfigID.isEmpty)
+}
+
+@MainActor
 @Test func queuedConnectionToggleReevaluatesStateAfterInFlightRun() async {
     let client = BlockingRuntimeMutationClient(blocksRun: true)
     let config = NetworkConfig(instance_id: "toggle-lock-id", network_name: "toggle-lock-network")
@@ -4034,7 +4052,8 @@ import Testing
           }
         }
       ],
-      "running": true
+      "running": true,
+      "instance_id": "11111111-1111-1111-1111-111111111111"
     }
     """
 
@@ -4043,6 +4062,7 @@ import Testing
 
     #expect(members.count == 2)
     #expect(members[0].isLocal)
+    #expect(members[0].instanceID == "11111111-1111-1111-1111-111111111111")
     #expect(members[0].hostname == "macbook")
     #expect(members[0].virtualIPv4 == "10.10.0.1/24")
     #expect(members[0].copyableIPv4Address == "10.10.0.1")
@@ -4370,9 +4390,15 @@ import Testing
     #expect(members[1].lossRate == "10%")
 }
 
-@Test func workspaceTabsExposeTrafficView() {
-    #expect(WorkspaceTab.allCases.map(\.rawValue) == ["Status", "View", "Config", "Logs", "Peers"])
-    #expect(WorkspaceTab.allCases.map(\.displayTitle) == ["Status", "Traffic", "Config", "Logs", "Peers"])
+@Test func workspaceTabsExposeWorkspaceDestinations() {
+    #expect(
+        WorkspaceTab.allCases.map(\.rawValue)
+            == ["Status", "Services", "View", "Config", "Logs", "Peers"]
+    )
+    #expect(
+        WorkspaceTab.allCases.map(\.displayTitle)
+            == ["Status", "Services", "Traffic", "Config", "Logs", "Peers"]
+    )
 }
 
 private func hostnameIntent(instanceID: String, networkName: String, base: String, desired: String) -> RuntimeIntent {

@@ -1,4 +1,3 @@
-import AppKit
 import EasyTierShared
 import SwiftUI
 
@@ -56,11 +55,11 @@ struct StatusDisplayModel {
         items.reserveCapacity(rows.count)
 
         for row in rows {
-            items.append(MemberGridRowItem(row: row, depth: 0, stripeIndex: items.count))
+            items.append(MemberGridRowItem(row: row, depth: 0))
             if publicServerGroupExpanded, let children = row.children {
                 items.reserveCapacity(items.count + children.count)
                 for child in children {
-                    items.append(MemberGridRowItem(row: child, depth: 1, stripeIndex: items.count))
+                    items.append(MemberGridRowItem(row: child, depth: 1))
                 }
             }
         }
@@ -108,43 +107,24 @@ struct MemberGridTable: View {
     var onPublishService: (NetworkMemberStatus) -> Void
 
     var body: some View {
-        GeometryReader { proxy in
-            let widths = MemberGridColumn.widths(for: proxy.size.width)
-            let tableWidth = max(proxy.size.width, MemberGridColumn.minimumTotalWidth)
-
-            ScrollView([.horizontal, .vertical]) {
-                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-                    Section {
-                        ForEach(rowItems) { item in
-                            MemberGridRowView(
-                                item: item,
-                                columnWidths: widths,
-                                highlightedMemberPeerID: highlightedMemberPeerID,
-                                animationsPaused: isScrolling,
-                                isStripedRow: !item.stripeIndex.isMultiple(of: 2),
-                                publicServerGroupExpanded: $publicServerGroupExpanded,
-                                onRenameHostname: onRenameHostname,
-                                onConfigureLocalMember: onConfigureLocalMember,
-                                onConfigureRemoteMember: onConfigureRemoteMember,
-                                onPublishService: onPublishService
-                            )
-                        }
-                    } header: {
-                        MemberGridHeader(columnWidths: widths)
-                    }
-                }
-                .frame(width: tableWidth, alignment: .topLeading)
-                .frame(minHeight: proxy.size.height, alignment: .topLeading)
-            }
-            .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
-            .hideScrollViewScrollers()
-            .defaultScrollAnchor(.topLeading)
-            .trackScrollPhase(isScrolling: $isScrolling)
-            .reflectScrollPhase(to: $globalScrolling)
-        }
-        .onDisappear {
-            isScrolling = false
-            globalScrolling = false
+        WorkspaceDataGrid(
+            rows: rowItems,
+            columns: MemberGridColumn.allCases,
+            minimumRowHeight: 44,
+            isScrolling: $isScrolling,
+            globalScrolling: $globalScrolling
+        ) { item, layout in
+            MemberGridRowView(
+                item: item,
+                layout: layout,
+                highlightedMemberPeerID: highlightedMemberPeerID,
+                animationsPaused: isScrolling,
+                publicServerGroupExpanded: $publicServerGroupExpanded,
+                onRenameHostname: onRenameHostname,
+                onConfigureLocalMember: onConfigureLocalMember,
+                onConfigureRemoteMember: onConfigureRemoteMember,
+                onPublishService: onPublishService
+            )
         }
     }
 }
@@ -152,12 +132,11 @@ struct MemberGridTable: View {
 struct MemberGridRowItem: Identifiable {
     fileprivate var row: MemberTableRow
     var depth: Int
-    var stripeIndex: Int
 
     var id: String { "\(row.id)-\(depth)" }
 }
 
-private enum MemberGridColumn: String, CaseIterable, Identifiable {
+private enum MemberGridColumn: String, CaseIterable, WorkspaceDataGridColumn {
     case member = "Member"
     case ipv4 = "IPv4"
     case route = "Route"
@@ -169,9 +148,10 @@ private enum MemberGridColumn: String, CaseIterable, Identifiable {
     case nat = "NAT"
     case version = "Version"
 
-    var id: String { rawValue }
+    var id: Self { self }
+    var title: String { rawValue }
 
-    var minWidth: CGFloat {
+    var minimumWidth: CGFloat {
         switch self {
         case .member: 220
         case .ipv4: 142
@@ -201,59 +181,13 @@ private enum MemberGridColumn: String, CaseIterable, Identifiable {
         }
     }
 
-    static var minimumTotalWidth: CGFloat {
-        allCases.reduce(0) { $0 + $1.minWidth }
-    }
-
-    private static var idealTotalWidth: CGFloat {
-        allCases.reduce(0) { $0 + $1.idealWidth }
-    }
-
-    static func widths(for availableWidth: CGFloat) -> [MemberGridColumn: CGFloat] {
-        let extraWidth = max(0, availableWidth - minimumTotalWidth)
-        let extraIdealWidth = max(1, idealTotalWidth - minimumTotalWidth)
-        return Dictionary(uniqueKeysWithValues: allCases.map { column in
-            let share = (column.idealWidth - column.minWidth) / extraIdealWidth
-            return (column, column.minWidth + extraWidth * share)
-        })
-    }
-}
-
-private struct MemberGridHeader: View {
-    var columnWidths: [MemberGridColumn: CGFloat]
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ForEach(MemberGridColumn.allCases) { column in
-                Text(column.rawValue)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .padding(.horizontal, 8)
-                    .frame(width: columnWidths[column, default: column.minWidth], alignment: .leading)
-                    .overlay(alignment: .trailing) {
-                        Rectangle()
-                            .fill(Color.primary.opacity(0.08))
-                            .frame(width: 0.6, height: 14)
-                    }
-            }
-        }
-        .frame(height: 28)
-        .background(.background.opacity(0.001))
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color.primary.opacity(0.08))
-                .frame(height: 0.6)
-        }
-    }
 }
 
 private struct MemberGridRowView: View {
     var item: MemberGridRowItem
-    var columnWidths: [MemberGridColumn: CGFloat]
+    var layout: WorkspaceDataGridLayout<MemberGridColumn>
     var highlightedMemberPeerID: String?
     var animationsPaused: Bool
-    var isStripedRow: Bool
     @Binding var publicServerGroupExpanded: Bool
     var onRenameHostname: (NetworkMemberStatus) -> Void
     var onConfigureLocalMember: () -> Void
@@ -288,19 +222,6 @@ private struct MemberGridRowView: View {
             cell(.nat) { Text(row.natType).lineLimit(1) }
             cell(.version) { Text(row.version).lineLimit(1) }
         }
-        .frame(minHeight: 44)
-        .background {
-            if isStripedRow {
-                Color.primary.opacity(0.025)
-            } else {
-                Color.clear
-            }
-        }
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color.primary.opacity(0.07))
-                .frame(height: 0.6)
-        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Text(accessibilitySummary))
     }
@@ -326,11 +247,7 @@ private struct MemberGridRowView: View {
     }
 
     private func cell<Content: View>(_ column: MemberGridColumn, @ViewBuilder content: () -> Content) -> some View {
-        content()
-            .font(.callout)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .frame(width: columnWidths[column, default: column.minWidth], alignment: .leading)
+        WorkspaceDataGridCell(column, layout: layout, content: content)
     }
 
     private var accessibilitySummary: String {
@@ -489,50 +406,6 @@ struct RenameHostnameSheet: View {
                 store.lastError = nil
             }
             isSaving = false
-        }
-    }
-}
-
-struct MemberSearchField: View {
-    @Binding var text: String
-    var resultCount: Int
-    var totalCount: Int
-
-    private var isSearching: Bool {
-        !SearchQuery(text).isEmpty
-    }
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .font(.callout.weight(.medium))
-                .foregroundStyle(.secondary)
-
-            TextField("Search networks, hostnames, servers, IPs, Peer IDs", text: $text)
-                .textFieldStyle(.plain)
-
-            if isSearching {
-                Text("\(resultCount)/\(totalCount)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-
-                Button {
-                    text = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.borderless)
-                .help("Clear search")
-                .accessibilityLabel(Text("Clear search"))
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .frostedGlassBackground(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(.primary.opacity(0.055), lineWidth: 1)
         }
     }
 }

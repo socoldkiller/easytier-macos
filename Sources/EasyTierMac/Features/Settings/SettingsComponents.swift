@@ -180,6 +180,8 @@ struct FieldRow<Content: View>: View {
 }
 
 struct StatusPill: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     enum Tone {
         case neutral, positive, warning
         var color: Color {
@@ -193,17 +195,27 @@ struct StatusPill: View {
 
     var text: String
     var tone: Tone = .neutral
+    var showsProgress = false
 
-    init(_ text: String, tone: Tone = .neutral) {
+    init(_ text: String, tone: Tone = .neutral, showsProgress: Bool = false) {
         self.text = text
         self.tone = tone
+        self.showsProgress = showsProgress
     }
 
     var body: some View {
         HStack(spacing: 5) {
-            Circle()
-                .fill(tone.color)
-                .frame(width: 6, height: 6)
+            if showsProgress, !reduceMotion {
+                ProgressView()
+                    .controlSize(.mini)
+                    .frame(width: 10, height: 10)
+                    .accessibilityHidden(true)
+            } else {
+                Circle()
+                    .fill(tone.color)
+                    .frame(width: 6, height: 6)
+                    .accessibilityHidden(true)
+            }
             Text(text)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(tone.color == .secondary ? .secondary : .primary)
@@ -235,20 +247,36 @@ struct StatusBadge: View {
     var value: String
     var systemImage: String
     var width: CGFloat? = nil
+    var showsProgress = false
 
-    init(title: String, value: String, systemImage: String, width: CGFloat? = nil) {
+    init(
+        title: String,
+        value: String,
+        systemImage: String,
+        width: CGFloat? = nil,
+        showsProgress: Bool = false
+    ) {
         self.title = title
         self.value = value
         self.systemImage = systemImage
         self.width = width
+        self.showsProgress = showsProgress
     }
 
     var body: some View {
         HStack(spacing: 7) {
-            Image(systemName: systemImage)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 18)
+            if showsProgress, !reduceMotion {
+                ProgressView()
+                    .controlSize(.mini)
+                    .frame(width: 18)
+                    .accessibilityHidden(true)
+            } else {
+                Image(systemName: systemImage)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18)
+                    .accessibilityHidden(true)
+            }
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
                     .font(.caption)
@@ -266,6 +294,9 @@ struct StatusBadge: View {
         .frame(width: width, alignment: .leading)
         .liquidGlassMetricBackground(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: value)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(title))
+        .accessibilityValue(Text(value.isEmpty ? "-" : value))
     }
 }
 

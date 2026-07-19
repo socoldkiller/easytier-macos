@@ -8,6 +8,7 @@ final class ApplicationRuntimeCoordinator: SoftwareUpdateRuntimeManaging {
     init(store: EasyTierAppStore, gateway: GatewayRuntimeController) {
         self.store = store
         self.gateway = gateway
+        gateway.bind(to: store)
     }
 
     func load() async {

@@ -13,7 +13,7 @@ package enum GatewayConfigurationValidationError: LocalizedError, Equatable, Sen
 
 package enum GatewayConfigurationValidator {
     package static func validate(_ configuration: GatewayConfiguration) throws -> GatewayConfiguration {
-        guard configuration.schemaVersion == GatewaySchema.version else {
+        guard configuration.schemaVersion == GatewaySchema.runtimeVersion else {
             throw invalid("Unsupported Gateway schema version \(configuration.schemaVersion).")
         }
         guard configuration.certificates.isEmpty || configuration.acme.termsOfServiceAgreed else {
@@ -131,12 +131,40 @@ package enum GatewayConfigurationValidator {
             tlsServerName = try normalizeDomain(host, label: "TLS server name")
         }
 
+        let expectedIPv4 = try normalizeIPv4(upstream.expectedIPv4, field: "expected_ipv4")
+        let allowedIPv4CIDR = try normalizeIPv4CIDR(upstream.allowedIPv4CIDR)
+        switch upstream.availability {
+        case .waiting, .unavailable:
+            guard expectedIPv4 == nil else {
+                throw invalid("A non-ready upstream must not include expected_ipv4.")
+            }
+        case .ready:
+            break
+        }
+        if let allowedIPv4CIDR, let expectedIPv4,
+           !ipv4(expectedIPv4, isInside: allowedIPv4CIDR)
+        {
+            throw invalid("expected_ipv4 must be inside allowed_ipv4_cidr.")
+        }
+
         return GatewayUpstreamConfiguration(
             url: upstream.url,
             hostHeader: hostHeader,
             tlsServerName: tlsServerName,
-            allowedIPv4CIDR: try normalizeIPv4CIDR(upstream.allowedIPv4CIDR)
+            allowedIPv4CIDR: allowedIPv4CIDR,
+            availability: upstream.availability,
+            expectedIPv4: expectedIPv4
         )
+    }
+
+    private static func normalizeIPv4(_ value: String?, field: String) throws -> String? {
+        guard let value else { return nil }
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        var address = in_addr()
+        guard normalized.withCString({ inet_pton(AF_INET, $0, &address) }) == 1 else {
+            throw invalid("\(field) must be an IPv4 address.")
+        }
+        return normalized
     }
 
     private static func normalizeIPv4CIDR(_ value: String?) throws -> String? {
@@ -155,6 +183,19 @@ package enum GatewayConfigurationValidator {
             throw invalid("allowed_ipv4_cidr must be an IPv4 CIDR.")
         }
         return "\(ip)/\(prefix)"
+    }
+
+    private static func ipv4(_ address: String, isInside cidr: String) -> Bool {
+        let parts = cidr.split(separator: "/", maxSplits: 1)
+        guard parts.count == 2, let prefix = UInt32(parts[1]) else { return false }
+        var addressValue = in_addr()
+        var networkValue = in_addr()
+        guard address.withCString({ inet_pton(AF_INET, $0, &addressValue) }) == 1,
+              String(parts[0]).withCString({ inet_pton(AF_INET, $0, &networkValue) }) == 1
+        else { return false }
+        let mask = prefix == 0 ? UInt32(0) : UInt32.max << (32 - prefix)
+        return UInt32(bigEndian: addressValue.s_addr) & mask
+            == UInt32(bigEndian: networkValue.s_addr) & mask
     }
 
     private static func normalizeHeaderValue(_ value: String?) throws -> String? {

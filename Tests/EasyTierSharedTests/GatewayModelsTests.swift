@@ -22,6 +22,60 @@ import Testing
     #expect(try JSONDecoder().decode(GatewayConfiguration.self, from: data) == configuration)
 }
 
+@Test func gatewayFactoryCarriesExactExpectedTargetIPv4() throws {
+    let state = GatewayPersistedState(
+        gatewayEnabled: true,
+        acmeAccount: GatewayACMEConfiguration(termsOfServiceAgreed: true),
+        publishingNetworkConfigID: "network-a",
+        lastKnownNetworkIPv4CIDR: "10.0.0.0/24",
+        services: [
+            GatewayPublishedService(
+                id: "service-a",
+                networkConfigID: "network-a",
+                targetPeerID: "peer-a",
+                publicNodeLabel: "alpha",
+                publicDNSSuffix: "et.net.",
+                lastKnownTargetHostname: "alpha",
+                lastKnownMagicDNSSuffix: "et.net.",
+                serviceLabel: "web",
+                publicHostname: "web.alpha.et.net",
+                targetPort: 3_000,
+                desiredEnabled: true
+            ),
+        ]
+    )
+    let configuration = try GatewayConfigurationFactory.makeRuntimeConfiguration(
+        from: state,
+        expectedIPv4ByServiceID: ["service-a": "10.0.0.42"]
+    )
+    #expect(configuration.routes.first?.upstream.availability == .ready)
+    #expect(configuration.routes.first?.upstream.expectedIPv4 == "10.0.0.42")
+
+    let unavailable = try GatewayConfigurationFactory.makeRuntimeConfiguration(from: state)
+    #expect(unavailable.routes.first?.upstream.availability == .unavailable)
+    #expect(unavailable.routes.first?.upstream.expectedIPv4 == nil)
+}
+
+@Test func gatewayValidationRejectsExpectedIPv4OutsideEasyTierCIDR() {
+    let configuration = GatewayConfiguration(
+        acme: GatewayACMEConfiguration(termsOfServiceAgreed: true),
+        routes: [
+            GatewayRouteConfiguration(
+                domain: "web.example.com",
+                certificateID: "service-a",
+                upstream: GatewayUpstreamConfiguration(
+                    url: "http://alpha.et.net:3000",
+                    allowedIPv4CIDR: "10.0.0.0/24",
+                    expectedIPv4: "10.0.1.42"
+                )
+            ),
+        ]
+    )
+    #expect(throws: GatewayConfigurationValidationError.self) {
+        try GatewayConfigurationValidator.validate(configuration)
+    }
+}
+
 @Test func helperRuntimeConfigurationInjectsOnlyPrivilegedFields() throws {
     let runtime = GatewayFFIConfiguration(
         configuration: gatewayTestConfiguration(),
@@ -183,6 +237,24 @@ func gatewayValidationRejectsNonExactCertificateDomains(_ domain: String) {
     )
 
     #expect(migrated.gatewayEnabled)
+}
+
+@Test func publishedServicePersistsStableInstanceIdentityAndDecodesLegacyRecords() throws {
+    var state = gatewayPersistedTestState()
+    state.services[0].targetInstanceID = "instance-a"
+
+    let encoded = try JSONEncoder().encode(state)
+    var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    var services = try #require(object["services"] as? [[String: Any]])
+    #expect(services.first?["target_instance_id"] as? String == "instance-a")
+    #expect(try JSONDecoder().decode(GatewayPersistedState.self, from: encoded) == state)
+
+    services[0].removeValue(forKey: "target_instance_id")
+    object["services"] = services
+    let legacyData = try JSONSerialization.data(withJSONObject: object)
+    let legacyState = try JSONDecoder().decode(GatewayPersistedState.self, from: legacyData)
+
+    #expect(legacyState.services.first?.targetInstanceID == nil)
 }
 
 @Test func incompatibleGatewayConfigurationIsBackedUpAndNotOverwritten() async throws {
