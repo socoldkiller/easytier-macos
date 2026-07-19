@@ -101,6 +101,22 @@ class GatewayPackagingTests(unittest.TestCase):
 
         self.assertIn(f"-package-name {package_name}", base_configuration)
 
+    def test_shared_ffi_symbols_are_not_treated_as_core_only(self) -> None:
+        verifier = (ROOT_DIR / "scripts" / "verify-app.sh").read_text(
+            encoding="utf-8"
+        )
+
+        shared_symbols = re.search(
+            r"REQUIRED_SHARED_FFI_SYMBOLS=\((.*?)\)", verifier, re.DOTALL
+        )
+        core_symbols = re.search(
+            r"REQUIRED_FFI_SYMBOLS=\((.*?)\)", verifier, re.DOTALL
+        )
+        self.assertIsNotNone(shared_symbols)
+        self.assertIsNotNone(core_symbols)
+        self.assertIn("free_string", shared_symbols.group(1))
+        self.assertNotIn("free_string", core_symbols.group(1))
+
     def test_debug_install_replaces_helpers_without_leaving_stale_daemons(self) -> None:
         install_script = (
             ROOT_DIR / "scripts" / "install-xcode-debug-app.sh"
