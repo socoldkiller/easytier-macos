@@ -8,8 +8,12 @@ PROFILE_PATH="${EASYTIER_PROVISIONING_PROFILE:-${PROVISIONING_PROFILE:-}}"
 PROFILE_BASE64="${APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64:-}"
 SWIFT_BUILD_DIR="${EASYTIER_SWIFT_BUILD_DIR:-$ROOT_DIR/.build/keychain-integration}"
 TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/easytier-keychain-test.XXXXXX")"
+ORIGINAL_DEFAULT_KEYCHAIN=""
 
 cleanup() {
+  if [[ -n "$ORIGINAL_DEFAULT_KEYCHAIN" ]]; then
+    security default-keychain -d user -s "$ORIGINAL_DEFAULT_KEYCHAIN" >/dev/null 2>&1 || true
+  fi
   rm -rf "$TEMP_ROOT"
 }
 trap cleanup EXIT
@@ -90,6 +94,14 @@ if [[ -n "$CODESIGN_KEYCHAIN" ]]; then
 fi
 codesign "${CODESIGN_ARGS[@]}" "$APP_PATH"
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+if [[ -n "$CODESIGN_KEYCHAIN" ]]; then
+  ORIGINAL_DEFAULT_KEYCHAIN="$(
+    security default-keychain -d user \
+      | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//'
+  )"
+  security default-keychain -d user -s "$CODESIGN_KEYCHAIN"
+fi
 
 TEST_SERVICE="com.kkrainbow.easytier.mac.keychain-integration.$(uuidgen | tr '[:upper:]' '[:lower:]')"
 EASYTIER_KEYCHAIN_TEST_SERVICE="$TEST_SERVICE" \
