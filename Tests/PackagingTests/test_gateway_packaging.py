@@ -92,6 +92,15 @@ class GatewayPackagingTests(unittest.TestCase):
         self.assertIn("import CEasyTierCoreFFI", core_client)
         self.assertIn("import CGatewayFFI", gateway_client)
 
+    def test_native_targets_share_swift_package_access_domain(self) -> None:
+        base_configuration = (
+            ROOT_DIR / "Configurations" / "Base.xcconfig"
+        ).read_text(encoding="utf-8")
+
+        package_name = ROOT_DIR.name.replace("-", "_").lower()
+
+        self.assertIn(f"-package-name {package_name}", base_configuration)
+
     def test_debug_install_replaces_helpers_without_leaving_stale_daemons(self) -> None:
         install_script = (
             ROOT_DIR / "scripts" / "install-xcode-debug-app.sh"
