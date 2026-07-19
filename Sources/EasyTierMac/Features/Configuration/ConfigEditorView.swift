@@ -9,6 +9,8 @@ struct ConfigEditorView: View {
     var members: [NetworkMemberStatus] = []
     var remoteSession: RemoteConfigSession? = nil
     var onScrolledPastTopChange: (Bool) -> Void = { _ in }
+    var onTextEditingChange: (Bool) -> Void = { _ in }
+    var onTextEditingCommit: () -> Void = {}
     @State private var reversePortForwardStatus: [UUID: Bool] = [:]
     @State private var reversePortForwardPending: Set<UUID> = []
 
@@ -23,7 +25,9 @@ struct ConfigEditorView: View {
         networkSecretDraft: Binding<NetworkSecretInput?>? = nil,
         members: [NetworkMemberStatus] = [],
         remoteSession: RemoteConfigSession? = nil,
-        onScrolledPastTopChange: @escaping (Bool) -> Void = { _ in }
+        onScrolledPastTopChange: @escaping (Bool) -> Void = { _ in },
+        onTextEditingChange: @escaping (Bool) -> Void = { _ in },
+        onTextEditingCommit: @escaping () -> Void = {}
     ) {
         _config = config
         _networkSecretDraft = networkSecretDraft ?? Binding(
@@ -37,6 +41,8 @@ struct ConfigEditorView: View {
         self.members = members
         self.remoteSession = remoteSession
         self.onScrolledPastTopChange = onScrolledPastTopChange
+        self.onTextEditingChange = onTextEditingChange
+        self.onTextEditingCommit = onTextEditingCommit
     }
 
     private static let scrollSpaceName = "ConfigEditorScroll"
@@ -79,10 +85,23 @@ struct ConfigEditorView: View {
         .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
         .hideScrollViewScrollers()
         .textFieldStyle(.glassField)
+        .environment(
+            \.configTextEditingActions,
+            ConfigTextEditingActions(
+                didBeginEditing: { onTextEditingChange(true) },
+                didCommitEditing: {
+                    onTextEditingChange(false)
+                    onTextEditingCommit()
+                }
+            )
+        )
         .onScrollPhaseChange { _, phase in
             store.isAnyViewScrolling = phase.isScrolling
         }
-        .onDisappear { store.isAnyViewScrolling = false }
+        .onDisappear {
+            store.isAnyViewScrolling = false
+            onTextEditingChange(false)
+        }
         .onAppear {
             syncDisplayMode()
             if !isRemote {
@@ -116,6 +135,7 @@ struct ConfigEditorView: View {
             VStack(alignment: .leading, spacing: 6) {
                 TextField("easytier", text: $config.network_name)
                     .textFieldStyle(.glassField)
+                    .commitsConfigTextOnFocusLoss()
                 if networkNameHasDuplicate {
                     Label(
                         "Another network already uses this name. Letting it persist will reuse that network's saved secret.",
@@ -168,6 +188,7 @@ struct ConfigEditorView: View {
                 HStack(spacing: 10) {
                     TextField("10.144.144.10", text: $config.virtual_ipv4)
                         .textFieldStyle(.glassField)
+                        .commitsConfigTextOnFocusLoss()
                         .frame(minWidth: ConfigControlMetrics.addressFieldMinWidth)
                         .disabled(config.dhcp)
                     Stepper("/\(config.network_length)", value: $config.network_length, in: 1...32)
@@ -179,19 +200,23 @@ struct ConfigEditorView: View {
             FieldRow("Hostname") {
                 TextField(NetworkConfig.defaultHostname, text: Binding($config.hostname, replacingNilWith: ""))
                     .textFieldStyle(.glassField)
+                    .commitsConfigTextOnFocusLoss()
             }
             magicDNSRow
             FieldRow("Device name") {
                 TextField("Auto", text: $config.dev_name)
                     .textFieldStyle(.glassField)
+                    .commitsConfigTextOnFocusLoss()
             }
             FieldRow("MTU") {
                 TextField(String(NetworkConfig.defaultMTU), text: Binding($config.mtu))
                     .textFieldStyle(.glassField)
+                    .commitsConfigTextOnFocusLoss()
             }
             FieldRow("Recv limit") {
                 TextField("Unlimited bytes/s", text: Binding($config.instance_recv_bps_limit))
                     .textFieldStyle(.glassField)
+                    .commitsConfigTextOnFocusLoss()
             }
         }
 
@@ -229,6 +254,7 @@ struct ConfigEditorView: View {
                     FieldRow("SOCKS5 port") {
                         TextField("1080", value: $config.socks5_port, format: .number)
                             .textFieldStyle(.glassField)
+                            .commitsConfigTextOnFocusLoss()
                             .monospacedDigit()
                             .frame(width: ConfigControlMetrics.portFieldWidth, alignment: .leading)
                             .disabled(config.enable_socks5 != true)
@@ -237,6 +263,7 @@ struct ConfigEditorView: View {
                     FieldRow("VPN portal port") {
                         TextField("22022", value: $config.vpn_portal_listen_port, format: .number)
                             .textFieldStyle(.glassField)
+                            .commitsConfigTextOnFocusLoss()
                             .monospacedDigit()
                             .frame(width: ConfigControlMetrics.portFieldWidth, alignment: .leading)
                             .disabled(!config.enable_vpn_portal)
@@ -244,6 +271,7 @@ struct ConfigEditorView: View {
                     FieldRow("VPN client network") {
                         TextField("10.0.0.0", text: $config.vpn_portal_client_network_addr)
                             .textFieldStyle(.glassField)
+                            .commitsConfigTextOnFocusLoss()
                             .frame(minWidth: ConfigControlMetrics.addressFieldMinWidth)
                             .disabled(!config.enable_vpn_portal)
                     }

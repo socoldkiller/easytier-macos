@@ -42,9 +42,8 @@ public final class ConfigApplyCoordinator {
     public private(set) var phase: Phase = .idle
     public private(set) var targetConfigID: String?
 
-    @ObservationIgnored private let debounceDuration: Duration
     @ObservationIgnored private let successDisplayDuration: Duration
-    @ObservationIgnored private var debounceTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingApplyTask: Task<Void, Never>?
     @ObservationIgnored private var successResetTask: Task<Void, Never>?
     @ObservationIgnored private var latestRequest: LocalConfigApplyRequest?
     @ObservationIgnored private var failedRequest: LocalConfigApplyRequest?
@@ -54,10 +53,8 @@ public final class ConfigApplyCoordinator {
     @ObservationIgnored private var flushAfterCurrentApply = false
 
     package init(
-        debounceDuration: Duration = .milliseconds(1_200),
         successDisplayDuration: Duration = .seconds(2)
     ) {
-        self.debounceDuration = debounceDuration
         self.successDisplayDuration = successDisplayDuration
     }
 
@@ -72,12 +69,12 @@ public final class ConfigApplyCoordinator {
         revision &+= 1
         phase = .pending
         successResetTask?.cancel()
-        armDebounce(for: revision)
+        armPendingApply(for: revision)
     }
 
     public func flush() async {
-        debounceTask?.cancel()
-        debounceTask = nil
+        pendingApplyTask?.cancel()
+        pendingApplyTask = nil
         guard !isApplying else {
             flushAfterCurrentApply = true
             return
@@ -97,8 +94,8 @@ public final class ConfigApplyCoordinator {
 
     public func cancelPending() {
         revision &+= 1
-        debounceTask?.cancel()
-        debounceTask = nil
+        pendingApplyTask?.cancel()
+        pendingApplyTask = nil
         successResetTask?.cancel()
         successResetTask = nil
         latestRequest = nil
@@ -111,15 +108,11 @@ public final class ConfigApplyCoordinator {
         }
     }
 
-    private func armDebounce(for expectedRevision: UInt64) {
-        debounceTask?.cancel()
-        let delay = debounceDuration
-        debounceTask = Task { [weak self] in
-            do {
-                try await Task.sleep(for: delay)
-            } catch {
-                return
-            }
+    private func armPendingApply(for expectedRevision: UInt64) {
+        pendingApplyTask?.cancel()
+        pendingApplyTask = Task { [weak self] in
+            await Task.yield()
+            guard !Task.isCancelled else { return }
             guard let self else { return }
             await self.applyLatest(expectedRevision: expectedRevision)
         }
@@ -129,7 +122,7 @@ public final class ConfigApplyCoordinator {
         guard expectedRevision == revision, !isApplying else { return }
         guard let request = latestRequest, let operation else { return }
 
-        debounceTask = nil
+        pendingApplyTask = nil
         latestRequest = nil
         isApplying = true
         phase = .applying
@@ -144,7 +137,7 @@ public final class ConfigApplyCoordinator {
                 flushAfterCurrentApply = false
                 await applyLatest(expectedRevision: nextRevision)
             } else {
-                armDebounce(for: nextRevision)
+                armPendingApply(for: nextRevision)
             }
             return
         }

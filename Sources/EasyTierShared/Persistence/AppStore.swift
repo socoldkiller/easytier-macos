@@ -1177,6 +1177,7 @@ public final class EasyTierAppStore {
     }
 
     public func applyMode(_ mode: AppMode) async {
+        let rpcConfigurationChanged = self.mode != mode
         self.mode = mode
         save()
 
@@ -1187,6 +1188,8 @@ public final class EasyTierAppStore {
             if mode.rpcPortal == nil { log("RPC portal disabled.") }
             return
         }
+
+        guard rpcConfigurationChanged || !runtimeServiceConfigured else { return }
 
         await busy {
             try await runtimeClient.configureRPCPortal(mode.rpcPortal, whitelist: mode.rpcPortalWhitelist)

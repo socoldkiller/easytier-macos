@@ -12,6 +12,7 @@ struct MainWindowView: View {
     @State private var draftNetworkSecret: NetworkSecretInput?
     @State private var draftConfigID: String?
     @State private var draftIsDirty = false
+    @State private var configTextFieldIsEditing = false
     @State private var configApplyCoordinator = ConfigApplyCoordinator()
     @State private var workspaceTransitionEdge: Edge = .trailing
     @State private var workspaceTransitionDistance: CGFloat = Self.tabTransitionDistance
@@ -218,7 +219,9 @@ struct MainWindowView: View {
                 ConfigEditorView(
                     config: config,
                     networkSecretDraft: $draftNetworkSecret,
-                    members: store.selectedLiveMemberStatuses
+                    members: store.selectedLiveMemberStatuses,
+                    onTextEditingChange: { configTextFieldIsEditing = $0 },
+                    onTextEditingCommit: scheduleLocalConfigApply
                 )
             } else if store.selectedConfigID != nil {
                 ProgressView()
@@ -939,7 +942,9 @@ struct MainWindowView: View {
                 guard newValue != draftConfig else { return }
                 draftConfig = newValue
                 draftIsDirty = true
-                scheduleLocalConfigApply()
+                if !configTextFieldIsEditing {
+                    scheduleLocalConfigApply()
+                }
             }
         )
     }
@@ -1083,6 +1088,7 @@ struct MainWindowView: View {
     }
 
     private func loadDraft(for selectedID: String?) {
+        configTextFieldIsEditing = false
         guard let selectedID,
             let config = store.configs.first(where: { $0.id == selectedID })
         else {

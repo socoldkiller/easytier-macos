@@ -8,6 +8,48 @@ enum ConfigControlMetrics {
     static let stepperWidth: CGFloat = 132
 }
 
+struct ConfigTextEditingActions: @unchecked Sendable {
+    var didBeginEditing: () -> Void = {}
+    var didCommitEditing: () -> Void = {}
+}
+
+private struct ConfigTextEditingActionsKey: EnvironmentKey {
+    static let defaultValue = ConfigTextEditingActions()
+}
+
+extension EnvironmentValues {
+    var configTextEditingActions: ConfigTextEditingActions {
+        get { self[ConfigTextEditingActionsKey.self] }
+        set { self[ConfigTextEditingActionsKey.self] = newValue }
+    }
+}
+
+private struct ConfigTextFocusCommitModifier: ViewModifier {
+    @Environment(\.configTextEditingActions) private var actions
+    @FocusState private var isFocused: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .focused($isFocused)
+            .onSubmit {
+                isFocused = false
+            }
+            .onChange(of: isFocused) { wasFocused, isFocused in
+                if isFocused {
+                    actions.didBeginEditing()
+                } else if wasFocused {
+                    actions.didCommitEditing()
+                }
+            }
+    }
+}
+
+extension View {
+    func commitsConfigTextOnFocusLoss() -> some View {
+        modifier(ConfigTextFocusCommitModifier())
+    }
+}
+
 struct ConfigEditorScrollOffsetKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
 
@@ -650,6 +692,7 @@ struct StringListEditor: View {
                             values[index] = newValue
                         }
                     ))
+                    .commitsConfigTextOnFocusLoss()
                     Button(role: .destructive) {
                         guard values.indices.contains(index) else { return }
                         _ = withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
@@ -745,12 +788,14 @@ struct PortForwardEditor: View {
                 TextField("Bind port", value: ruleBinding.bind_port, format: .number)
                     .monospacedDigit()
                     .frame(width: ConfigControlMetrics.portFieldWidth, alignment: .leading)
+                    .commitsConfigTextOnFocusLoss()
                 Text("->")
                     .foregroundStyle(.secondary)
                 PortForwardDestinationField(address: ruleBinding.dst_ip, options: destinationOptions)
                 TextField("Port", value: ruleBinding.dst_port, format: .number)
                     .monospacedDigit()
                     .frame(width: ConfigControlMetrics.portFieldWidth, alignment: .leading)
+                    .commitsConfigTextOnFocusLoss()
                 if allowsReverse { reverseButton(for: rule) }
                 Button(role: .destructive) {
                     portForwards.removeAll { $0.id == rule.id }
@@ -834,6 +879,7 @@ private struct PortForwardBindField: View {
         HStack(spacing: 6) {
             TextField("Bind IP", text: $address)
                 .frame(minWidth: ConfigControlMetrics.addressFieldMinWidth)
+                .commitsConfigTextOnFocusLoss()
 
             Menu {
                 ForEach(options) { option in
@@ -872,6 +918,7 @@ private struct PortForwardDestinationField: View {
         HStack(spacing: 6) {
             TextField("Destination IP", text: $address)
                 .frame(minWidth: ConfigControlMetrics.addressFieldMinWidth)
+                .commitsConfigTextOnFocusLoss()
 
             if !options.isEmpty {
                 Menu {

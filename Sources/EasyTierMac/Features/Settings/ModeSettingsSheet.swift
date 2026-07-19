@@ -72,6 +72,11 @@ enum SettingsSelection: Hashable {
     case about
 }
 
+private enum SettingsTextField: Hashable {
+    case magicDNSSuffix
+    case rpcListenPort
+}
+
 struct EasyTierSettingsSheet: View {
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -83,6 +88,7 @@ struct EasyTierSettingsSheet: View {
     @State private var magicDNSSuffix: String
     @State private var settingsError: String?
     @State private var showingDisableRPCListenWarning = false
+    @FocusState private var focusedTextField: SettingsTextField?
     private let appInfo = AppVersionInfo.current
 
     var onChange: (AppMode, MagicDNSSettings) -> Void
@@ -140,13 +146,8 @@ struct EasyTierSettingsSheet: View {
         .onChange(of: rpcListenEnabled) { _, _ in
             applySettings()
         }
-        .onChange(of: rpcListenPort) { _, _ in
-            applySettings()
-        }
-        .onChange(of: rpcPortalWhitelist) { _, _ in
-            applySettings()
-        }
-        .onChange(of: magicDNSSuffix) { _, _ in
+        .onChange(of: focusedTextField) { oldValue, newValue in
+            guard oldValue != nil, oldValue != newValue else { return }
             applySettings()
         }
         .hideScrollViewScrollers()
@@ -330,6 +331,10 @@ struct EasyTierSettingsSheet: View {
                     .textFieldStyle(.glassField)
                     .font(.body.monospaced())
                     .frame(width: 160)
+                    .focused($focusedTextField, equals: .magicDNSSuffix)
+                    .onSubmit {
+                        focusedTextField = nil
+                    }
             }
             SettingsRowDivider()
             SettingsInlineRow("DNS Routing") {
@@ -389,14 +394,20 @@ struct EasyTierSettingsSheet: View {
                             .textFieldStyle(.glassField)
                             .font(.body.monospacedDigit())
                             .frame(width: 96)
-                        Stepper("Listen Port", value: $rpcListenPort, in: 1...65_535)
+                            .focused($focusedTextField, equals: .rpcListenPort)
+                            .onSubmit {
+                                focusedTextField = nil
+                            }
+                        Stepper("Listen Port", value: rpcListenPortStepperBinding, in: 1...65_535)
                             .labelsHidden()
                     }
                     .disabled(!rpcListenEnabled)
                 }
                 SettingsRowDivider()
                 SettingsInlineRow("Whitelist", alignment: .top) {
-                    RPCPortalWhitelistEditor(values: $rpcPortalWhitelist)
+                    RPCPortalWhitelistEditor(values: $rpcPortalWhitelist) {
+                        applySettings()
+                    }
                         .disabled(!rpcListenEnabled)
                         .frame(maxWidth: 340, alignment: .leading)
                 }
@@ -424,6 +435,16 @@ struct EasyTierSettingsSheet: View {
                 } else if rpcListenEnabled {
                     showingDisableRPCListenWarning = true
                 }
+            }
+        )
+    }
+
+    private var rpcListenPortStepperBinding: Binding<Int> {
+        Binding(
+            get: { rpcListenPort },
+            set: { newValue in
+                rpcListenPort = newValue
+                applySettings()
             }
         )
     }
@@ -485,13 +506,13 @@ struct EasyTierSettingsSheet: View {
         )
     }
 
-    private func applySettings() {
+    private func applySettings(surfacesValidationError: Bool = true) {
         do {
             let settings = try MagicDNSSettings(dnsSuffix: magicDNSSuffix)
             settingsError = nil
             onChange(buildMode(), settings)
         } catch {
-            settingsError = error.localizedDescription
+            settingsError = surfacesValidationError ? error.localizedDescription : nil
         }
     }
 
@@ -832,6 +853,8 @@ private struct SettingsSourceRevisionInfo: Equatable {
 private struct RPCPortalWhitelistEditor: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var values: [String]
+    @FocusState private var focusedIndex: Int?
+    var onCommit: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -846,11 +869,20 @@ private struct RPCPortalWhitelistEditor: View {
                     ))
                     .textFieldStyle(.glassField)
                     .font(.body.monospaced())
+                    .focused($focusedIndex, equals: index)
+                    .onSubmit {
+                        focusedIndex = nil
+                    }
 
                     Button(role: .destructive) {
                         guard values.indices.contains(index) else { return }
+                        let hadFocusedField = focusedIndex != nil
+                        focusedIndex = nil
                         _ = withAnimation(EasyTierMotion.content(reduceMotion: reduceMotion)) {
                             values.remove(at: index)
+                        }
+                        if !hadFocusedField {
+                            onCommit()
                         }
                     } label: {
                         Image(systemName: "minus.circle")
@@ -872,6 +904,10 @@ private struct RPCPortalWhitelistEditor: View {
             .font(.body)
         }
         .animation(EasyTierMotion.content(reduceMotion: reduceMotion), value: values.count)
+        .onChange(of: focusedIndex) { oldValue, newValue in
+            guard oldValue != nil, oldValue != newValue else { return }
+            onCommit()
+        }
     }
 }
 

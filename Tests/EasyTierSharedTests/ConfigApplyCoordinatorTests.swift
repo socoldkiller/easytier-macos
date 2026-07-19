@@ -5,7 +5,6 @@ import Testing
 @MainActor
 @Test func configApplyCoordinatorCoalescesRapidChanges() async throws {
     let coordinator = ConfigApplyCoordinator(
-        debounceDuration: .milliseconds(20),
         successDisplayDuration: .seconds(1)
     )
     var applied: [LocalConfigApplyRequest] = []
@@ -36,9 +35,8 @@ import Testing
 }
 
 @MainActor
-@Test func configApplyCoordinatorFlushesWithoutWaitingForDebounce() async {
+@Test func configApplyCoordinatorFlushesPendingApply() async {
     let coordinator = ConfigApplyCoordinator(
-        debounceDuration: .seconds(10),
         successDisplayDuration: .seconds(1)
     )
     var applied: [LocalConfigApplyRequest] = []
@@ -61,7 +59,6 @@ import Testing
 @MainActor
 @Test func configApplyCoordinatorTracksWhichConfigOwnsItsToolbarStatus() {
     let coordinator = ConfigApplyCoordinator(
-        debounceDuration: .seconds(10),
         successDisplayDuration: .seconds(1)
     )
     let first = LocalConfigApplyRequest(
@@ -89,7 +86,6 @@ import Testing
 @MainActor
 @Test func configApplyCoordinatorRunsOneFollowUpForChangesMadeDuringApply() async throws {
     let coordinator = ConfigApplyCoordinator(
-        debounceDuration: .milliseconds(10),
         successDisplayDuration: .seconds(1)
     )
     var appliedNames: [String] = []

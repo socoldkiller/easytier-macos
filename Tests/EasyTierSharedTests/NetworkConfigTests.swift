@@ -1597,6 +1597,27 @@ import Testing
 }
 
 @MainActor
+@Test func changingOnlyMagicDNSSuffixDoesNotReconfigureRPCPortal() async throws {
+    let client = RecordingToggleClient()
+    let backend = HelperRegistrationBackendSpy(status: .enabled)
+    let registration = HelperRegistrationService(backend: backend.backend(), refreshOnInit: false)
+    let store = EasyTierAppStore(
+        runtimeClient: client,
+        helperRegistration: registration,
+        storage: .isolatedForTesting()
+    )
+
+    #expect(await store.prepareRuntimeServiceAfterLaunch())
+
+    await store.applyMode(
+        store.mode,
+        magicDNSSettings: try MagicDNSSettings(dnsSuffix: "lab.internal")
+    )
+
+    #expect(client.configuredRPCPortals == [AppMode.default.rpcPortal])
+}
+
+@MainActor
 @Test func magicDNSResolverIsActiveOnlyForRunningEnabledNetworks() {
     var magicDNSConfig = NetworkConfig(instance_id: "magic-dns", network_name: "magic")
     magicDNSConfig.enable_magic_dns = true
