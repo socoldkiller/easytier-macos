@@ -109,6 +109,11 @@ if [[ "$1" == "notarytool" && "$2" == "submit" ]]; then
     fi
   else
     printf 'notary-app\n' >> "$TRACE_FILE"
+    if [[ "${TRANSIENT_APP_NOTARY:-0}" == "1" && ! -f "$TRANSIENT_NOTARY_STATE" ]]; then
+      touch "$TRANSIENT_NOTARY_STATE"
+      echo 'Error: abortedUpload: Connection reset by peer' >&2
+      exit 1
+    fi
   fi
   printf '{"status":"Accepted","id":"fake-submission"}\n'
   exit 0
@@ -216,6 +221,25 @@ if find "$TEMP_PARENT" -mindepth 1 -print -quit | grep -q .; then
   echo "Temporary credentials survived a failed artifact build." >&2
   exit 1
 fi
+
+rm -rf "$ARTIFACTS_DIR"
+mkdir -p "$ARTIFACTS_DIR"
+: > "$TRACE_FILE"
+: > "$ARGS_TRACE"
+TRANSIENT_NOTARY_STATE="$TEST_ROOT/transient-notary-state"
+rm -f "$TRANSIENT_NOTARY_STATE"
+APPLE_NOTARY_KEY=fake-private-key \
+APPLE_NOTARY_KEY_ID=FAKEKEY123 \
+APPLE_NOTARY_ISSUER_ID=00000000-0000-0000-0000-000000000000 \
+TRANSIENT_APP_NOTARY=1 \
+TRANSIENT_NOTARY_STATE="$TRANSIENT_NOTARY_STATE" \
+EASYTIER_NOTARY_RETRY_DELAY_SECONDS=0 \
+run_artifact > "$TEST_ROOT/retried-artifact.log" 2>&1
+[[ "$(grep -c '^notary-app$' "$TRACE_FILE")" == "2" ]] || {
+  echo "Transient notarization upload was not retried exactly once." >&2
+  exit 1
+}
+test -s "$ARTIFACTS_DIR/EasyTier-macOS-ARM64.dmg"
 
 rm -rf "$ARTIFACTS_DIR"
 mkdir -p "$ARTIFACTS_DIR"
