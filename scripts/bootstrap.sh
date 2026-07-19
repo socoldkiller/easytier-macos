@@ -35,10 +35,19 @@ if [[ ! -f "$EASYTIER_DIR/Cargo.toml" ]]; then
   exit 1
 fi
 
-EXPECTED_CORE_REV="$(git ls-files --stage -- Vendor/EasyTier | awk '$1 == 160000 { print $2 }')"
+EXPECTED_CORE_REV="${EASYTIER_CORE_REVISION:-}"
+if [[ -n "$EXPECTED_CORE_REV" ]]; then
+  if [[ ! "$EXPECTED_CORE_REV" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "EASYTIER_CORE_REVISION must be a full lowercase Git SHA: $EXPECTED_CORE_REV" >&2
+    exit 1
+  fi
+else
+  EXPECTED_CORE_REV="$(git ls-files --stage -- Vendor/EasyTier | awk '$1 == 160000 { print $2 }')"
+fi
+
 CURRENT_CORE_REV="$(git -C "$EASYTIER_DIR" rev-parse HEAD)"
 if [[ -z "$EXPECTED_CORE_REV" || "$CURRENT_CORE_REV" != "$EXPECTED_CORE_REV" ]]; then
-  echo "Vendor/EasyTier does not match the repository gitlink; run: git submodule update --init --recursive" >&2
+  echo "Vendor/EasyTier does not match the expected revision $EXPECTED_CORE_REV; current revision is $CURRENT_CORE_REV." >&2
   exit 1
 fi
 
