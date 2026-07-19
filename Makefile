@@ -86,7 +86,7 @@ test-swift:
 
 test-rust: rust-toolchain-shims
 	PATH="$(RUST_TOOLS_DIR):$$PATH" \
-		cargo test --manifest-path Rust/EasyTierGuiFFI/Cargo.toml
+		./scripts/test-rust.sh
 
 test-packaging:
 	$(PYTHON_BIN) -m unittest discover -s Tests/PackagingTests -p 'test_*.py' -v
