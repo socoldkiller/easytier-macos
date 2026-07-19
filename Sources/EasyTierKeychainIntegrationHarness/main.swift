@@ -9,6 +9,10 @@ struct EasyTierKeychainIntegrationHarness {
         do {
             try await run()
             print("Data Protection Keychain integration test passed.")
+        } catch NetworkSecretStoreError.keychain(errSecInteractionNotAllowed)
+            where ProcessInfo.processInfo.environment["EASYTIER_KEYCHAIN_TEST_ALLOW_HEADLESS_SKIP"] == "1"
+        {
+            print("Data Protection Keychain integration skipped because this runner has no interactive user session.")
         } catch {
             fputs("Data Protection Keychain integration test failed: \(error.localizedDescription)\n", stderr)
             Foundation.exit(EXIT_FAILURE)
@@ -160,7 +164,7 @@ struct EasyTierKeychainIntegrationHarness {
             status = SecItemCopyMatching(query as CFDictionary, nil)
         }
         guard status == errSecSuccess || status == errSecInteractionNotAllowed else {
-            throw HarnessError("modern item verification failed with OSStatus \(status)")
+            throw NetworkSecretStoreError.keychain(status)
         }
     }
 
@@ -180,7 +184,7 @@ struct EasyTierKeychainIntegrationHarness {
         query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUISkip
         let status = SecItemCopyMatching(query as CFDictionary, nil)
         guard status == errSecItemNotFound else {
-            throw HarnessError("legacy item still exists or could not be checked; OSStatus \(status)")
+            throw NetworkSecretStoreError.keychain(status)
         }
     }
 
@@ -221,7 +225,7 @@ struct EasyTierKeychainIntegrationHarness {
 
     private static func requireDeleteSucceeded(_ status: OSStatus) throws {
         guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw HarnessError("test item cleanup failed with OSStatus \(status)")
+            throw NetworkSecretStoreError.keychain(status)
         }
     }
 
