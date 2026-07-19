@@ -11,6 +11,8 @@ struct StatusView: View {
     @State private var memberSearchText = ""
     @State private var memberTableIsScrolling = false
     @State private var displayedMembers: [NetworkMemberStatus] = []
+    @State private var publishServiceMember: NetworkMemberStatus?
+    @State private var isShowingPublishedServices = false
 
     var highlightedMemberPeerID: String? = nil
     var onRenameLocalHostname: (String) -> Void = { _ in }
@@ -19,6 +21,7 @@ struct StatusView: View {
     var onConfigureRemoteMember: (NetworkMemberStatus) -> Void = { _ in }
 
     private var store: EasyTierAppStore { appContext.workspace.store }
+    private var gateway: GatewayRuntimeController { appContext.runtime.gateway }
     private var appearanceSettings: AppAppearanceSettings { appContext.settings.appearance }
     private var snapshot: RuntimeStatusSnapshot { store.selectedStatusSnapshot }
     private var members: [NetworkMemberStatus] { snapshot.members }
@@ -92,6 +95,15 @@ struct StatusView: View {
                 }
             }
         }
+        .sheet(item: $publishServiceMember) { member in
+            PublishServiceSheet(member: member)
+        }
+        .sheet(isPresented: $isShowingPublishedServices) {
+            PublishedServicesSheet()
+        }
+        .task(id: GatewayTopologyBridge.fingerprint(gateway: gateway, store: store)) {
+            await GatewayTopologyBridge.reconcile(gateway: gateway, store: store)
+        }
     }
 
     @ViewBuilder
@@ -149,6 +161,19 @@ struct StatusView: View {
                 width: 152
             )
             StatusBadge(title: "Mode", value: display.modeLabel, systemImage: "slider.horizontal.3")
+            Button {
+                isShowingPublishedServices = true
+            } label: {
+                StatusBadge(
+                    title: "Services",
+                    value: servicesBadgeValue,
+                    systemImage: "network.badge.shield.half.filled",
+                    width: 130
+                )
+            }
+            .buttonStyle(.plain)
+            .pointingHandOnHover()
+            .help("Manage Published Services")
             Spacer(minLength: 0)
         }
     }
@@ -163,8 +188,20 @@ struct StatusView: View {
             globalScrolling: $store.isAnyViewScrolling,
             onRenameHostname: beginRenamingHostname,
             onConfigureLocalMember: onConfigureLocalMember,
-            onConfigureRemoteMember: onConfigureRemoteMember
+            onConfigureRemoteMember: onConfigureRemoteMember,
+            onPublishService: { member in
+                publishServiceMember = member
+            }
         )
+    }
+
+    private var servicesBadgeValue: String {
+        if gateway.status.state == .failed { return "Error" }
+        guard gateway.desiredEnabled else { return "Off" }
+        let total = gateway.services.count
+        guard total > 0 else { return "On" }
+        let enabled = gateway.services.filter(\.desiredEnabled).count
+        return "\(enabled)/\(total)"
     }
 
     private var statusDisplay: StatusDisplayModel {

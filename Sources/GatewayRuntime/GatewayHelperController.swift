@@ -56,6 +56,7 @@ package enum GatewayHelperControllerError: LocalizedError, Equatable, Sendable {
     case ownedByAnotherUser(uid_t)
     case notRunning
     case unknownCertificate(String)
+    case resolverConfigurationFailed(String)
     case restartFailed(newConfiguration: String, rollback: String)
 
     package var errorDescription: String? {
@@ -68,6 +69,8 @@ package enum GatewayHelperControllerError: LocalizedError, Equatable, Sendable {
             "Gateway is not running."
         case let .unknownCertificate(certificateID):
             "Gateway certificate \(certificateID) does not exist."
+        case let .resolverConfigurationFailed(message):
+            "Gateway local DNS setup failed: \(message)"
         case let .restartFailed(newConfiguration, rollback):
             "Gateway restart failed: \(newConfiguration) Rollback: \(rollback)"
         }
@@ -79,7 +82,8 @@ package enum GatewayHelperControllerError: LocalizedError, Equatable, Sendable {
 /// serial executor without an adapter escape hatch.
 package final class GatewayHelperController: @unchecked Sendable {
     package static let productionHTTPListener = "0.0.0.0:80"
-    package static let productionHTTPSListener = "0.0.0.0:443"
+    package static let productionHTTPSListener = "127.0.0.1:443"
+    package static let productionDNSListener = "127.0.0.1:53535"
 
     private let queue = DispatchQueue(label: "com.coldkiller.gateway.helper.runtime")
     private let ffi: any GatewayFFIRuntimeClient
@@ -87,6 +91,9 @@ package final class GatewayHelperController: @unchecked Sendable {
     private let legacyStorageRoot: URL?
     private let httpListener: String
     private let httpsListener: String
+    private let dnsListener: String
+    private let resolverConfigurator: GatewayLocalResolverConfigurator
+    private var resolverStartupError: String?
     private let leaseDuration: TimeInterval
     private let leaseScheduler: any GatewayLeaseScheduling
     private let hasNetworkInstances: @Sendable () -> Bool
@@ -96,6 +103,7 @@ package final class GatewayHelperController: @unchecked Sendable {
     private var attachedSessionIDs = Set<UUID>()
     private var currentConfiguration: GatewayConfiguration?
     private var currentFFIConfiguration: GatewayFFIConfiguration?
+    private var retainsRuntimeAfterDisconnect = false
     private var leaseGeneration: UInt64 = 0
     private var leaseCancellation: (any GatewayLeaseCancellation)?
 
@@ -108,6 +116,8 @@ package final class GatewayHelperController: @unchecked Sendable {
         legacyStorageRoot: URL? = nil,
         httpListener: String = GatewayHelperController.productionHTTPListener,
         httpsListener: String = GatewayHelperController.productionHTTPSListener,
+        dnsListener: String = GatewayHelperController.productionDNSListener,
+        resolverConfigurator: GatewayLocalResolverConfigurator = GatewayLocalResolverConfigurator(),
         leaseDuration: TimeInterval = 10,
         leaseScheduler: any GatewayLeaseScheduling = DispatchGatewayLeaseScheduler(),
         hasNetworkInstances: @escaping @Sendable () -> Bool = { false },
@@ -118,6 +128,9 @@ package final class GatewayHelperController: @unchecked Sendable {
         self.legacyStorageRoot = legacyStorageRoot
         self.httpListener = httpListener
         self.httpsListener = httpsListener
+        self.dnsListener = dnsListener
+        self.resolverConfigurator = resolverConfigurator
+        resolverStartupError = Self.cleanStaleResolvers(using: resolverConfigurator)
         self.leaseDuration = leaseDuration
         self.leaseScheduler = leaseScheduler
         self.hasNetworkInstances = hasNetworkInstances
@@ -126,6 +139,12 @@ package final class GatewayHelperController: @unchecked Sendable {
 
     package func start(configurationJSON: String, session: GatewayHelperSession) async throws {
         try await perform { [self] in
+            if resolverStartupError != nil {
+                resolverStartupError = Self.cleanStaleResolvers(using: resolverConfigurator)
+            }
+            if let resolverStartupError {
+                throw GatewayHelperControllerError.resolverConfigurationFailed(resolverStartupError)
+            }
             let configuration = try decodeAndValidate(configurationJSON)
             try attach(session, claimingOwnership: true)
             let ffiConfiguration: GatewayFFIConfiguration
@@ -182,6 +201,7 @@ package final class GatewayHelperController: @unchecked Sendable {
             try attach(session, claimingOwnership: false, allowUnowned: true)
             let status = try ffi.statusSync()
             if status.state == .stopped {
+                try resolverConfigurator.removeManagedResolverFiles()
                 clearRuntimeState()
             }
             return try encode(status)
@@ -207,6 +227,13 @@ package final class GatewayHelperController: @unchecked Sendable {
         }
     }
 
+    package func setRetainsRuntimeAfterDisconnect(_ retainsRuntime: Bool) async throws {
+        try await perform { [self] in
+            retainsRuntimeAfterDisconnect = retainsRuntime
+            if retainsRuntime { cancelLeaseStop() }
+        }
+    }
+
     package func sessionDidInvalidate(_ session: GatewayHelperSession) async {
         try? await perform { [self] in
             handleSessionInvalidation(session)
@@ -216,8 +243,9 @@ package final class GatewayHelperController: @unchecked Sendable {
     package func shutdown() async throws {
         try await perform { [self] in
             cancelLeaseStop()
-            defer { clearRuntimeState() }
             try ffi.stopSync()
+            defer { clearRuntimeState() }
+            try resolverConfigurator.removeManagedResolverFiles()
         }
     }
 
@@ -262,7 +290,8 @@ package final class GatewayHelperController: @unchecked Sendable {
             configuration: configuration,
             storageDirectory: runtimeDirectory.path,
             httpListener: httpListener,
-            httpsListener: httpsListener
+            httpsListener: httpsListener,
+            dnsListener: dnsListener
         )
     }
 
@@ -301,6 +330,29 @@ package final class GatewayHelperController: @unchecked Sendable {
             try ffi.startSync(configuration: ffiConfiguration)
             self.currentConfiguration = configuration
             currentFFIConfiguration = ffiConfiguration
+            do {
+                try synchronizeResolvers(for: configuration)
+            } catch {
+                let resolverError = error.localizedDescription
+                do {
+                    try ffi.stopSync()
+                } catch {
+                    throw GatewayHelperControllerError.restartFailed(
+                        newConfiguration: resolverError,
+                        rollback: "Failed to stop the new runtime: \(error.localizedDescription)"
+                    )
+                }
+                do {
+                    try resolverConfigurator.removeManagedResolverFiles()
+                } catch {
+                    clearRuntimeState()
+                    throw GatewayHelperControllerError.resolverConfigurationFailed(
+                        "\(resolverError) Cleanup also failed: \(error.localizedDescription)"
+                    )
+                }
+                clearRuntimeState()
+                throw GatewayHelperControllerError.resolverConfigurationFailed(resolverError)
+            }
             return
         }
         guard currentConfiguration != configuration else { return }
@@ -321,20 +373,45 @@ package final class GatewayHelperController: @unchecked Sendable {
 
         if previousConfiguration.acme.directory == configuration.acme.directory {
             try ffi.applySync(configuration: ffiConfiguration)
+            do {
+                try synchronizeResolvers(for: configuration)
+            } catch {
+                let resolverError = error.localizedDescription
+                do {
+                    try restoreRuntime(
+                        configuration: previousConfiguration,
+                        ffiConfiguration: previousFFIConfiguration
+                    )
+                } catch {
+                    clearRuntimeStateAfterFailedRollback()
+                    throw GatewayHelperControllerError.restartFailed(
+                        newConfiguration: resolverError,
+                        rollback: error.localizedDescription
+                    )
+                }
+                throw GatewayHelperControllerError.resolverConfigurationFailed(resolverError)
+            }
             currentConfiguration = configuration
             currentFFIConfiguration = ffiConfiguration
             return
         }
 
         try ffi.stopSync()
+        var newRuntimeStarted = false
         do {
             try ffi.startSync(configuration: ffiConfiguration)
+            newRuntimeStarted = true
+            try synchronizeResolvers(for: configuration)
             currentConfiguration = configuration
             currentFFIConfiguration = ffiConfiguration
         } catch {
             let newConfigurationError = error.localizedDescription
+            if newRuntimeStarted {
+                try? ffi.stopSync()
+            }
             do {
                 try ffi.startSync(configuration: previousFFIConfiguration)
+                try synchronizeResolvers(for: previousConfiguration)
                 currentConfiguration = previousConfiguration
                 currentFFIConfiguration = previousFFIConfiguration
                 throw GatewayHelperControllerError.restartFailed(
@@ -344,7 +421,7 @@ package final class GatewayHelperController: @unchecked Sendable {
             } catch let rollbackError as GatewayHelperControllerError {
                 throw rollbackError
             } catch {
-                clearRuntimeState()
+                clearRuntimeStateAfterFailedRollback()
                 throw GatewayHelperControllerError.restartFailed(
                     newConfiguration: newConfigurationError,
                     rollback: "Previous configuration also failed: \(error.localizedDescription)"
@@ -381,6 +458,7 @@ package final class GatewayHelperController: @unchecked Sendable {
         guard ownerUserID == session.userID else { return }
         attachedSessionIDs.remove(session.id)
         guard attachedSessionIDs.isEmpty, currentConfiguration != nil else { return }
+        guard !retainsRuntimeAfterDisconnect else { return }
         scheduleLeaseStop()
     }
 
@@ -423,6 +501,44 @@ package final class GatewayHelperController: @unchecked Sendable {
         dispatchPrecondition(condition: .onQueue(queue))
         cancelLeaseStop()
         try ffi.stopSync()
+        defer { clearRuntimeState() }
+        try resolverConfigurator.removeManagedResolverFiles()
+    }
+
+    private func synchronizeResolvers(for configuration: GatewayConfiguration) throws {
+        dispatchPrecondition(condition: .onQueue(queue))
+        try resolverConfigurator.synchronize(domains: configuration.localDomains)
+    }
+
+    private func restoreRuntime(
+        configuration: GatewayConfiguration,
+        ffiConfiguration: GatewayFFIConfiguration
+    ) throws {
+        dispatchPrecondition(condition: .onQueue(queue))
+        do {
+            try ffi.applySync(configuration: ffiConfiguration)
+            try synchronizeResolvers(for: configuration)
+        } catch {
+            let hotRollbackError = error.localizedDescription
+            try? ffi.stopSync()
+            do {
+                try ffi.startSync(configuration: ffiConfiguration)
+                try synchronizeResolvers(for: configuration)
+            } catch {
+                throw GatewayHelperControllerError.restartFailed(
+                    newConfiguration: hotRollbackError,
+                    rollback: error.localizedDescription
+                )
+            }
+        }
+        currentConfiguration = configuration
+        currentFFIConfiguration = ffiConfiguration
+    }
+
+    private func clearRuntimeStateAfterFailedRollback() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        try? ffi.stopSync()
+        try? resolverConfigurator.removeManagedResolverFiles()
         clearRuntimeState()
     }
 
@@ -437,6 +553,7 @@ package final class GatewayHelperController: @unchecked Sendable {
         currentConfiguration = nil
         currentFFIConfiguration = nil
         ownerUserID = nil
+        retainsRuntimeAfterDisconnect = false
         attachedSessionIDs.removeAll()
         cancelLeaseStop()
     }
@@ -463,6 +580,17 @@ package final class GatewayHelperController: @unchecked Sendable {
         dispatchPrecondition(condition: .onQueue(queue))
         guard chmod(url.path, permissions) == 0 else {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    private static func cleanStaleResolvers(
+        using configurator: GatewayLocalResolverConfigurator
+    ) -> String? {
+        do {
+            try configurator.removeManagedResolverFiles()
+            return nil
+        } catch {
+            return error.localizedDescription
         }
     }
 }

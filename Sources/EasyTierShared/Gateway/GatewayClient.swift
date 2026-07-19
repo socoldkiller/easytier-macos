@@ -4,4 +4,5 @@ package protocol GatewayClient: Sendable {
     func stop() async throws
     func status() async throws -> GatewayStatus
     func requestRenewal(certificateID: String?) async throws
+    func setRetainsRuntimeAfterDisconnect(_ retainsRuntime: Bool) async throws
 }

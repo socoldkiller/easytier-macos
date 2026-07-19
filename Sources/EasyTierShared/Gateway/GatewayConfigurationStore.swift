@@ -31,16 +31,7 @@ package actor GatewayConfigurationStore: GatewayConfigurationStoring {
                 GatewayPersistedState.self,
                 from: Data(contentsOf: fileURL)
             )
-            guard state.schemaVersion == GatewaySchema.version else {
-                throw GatewayConfigurationValidationError.invalid(
-                    "Unsupported persisted Gateway schema version \(state.schemaVersion)."
-                )
-            }
-            var normalized = state
-            normalized.configuration = try GatewayConfigurationValidator.validate(
-                state.configuration
-            )
-            return normalized
+            return try GatewayPublishedServicesValidator.validate(state)
         } catch {
             let backupURL = try backUpIncompatibleConfiguration()
             throw GatewayConfigurationStoreError.incompatibleConfiguration(
@@ -51,15 +42,7 @@ package actor GatewayConfigurationStore: GatewayConfigurationStoring {
     }
 
     package func save(_ state: GatewayPersistedState) throws {
-        guard state.schemaVersion == GatewaySchema.version else {
-            throw GatewayConfigurationValidationError.invalid(
-                "Unsupported persisted Gateway schema version \(state.schemaVersion)."
-            )
-        }
-        var normalized = state
-        normalized.configuration = try GatewayConfigurationValidator.validate(
-            state.configuration
-        )
+        let normalized = try GatewayPublishedServicesValidator.validate(state)
 
         let directory = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

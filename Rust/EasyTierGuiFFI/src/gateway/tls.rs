@@ -338,11 +338,17 @@ mod tests {
         store.install("app-cert".to_string(), test_material("old.example.com"));
         let config = GatewayConfig::parse(
             &json!({
-                "schema_version": 1,
+                "schema_version": 2,
                 "storage_dir": PathBuf::from("/tmp/easytier-gateway-tls-test"),
                 "listeners": {
                     "http": "127.0.0.1:5002",
-                    "https": "127.0.0.1:8443"
+                    "https": "127.0.0.1:8443",
+                    "dns": "127.0.0.1:53535"
+                },
+                "local_dns": {
+                    "domains": [],
+                    "answer_ipv4": "127.0.0.1",
+                    "ttl": 30
                 },
                 "acme": {
                     "directory": { "kind": "letsencrypt_staging" },

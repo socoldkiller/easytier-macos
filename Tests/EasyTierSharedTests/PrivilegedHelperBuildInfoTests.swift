@@ -37,6 +37,6 @@ import Testing
         ]
     )
 
-    #expect(info.componentDisplay == "0.1.0 · 01234567-dirty · schema 1")
-    #expect(info.binaryDisplay == "0.1.0 (20260718124530) · protocol 1")
+    #expect(info.componentDisplay == "0.1.0 · 01234567-dirty · schema 2")
+    #expect(info.binaryDisplay == "0.1.0 (20260718124530) · protocol 3")
 }

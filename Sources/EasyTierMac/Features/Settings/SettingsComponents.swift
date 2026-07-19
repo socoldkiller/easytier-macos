@@ -84,6 +84,43 @@ struct CardSection<Content: View>: View {
     }
 }
 
+struct SettingsInlineRow<Content: View>: View {
+    var label: String
+    var alignment: VerticalAlignment
+    @ViewBuilder var content: Content
+
+    init(
+        _ label: String,
+        alignment: VerticalAlignment = .center,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.label = label
+        self.alignment = alignment
+        self.content = content()
+    }
+
+    var body: some View {
+        HStack(alignment: alignment, spacing: 16) {
+            Text(label)
+                .font(.body.weight(.medium))
+                .foregroundStyle(.primary)
+                .frame(minWidth: 110, alignment: .leading)
+
+            Spacer(minLength: 12)
+
+            content
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+}
+
+struct SettingsRowDivider: View {
+    var body: some View {
+        Divider()
+            .opacity(0.45)
+    }
+}
+
 struct FieldRow<Content: View>: View {
     var label: String
     var description: String?

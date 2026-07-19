@@ -76,6 +76,16 @@ private final class GatewayPrivilegedService: NSObject, GatewayPrivilegedService
         }
     }
 
+    func setRetainsRuntimeAfterDisconnect(
+        _ retainsRuntime: Bool,
+        reply: @escaping (String?, String?) -> Void
+    ) {
+        run(code: "gatewayRetentionPolicyFailed", reply: reply) { [controller] in
+            try await controller.setRetainsRuntimeAfterDisconnect(retainsRuntime)
+            return "ok"
+        }
+    }
+
     func shutdown(reply: @escaping (String?, String?) -> Void) {
         let replyBox = GatewayReplyBox(reply)
         Task { @concurrent [controller] in
@@ -122,7 +132,7 @@ private final class GatewayPrivilegedService: NSObject, GatewayPrivilegedService
     private static func recoverySuggestion(for code: String) -> String? {
         switch code {
         case "gatewayStartFailed", "gatewayApplyFailed":
-            "Check that ports 80 and 443 are free and that the Gateway configuration is valid."
+            "Check that ports 80, 443, and 53535 are free and that the Gateway configuration is valid."
         case "gatewayStopFailed", "gatewayShutdownFailed":
             "Reinstall the Gateway helper if its privileged listeners remain active."
         case "gatewayRenewalFailed":

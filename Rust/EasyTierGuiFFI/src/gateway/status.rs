@@ -45,6 +45,16 @@ impl Default for GatewayStatusSnapshot {
 pub struct ListenerStatus {
     pub http: Option<String>,
     pub https: Option<String>,
+    pub dns: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteResolutionState {
+    #[default]
+    Resolving,
+    Ready,
+    Unavailable,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -53,6 +63,9 @@ pub struct RouteStatus {
     pub upstream: String,
     pub resolved_addresses: Vec<String>,
     pub certificate_id: String,
+    pub resolution_state: RouteResolutionState,
+    pub last_resolved_at: Option<String>,
+    pub last_error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]

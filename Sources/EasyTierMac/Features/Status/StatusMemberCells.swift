@@ -8,6 +8,7 @@ struct MemberIdentityCell: View {
     var onRenameHostname: (NetworkMemberStatus) -> Void
     var onConfigureLocalMember: () -> Void
     var onConfigureRemoteMember: (NetworkMemberStatus) -> Void
+    var onPublishService: (NetworkMemberStatus) -> Void
 
     var body: some View {
         switch row.kind {
@@ -21,7 +22,8 @@ struct MemberIdentityCell: View {
                     ? (member.isLocal
                         ? onConfigureLocalMember
                         : { onConfigureRemoteMember(member) })
-                    : nil
+                    : nil,
+                publishAction: canInteract ? { onPublishService(member) } : nil
             )
         case .publicServerGroup(let group):
             PublicServerGroupIdentity(group: group, isHighlighted: isHighlighted)
@@ -36,6 +38,7 @@ private struct MemberStatusIdentity: View {
     var isHighlighted: Bool
     var renameAction: (() -> Void)? = nil
     var configureAction: (() -> Void)? = nil
+    var publishAction: (() -> Void)? = nil
 
     private var store: EasyTierAppStore { appContext.workspace.store }
 
@@ -52,7 +55,7 @@ private struct MemberStatusIdentity: View {
             .help("Open Config for this device")
             .accessibilityHint(Text("Opens the Config page for this network."))
             .contextMenu { memberContextMenu }
-        } else if renameAction != nil {
+        } else if renameAction != nil || canPublish {
             identityContent
                 .padding(.vertical, 5)
                 .contextMenu { memberContextMenu }
@@ -132,6 +135,12 @@ private struct MemberStatusIdentity: View {
                 configureAction()
             }
         }
+        if canPublish, let publishAction {
+            Divider()
+            Button("Publish Service…", systemImage: "network.badge.shield.half.filled") {
+                publishAction()
+            }
+        }
     }
 
     private var magicDNSDomain: String? {
@@ -140,6 +149,10 @@ private struct MemberStatusIdentity: View {
             config: store.selectedConfig,
             settings: store.magicDNSSettings
         )
+    }
+
+    private var canPublish: Bool {
+        publishAction != nil && GatewayTopologyBridge.canPublish(member, store: store)
     }
 
     private var memberSubtitle: String {

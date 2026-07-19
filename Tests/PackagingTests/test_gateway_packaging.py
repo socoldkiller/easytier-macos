@@ -92,6 +92,21 @@ class GatewayPackagingTests(unittest.TestCase):
         self.assertIn("import CEasyTierCoreFFI", core_client)
         self.assertIn("import CGatewayFFI", gateway_client)
 
+    def test_debug_install_replaces_helpers_without_leaving_stale_daemons(self) -> None:
+        install_script = (
+            ROOT_DIR / "scripts" / "install-xcode-debug-app.sh"
+        ).read_text(encoding="utf-8")
+
+        unregister_index = install_script.index("--unregister-helper")
+        replace_index = install_script.index('rm -rf "$DESTINATION_APP"')
+        register_index = install_script.index("--register-helper")
+        open_index = install_script.index('open "$DESTINATION_APP"')
+
+        self.assertLess(unregister_index, replace_index)
+        self.assertLess(replace_index, register_index)
+        self.assertLess(register_index, open_index)
+        self.assertIn("EASYTIER_SKIP_LEGACY_HELPER_UNINSTALL=1", install_script)
+
 
 if __name__ == "__main__":
     unittest.main()

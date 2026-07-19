@@ -22,7 +22,8 @@ struct StaticGatewayFFITests {
             configuration: configuration,
             storageDirectory: root.path,
             httpListener: "127.0.0.1:0",
-            httpsListener: "127.0.0.1:0"
+            httpsListener: "127.0.0.1:0",
+            dnsListener: "127.0.0.1:0"
         )
 
         try ffi.startSync(configuration: runtime)
@@ -30,13 +31,15 @@ struct StaticGatewayFFITests {
         #expect(running.state == .running)
         #expect(running.listeners.http?.hasPrefix("127.0.0.1:") == true)
         #expect(running.listeners.https?.hasPrefix("127.0.0.1:") == true)
+        #expect(running.listeners.dns?.hasPrefix("127.0.0.1:") == true)
 
         configuration.acme.contactEmail = "renewals@example.com"
         runtime = GatewayFFIConfiguration(
             configuration: configuration,
             storageDirectory: root.path,
             httpListener: "127.0.0.1:0",
-            httpsListener: "127.0.0.1:0"
+            httpsListener: "127.0.0.1:0",
+            dnsListener: "127.0.0.1:0"
         )
         try ffi.applySync(configuration: runtime)
         #expect(try ffi.statusSync().configGeneration >= running.configGeneration)
@@ -45,6 +48,122 @@ struct StaticGatewayFFITests {
         try ffi.stopSync()
         #expect(try ffi.statusSync().state == .stopped)
     }
+}
+
+@Test func localResolverConfiguratorWritesExactDomainsAndPreservesOtherOwners() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("GatewayResolverTests", isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let easyTierResolver = root.appendingPathComponent("et.net")
+    try Data("# Added by easytier\ndomain et.net\nnameserver 100.100.100.101\n".utf8)
+        .write(to: easyTierResolver)
+    let staleGatewayResolver = root.appendingPathComponent("old.a.et.net")
+    try Data("# Added by coldkiller gateway\ndomain old.a.et.net\n".utf8)
+        .write(to: staleGatewayResolver)
+    let configurator = GatewayLocalResolverConfigurator(resolverDirectory: root)
+
+    try configurator.synchronize(domains: ["api.a.et.net", "web.a.et.net"])
+
+    let apiURL = root.appendingPathComponent("api.a.et.net")
+    let apiContent = try String(contentsOf: apiURL, encoding: .utf8)
+    let permissions = try FileManager.default.attributesOfItem(atPath: apiURL.path)[.posixPermissions]
+        as? NSNumber
+    #expect(apiContent == """
+    # Added by coldkiller gateway
+    domain api.a.et.net
+    nameserver 127.0.0.1
+    port 53535
+    timeout 1
+
+    """)
+    #expect(permissions?.intValue == 0o644)
+    #expect(!FileManager.default.fileExists(atPath: staleGatewayResolver.path))
+    #expect(FileManager.default.fileExists(atPath: easyTierResolver.path))
+
+    try configurator.synchronize(domains: ["web.a.et.net"])
+    #expect(!FileManager.default.fileExists(atPath: apiURL.path))
+    try configurator.removeManagedResolverFiles()
+    #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("web.a.et.net").path))
+    #expect(FileManager.default.fileExists(atPath: easyTierResolver.path))
+}
+
+@Test func localResolverConfiguratorRefusesToOverwriteAnUnmanagedDomain() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("GatewayResolverTests", isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let resolver = root.appendingPathComponent("api.a.et.net")
+    try Data("nameserver 192.0.2.53\n".utf8).write(to: resolver)
+    let configurator = GatewayLocalResolverConfigurator(resolverDirectory: root)
+
+    #expect(throws: GatewayLocalResolverConfiguratorError.self) {
+        try configurator.synchronize(domains: ["api.a.et.net"])
+    }
+    #expect(try String(contentsOf: resolver, encoding: .utf8) == "nameserver 192.0.2.53\n")
+}
+
+@Test func helperControllerSynchronizesResolverFilesWithRuntimeLifecycle() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("GatewayResolverLifecycleTests", isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let resolverRoot = root.appendingPathComponent("resolver", isDirectory: true)
+    try FileManager.default.createDirectory(at: resolverRoot, withIntermediateDirectories: true)
+    let stale = resolverRoot.appendingPathComponent("stale.a.et.net")
+    try Data("# Added by coldkiller gateway\ndomain stale.a.et.net\n".utf8).write(to: stale)
+    let ffi = FakeGatewayFFI()
+    let controller = GatewayHelperController(
+        ffi: ffi,
+        storageRoot: root.appendingPathComponent("storage", isDirectory: true),
+        resolverConfigurator: GatewayLocalResolverConfigurator(resolverDirectory: resolverRoot)
+    )
+    #expect(!FileManager.default.fileExists(atPath: stale.path))
+    let session = GatewayHelperSession(userID: 501)
+
+    try await controller.start(
+        configurationJSON: encode(gatewayRuntimePublishedConfiguration(domain: "api.a.et.net")),
+        session: session
+    )
+    #expect(FileManager.default.fileExists(atPath: resolverRoot.appendingPathComponent("api.a.et.net").path))
+
+    try await controller.apply(
+        configurationJSON: encode(gatewayRuntimePublishedConfiguration(domain: "web.a.et.net")),
+        session: session
+    )
+    #expect(!FileManager.default.fileExists(atPath: resolverRoot.appendingPathComponent("api.a.et.net").path))
+    #expect(FileManager.default.fileExists(atPath: resolverRoot.appendingPathComponent("web.a.et.net").path))
+
+    try await controller.stop(session: session)
+    #expect(!FileManager.default.fileExists(atPath: resolverRoot.appendingPathComponent("web.a.et.net").path))
+}
+
+@Test func helperControllerStopsRuntimeWhenResolverActivationFails() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("GatewayResolverRollbackTests", isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let resolverRoot = root.appendingPathComponent("resolver", isDirectory: true)
+    try FileManager.default.createDirectory(at: resolverRoot, withIntermediateDirectories: true)
+    let foreignResolver = resolverRoot.appendingPathComponent("api.a.et.net")
+    try Data("nameserver 192.0.2.53\n".utf8).write(to: foreignResolver)
+    let ffi = FakeGatewayFFI()
+    let controller = GatewayHelperController(
+        ffi: ffi,
+        storageRoot: root.appendingPathComponent("storage", isDirectory: true),
+        resolverConfigurator: GatewayLocalResolverConfigurator(resolverDirectory: resolverRoot)
+    )
+
+    await #expect(throws: GatewayHelperControllerError.self) {
+        try await controller.start(
+            configurationJSON: encode(gatewayRuntimePublishedConfiguration(domain: "api.a.et.net")),
+            session: GatewayHelperSession(userID: 501)
+        )
+    }
+    #expect(ffi.callNames() == ["start", "stop"])
+    #expect(try String(contentsOf: foreignResolver, encoding: .utf8) == "nameserver 192.0.2.53\n")
 }
 
 @Test func helperControllerReconcilesIdempotentHotAndRestartChanges() async throws {
@@ -80,7 +199,8 @@ struct StaticGatewayFFITests {
     let startConfigurations = fixture.ffi.startConfigurations()
     #expect(startConfigurations.count == 2)
     #expect(startConfigurations.allSatisfy { $0.listeners.http == "0.0.0.0:80" })
-    #expect(startConfigurations.allSatisfy { $0.listeners.https == "0.0.0.0:443" })
+    #expect(startConfigurations.allSatisfy { $0.listeners.https == "127.0.0.1:443" })
+    #expect(startConfigurations.allSatisfy { $0.listeners.dns == "127.0.0.1:53535" })
     #expect(startConfigurations.allSatisfy {
         $0.storageDirectory.hasSuffix("/501/runtime")
     })
@@ -131,6 +251,9 @@ struct StaticGatewayFFITests {
     let controller = GatewayHelperController(
         ffi: FakeGatewayFFI(),
         storageRoot: unusableStorageRoot,
+        resolverConfigurator: GatewayLocalResolverConfigurator(
+            resolverDirectory: parent.appendingPathComponent("resolver", isDirectory: true)
+        ),
         leaseScheduler: ManualGatewayLeaseScheduler()
     )
     let owner = GatewayHelperSession(userID: 501)
@@ -210,6 +333,24 @@ struct StaticGatewayFFITests {
     #expect(idleExitCount.withLock { $0 } == 1)
 }
 
+@Test func helperRetentionPolicyKeepsRuntimeAfterTheLastSessionDisconnects() async throws {
+    let scheduler = ManualGatewayLeaseScheduler()
+    let fixture = GatewayHelperFixture(scheduler: scheduler)
+    defer { fixture.cleanup() }
+    let session = GatewayHelperSession(userID: 501)
+    try await fixture.controller.start(
+        configurationJSON: encode(gatewayRuntimeTestConfiguration()),
+        session: session
+    )
+    try await fixture.controller.setRetainsRuntimeAfterDisconnect(true)
+
+    await fixture.controller.sessionDidInvalidate(session)
+    scheduler.fire()
+
+    #expect(fixture.ffi.callNames() == ["start"])
+    try await fixture.controller.shutdown()
+}
+
 @Test func failedLeaseStopRetriesWhileNetworkInstancesRemain() async throws {
     let scheduler = ManualGatewayLeaseScheduler()
     let networkInstancesRemain = Mutex(true)
@@ -262,7 +403,10 @@ struct StaticGatewayFFITests {
     let controller = GatewayHelperController(
         ffi: FakeGatewayFFI(),
         storageRoot: newRoot,
-        legacyStorageRoot: legacyRoot
+        legacyStorageRoot: legacyRoot,
+        resolverConfigurator: GatewayLocalResolverConfigurator(
+            resolverDirectory: parent.appendingPathComponent("resolver", isDirectory: true)
+        )
     )
     try await controller.start(
         configurationJSON: encode(gatewayRuntimeTestConfiguration()),
@@ -294,6 +438,9 @@ private struct GatewayHelperFixture {
         controller = GatewayHelperController(
             ffi: ffi,
             storageRoot: root,
+            resolverConfigurator: GatewayLocalResolverConfigurator(
+                resolverDirectory: root.appendingPathComponent("resolver", isDirectory: true)
+            ),
             leaseDuration: 10,
             leaseScheduler: scheduler,
             hasNetworkInstances: hasNetworkInstances,
@@ -357,7 +504,8 @@ private final class FakeGatewayFFI: GatewayFFIRuntimeClient, Sendable {
                 status.state = .running
                 status.listeners = GatewayListenerStatus(
                     http: state.current?.listeners.http,
-                    https: state.current?.listeners.https
+                    https: state.current?.listeners.https,
+                    dns: state.current?.listeners.dns
                 )
             }
             return status
@@ -443,10 +591,34 @@ private func gatewayRuntimeTestConfiguration(
         acme: GatewayACMEConfiguration(
             directory: directory,
             contactEmail: "ops@example.com",
-            termsOfServiceAgreed: true
+            termsOfServiceAgreed: false
         ),
         certificates: [],
         routes: []
+    )
+}
+
+private func gatewayRuntimePublishedConfiguration(domain: String) -> GatewayConfiguration {
+    GatewayConfiguration(
+        acme: GatewayACMEConfiguration(
+            directory: .letsencryptStaging,
+            contactEmail: "ops@example.com",
+            termsOfServiceAgreed: true
+        ),
+        certificates: [
+            GatewayCertificateConfiguration(id: "service-cert", domains: [domain]),
+        ],
+        routes: [
+            GatewayRouteConfiguration(
+                domain: domain,
+                certificateID: "service-cert",
+                upstream: GatewayUpstreamConfiguration(
+                    url: "http://a.et.net:3000",
+                    allowedIPv4CIDR: "10.0.0.0/24"
+                )
+            ),
+        ],
+        localDomains: [domain]
     )
 }
 

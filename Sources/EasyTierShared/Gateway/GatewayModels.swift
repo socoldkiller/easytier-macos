@@ -1,7 +1,7 @@
 import Foundation
 
 package enum GatewaySchema {
-    package static let version: UInt32 = 1
+    package static let version: UInt32 = 2
 }
 
 package struct GatewayConfiguration: Codable, Equatable, Sendable {
@@ -9,17 +9,20 @@ package struct GatewayConfiguration: Codable, Equatable, Sendable {
     package var acme: GatewayACMEConfiguration
     package var certificates: [GatewayCertificateConfiguration]
     package var routes: [GatewayRouteConfiguration]
+    package var localDomains: [String]
 
     package init(
         schemaVersion: UInt32 = GatewaySchema.version,
         acme: GatewayACMEConfiguration,
         certificates: [GatewayCertificateConfiguration] = [],
-        routes: [GatewayRouteConfiguration] = []
+        routes: [GatewayRouteConfiguration] = [],
+        localDomains: [String] = []
     ) {
         self.schemaVersion = schemaVersion
         self.acme = acme
         self.certificates = certificates
         self.routes = routes
+        self.localDomains = localDomains
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -27,6 +30,7 @@ package struct GatewayConfiguration: Codable, Equatable, Sendable {
         case acme
         case certificates
         case routes
+        case localDomains = "local_domains"
     }
 }
 
@@ -36,7 +40,7 @@ package struct GatewayACMEConfiguration: Codable, Equatable, Sendable {
     package var termsOfServiceAgreed: Bool
 
     package init(
-        directory: GatewayACMEDirectory = .letsencryptStaging,
+        directory: GatewayACMEDirectory = .letsencryptProduction,
         contactEmail: String? = nil,
         termsOfServiceAgreed: Bool
     ) {
@@ -114,7 +118,7 @@ extension GatewayChallengeConfiguration: Codable {
             throw DecodingError.dataCorruptedError(
                 forKey: .type,
                 in: container,
-                debugDescription: "Gateway v1 supports only HTTP-01 challenges."
+                debugDescription: "Published Services v1 supports only HTTP-01 challenges."
             )
         }
         self = .http01
@@ -152,39 +156,173 @@ package struct GatewayUpstreamConfiguration: Codable, Equatable, Sendable {
     package var url: String
     package var hostHeader: String?
     package var tlsServerName: String?
+    package var allowedIPv4CIDR: String?
 
-    package init(url: String, hostHeader: String? = nil, tlsServerName: String? = nil) {
+    package init(
+        url: String,
+        hostHeader: String? = nil,
+        tlsServerName: String? = nil,
+        allowedIPv4CIDR: String? = nil
+    ) {
         self.url = url
         self.hostHeader = hostHeader
         self.tlsServerName = tlsServerName
+        self.allowedIPv4CIDR = allowedIPv4CIDR
     }
 
     private enum CodingKeys: String, CodingKey {
         case url
         case hostHeader = "host_header"
         case tlsServerName = "tls_server_name"
+        case allowedIPv4CIDR = "allowed_ipv4_cidr"
     }
 }
 
 package struct GatewayPersistedState: Codable, Equatable, Sendable {
     package var schemaVersion: UInt32
-    package var enabled: Bool
-    package var configuration: GatewayConfiguration
+    package var gatewayEnabled: Bool
+    package var acmeAccount: GatewayACMEConfiguration?
+    package var publishingNetworkConfigID: String?
+    package var lastKnownNetworkIPv4CIDR: String?
+    package var services: [GatewayPublishedService]
 
     package init(
         schemaVersion: UInt32 = GatewaySchema.version,
-        enabled: Bool,
-        configuration: GatewayConfiguration
+        gatewayEnabled: Bool = false,
+        acmeAccount: GatewayACMEConfiguration? = nil,
+        publishingNetworkConfigID: String? = nil,
+        lastKnownNetworkIPv4CIDR: String? = nil,
+        services: [GatewayPublishedService] = []
     ) {
         self.schemaVersion = schemaVersion
-        self.enabled = enabled
-        self.configuration = configuration
+        self.gatewayEnabled = gatewayEnabled
+        self.acmeAccount = acmeAccount
+        self.publishingNetworkConfigID = publishingNetworkConfigID
+        self.lastKnownNetworkIPv4CIDR = lastKnownNetworkIPv4CIDR
+        self.services = services
+    }
+
+    package static let empty = GatewayPersistedState()
+
+    package var desiredEnabled: Bool {
+        gatewayEnabled
+    }
+
+    package var hasEnabledServices: Bool {
+        services.contains(where: \.desiredEnabled)
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
-        case enabled
-        case configuration
+        case gatewayEnabled = "gateway_enabled"
+        case acmeAccount = "acme_account"
+        case publishingNetworkConfigID = "publishing_network_config_id"
+        case lastKnownNetworkIPv4CIDR = "last_known_network_ipv4_cidr"
+        case services
+    }
+
+    package init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(UInt32.self, forKey: .schemaVersion)
+        acmeAccount = try container.decodeIfPresent(GatewayACMEConfiguration.self, forKey: .acmeAccount)
+        publishingNetworkConfigID = try container.decodeIfPresent(
+            String.self,
+            forKey: .publishingNetworkConfigID
+        )
+        lastKnownNetworkIPv4CIDR = try container.decodeIfPresent(
+            String.self,
+            forKey: .lastKnownNetworkIPv4CIDR
+        )
+        services = try container.decodeIfPresent([GatewayPublishedService].self, forKey: .services) ?? []
+        gatewayEnabled = try container.decodeIfPresent(Bool.self, forKey: .gatewayEnabled)
+            ?? services.contains(where: \.desiredEnabled)
+    }
+
+    package func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(gatewayEnabled, forKey: .gatewayEnabled)
+        try container.encodeIfPresent(acmeAccount, forKey: .acmeAccount)
+        try container.encodeIfPresent(publishingNetworkConfigID, forKey: .publishingNetworkConfigID)
+        try container.encodeIfPresent(lastKnownNetworkIPv4CIDR, forKey: .lastKnownNetworkIPv4CIDR)
+        try container.encode(services, forKey: .services)
+    }
+}
+
+package enum GatewayPublishedServiceUpstreamProtocol: String, Codable, Equatable, Sendable {
+    case http
+}
+
+package enum GatewayPublishedServiceChallenge: String, Codable, Equatable, Sendable {
+    case http01
+}
+
+package struct GatewayPublishedService: Codable, Equatable, Identifiable, Sendable {
+    package var id: String
+    package var networkConfigID: String
+    package var targetPeerID: String
+    package var publicNodeLabel: String
+    package var publicDNSSuffix: String
+    package var lastKnownTargetHostname: String
+    package var lastKnownMagicDNSSuffix: String
+    package var serviceLabel: String
+    package var publicHostname: String
+    package var targetPort: Int
+    package var desiredEnabled: Bool
+    package var upstreamProtocol: GatewayPublishedServiceUpstreamProtocol
+    package var challenge: GatewayPublishedServiceChallenge
+
+    package init(
+        id: String = UUID().uuidString.lowercased(),
+        networkConfigID: String,
+        targetPeerID: String,
+        publicNodeLabel: String,
+        publicDNSSuffix: String,
+        lastKnownTargetHostname: String,
+        lastKnownMagicDNSSuffix: String,
+        serviceLabel: String,
+        publicHostname: String,
+        targetPort: Int,
+        desiredEnabled: Bool = false,
+        upstreamProtocol: GatewayPublishedServiceUpstreamProtocol = .http,
+        challenge: GatewayPublishedServiceChallenge = .http01
+    ) {
+        self.id = id
+        self.networkConfigID = networkConfigID
+        self.targetPeerID = targetPeerID
+        self.publicNodeLabel = publicNodeLabel
+        self.publicDNSSuffix = publicDNSSuffix
+        self.lastKnownTargetHostname = lastKnownTargetHostname
+        self.lastKnownMagicDNSSuffix = lastKnownMagicDNSSuffix
+        self.serviceLabel = serviceLabel
+        self.publicHostname = publicHostname
+        self.targetPort = targetPort
+        self.desiredEnabled = desiredEnabled
+        self.upstreamProtocol = upstreamProtocol
+        self.challenge = challenge
+    }
+
+    package var targetDomain: String {
+        let suffix = lastKnownMagicDNSSuffix.hasSuffix(".")
+            ? String(lastKnownMagicDNSSuffix.dropLast())
+            : lastKnownMagicDNSSuffix
+        return "\(lastKnownTargetHostname).\(suffix)"
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case networkConfigID = "network_config_id"
+        case targetPeerID = "target_peer_id"
+        case publicNodeLabel = "public_node_label"
+        case publicDNSSuffix = "public_dns_suffix"
+        case lastKnownTargetHostname = "last_known_target_hostname"
+        case lastKnownMagicDNSSuffix = "last_known_magic_dns_suffix"
+        case serviceLabel = "service_label"
+        case publicHostname = "public_hostname"
+        case targetPort = "target_port"
+        case desiredEnabled = "desired_enabled"
+        case upstreamProtocol = "upstream_protocol"
+        case challenge
     }
 }
 
@@ -192,6 +330,7 @@ package struct GatewayFFIConfiguration: Codable, Equatable, Sendable {
     package var schemaVersion: UInt32
     package var storageDirectory: String
     package var listeners: GatewayListenerConfiguration
+    package var localDNS: GatewayLocalDNSConfiguration
     package var acme: GatewayACMEConfiguration
     package var certificates: [GatewayCertificateConfiguration]
     package var routes: [GatewayRouteConfiguration]
@@ -200,11 +339,21 @@ package struct GatewayFFIConfiguration: Codable, Equatable, Sendable {
         configuration: GatewayConfiguration,
         storageDirectory: String,
         httpListener: String,
-        httpsListener: String
+        httpsListener: String,
+        dnsListener: String
     ) {
         schemaVersion = configuration.schemaVersion
         self.storageDirectory = storageDirectory
-        listeners = GatewayListenerConfiguration(http: httpListener, https: httpsListener)
+        listeners = GatewayListenerConfiguration(
+            http: httpListener,
+            https: httpsListener,
+            dns: dnsListener
+        )
+        localDNS = GatewayLocalDNSConfiguration(
+            domains: configuration.localDomains,
+            answerIPv4: "127.0.0.1",
+            ttl: 30
+        )
         acme = configuration.acme
         certificates = configuration.certificates
         routes = configuration.routes
@@ -214,6 +363,7 @@ package struct GatewayFFIConfiguration: Codable, Equatable, Sendable {
         case schemaVersion = "schema_version"
         case storageDirectory = "storage_dir"
         case listeners
+        case localDNS = "local_dns"
         case acme
         case certificates
         case routes
@@ -223,6 +373,19 @@ package struct GatewayFFIConfiguration: Codable, Equatable, Sendable {
 package struct GatewayListenerConfiguration: Codable, Equatable, Sendable {
     package var http: String
     package var https: String
+    package var dns: String
+}
+
+package struct GatewayLocalDNSConfiguration: Codable, Equatable, Sendable {
+    package var domains: [String]
+    package var answerIPv4: String
+    package var ttl: UInt32
+
+    private enum CodingKeys: String, CodingKey {
+        case domains
+        case answerIPv4 = "answer_ipv4"
+        case ttl
+    }
 }
 
 package struct GatewaySecrets: Codable, Equatable, Sendable {
@@ -292,6 +455,19 @@ package enum GatewayState: String, Codable, Equatable, Sendable {
 package struct GatewayListenerStatus: Codable, Equatable, Sendable {
     package var http: String?
     package var https: String?
+    package var dns: String?
+
+    package init(http: String?, https: String?, dns: String? = nil) {
+        self.http = http
+        self.https = https
+        self.dns = dns
+    }
+}
+
+package enum GatewayRouteResolutionState: String, Codable, Equatable, Sendable {
+    case resolving
+    case ready
+    case unavailable
 }
 
 package struct GatewayRouteStatus: Codable, Equatable, Sendable {
@@ -299,12 +475,18 @@ package struct GatewayRouteStatus: Codable, Equatable, Sendable {
     package var upstream: String
     package var resolvedAddresses: [String]
     package var certificateID: String
+    package var resolutionState: GatewayRouteResolutionState
+    package var lastResolvedAt: String?
+    package var lastError: String?
 
     private enum CodingKeys: String, CodingKey {
         case domain
         case upstream
         case resolvedAddresses = "resolved_addresses"
         case certificateID = "certificate_id"
+        case resolutionState = "resolution_state"
+        case lastResolvedAt = "last_resolved_at"
+        case lastError = "last_error"
     }
 }
 

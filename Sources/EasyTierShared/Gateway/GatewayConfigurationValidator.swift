@@ -16,7 +16,7 @@ package enum GatewayConfigurationValidator {
         guard configuration.schemaVersion == GatewaySchema.version else {
             throw invalid("Unsupported Gateway schema version \(configuration.schemaVersion).")
         }
-        guard configuration.acme.termsOfServiceAgreed else {
+        guard configuration.certificates.isEmpty || configuration.acme.termsOfServiceAgreed else {
             throw invalid("ACME terms of service must be accepted.")
         }
 
@@ -78,6 +78,18 @@ package enum GatewayConfigurationValidator {
             )
         }.sorted { $0.domain < $1.domain }
 
+        var localDomains = Set<String>()
+        normalized.localDomains = try configuration.localDomains.map { rawDomain in
+            let domain = try normalizeDomain(rawDomain, label: "Local DNS domain")
+            guard routeDomains.contains(domain) else {
+                throw invalid("Local DNS domain \(domain) does not have a Gateway route.")
+            }
+            guard localDomains.insert(domain).inserted else {
+                throw invalid("Duplicate local DNS domain \(domain).")
+            }
+            return domain
+        }.sorted()
+
         normalized.certificates.sort { $0.id < $1.id }
         return normalized
     }
@@ -122,8 +134,27 @@ package enum GatewayConfigurationValidator {
         return GatewayUpstreamConfiguration(
             url: upstream.url,
             hostHeader: hostHeader,
-            tlsServerName: tlsServerName
+            tlsServerName: tlsServerName,
+            allowedIPv4CIDR: try normalizeIPv4CIDR(upstream.allowedIPv4CIDR)
         )
+    }
+
+    private static func normalizeIPv4CIDR(_ value: String?) throws -> String? {
+        guard let value else { return nil }
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = normalized.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              let prefix = Int(parts[1]),
+              (0 ... 32).contains(prefix)
+        else {
+            throw invalid("allowed_ipv4_cidr must be an IPv4 CIDR.")
+        }
+        var address = in_addr()
+        let ip = String(parts[0])
+        guard ip.withCString({ inet_pton(AF_INET, $0, &address) }) == 1 else {
+            throw invalid("allowed_ipv4_cidr must be an IPv4 CIDR.")
+        }
+        return "\(ip)/\(prefix)"
     }
 
     private static func normalizeHeaderValue(_ value: String?) throws -> String? {

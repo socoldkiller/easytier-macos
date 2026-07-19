@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
 };
 
@@ -8,7 +8,7 @@ use http::HeaderValue;
 use serde::{Deserialize, Serialize};
 use url::{Host, Url};
 
-pub const GATEWAY_SCHEMA_VERSION: u32 = 1;
+pub const GATEWAY_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -16,6 +16,7 @@ pub struct GatewayConfig {
     pub schema_version: u32,
     pub storage_dir: PathBuf,
     pub listeners: ListenerConfig,
+    pub local_dns: LocalDnsConfig,
     pub acme: AcmeConfig,
     #[serde(default)]
     pub certificates: Vec<CertificateConfig>,
@@ -28,6 +29,16 @@ pub struct GatewayConfig {
 pub struct ListenerConfig {
     pub http: String,
     pub https: String,
+    pub dns: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LocalDnsConfig {
+    #[serde(default)]
+    pub domains: Vec<String>,
+    pub answer_ipv4: Ipv4Addr,
+    pub ttl: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -124,6 +135,7 @@ pub struct UpstreamConfig {
     pub url: String,
     pub host_header: Option<String>,
     pub tls_server_name: Option<String>,
+    pub allowed_ipv4_cidr: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -145,6 +157,8 @@ pub struct ValidatedGatewayConfig {
     pub source: GatewayConfig,
     pub http_addr: SocketAddr,
     pub https_addr: SocketAddr,
+    pub dns_addr: SocketAddr,
+    pub local_dns_domains: BTreeSet<String>,
     pub certificates: BTreeMap<String, ValidatedCertificate>,
     pub routes: BTreeMap<String, ValidatedRoute>,
 }
@@ -177,6 +191,24 @@ pub struct ParsedUpstream {
     pub port: u16,
     pub host_header: Option<String>,
     pub tls_server_name: Option<String>,
+    pub allowed_ipv4_cidr: Option<Ipv4Cidr>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ipv4Cidr {
+    network: u32,
+    prefix: u8,
+}
+
+impl Ipv4Cidr {
+    pub fn contains(self, address: Ipv4Addr) -> bool {
+        let mask = if self.prefix == 0 {
+            0
+        } else {
+            u32::MAX << (32 - self.prefix)
+        };
+        u32::from(address) & mask == self.network
+    }
 }
 
 impl GatewayConfig {
@@ -194,7 +226,7 @@ impl GatewayConfig {
         if !self.storage_dir.is_absolute() {
             return Err("storage_dir must be an absolute path".to_string());
         }
-        if !self.acme.terms_of_service_agreed {
+        if !self.certificates.is_empty() && !self.acme.terms_of_service_agreed {
             return Err("acme.terms_of_service_agreed must be true".to_string());
         }
         if let Some(email) = self.acme.contact_email.as_deref() {
@@ -204,8 +236,18 @@ impl GatewayConfig {
 
         let http_addr = parse_listener(&self.listeners.http, "listeners.http")?;
         let https_addr = parse_listener(&self.listeners.https, "listeners.https")?;
+        let dns_addr = parse_listener(&self.listeners.dns, "listeners.dns")?;
         if http_addr == https_addr && http_addr.port() != 0 {
             return Err("HTTP and HTTPS listeners must use different addresses".to_string());
+        }
+        if !https_addr.ip().is_loopback() {
+            return Err("listeners.https must bind a loopback address".to_string());
+        }
+        if !dns_addr.ip().is_loopback() {
+            return Err("listeners.dns must bind a loopback address".to_string());
+        }
+        if !(1..=300).contains(&self.local_dns.ttl) {
+            return Err("local_dns.ttl must be between 1 and 300 seconds".to_string());
         }
 
         let mut certificates = BTreeMap::new();
@@ -290,10 +332,23 @@ impl GatewayConfig {
             }
         }
 
+        let mut local_dns_domains = BTreeSet::new();
+        for domain in &self.local_dns.domains {
+            let domain = normalize_domain(domain)?;
+            if !routes.contains_key(&domain) {
+                return Err(format!("local DNS domain {domain} does not have a route"));
+            }
+            if !local_dns_domains.insert(domain.clone()) {
+                return Err(format!("duplicate local DNS domain {domain}"));
+            }
+        }
+
         Ok(ValidatedGatewayConfig {
             source: self,
             http_addr,
             https_addr,
+            dns_addr,
+            local_dns_domains,
             certificates,
             routes,
         })
@@ -438,6 +493,11 @@ fn parse_upstream(config: &UpstreamConfig) -> Result<ParsedUpstream, String> {
             None => Some(host.clone()),
         },
     };
+    let allowed_ipv4_cidr = config
+        .allowed_ipv4_cidr
+        .as_deref()
+        .map(parse_ipv4_cidr)
+        .transpose()?;
 
     Ok(ParsedUpstream {
         original_url: config.url.clone(),
@@ -446,6 +506,34 @@ fn parse_upstream(config: &UpstreamConfig) -> Result<ParsedUpstream, String> {
         port,
         host_header,
         tls_server_name,
+        allowed_ipv4_cidr,
+    })
+}
+
+fn parse_ipv4_cidr(raw: &str) -> Result<Ipv4Cidr, String> {
+    let (address, prefix) = raw
+        .trim()
+        .split_once('/')
+        .ok_or_else(|| format!("invalid allowed_ipv4_cidr {raw}"))?;
+    let address = address
+        .parse::<Ipv4Addr>()
+        .map_err(|error| format!("invalid allowed_ipv4_cidr {raw}: {error}"))?;
+    let prefix = prefix
+        .parse::<u8>()
+        .map_err(|error| format!("invalid allowed_ipv4_cidr {raw}: {error}"))?;
+    if prefix > 32 {
+        return Err(format!(
+            "invalid allowed_ipv4_cidr {raw}: prefix exceeds 32"
+        ));
+    }
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    Ok(Ipv4Cidr {
+        network: u32::from(address) & mask,
+        prefix,
     })
 }
 
@@ -517,6 +605,12 @@ mod tests {
             listeners: ListenerConfig {
                 http: "127.0.0.1:5002".to_string(),
                 https: "127.0.0.1:8443".to_string(),
+                dns: "127.0.0.1:53535".to_string(),
+            },
+            local_dns: LocalDnsConfig {
+                domains: vec!["app.example.com".to_string()],
+                answer_ipv4: Ipv4Addr::LOCALHOST,
+                ttl: 30,
             },
             acme: AcmeConfig {
                 directory: AcmeDirectoryConfig::LetsencryptStaging,
@@ -535,6 +629,7 @@ mod tests {
                     url: "http://127.0.0.1:8080".to_string(),
                     host_header: None,
                     tls_server_name: None,
+                    allowed_ipv4_cidr: None,
                 },
             }],
         }
@@ -552,6 +647,7 @@ mod tests {
         config.certificates[0].domains =
             vec!["B.Example.com.".to_string(), "a.example.com".to_string()];
         config.routes.clear();
+        config.local_dns.domains.clear();
         let validated = config.validate().unwrap();
         assert_eq!(
             validated.certificates["app-cert"].domains,

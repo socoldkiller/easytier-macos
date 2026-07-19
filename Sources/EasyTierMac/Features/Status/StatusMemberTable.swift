@@ -105,6 +105,7 @@ struct MemberGridTable: View {
     var onRenameHostname: (NetworkMemberStatus) -> Void
     var onConfigureLocalMember: () -> Void
     var onConfigureRemoteMember: (NetworkMemberStatus) -> Void
+    var onPublishService: (NetworkMemberStatus) -> Void
 
     var body: some View {
         GeometryReader { proxy in
@@ -124,7 +125,8 @@ struct MemberGridTable: View {
                                 publicServerGroupExpanded: $publicServerGroupExpanded,
                                 onRenameHostname: onRenameHostname,
                                 onConfigureLocalMember: onConfigureLocalMember,
-                                onConfigureRemoteMember: onConfigureRemoteMember
+                                onConfigureRemoteMember: onConfigureRemoteMember,
+                                onPublishService: onPublishService
                             )
                         }
                     } header: {
@@ -256,6 +258,7 @@ private struct MemberGridRowView: View {
     var onRenameHostname: (NetworkMemberStatus) -> Void
     var onConfigureLocalMember: () -> Void
     var onConfigureRemoteMember: (NetworkMemberStatus) -> Void
+    var onPublishService: (NetworkMemberStatus) -> Void
 
     private var row: MemberTableRow { item.row }
 
@@ -269,7 +272,8 @@ private struct MemberGridRowView: View {
                         isHighlighted: row.contains(peerID: highlightedMemberPeerID),
                         onRenameHostname: onRenameHostname,
                         onConfigureLocalMember: onConfigureLocalMember,
-                        onConfigureRemoteMember: onConfigureRemoteMember
+                        onConfigureRemoteMember: onConfigureRemoteMember,
+                        onPublishService: onPublishService
                     )
                     .padding(.leading, CGFloat(item.depth) * 18)
                 }

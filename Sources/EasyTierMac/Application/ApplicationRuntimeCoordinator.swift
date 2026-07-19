@@ -21,7 +21,7 @@ final class ApplicationRuntimeCoordinator: SoftwareUpdateRuntimeManaging {
     }
 
     func prepareForAppQuit() async {
-        await gateway.stopForLifecycle()
+        await gateway.stopForLifecycle(retainRuntime: store.vpnOnDemandEnabled)
         await store.prepareForAppQuit()
     }
 

@@ -21,6 +21,7 @@ enum MagicDNSDisplay {
 
 enum EasyTierSettingsTab: String, CaseIterable, Identifiable, Hashable {
     case general = "General"
+    case gateway = "Gateway"
     case easyTier = "EasyTier"
     case about = "About"
 
@@ -29,6 +30,7 @@ enum EasyTierSettingsTab: String, CaseIterable, Identifiable, Hashable {
     var systemImage: String {
         switch self {
         case .general: "gearshape"
+        case .gateway: "network.badge.shield.half.filled"
         case .easyTier: "network"
         case .about: "info.circle"
         }
@@ -65,6 +67,7 @@ enum EasyTierSection: String, CaseIterable, Identifiable, Hashable {
 
 enum SettingsSelection: Hashable {
     case general
+    case gateway
     case easyTier(EasyTierSection)
     case about
 }
@@ -80,7 +83,6 @@ struct EasyTierSettingsSheet: View {
     @State private var magicDNSSuffix: String
     @State private var settingsError: String?
     @State private var showingDisableRPCListenWarning = false
-    @State private var helperDiagnostics = HelperDiagnosticsController()
     private let appInfo = AppVersionInfo.current
 
     var onChange: (AppMode, MagicDNSSettings) -> Void
@@ -99,6 +101,7 @@ struct EasyTierSettingsSheet: View {
         self.onChange = onChange
         switch initialTab {
         case .general: _selection = State(initialValue: .general)
+        case .gateway: _selection = State(initialValue: .gateway)
         case .easyTier: _selection = State(initialValue: .easyTier(.magicDNS))
         case .about: _selection = State(initialValue: .about)
         }
@@ -128,6 +131,7 @@ struct EasyTierSettingsSheet: View {
             let tab: EasyTierSettingsTab
             switch newSelection {
             case .general: tab = .general
+            case .gateway: tab = .gateway
             case .easyTier: tab = .easyTier
             case .about: tab = .about
             }
@@ -172,6 +176,8 @@ struct EasyTierSettingsSheet: View {
         switch effectiveSelection {
         case .general:
             generalSettings
+        case .gateway:
+            GatewaySettingsView()
         case .easyTier(let section):
             easyTierSectionView(section)
         case .about:
@@ -184,7 +190,10 @@ struct EasyTierSettingsSheet: View {
     private var generalSettings: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
-                paneHeader(title: "General", subtitle: "Appearance, launch, updates, and quit behavior for the EasyTier GUI.")
+                paneHeader(
+                    title: "General",
+                    subtitle: "Appearance, launch, updates, and background services."
+                )
 
                 CardSection(
                     "Appearance",
@@ -220,6 +229,8 @@ struct EasyTierSettingsSheet: View {
                         .onChange(of: loginItem.isEnabled) { _, _ in loginItem.apply() }
                 }
 
+                GeneralGatewaySettingsSection()
+
                 CardSection(
                     "Software Update",
                     footer: softwareUpdateFooterText
@@ -253,51 +264,12 @@ struct EasyTierSettingsSheet: View {
 
                 CardSection(
                     "Quit Behavior",
-                    footer: "All running networks are helper-managed and can remain active after the EasyTier window and menu bar app quit."
+                    footer: "Running networks and Published Services are helper-managed and can remain active after the EasyTier window and menu bar app quit."
                 ) {
                     Toggle("Keep Networks Running After Quit", isOn: vpnOnDemandBinding)
                 }
 
-                CardSection(
-                    "Helper Diagnostics",
-                    footer: helperDiagnostics.status
-                ) {
-                    SettingsInlineRow("EasyTier Helper") {
-                        Text(helperDiagnostics.displayedEasyTierHelper.easyTierHelperDisplay)
-                            .font(.callout.monospaced())
-                            .textSelection(.enabled)
-                    }
-                    SettingsRowDivider()
-                    SettingsInlineRow("Gateway Helper") {
-                        Text(helperDiagnostics.displayedGatewayHelper.componentDisplay)
-                            .font(.callout.monospaced())
-                            .textSelection(.enabled)
-                    }
-                    SettingsRowDivider()
-                    SettingsInlineRow("EasyTier Binary") {
-                        Text(helperDiagnostics.displayedEasyTierHelper.binaryDisplay)
-                            .font(.callout.monospaced())
-                            .textSelection(.enabled)
-                    }
-                    SettingsRowDivider()
-                    SettingsInlineRow("EasyTier Built") {
-                        Text(helperDiagnostics.displayedEasyTierHelper.buildTime)
-                            .font(.callout.monospaced())
-                            .textSelection(.enabled)
-                    }
-                    SettingsRowDivider()
-                    SettingsInlineRow("Gateway Binary") {
-                        Text(helperDiagnostics.displayedGatewayHelper.binaryDisplay)
-                            .font(.callout.monospaced())
-                            .textSelection(.enabled)
-                    }
-                    SettingsRowDivider()
-                    SettingsInlineRow("Gateway Built") {
-                        Text(helperDiagnostics.displayedGatewayHelper.buildTime)
-                            .font(.callout.monospaced())
-                            .textSelection(.enabled)
-                    }
-                }
+                HelperDiagnosticsSection()
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 18)
@@ -306,18 +278,10 @@ struct EasyTierSettingsSheet: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .scrollIndicators(.hidden, axes: .vertical)
         .hideScrollViewScrollers()
-        .task(id: helperDiagnosticsTaskID) {
+        .task {
             await Task.yield()
             loginItem.refresh()
-            await helperDiagnostics.refresh(
-                easyTierRegistration: store.helperRegistration,
-                gatewayRegistration: appContext.runtime.gateway.helperRegistration
-            )
         }
-    }
-
-    private var helperDiagnosticsTaskID: String {
-        "\(String(describing: store.helperRegistration?.state))-\(String(describing: appContext.runtime.gateway.helperRegistration?.state))"
     }
 
     @ViewBuilder
@@ -548,6 +512,8 @@ struct EasyTierSettingsSheet: View {
         switch tab {
         case .general:
             target = .general
+        case .gateway:
+            target = .gateway
         case .easyTier:
             if case .easyTier(let current) = selection {
                 target = sanitizedSelection(.easyTier(current))
@@ -680,6 +646,9 @@ private struct SettingsSidebar: View {
             Section {
                 Label("General", systemImage: "gearshape")
                     .tag(SettingsSelection.general)
+
+                Label("Gateway", systemImage: "network.badge.shield.half.filled")
+                    .tag(SettingsSelection.gateway)
 
                 ForEach(visibleEasyTierSections) { section in
                     Label(section.rawValue, systemImage: section.systemImage)
@@ -857,43 +826,6 @@ private struct SettingsSourceRevisionInfo: Equatable {
     private static func normalized(_ value: String?) -> String? {
         guard let value, !value.isEmpty, value != "unknown" else { return nil }
         return value
-    }
-}
-
-private struct SettingsInlineRow<Content: View>: View {
-    var label: String
-    var alignment: VerticalAlignment
-    @ViewBuilder var content: Content
-
-    init(
-        _ label: String,
-        alignment: VerticalAlignment = .center,
-        @ViewBuilder content: () -> Content
-    ) {
-        self.label = label
-        self.alignment = alignment
-        self.content = content()
-    }
-
-    var body: some View {
-        HStack(alignment: alignment, spacing: 16) {
-            Text(label)
-                .font(.body.weight(.medium))
-                .foregroundStyle(.primary)
-                .frame(minWidth: 110, alignment: .leading)
-
-            Spacer(minLength: 12)
-
-            content
-                .frame(maxWidth: .infinity, alignment: .trailing)
-        }
-    }
-}
-
-private struct SettingsRowDivider: View {
-    var body: some View {
-        Divider()
-            .opacity(0.45)
     }
 }
 

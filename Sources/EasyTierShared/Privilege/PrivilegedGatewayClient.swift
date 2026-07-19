@@ -51,6 +51,12 @@ package final class PrivilegedGatewayClient: GatewayClient, @unchecked Sendable 
         }
     }
 
+    package func setRetainsRuntimeAfterDisconnect(_ retainsRuntime: Bool) async throws {
+        try await call {
+            $0.setRetainsRuntimeAfterDisconnect(retainsRuntime, reply: $1)
+        }
+    }
+
     package func connectionEvents() -> AsyncStream<PrivilegedHelperConnectionEvent> {
         let id = UUID()
         return AsyncStream { continuation in

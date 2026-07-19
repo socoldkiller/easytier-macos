@@ -86,12 +86,31 @@ if [[ "$STOP_RUNNING_APPS" == "1" ]]; then
   fi
 fi
 
+installed_binary="$DESTINATION_APP/Contents/MacOS/EasyTierMac"
+if [[ -x "$installed_binary" ]]; then
+  if ! unregister_output="$(
+    EASYTIER_SKIP_LEGACY_HELPER_UNINSTALL=1 \
+      "$installed_binary" --unregister-helper 2>&1
+  )"; then
+    printf '%s\n' "$unregister_output" >&2
+    die "Failed to unregister the installed privileged helpers before replacing the app."
+  fi
+  printf '%s\n' "$unregister_output"
+fi
+
 mkdir -p "$(dirname "$DESTINATION_APP")"
 ditto --noextattr --norsrc "$SOURCE_APP" "$staging_app"
 xattr -cr "$staging_app"
 verify_signature "$staging_app"
 rm -rf "$DESTINATION_APP"
 mv "$staging_app" "$DESTINATION_APP"
+
+installed_binary="$DESTINATION_APP/Contents/MacOS/EasyTierMac"
+if ! register_output="$("$installed_binary" --register-helper 2>&1)"; then
+  printf '%s\n' "$register_output" >&2
+  die "Failed to register the privileged helpers from the newly installed app."
+fi
+printf '%s\n' "$register_output"
 
 printf 'Installed signed Xcode Debug app: %s\n' "$DESTINATION_APP"
 printf 'Data Protection Keychain identifier: %s\n' "$expected_identifier"

@@ -4,7 +4,7 @@ package enum GatewayPrivilegedHelperConstants {
     package static let bundleIdentifier = "com.coldkiller.gateway.helper"
     package static let machServiceName = "com.coldkiller.gateway.helper"
     package static let launchDaemonPlistName = "com.coldkiller.gateway.helper.plist"
-    package static let protocolVersion = "1"
+    package static let protocolVersion = "3"
     package static let pingPayload = "pong:\(protocolVersion)"
 }
 
@@ -67,5 +67,6 @@ package protocol GatewayPrivilegedServiceProtocol {
     func stop(reply: @escaping (String?, String?) -> Void)
     func status(reply: @escaping (String?, String?) -> Void)
     func requestRenewal(certificateID: String?, reply: @escaping (String?, String?) -> Void)
+    func setRetainsRuntimeAfterDisconnect(_ retainsRuntime: Bool, reply: @escaping (String?, String?) -> Void)
     func shutdown(reply: @escaping (String?, String?) -> Void)
 }

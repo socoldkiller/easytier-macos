@@ -1,5 +1,6 @@
 mod acme;
 mod config;
+mod local_dns;
 mod proxy;
 mod status;
 mod storage;
@@ -7,6 +8,7 @@ mod tls;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    os::fd::AsRawFd,
     sync::Arc,
     time::Duration,
 };
@@ -14,7 +16,7 @@ use std::{
 use arc_swap::ArcSwap;
 use pingora::{
     apps::ServerApp,
-    protocols::{Stream, l4},
+    protocols::{GetSocketDigest, SocketDigest, Stream, l4},
     proxy::{HttpProxy, http_proxy},
     server::configuration::ServerConf,
 };
@@ -32,7 +34,10 @@ pub use status::GatewayStatusSnapshot;
 
 use acme::{AcmeContext, AcmeJobOutput};
 use config::{ChallengeConfig, GATEWAY_SCHEMA_VERSION, ValidatedGatewayConfig};
-use proxy::{GatewayProxy, Http01ChallengeStore, SharedRouteTable, resolve_route_table};
+use local_dns::{LocalDnsTable, SharedLocalDnsTable, bind_local_dns, spawn_local_dns};
+use proxy::{
+    GatewayProxy, Http01ChallengeStore, SharedRouteTable, build_route_table, spawn_route_resolvers,
+};
 use status::{CertificateState, CertificateStatus, GatewayState, ListenerStatus};
 use storage::{GatewayStorage, PendingDnsCleanup};
 use tls::{DynamicCertificateStore, build_tls_acceptor};
@@ -207,9 +212,11 @@ struct GatewayInstance {
     acme_event_sender: mpsc::UnboundedSender<AcmeEvent>,
     certificates: Arc<DynamicCertificateStore>,
     routes: Arc<SharedRouteTable>,
+    local_dns: Arc<SharedLocalDnsTable>,
     proxy: Arc<HttpProxy<GatewayProxy>>,
     shutdown: watch::Sender<bool>,
     listener_tasks: Vec<JoinHandle<()>>,
+    route_tasks: Vec<JoinHandle<()>>,
     status: Arc<ArcSwap<GatewayStatusSnapshot>>,
     certificate_status: BTreeMap<String, CertificateStatus>,
     listener_status: ListenerStatus,
@@ -240,8 +247,9 @@ impl GatewayInstance {
             challenges.clone(),
         );
         let (acme_event_sender, acme_events) = mpsc::unbounded_channel();
-        let route_table = resolve_route_table(&config).await?;
+        let route_table = build_route_table(&config);
         let routes = SharedRouteTable::new(route_table);
+        let local_dns = SharedLocalDnsTable::new(LocalDnsTable::from_config(&config));
 
         let mut certificate_status = BTreeMap::new();
         for certificate in config.certificates.values() {
@@ -289,6 +297,15 @@ impl GatewayInstance {
                 ));
             }
         };
+        let (dns_tcp_listener, dns_udp_socket, dns_addr) =
+            match bind_local_dns(config.dns_addr).await {
+                Ok(listeners) => listeners,
+                Err(error) => {
+                    drop(http_listener);
+                    drop(https_listener);
+                    return Err(error);
+                }
+            };
         let http_addr = http_listener
             .local_addr()
             .map_err(|error| format!("failed to inspect HTTP listener: {error}"))?;
@@ -307,14 +324,25 @@ impl GatewayInstance {
             proxy.clone(),
             tls_acceptor,
             tls_callbacks,
-            shutdown_watch,
+            shutdown_watch.clone(),
         ));
+        let mut dns_tasks = spawn_local_dns(
+            dns_tcp_listener,
+            dns_udp_socket,
+            local_dns.clone(),
+            certificates.clone(),
+            shutdown_watch.clone(),
+        );
+        let route_tasks = spawn_route_resolvers(routes.snapshot(), shutdown_watch);
 
         let status = Arc::new(ArcSwap::from_pointee(GatewayStatusSnapshot::default()));
         let listener_status = ListenerStatus {
             http: Some(http_addr.to_string()),
             https: Some(https_addr.to_string()),
+            dns: Some(dns_addr.to_string()),
         };
+        let mut listener_tasks = vec![http_task, https_task];
+        listener_tasks.append(&mut dns_tasks);
         let mut instance = Self {
             config,
             secrets,
@@ -324,9 +352,11 @@ impl GatewayInstance {
             acme_event_sender,
             certificates,
             routes,
+            local_dns,
             proxy,
             shutdown,
-            listener_tasks: vec![http_task, https_task],
+            listener_tasks,
+            route_tasks,
             status: status.clone(),
             certificate_status,
             listener_status,
@@ -439,7 +469,7 @@ impl GatewayInstance {
             None => self.secrets.validate_references(&config)?,
         }
 
-        let route_table = resolve_route_table(&config).await?;
+        let route_table = build_route_table(&config);
         self.acme.update_config(config.source.acme.clone()).await?;
         let mut next_status = BTreeMap::new();
         for certificate in config.certificates.values() {
@@ -493,7 +523,13 @@ impl GatewayInstance {
         }
         self.certificates.reconcile(&config);
         self.certificates.update_routes(&config);
-        self.routes.replace(route_table);
+        self.local_dns.replace(LocalDnsTable::from_config(&config));
+        for task in self.route_tasks.drain(..) {
+            task.abort();
+            let _ = task.await;
+        }
+        self.routes.replace(route_table.clone());
+        self.route_tasks = spawn_route_resolvers(route_table, self.shutdown.subscribe());
         self.certificate_status = next_status;
         self.config = config;
         self.config_generation = self.config_generation.saturating_add(1);
@@ -912,6 +948,10 @@ impl GatewayInstance {
     async fn stop_listeners(&mut self) -> Result<(), String> {
         let _ = self.shutdown.send(true);
         self.proxy.cleanup().await;
+        for task in self.route_tasks.drain(..) {
+            task.abort();
+            let _ = task.await;
+        }
         let tasks = std::mem::take(&mut self.listener_tasks);
         timeout(
             CONNECTION_SHUTDOWN_TIMEOUT + Duration::from_secs(1),
@@ -1022,14 +1062,22 @@ async fn run_listener(
             }
             accepted = listener.accept() => {
                 match accepted {
-                    Ok((stream, _)) => {
+                    Ok((stream, peer_addr)) => {
                         let _ = stream.set_nodelay(true);
                         let proxy = proxy.clone();
                         let shutdown = shutdown.clone();
                         let acceptor = acceptor.clone();
                         let callbacks = callbacks.clone();
                         connections.spawn(async move {
-                            process_connection(stream, proxy, acceptor, callbacks, shutdown).await;
+                            process_connection(
+                                stream,
+                                peer_addr,
+                                proxy,
+                                acceptor,
+                                callbacks,
+                                shutdown,
+                            )
+                            .await;
                         });
                     }
                     Err(_) => sleep(Duration::from_millis(100)).await,
@@ -1052,12 +1100,19 @@ async fn run_listener(
 
 async fn process_connection(
     stream: TcpStream,
+    peer_addr: std::net::SocketAddr,
     proxy: Arc<HttpProxy<GatewayProxy>>,
     acceptor: Option<Arc<pingora::tls::ssl::SslAcceptor>>,
     callbacks: Option<Arc<pingora::listeners::TlsAcceptCallbacks>>,
     shutdown: watch::Receiver<bool>,
 ) {
-    let l4_stream: l4::stream::Stream = stream.into();
+    let mut l4_stream: l4::stream::Stream = stream.into();
+    let socket_digest = SocketDigest::from_raw_fd(l4_stream.as_raw_fd());
+    socket_digest
+        .peer_addr
+        .set(Some(peer_addr.into()))
+        .expect("new Gateway connection must not have a peer address yet");
+    l4_stream.set_socket_digest(socket_digest);
     let stream: Stream = match (acceptor, callbacks) {
         (Some(acceptor), Some(callbacks)) => {
             let handshake = pingora::protocols::tls::server::handshake_with_callback(
@@ -1124,6 +1179,51 @@ mod tests {
     }
 
     #[test]
+    fn gateway_runs_without_published_services() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let config = json!({
+                "schema_version": 2,
+                "storage_dir": temp.path().join("gateway"),
+                "listeners": {
+                    "http": "127.0.0.1:0",
+                    "https": "127.0.0.1:0",
+                    "dns": "127.0.0.1:0"
+                },
+                "local_dns": {
+                    "domains": [],
+                    "answer_ipv4": "127.0.0.1",
+                    "ttl": 30
+                },
+                "acme": {
+                    "directory": { "kind": "letsencrypt_production" },
+                    "contact_email": null,
+                    "terms_of_service_agreed": false
+                },
+                "certificates": [],
+                "routes": []
+            });
+            let gateway = GatewayHandle::start(&config.to_string(), &empty_secrets().to_string())
+                .await
+                .unwrap();
+            let status: Value = serde_json::from_str(&gateway.status_json().unwrap()).unwrap();
+            assert_eq!(status["state"], "running");
+            assert!(status["certificates"].as_array().unwrap().is_empty());
+            assert!(status["routes"].as_array().unwrap().is_empty());
+
+            let response = plain_http_request(
+                status["listeners"]["http"].as_str().unwrap(),
+                "unknown.gateway.test",
+                "/",
+            )
+            .await;
+            assert!(response.starts_with("HTTP/1.1 404"), "{response:?}");
+            gateway.stop().await.unwrap();
+        });
+    }
+
+    #[test]
     fn gateway_routes_tls_and_enforces_http_policy() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
@@ -1176,7 +1276,7 @@ mod tests {
             let https_addr = status["listeners"]["https"].as_str().unwrap();
 
             let redirect = plain_http_request(http_addr, domains[0], "/hello?q=1").await;
-            assert!(redirect.starts_with("HTTP/1.1 308"));
+            assert!(redirect.starts_with("HTTP/1.1 308"), "{redirect:?}");
             assert!(
                 redirect
                     .to_ascii_lowercase()
@@ -1245,11 +1345,11 @@ mod tests {
                 .remove("pending.gateway.test", "http01-token");
 
             let response = plain_http_request(http_addr, "pending.gateway.test", "/").await;
-            assert!(response.starts_with("HTTP/1.1 503"));
+            assert!(response.starts_with("HTTP/1.1 503"), "{response:?}");
             assert!(response.to_ascii_lowercase().contains("retry-after: 30"));
 
             let unknown = plain_http_request(http_addr, "unknown.gateway.test", "/").await;
-            assert!(unknown.starts_with("HTTP/1.1 421"));
+            assert!(unknown.starts_with("HTTP/1.1 404"));
             gateway.stop().await.unwrap();
         });
     }
@@ -1324,11 +1424,17 @@ mod tests {
         https_listener: &str,
     ) -> Value {
         json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "storage_dir": storage_dir,
             "listeners": {
                 "http": http_listener,
-                "https": https_listener
+                "https": https_listener,
+                "dns": "127.0.0.1:0"
+            },
+            "local_dns": {
+                "domains": domains,
+                "answer_ipv4": "127.0.0.1",
+                "ttl": 30
             },
             "acme": {
                 "directory": { "kind": "letsencrypt_staging" },
@@ -1346,14 +1452,15 @@ mod tests {
                 "upstream": {
                     "url": format!("http://{upstream_addr}"),
                     "host_header": null,
-                    "tls_server_name": null
+                    "tls_server_name": null,
+                    "allowed_ipv4_cidr": null
                 }
             })).collect::<Vec<_>>()
         })
     }
 
     fn empty_secrets() -> Value {
-        json!({ "schema_version": 1, "cloudflare": {} })
+        json!({ "schema_version": 2, "cloudflare": {} })
     }
 
     fn test_certificate(domains: &[&str]) -> (String, String, CertificateDer<'static>) {
