@@ -208,7 +208,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Install native build dependencies
-        run: brew install protobuf
+        run: brew install cmake protobuf
 
       - name: Select Xcode 16
         env:
