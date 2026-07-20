@@ -12,7 +12,7 @@ SWIFT_STRICT_CONCURRENCY = complete
 SWIFT_VERSION = 6.0
 
 // Native Xcode targets join the same Swift package access domain as Package.swift.
-OTHER_SWIFT_FLAGS = $(inherited) -package-name et_macos_gateway
+OTHER_SWIFT_FLAGS = $(inherited) -package-name easytier_macos
 
 EASYTIER_APPLICATION_IDENTIFIER = local.$(PRODUCT_BUNDLE_IDENTIFIER)
 EASYTIER_BUILD_TIME = 1970-01-01T00:00:00Z

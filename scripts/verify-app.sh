@@ -12,10 +12,12 @@ REQUIRED_FFI_SYMBOLS=(
   retain_network_instance
   stop_network_instance
   collect_network_infos
-  free_string
   connect_rpc_client
   call_json_rpc
   configure_rpc_portal
+)
+REQUIRED_SHARED_FFI_SYMBOLS=(
+  free_string
 )
 REQUIRED_GATEWAY_SYMBOLS=(
   gateway_start
@@ -252,6 +254,12 @@ verify_binary_symbols() {
   [[ "$gui_archs" == "arm64" ]] || fail "EasyTierMac release must be ARM64-only; found: $gui_archs"
   [[ "$helper_archs" == "arm64" ]] || fail "EasyTierPrivilegedHelper release must be ARM64-only; found: $helper_archs"
   [[ "$gateway_helper_archs" == "arm64" ]] || fail "GatewayPrivilegedHelper release must be ARM64-only; found: $gateway_helper_archs"
+
+  for symbol in "${REQUIRED_SHARED_FFI_SYMBOLS[@]}"; do
+    ! has_symbol "$GUI_BINARY" "$symbol" "$gui_archs" || fail "EasyTierMac must not contain shared FFI symbol: $symbol"
+    has_symbol "$HELPER_BINARY" "$symbol" "$helper_archs" || fail "EasyTierPrivilegedHelper must contain shared FFI symbol: $symbol"
+    has_symbol "$GATEWAY_HELPER_BINARY" "$symbol" "$gateway_helper_archs" || fail "GatewayPrivilegedHelper must contain shared FFI symbol: $symbol"
+  done
 
   for symbol in "${REQUIRED_FFI_SYMBOLS[@]}"; do
     ! has_symbol "$GUI_BINARY" "$symbol" "$gui_archs" || fail "EasyTierMac must not contain EasyTier FFI symbol: $symbol"

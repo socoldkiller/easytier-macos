@@ -215,12 +215,43 @@ notarize() {
   local path="$1"
   local label="$2"
   local result_path="$TEMP_ROOT/${label}-notary-result.json"
+  local error_path="$TEMP_ROOT/${label}-notary-error.log"
+  local max_attempts="${EASYTIER_NOTARY_MAX_ATTEMPTS:-3}"
+  local retry_delay="${EASYTIER_NOTARY_RETRY_DELAY_SECONDS:-15}"
+  local attempt=1
+  local status=0
 
-  log "Submitting $label for Apple notarization"
-  xcrun notarytool submit "$path" \
-    "${NOTARY_ARGS[@]}" \
-    --wait \
-    --output-format json > "$result_path"
+  [[ "$max_attempts" =~ ^[1-9][0-9]*$ ]] \
+    || die "EASYTIER_NOTARY_MAX_ATTEMPTS must be a positive integer."
+  [[ "$retry_delay" =~ ^[0-9]+$ ]] \
+    || die "EASYTIER_NOTARY_RETRY_DELAY_SECONDS must be a non-negative integer."
+
+  while (( attempt <= max_attempts )); do
+    log "Submitting $label for Apple notarization (attempt $attempt/$max_attempts)"
+    if xcrun notarytool submit "$path" \
+      "${NOTARY_ARGS[@]}" \
+      --wait \
+      --output-format json > "$result_path" 2> "$error_path"; then
+      break
+    else
+      status=$?
+    fi
+
+    cat "$error_path" >&2
+    if (( attempt == max_attempts )) \
+      || ! grep -Eqi \
+        'abortedUpload|connection reset|network connection was lost|timed? out|timeout|temporarily unavailable' \
+        "$error_path"; then
+      return "$status"
+    fi
+
+    log "Apple notarization upload was interrupted; retrying $label after ${retry_delay}s"
+    if (( retry_delay > 0 )); then
+      sleep "$retry_delay"
+    fi
+    attempt=$((attempt + 1))
+  done
+
   cat "$result_path"
   "$PYTHON_BIN" "$RELEASE_FEED_HELPER" validate-notary \
     --input "$result_path" \

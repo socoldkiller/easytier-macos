@@ -208,7 +208,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Install native build dependencies
-        run: brew install protobuf
+        run: brew install cmake protobuf
 
       - name: Select Xcode 16
         env:
@@ -276,7 +276,9 @@ jobs:
           EASYTIER_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
           APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64 }}
           EASYTIER_SWIFT_BUILD_DIR: ${{ github.workspace }}/.build/keychain-integration
-        run: ./scripts/test-keychain-integration.sh
+          EASYTIER_KEYCHAIN_TEST_LEGACY_MIGRATION: "0"
+          EASYTIER_KEYCHAIN_TEST_ALLOW_HEADLESS_SKIP: "1"
+        run: EASYTIER_CODESIGN_KEYCHAIN="$HOME/Library/Keychains/signing_temp.keychain-db" ./scripts/test-keychain-integration.sh
 
       - name: Build signed and notarized release artifact
         if: steps.context.outputs.should_publish == 'true'

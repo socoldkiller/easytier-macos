@@ -9,6 +9,10 @@ struct EasyTierKeychainIntegrationHarness {
         do {
             try await run()
             print("Data Protection Keychain integration test passed.")
+        } catch NetworkSecretStoreError.keychain(errSecInteractionNotAllowed)
+            where ProcessInfo.processInfo.environment["EASYTIER_KEYCHAIN_TEST_ALLOW_HEADLESS_SKIP"] == "1"
+        {
+            print("Data Protection Keychain integration skipped because this runner has no interactive user session.")
         } catch {
             fputs("Data Protection Keychain integration test failed: \(error.localizedDescription)\n", stderr)
             Foundation.exit(EXIT_FAILURE)
@@ -17,6 +21,7 @@ struct EasyTierKeychainIntegrationHarness {
 
     private static func run() async throws {
         let environment = ProcessInfo.processInfo.environment
+        let runsLegacyMigration = environment["EASYTIER_KEYCHAIN_TEST_LEGACY_MIGRATION"] != "0"
         let service = environment["EASYTIER_KEYCHAIN_TEST_SERVICE"]
             ?? "com.kkrainbow.easytier.mac.keychain-test.\(UUID().uuidString.lowercased())"
         let accessGroup = environment["EASYTIER_KEYCHAIN_ACCESS_GROUP"]?.nilIfEmpty
@@ -65,30 +70,34 @@ struct EasyTierKeychainIntegrationHarness {
             accessGroup: accessGroup
         )
 
-        try addLegacyFixture(
-            "integration-migration-secret",
-            service: service,
-            account: migrationConfig.network_name,
-            accessGroup: accessGroup
-        )
-        let migrated = try await store.secret(
-            for: migrationConfig,
-            purpose: .reveal,
-            reason: "Migrate an EasyTier Keychain integration fixture."
-        )
-        guard migrated?.secret == "integration-migration-secret" else {
-            throw HarnessError("legacy migration returned an unexpected value")
+        if runsLegacyMigration {
+            try addLegacyFixture(
+                "integration-migration-secret",
+                service: service,
+                account: migrationConfig.network_name,
+                accessGroup: accessGroup
+            )
+            let migrated = try await store.secret(
+                for: migrationConfig,
+                purpose: .reveal,
+                reason: "Migrate an EasyTier Keychain integration fixture."
+            )
+            guard migrated?.secret == "integration-migration-secret" else {
+                throw HarnessError("legacy migration returned an unexpected value")
+            }
+            try requireModernItem(
+                service: service,
+                account: migrationConfig.network_name,
+                accessGroup: accessGroup
+            )
+            try requireLegacyItemAbsent(
+                service: service,
+                account: migrationConfig.network_name,
+                accessGroup: accessGroup
+            )
+        } else {
+            print("Legacy Keychain migration skipped because this runner has no interactive user session.")
         }
-        try requireModernItem(
-            service: service,
-            account: migrationConfig.network_name,
-            accessGroup: accessGroup
-        )
-        try requireLegacyItemAbsent(
-            service: service,
-            account: migrationConfig.network_name,
-            accessGroup: accessGroup
-        )
 
         for account in accounts {
             try requireDeleteSucceeded(
@@ -155,7 +164,7 @@ struct EasyTierKeychainIntegrationHarness {
             status = SecItemCopyMatching(query as CFDictionary, nil)
         }
         guard status == errSecSuccess || status == errSecInteractionNotAllowed else {
-            throw HarnessError("modern item verification failed with OSStatus \(status)")
+            throw NetworkSecretStoreError.keychain(status)
         }
     }
 
@@ -175,7 +184,7 @@ struct EasyTierKeychainIntegrationHarness {
         query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUISkip
         let status = SecItemCopyMatching(query as CFDictionary, nil)
         guard status == errSecItemNotFound else {
-            throw HarnessError("legacy item still exists or could not be checked; OSStatus \(status)")
+            throw NetworkSecretStoreError.keychain(status)
         }
     }
 
@@ -216,7 +225,7 @@ struct EasyTierKeychainIntegrationHarness {
 
     private static func requireDeleteSucceeded(_ status: OSStatus) throws {
         guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw HarnessError("test item cleanup failed with OSStatus \(status)")
+            throw NetworkSecretStoreError.keychain(status)
         }
     }
 

@@ -11,6 +11,7 @@ INSTALL_APP_PATH ?= /Applications/EasyTier.app
 RELEASE_ARCH ?= ARM64
 DMG_PATH ?= $(ARTIFACTS_DIR)/EasyTier-macOS-$(RELEASE_ARCH).dmg
 FFI_CACHE_DIR ?= $(HOME)/Library/Caches/easytier-macos/ffi
+RUST_TOOLS_DIR ?= $(APP_PRODUCTS_DIR)/RustTools
 PYTHON_BIN ?= python3
 CODESIGN_IDENTITY ?=
 CODESIGN_KEYCHAIN ?= $(firstword $(wildcard $(HOME)/Library/Keychains/easytier-signing.keychain-db))
@@ -27,7 +28,7 @@ RUST_OPT_LEVEL ?= z
 RUST_LTO ?= fat
 RUST_CODEGEN_UNITS ?= 1
 
-.PHONY: help bootstrap ffi test-swift test-rust test-packaging test-xcode-project test test-keychain-integration smoke clean clean-cache \
+.PHONY: help bootstrap rust-toolchain-shims ffi test-swift test-rust test-packaging test-xcode-project test test-keychain-integration smoke clean clean-cache \
 	require-codesign-identity \
 	app-debug app-release-signed \
 	debug-install dmg release-dmg verify-app install-helper
@@ -68,7 +69,12 @@ help:
 bootstrap:
 	./scripts/bootstrap.sh
 
-ffi:
+rust-toolchain-shims:
+	mkdir -p "$(RUST_TOOLS_DIR)"
+	ln -sf "$$(xcrun --sdk macosx --find ar)" "$(RUST_TOOLS_DIR)/llvm-ar"
+
+ffi: rust-toolchain-shims
+	PATH="$(RUST_TOOLS_DIR):$$PATH" \
 	EASYTIER_FFI_CACHE_DIR="$(FFI_CACHE_DIR)" \
 	EASYTIER_RUST_OPT_LEVEL="$(RUST_OPT_LEVEL)" \
 	EASYTIER_RUST_LTO="$(RUST_LTO)" \
@@ -78,8 +84,9 @@ ffi:
 test-swift:
 	swift test --scratch-path "$(SWIFT_BUILD_DIR)" --configuration release
 
-test-rust:
-	cargo test --manifest-path Rust/EasyTierGuiFFI/Cargo.toml
+test-rust: rust-toolchain-shims
+	PATH="$(RUST_TOOLS_DIR):$$PATH" \
+		./scripts/test-rust.sh
 
 test-packaging:
 	$(PYTHON_BIN) -m unittest discover -s Tests/PackagingTests -p 'test_*.py' -v
