@@ -105,13 +105,13 @@ private struct MemberStatusIdentity: View {
     @ViewBuilder
     private var memberContextMenu: some View {
         if let ip = member.copyableIPv4Address, !ip.isEmpty {
-            Button("Copy IP") {
+            Button("Copy IP", systemImage: "doc.on.doc") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(ip, forType: .string)
             }
         }
         if let domain = magicDNSDomain, !domain.isEmpty {
-            Button("Copy Domain") {
+            Button("Copy Domain", systemImage: "doc.on.doc") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(domain, forType: .string)
             }
@@ -121,18 +121,18 @@ private struct MemberStatusIdentity: View {
             Divider()
         }
         if !member.peerID.isEmpty, member.peerID != "-" {
-            Button("Copy Peer ID") {
+            Button("Copy Peer ID", systemImage: "doc.on.doc") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(member.peerID, forType: .string)
             }
         }
         if let renameAction {
-            Button("Rename Hostname...") {
+            Button("Rename Hostname...", systemImage: "pencil") {
                 renameAction()
             }
         }
         if let configureAction {
-            Button("Open Config") {
+            Button("Open Config", systemImage: "slider.horizontal.3") {
                 configureAction()
             }
         }
