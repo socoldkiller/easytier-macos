@@ -327,7 +327,7 @@ mod tests {
     fn test_config(domain: &str) -> super::ValidatedGatewayConfig {
         GatewayConfig::parse(
             &serde_json::json!({
-                "schema_version": 3,
+                "schema_version": 4,
                 "storage_dir": "/tmp/easytier-local-dns-test",
                 "listeners": {
                     "http": "127.0.0.1:0",
@@ -341,7 +341,7 @@ mod tests {
                 },
                 "acme": {
                     "directory": { "kind": "letsencrypt_staging" },
-                    "contact_email": null,
+                    "contact_email": "gateway@example.com",
                     "terms_of_service_agreed": true
                 },
                 "certificates": [{

@@ -1263,7 +1263,7 @@ mod tests {
 
         let temp = tempfile::tempdir().unwrap();
         let mut config = serde_json::json!({
-            "schema_version": 3,
+            "schema_version": 4,
             "storage_dir": temp.path().join("gateway"),
             "listeners": {
                 "http": "127.0.0.1:0",
@@ -1284,7 +1284,7 @@ mod tests {
             "routes": []
         });
         let secrets = serde_json::json!({
-            "schema_version": 3,
+            "schema_version": 4,
             "cloudflare": {
                 "cf-main": { "api_token": "super-secret-cloudflare-token" }
             }

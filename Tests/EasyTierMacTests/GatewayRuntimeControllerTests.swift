@@ -819,6 +819,11 @@ import Testing
     let saved = try #require(await configurationStore.currentState()?.services.first)
     #expect(saved.targetPeerID == "10")
     #expect(saved.targetInstanceID == "network-a")
+    await waitUntil {
+        let applied = await client.lastAppliedConfiguration()
+        let started = await client.lastStartedConfiguration()
+        return applied != nil || started != nil
+    }
     let appliedRuntime = await client.lastAppliedConfiguration()
     let startedRuntime = await client.lastStartedConfiguration()
     let runtime = try #require(appliedRuntime ?? startedRuntime)

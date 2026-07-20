@@ -5,17 +5,38 @@ import Foundation
 package protocol GatewayFFIRuntimeClient: Sendable {
     func startSync(configuration: GatewayFFIConfiguration) throws
     func applySync(configuration: GatewayFFIConfiguration) throws
+    func startSync(configuration: GatewayFFIConfiguration, secrets: GatewaySecrets) throws
+    func applySync(configuration: GatewayFFIConfiguration, secrets: GatewaySecrets) throws
     func stopSync() throws
     func statusSync() throws -> GatewayStatus
     func requestRenewalSync(certificateID: String?) throws
+}
+
+package extension GatewayFFIRuntimeClient {
+    func startSync(configuration: GatewayFFIConfiguration, secrets: GatewaySecrets) throws {
+        _ = secrets
+        try startSync(configuration: configuration)
+    }
+
+    func applySync(configuration: GatewayFFIConfiguration, secrets: GatewaySecrets) throws {
+        _ = secrets
+        try applySync(configuration: configuration)
+    }
 }
 
 package final class StaticGatewayFFIClient: GatewayFFIRuntimeClient, Sendable {
     package init() {}
 
     package func startSync(configuration: GatewayFFIConfiguration) throws {
+        try startSync(configuration: configuration, secrets: .empty)
+    }
+
+    package func startSync(
+        configuration: GatewayFFIConfiguration,
+        secrets: GatewaySecrets
+    ) throws {
         let configurationJSON = try encode(configuration)
-        let secretsJSON = try encode(GatewaySecrets.empty)
+        let secretsJSON = try encode(secrets)
         var error: UnsafePointer<CChar>?
         let result = configurationJSON.withCString { configurationPointer in
             secretsJSON.withCString { secretsPointer in
@@ -26,10 +47,20 @@ package final class StaticGatewayFFIClient: GatewayFFIRuntimeClient, Sendable {
     }
 
     package func applySync(configuration: GatewayFFIConfiguration) throws {
+        try applySync(configuration: configuration, secrets: .empty)
+    }
+
+    package func applySync(
+        configuration: GatewayFFIConfiguration,
+        secrets: GatewaySecrets
+    ) throws {
         let configurationJSON = try encode(configuration)
+        let secretsJSON = try encode(secrets)
         var error: UnsafePointer<CChar>?
         let result = configurationJSON.withCString { configurationPointer in
-            gateway_apply_config(configurationPointer, nil, &error)
+            secretsJSON.withCString { secretsPointer in
+                gateway_apply_config(configurationPointer, secretsPointer, &error)
+            }
         }
         try Self.throwOnError(result, error: error)
     }

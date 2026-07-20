@@ -27,7 +27,7 @@ struct PublishedServiceCertificatePresentation: Equatable, Sendable {
         renewalAt = Self.date(from: certificate?.nextRenewalAt)
         errorMessage = certificate?.lastError
 
-        guard provider.isSecure else {
+        guard provider != .httpOnly else {
             state = .unavailable
             return
         }

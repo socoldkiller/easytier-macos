@@ -102,11 +102,17 @@ struct ServicesView: View {
                     currentIPv4: row?.proxyIPv4 ?? "—",
                     members: gateway.topologyMembers
                 ),
+                dnsCredentials: gateway.dnsCredentials,
                 sslProvider: row?.sslProvider
                     ?? PublishedServiceSSLProvider(acmeConfiguration: gateway.acmeConfiguration),
                 onConfigureSSL: openGatewaySettings
-            ) { target, port in
-                updateService(target: target, port: port, service: service)
+            ) { target, port, challenge in
+                updateService(
+                    target: target,
+                    port: port,
+                    challenge: challenge,
+                    service: service
+                )
             }
         }
         .alert(
@@ -213,6 +219,7 @@ struct ServicesView: View {
     private func updateService(
         target: PublishedServiceTargetOption,
         port: Int,
+        challenge: GatewayPublishedServiceChallenge,
         service: GatewayPublishedService
     ) {
         perform(service) {
@@ -223,7 +230,8 @@ struct ServicesView: View {
                 targetHostname: target.hostname,
                 magicDNSSuffix: gateway.appliedMagicDNSSuffix
                     ?? store.magicDNSSettings.dnsSuffix,
-                port: port
+                port: port,
+                challenge: challenge
             )
         }
     }

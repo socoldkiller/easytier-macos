@@ -1,4 +1,5 @@
 mod acme;
+mod authority;
 mod config;
 mod local_dns;
 mod proxy;
@@ -32,13 +33,15 @@ use zeroize::Zeroizing;
 pub use config::{GatewayConfig, GatewaySecrets};
 pub use status::GatewayStatusSnapshot;
 
-use acme::{AcmeContext, AcmeJobOutput};
-use config::{ChallengeConfig, GATEWAY_SCHEMA_VERSION, ValidatedGatewayConfig};
+use acme::{AcmeContext, AcmeJobOutput, DnsCredential};
+use config::{DnsProviderKind, GATEWAY_SCHEMA_VERSION, ValidatedGatewayConfig};
 use local_dns::{LocalDnsTable, SharedLocalDnsTable, bind_local_dns, spawn_local_dns};
 use proxy::{
     GatewayProxy, Http01ChallengeStore, SharedRouteTable, build_route_table, spawn_route_resolvers,
 };
-use status::{CertificateState, CertificateStatus, GatewayState, ListenerStatus};
+use status::{
+    CertificateServingMode, CertificateState, CertificateStatus, GatewayState, ListenerStatus,
+};
 use storage::{GatewayStorage, PendingDnsCleanup};
 use tls::{DynamicCertificateStore, build_tls_acceptor};
 
@@ -82,7 +85,7 @@ impl GatewayHandle {
             })
             .transpose()?;
         self.command(|reply| GatewayCommand::Apply {
-            config,
+            config: Box::new(config),
             secrets,
             reply,
         })
@@ -143,6 +146,7 @@ pub fn stopped_status_json() -> Result<String, String> {
 
 struct RuntimeSecrets {
     cloudflare: BTreeMap<String, Zeroizing<String>>,
+    aliyun: BTreeMap<String, (Zeroizing<String>, Zeroizing<String>)>,
 }
 
 impl RuntimeSecrets {
@@ -153,33 +157,64 @@ impl RuntimeSecrets {
                 .into_iter()
                 .map(|(id, secret)| (id, Zeroizing::new(secret.api_token)))
                 .collect(),
+            aliyun: secrets
+                .aliyun
+                .into_iter()
+                .map(|(id, secret)| {
+                    (
+                        id,
+                        (
+                            Zeroizing::new(secret.access_key_id),
+                            Zeroizing::new(secret.access_key_secret),
+                        ),
+                    )
+                })
+                .collect(),
         }
     }
 
     fn validate_references(&self, config: &ValidatedGatewayConfig) -> Result<(), String> {
-        for certificate in config.certificates.values() {
-            if let Some(credential_id) = certificate.challenge.credential_id()
-                && !self.cloudflare.contains_key(credential_id)
-            {
-                return Err(format!(
-                    "certificate {} references missing Cloudflare credential {credential_id}",
-                    certificate.id
-                ));
-            }
-        }
+        let _ = config;
         Ok(())
     }
 
-    fn cloudflare_token(&self, credential_id: &str) -> Option<Zeroizing<String>> {
-        self.cloudflare
-            .get(credential_id)
-            .map(|token| Zeroizing::new(token.as_str().to_string()))
+    fn dns_credential(
+        &self,
+        provider: DnsProviderKind,
+        credential_id: &str,
+    ) -> Option<DnsCredential> {
+        match provider {
+            DnsProviderKind::Cloudflare => {
+                self.cloudflare
+                    .get(credential_id)
+                    .map(|token| DnsCredential::Cloudflare {
+                        api_token: Zeroizing::new(token.as_str().to_string()),
+                    })
+            }
+            DnsProviderKind::Aliyun => {
+                self.aliyun
+                    .get(credential_id)
+                    .map(|(access_key_id, access_key_secret)| DnsCredential::Aliyun {
+                        access_key_id: Zeroizing::new(access_key_id.as_str().to_string()),
+                        access_key_secret: Zeroizing::new(access_key_secret.as_str().to_string()),
+                    })
+            }
+        }
+    }
+
+    fn dns_credential_for_cleanup(&self, cleanup: &PendingDnsCleanup) -> Option<DnsCredential> {
+        let provider = match cleanup.provider.as_str() {
+            "cloudflare" => DnsProviderKind::Cloudflare,
+            "aliyun" => DnsProviderKind::Aliyun,
+            _ => return None,
+        };
+        self.dns_credential(provider, &cleanup.credential_id)
     }
 }
 
 enum GatewayCommand {
     Apply {
-        config: ValidatedGatewayConfig,
+        config: Box<ValidatedGatewayConfig>,
         secrets: Option<RuntimeSecrets>,
         reply: oneshot::Sender<Result<(), String>>,
     },
@@ -264,6 +299,7 @@ impl GatewayInstance {
             match storage.load_certificate(&certificate.id, &certificate.domains) {
                 Ok(Some(material)) => {
                     status.state = CertificateState::Active;
+                    status.serving_mode = CertificateServingMode::Https;
                     status.not_before = Some(material.metadata.not_before_rfc3339.clone());
                     status.not_after = Some(material.metadata.not_after_rfc3339.clone());
                     certificates.install(certificate.id.clone(), material);
@@ -277,10 +313,12 @@ impl GatewayInstance {
             certificate_status.insert(certificate.id.clone(), status);
         }
 
-        let mut server_conf = ServerConf::default();
-        server_conf.threads = 1;
-        server_conf.upstream_keepalive_pool_size = 128;
-        server_conf.max_retries = 1;
+        let server_conf = ServerConf {
+            threads: 1,
+            upstream_keepalive_pool_size: 128,
+            max_retries: 1,
+            ..ServerConf::default()
+        };
         let server_conf = Arc::new(server_conf);
         let gateway_proxy =
             GatewayProxy::new(routes.clone(), certificates.clone(), challenges.clone());
@@ -405,7 +443,7 @@ impl GatewayInstance {
                             secrets,
                             reply,
                         } => {
-                            let result = self.apply(config, secrets).await;
+                            let result = self.apply(*config, secrets).await;
                             let _ = reply.send(result);
                         }
                         GatewayCommand::Renew {
@@ -495,6 +533,7 @@ impl GatewayInstance {
                             domains: certificate.domains.clone(),
                             challenge: certificate.challenge.kind().to_string(),
                             state: CertificateState::Active,
+                            serving_mode: CertificateServingMode::Https,
                             not_before: Some(material.metadata.not_before_rfc3339.clone()),
                             not_after: Some(material.metadata.not_after_rfc3339.clone()),
                             next_renewal_at: None,
@@ -606,23 +645,13 @@ impl GatewayInstance {
             let Some(certificate) = self.config.certificates.get(&certificate_id).cloned() else {
                 continue;
             };
-            let cloudflare_token = match &certificate.challenge {
-                ChallengeConfig::Http01 => None,
-                ChallengeConfig::Dns01 { credential_id, .. } => {
-                    match self.secrets.cloudflare_token(credential_id) {
-                        Some(token) => Some(token),
-                        None => {
-                            self.record_issuance_failure(
-                                &certificate_id,
-                                format!(
-                                    "Cloudflare credential {credential_id} is unavailable for certificate {certificate_id}"
-                                ),
-                            );
-                            continue;
-                        }
-                    }
-                }
-            };
+            let dns_credential =
+                certificate
+                    .challenge
+                    .dns01()
+                    .and_then(|(provider, credential_id)| {
+                        self.secrets.dns_credential(provider, credential_id)
+                    });
 
             let current = self.certificates.get(&certificate_id);
             let current_leaf_der = current
@@ -644,12 +673,7 @@ impl GatewayInstance {
             let cancellation = self.shutdown.subscribe();
             self.background_tasks.push(tokio::spawn(async move {
                 let output = acme
-                    .issue(
-                        certificate,
-                        cloudflare_token,
-                        current_leaf_der,
-                        cancellation,
-                    )
+                    .issue(certificate, dns_credential, current_leaf_der, cancellation)
                     .await;
                 let _ = events.send(AcmeEvent::JobFinished(output));
             }));
@@ -662,12 +686,12 @@ impl GatewayInstance {
         }
 
         let attempted = self.pending_cleanups.clone();
-        let tokens = attempted
+        let credentials = attempted
             .iter()
             .filter_map(|cleanup| {
                 self.secrets
-                    .cloudflare_token(&cleanup.credential_id)
-                    .map(|token| (cleanup.credential_id.clone(), token))
+                    .dns_credential_for_cleanup(cleanup)
+                    .map(|credential| (cleanup.credential_id.clone(), credential))
             })
             .collect::<BTreeMap<_, _>>();
         let acme = self.acme.clone();
@@ -679,15 +703,12 @@ impl GatewayInstance {
             let mut remaining = Vec::new();
             let mut last_error = None;
             for cleanup in attempted {
-                let result = match cleanup.provider.as_str() {
-                    "cloudflare" => match tokens.get(&cleanup.credential_id) {
-                        Some(token) => acme.retry_cleanup(&cleanup, token.as_str()).await,
-                        None => Err(format!(
-                            "Cloudflare credential {} is unavailable for DNS cleanup {}",
-                            cleanup.credential_id, cleanup.record_name
-                        )),
-                    },
-                    provider => Err(format!("unsupported DNS cleanup provider {provider}")),
+                let result = match credentials.get(&cleanup.credential_id) {
+                    Some(credential) => acme.retry_cleanup(&cleanup, credential).await,
+                    None => Err(format!(
+                        "DNS credential {} is unavailable for cleanup {}",
+                        cleanup.credential_id, cleanup.record_name
+                    )),
                 };
                 if let Err(error) = result {
                     last_error = Some(error);
@@ -744,6 +765,7 @@ impl GatewayInstance {
                             self.certificate_status.get_mut(&output.certificate_id)
                         {
                             status.state = CertificateState::Active;
+                            status.serving_mode = CertificateServingMode::Https;
                             status.not_before = Some(material.metadata.not_before_rfc3339.clone());
                             status.not_after = Some(material.metadata.not_after_rfc3339.clone());
                             status.last_error = None;
@@ -870,11 +892,23 @@ impl GatewayInstance {
             + time::Duration::try_from(retry_delay(*attempt)).unwrap_or(time::Duration::hours(6));
         self.set_renewal_time(certificate_id, retry_at);
         if let Some(status) = self.certificate_status.get_mut(certificate_id) {
-            status.state = if self.certificates.get(certificate_id).is_some() {
+            let now = OffsetDateTime::now_utc();
+            let has_certificate = self
+                .certificates
+                .get(certificate_id)
+                .is_some_and(|material| material.metadata.not_after > now);
+            if !has_certificate {
+                self.certificates.remove(certificate_id);
+            }
+            status.state = if has_certificate {
                 CertificateState::Degraded
             } else {
                 CertificateState::Failed
             };
+            if !has_certificate {
+                status.serving_mode = CertificateServingMode::HttpOnly;
+                self.certificates.mark_http_only(certificate_id);
+            }
             status.last_error = Some(error);
         }
     }
@@ -1188,7 +1222,7 @@ mod tests {
         runtime.block_on(async {
             let temp = tempfile::tempdir().unwrap();
             let config = json!({
-                "schema_version": 3,
+                "schema_version": 4,
                 "storage_dir": temp.path().join("gateway"),
                 "listeners": {
                     "http": "127.0.0.1:0",
@@ -1245,6 +1279,7 @@ mod tests {
                         .collect::<Vec<_>>(),
                     &certificate_pem,
                     &private_key_pem,
+                    "letsencrypt",
                 )
                 .unwrap();
 
@@ -1420,6 +1455,7 @@ mod tests {
                     &[domain.to_string()],
                     &certificate_pem,
                     &private_key_pem,
+                    "letsencrypt",
                 )
                 .unwrap();
 
@@ -1474,7 +1510,7 @@ mod tests {
         https_listener: &str,
     ) -> Value {
         json!({
-            "schema_version": 3,
+            "schema_version": 4,
             "storage_dir": storage_dir,
             "listeners": {
                 "http": http_listener,
@@ -1488,7 +1524,7 @@ mod tests {
             },
             "acme": {
                 "directory": { "kind": "letsencrypt_staging" },
-                "contact_email": null,
+                "contact_email": "gateway@example.com",
                 "terms_of_service_agreed": true
             },
             "certificates": [{
@@ -1512,7 +1548,7 @@ mod tests {
     }
 
     fn empty_secrets() -> Value {
-        json!({ "schema_version": 3, "cloudflare": {} })
+        json!({ "schema_version": 4, "cloudflare": {}, "aliyun": {} })
     }
 
     fn test_certificate(domains: &[&str]) -> (String, String, CertificateDer<'static>) {

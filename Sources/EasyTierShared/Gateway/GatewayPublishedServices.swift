@@ -41,7 +41,7 @@ package enum GatewayPublishedServicesValidator {
         var normalized = state
         if var acme = state.acmeAccount {
             guard acme.directory == .letsencryptProduction else {
-                throw invalid("Published Services supports only Let's Encrypt Production.")
+                throw invalid("Published Services requires the production automatic certificate service.")
             }
             if let email = acme.contactEmail {
                 let email = email.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -52,6 +52,17 @@ package enum GatewayPublishedServicesValidator {
             }
             normalized.acmeAccount = acme
         }
+
+        var credentialIDs = Set<String>()
+        normalized.dnsCredentials = try state.dnsCredentials.map { credential in
+            var credential = credential
+            credential.id = try required(credential.id, field: "DNS credential ID")
+            credential.label = try required(credential.label, field: "DNS credential name")
+            guard credentialIDs.insert(credential.id).inserted else {
+                throw invalid("Duplicate DNS credential ID \(credential.id).")
+            }
+            return credential
+        }.sorted { $0.label.localizedStandardCompare($1.label) == .orderedAscending }
 
         if let cidr = state.lastKnownNetworkIPv4CIDR {
             normalized.lastKnownNetworkIPv4CIDR = try normalizeIPv4CIDR(cidr)
@@ -96,6 +107,18 @@ package enum GatewayPublishedServicesValidator {
                 throw invalid("Duplicate public hostname \(publicHostname).")
             }
             service.publicHostname = publicHostname
+            switch service.challenge {
+            case let .automatic(dnsCredentialID):
+                if let dnsCredentialID, !credentialIDs.contains(dnsCredentialID) {
+                    throw invalid("Service references an unknown DNS credential.")
+                }
+            case .http01:
+                break
+            case let .dns01(credentialID):
+                guard credentialIDs.contains(credentialID) else {
+                    throw invalid("Service references an unknown DNS credential.")
+                }
+            }
             networkIDs.insert(service.networkConfigID)
             return service
         }.sorted { $0.publicHostname < $1.publicHostname }
@@ -110,7 +133,10 @@ package enum GatewayPublishedServicesValidator {
 
         if normalized.hasEnabledServices {
             guard let acme = normalized.acmeAccount, acme.termsOfServiceAgreed else {
-                throw invalid("Accept the ACME terms of service before enabling a service.")
+                throw invalid("Accept the certificate service terms before enabling a service.")
+            }
+            guard acme.contactEmail != nil else {
+                throw invalid("Enter a certificate contact email before enabling a service.")
             }
         }
         return normalized
@@ -237,7 +263,10 @@ package enum GatewayConfigurationFactory {
                     GatewayCertificateConfiguration(
                         id: service.id,
                         domains: [service.publicHostname],
-                        challenge: .http01
+                        challenge: try runtimeChallenge(
+                            service.challenge,
+                            credentials: state.dnsCredentials
+                        )
                     )
                 },
                 routes: enabledServices.map { service in
@@ -262,5 +291,46 @@ package enum GatewayConfigurationFactory {
                 localDomains: enabledServices.map(\.publicHostname)
             )
         )
+    }
+
+    private static func runtimeChallenge(
+        _ challenge: GatewayPublishedServiceChallenge,
+        credentials: [GatewayDNSCredentialDescriptor]
+    ) throws -> GatewayChallengeConfiguration {
+        switch challenge {
+        case let .automatic(dnsCredentialID):
+            guard let dnsCredentialID else {
+                return .automatic(dns01: nil)
+            }
+            let credential = try credential(id: dnsCredentialID, in: credentials)
+            return .automatic(
+                dns01: GatewayDNS01Configuration(
+                    provider: credential.provider,
+                    credentialID: credential.id
+                )
+            )
+        case .http01:
+            return .http01
+        case let .dns01(credentialID):
+            let credential = try credential(id: credentialID, in: credentials)
+            return .dns01(
+                GatewayDNS01Configuration(
+                    provider: credential.provider,
+                    credentialID: credential.id
+                )
+            )
+        }
+    }
+
+    private static func credential(
+        id: String,
+        in credentials: [GatewayDNSCredentialDescriptor]
+    ) throws -> GatewayDNSCredentialDescriptor {
+        guard let credential = credentials.first(where: { $0.id == id }) else {
+            throw GatewayConfigurationValidationError.invalid(
+                "Published service references an unknown DNS credential."
+            )
+        }
+        return credential
     }
 }

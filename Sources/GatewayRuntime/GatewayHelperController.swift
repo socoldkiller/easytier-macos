@@ -103,6 +103,7 @@ package final class GatewayHelperController: @unchecked Sendable {
     private var attachedSessionIDs = Set<UUID>()
     private var currentConfiguration: GatewayConfiguration?
     private var currentFFIConfiguration: GatewayFFIConfiguration?
+    private var currentSecrets: GatewaySecrets?
     private var retainsRuntimeAfterDisconnect = false
     private var leaseGeneration: UInt64 = 0
     private var leaseCancellation: (any GatewayLeaseCancellation)?
@@ -137,7 +138,22 @@ package final class GatewayHelperController: @unchecked Sendable {
         self.idleExitHandler = idleExitHandler
     }
 
-    package func start(configurationJSON: String, session: GatewayHelperSession) async throws {
+    package func start(
+        configurationJSON: String,
+        session: GatewayHelperSession
+    ) async throws {
+        try await start(
+            configurationJSON: configurationJSON,
+            secretsJSON: try Self.emptySecretsJSON(),
+            session: session
+        )
+    }
+
+    package func start(
+        configurationJSON: String,
+        secretsJSON: String,
+        session: GatewayHelperSession
+    ) async throws {
         try await perform { [self] in
             if resolverStartupError != nil {
                 resolverStartupError = Self.cleanStaleResolvers(using: resolverConfigurator)
@@ -146,6 +162,7 @@ package final class GatewayHelperController: @unchecked Sendable {
                 throw GatewayHelperControllerError.resolverConfigurationFailed(resolverStartupError)
             }
             let configuration = try decodeAndValidate(configurationJSON)
+            let secrets = try decodeSecrets(secretsJSON)
             try attach(session, claimingOwnership: true)
             let ffiConfiguration: GatewayFFIConfiguration
             do {
@@ -163,7 +180,8 @@ package final class GatewayHelperController: @unchecked Sendable {
             do {
                 try reconcileStart(
                     configuration: configuration,
-                    ffiConfiguration: ffiConfiguration
+                    ffiConfiguration: ffiConfiguration,
+                    secrets: secrets
                 )
             } catch {
                 if currentConfiguration == nil {
@@ -174,17 +192,34 @@ package final class GatewayHelperController: @unchecked Sendable {
         }
     }
 
-    package func apply(configurationJSON: String, session: GatewayHelperSession) async throws {
+    package func apply(
+        configurationJSON: String,
+        session: GatewayHelperSession
+    ) async throws {
+        try await apply(
+            configurationJSON: configurationJSON,
+            secretsJSON: try Self.emptySecretsJSON(),
+            session: session
+        )
+    }
+
+    package func apply(
+        configurationJSON: String,
+        secretsJSON: String,
+        session: GatewayHelperSession
+    ) async throws {
         try await perform { [self] in
             guard currentConfiguration != nil else {
                 throw GatewayHelperControllerError.notRunning
             }
             let configuration = try decodeAndValidate(configurationJSON)
+            let secrets = try decodeSecrets(secretsJSON)
             try attach(session, claimingOwnership: false)
             let ffiConfiguration = try makeFFIConfiguration(configuration, userID: session.userID)
             try applyOrRestart(
                 configuration: configuration,
-                ffiConfiguration: ffiConfiguration
+                ffiConfiguration: ffiConfiguration,
+                secrets: secrets
             )
         }
     }
@@ -277,6 +312,21 @@ package final class GatewayHelperController: @unchecked Sendable {
         }
     }
 
+    private func decodeSecrets(_ json: String) throws -> GatewaySecrets {
+        dispatchPrecondition(condition: .onQueue(queue))
+        return try JSONDecoder().decode(GatewaySecrets.self, from: Data(json.utf8))
+    }
+
+    private static func emptySecretsJSON() throws -> String {
+        let data = try JSONEncoder().encode(GatewaySecrets.empty)
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw GatewayHelperControllerError.invalidConfiguration(
+                "Failed to encode empty Gateway secrets"
+            )
+        }
+        return json
+    }
+
     private func makeFFIConfiguration(
         _ configuration: GatewayConfiguration,
         userID: uid_t
@@ -323,13 +373,15 @@ package final class GatewayHelperController: @unchecked Sendable {
 
     private func reconcileStart(
         configuration: GatewayConfiguration,
-        ffiConfiguration: GatewayFFIConfiguration
+        ffiConfiguration: GatewayFFIConfiguration,
+        secrets: GatewaySecrets
     ) throws {
         dispatchPrecondition(condition: .onQueue(queue))
         guard let currentConfiguration else {
-            try ffi.startSync(configuration: ffiConfiguration)
+            try ffi.startSync(configuration: ffiConfiguration, secrets: secrets)
             self.currentConfiguration = configuration
             currentFFIConfiguration = ffiConfiguration
+            currentSecrets = secrets
             do {
                 try synchronizeResolvers(for: configuration)
             } catch {
@@ -355,24 +407,30 @@ package final class GatewayHelperController: @unchecked Sendable {
             }
             return
         }
-        guard currentConfiguration != configuration else { return }
-        try applyOrRestart(configuration: configuration, ffiConfiguration: ffiConfiguration)
+        guard currentConfiguration != configuration || currentSecrets != secrets else { return }
+        try applyOrRestart(
+            configuration: configuration,
+            ffiConfiguration: ffiConfiguration,
+            secrets: secrets
+        )
     }
 
     private func applyOrRestart(
         configuration: GatewayConfiguration,
-        ffiConfiguration: GatewayFFIConfiguration
+        ffiConfiguration: GatewayFFIConfiguration,
+        secrets: GatewaySecrets
     ) throws {
         dispatchPrecondition(condition: .onQueue(queue))
         guard let previousConfiguration = currentConfiguration,
-              let previousFFIConfiguration = currentFFIConfiguration
+              let previousFFIConfiguration = currentFFIConfiguration,
+              let previousSecrets = currentSecrets
         else {
             throw GatewayHelperControllerError.notRunning
         }
-        guard previousConfiguration != configuration else { return }
+        guard previousConfiguration != configuration || previousSecrets != secrets else { return }
 
         if previousConfiguration.acme.directory == configuration.acme.directory {
-            try ffi.applySync(configuration: ffiConfiguration)
+            try ffi.applySync(configuration: ffiConfiguration, secrets: secrets)
             do {
                 try synchronizeResolvers(for: configuration)
             } catch {
@@ -380,7 +438,8 @@ package final class GatewayHelperController: @unchecked Sendable {
                 do {
                     try restoreRuntime(
                         configuration: previousConfiguration,
-                        ffiConfiguration: previousFFIConfiguration
+                        ffiConfiguration: previousFFIConfiguration,
+                        secrets: previousSecrets
                     )
                 } catch {
                     clearRuntimeStateAfterFailedRollback()
@@ -393,27 +452,30 @@ package final class GatewayHelperController: @unchecked Sendable {
             }
             currentConfiguration = configuration
             currentFFIConfiguration = ffiConfiguration
+            currentSecrets = secrets
             return
         }
 
         try ffi.stopSync()
         var newRuntimeStarted = false
         do {
-            try ffi.startSync(configuration: ffiConfiguration)
+            try ffi.startSync(configuration: ffiConfiguration, secrets: secrets)
             newRuntimeStarted = true
             try synchronizeResolvers(for: configuration)
             currentConfiguration = configuration
             currentFFIConfiguration = ffiConfiguration
+            currentSecrets = secrets
         } catch {
             let newConfigurationError = error.localizedDescription
             if newRuntimeStarted {
                 try? ffi.stopSync()
             }
             do {
-                try ffi.startSync(configuration: previousFFIConfiguration)
+                try ffi.startSync(configuration: previousFFIConfiguration, secrets: previousSecrets)
                 try synchronizeResolvers(for: previousConfiguration)
                 currentConfiguration = previousConfiguration
                 currentFFIConfiguration = previousFFIConfiguration
+                currentSecrets = previousSecrets
                 throw GatewayHelperControllerError.restartFailed(
                     newConfiguration: newConfigurationError,
                     rollback: "Previous configuration was restored."
@@ -512,17 +574,18 @@ package final class GatewayHelperController: @unchecked Sendable {
 
     private func restoreRuntime(
         configuration: GatewayConfiguration,
-        ffiConfiguration: GatewayFFIConfiguration
+        ffiConfiguration: GatewayFFIConfiguration,
+        secrets: GatewaySecrets
     ) throws {
         dispatchPrecondition(condition: .onQueue(queue))
         do {
-            try ffi.applySync(configuration: ffiConfiguration)
+            try ffi.applySync(configuration: ffiConfiguration, secrets: secrets)
             try synchronizeResolvers(for: configuration)
         } catch {
             let hotRollbackError = error.localizedDescription
             try? ffi.stopSync()
             do {
-                try ffi.startSync(configuration: ffiConfiguration)
+                try ffi.startSync(configuration: ffiConfiguration, secrets: secrets)
                 try synchronizeResolvers(for: configuration)
             } catch {
                 throw GatewayHelperControllerError.restartFailed(
@@ -533,6 +596,7 @@ package final class GatewayHelperController: @unchecked Sendable {
         }
         currentConfiguration = configuration
         currentFFIConfiguration = ffiConfiguration
+        currentSecrets = secrets
     }
 
     private func clearRuntimeStateAfterFailedRollback() {
@@ -552,6 +616,7 @@ package final class GatewayHelperController: @unchecked Sendable {
         dispatchPrecondition(condition: .onQueue(queue))
         currentConfiguration = nil
         currentFFIConfiguration = nil
+        currentSecrets = nil
         ownerUserID = nil
         retainsRuntimeAfterDisconnect = false
         attachedSessionIDs.removeAll()

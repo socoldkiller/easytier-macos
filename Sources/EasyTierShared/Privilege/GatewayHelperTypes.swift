@@ -4,7 +4,7 @@ package enum GatewayPrivilegedHelperConstants {
     package static let bundleIdentifier = "com.coldkiller.gateway.helper"
     package static let machServiceName = "com.coldkiller.gateway.helper"
     package static let launchDaemonPlistName = "com.coldkiller.gateway.helper.plist"
-    package static let protocolVersion = "4"
+    package static let protocolVersion = "5"
     package static let pingPayload = "pong:\(protocolVersion)"
 }
 
@@ -62,8 +62,16 @@ package struct GatewayHelperBuildInfo: Codable, Equatable, Sendable {
 package protocol GatewayPrivilegedServiceProtocol {
     func ping(reply: @escaping (String?, String?) -> Void)
     func buildInfo(reply: @escaping (String?, String?) -> Void)
-    func start(configurationJSON: String, reply: @escaping (String?, String?) -> Void)
-    func apply(configurationJSON: String, reply: @escaping (String?, String?) -> Void)
+    func start(
+        configurationJSON: String,
+        secretsJSON: String,
+        reply: @escaping (String?, String?) -> Void
+    )
+    func apply(
+        configurationJSON: String,
+        secretsJSON: String,
+        reply: @escaping (String?, String?) -> Void
+    )
     func stop(reply: @escaping (String?, String?) -> Void)
     func status(reply: @escaping (String?, String?) -> Void)
     func requestRenewal(certificateID: String?, reply: @escaping (String?, String?) -> Void)

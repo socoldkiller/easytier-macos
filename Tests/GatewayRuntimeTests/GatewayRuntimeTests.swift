@@ -140,6 +140,33 @@ struct StaticGatewayFFITests {
     #expect(!FileManager.default.fileExists(atPath: resolverRoot.appendingPathComponent("web.a.et.net").path))
 }
 
+@Test func helperControllerForwardsSecretChangesWithoutAConfigurationChange() async throws {
+    let fixture = GatewayHelperFixture()
+    defer { fixture.cleanup() }
+    let session = GatewayHelperSession(userID: 501)
+    let configurationJSON = encode(gatewayRuntimeTestConfiguration())
+    let firstSecrets = GatewaySecrets(
+        cloudflare: ["main": GatewayCloudflareSecret(apiToken: "first-token")]
+    )
+    let updatedSecrets = GatewaySecrets(
+        cloudflare: ["main": GatewayCloudflareSecret(apiToken: "updated-token")]
+    )
+
+    try await fixture.controller.start(
+        configurationJSON: configurationJSON,
+        secretsJSON: try encodeSecrets(firstSecrets),
+        session: session
+    )
+    try await fixture.controller.apply(
+        configurationJSON: configurationJSON,
+        secretsJSON: try encodeSecrets(updatedSecrets),
+        session: session
+    )
+
+    #expect(Array(fixture.ffi.callNames().prefix(2)) == ["start", "apply"])
+    #expect(fixture.ffi.forwardedSecrets() == [firstSecrets, updatedSecrets])
+}
+
 @Test func helperControllerStopsRuntimeWhenResolverActivationFails() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("GatewayResolverRollbackTests", isDirectory: true)
@@ -459,6 +486,7 @@ private final class FakeGatewayFFI: GatewayFFIRuntimeClient, Sendable {
         var calls: [String] = []
         var starts: [GatewayFFIConfiguration] = []
         var current: GatewayFFIConfiguration?
+        var secrets: [GatewaySecrets] = []
         var startFailuresRemaining = 0
         var stopFailuresRemaining = 0
     }
@@ -466,9 +494,17 @@ private final class FakeGatewayFFI: GatewayFFIRuntimeClient, Sendable {
     private let state = Mutex(State())
 
     func startSync(configuration: GatewayFFIConfiguration) throws {
+        try startSync(configuration: configuration, secrets: .empty)
+    }
+
+    func startSync(
+        configuration: GatewayFFIConfiguration,
+        secrets: GatewaySecrets
+    ) throws {
         try state.withLock { state in
             state.calls.append("start")
             state.starts.append(configuration)
+            state.secrets.append(secrets)
             if state.startFailuresRemaining > 0 {
                 state.startFailuresRemaining -= 1
                 throw FakeGatewayError.startFailed
@@ -479,9 +515,17 @@ private final class FakeGatewayFFI: GatewayFFIRuntimeClient, Sendable {
     }
 
     func applySync(configuration: GatewayFFIConfiguration) throws {
+        try applySync(configuration: configuration, secrets: .empty)
+    }
+
+    func applySync(
+        configuration: GatewayFFIConfiguration,
+        secrets: GatewaySecrets
+    ) throws {
         state.withLock { state in
             state.calls.append("apply")
             state.current = configuration
+            state.secrets.append(secrets)
         }
     }
 
@@ -522,6 +566,10 @@ private final class FakeGatewayFFI: GatewayFFIRuntimeClient, Sendable {
 
     func startConfigurations() -> [GatewayFFIConfiguration] {
         state.withLock { $0.starts }
+    }
+
+    func forwardedSecrets() -> [GatewaySecrets] {
+        state.withLock { $0.secrets }
     }
 
     func failNextStarts(_ count: Int) {
@@ -624,5 +672,10 @@ private func gatewayRuntimePublishedConfiguration(domain: String) -> GatewayConf
 
 private func encode(_ configuration: GatewayConfiguration) -> String {
     let data = try! JSONEncoder().encode(configuration)
+    return String(decoding: data, as: UTF8.self)
+}
+
+private func encodeSecrets(_ secrets: GatewaySecrets) throws -> String {
+    let data = try JSONEncoder().encode(secrets)
     return String(decoding: data, as: UTF8.self)
 }

@@ -490,17 +490,22 @@ impl ProxyHttp for GatewayProxy {
             return Ok(false);
         }
 
-        let is_loopback = session
-            .as_downstream()
-            .client_addr()
-            .and_then(|address| address.as_inet())
-            .is_some_and(|address| address.ip().is_loopback());
-        if !is_loopback {
-            respond_text(session, StatusCode::NOT_FOUND, "not found").await?;
-            return Ok(true);
-        }
-
         if !self.certificates.has_certificate_for_domain(&host) {
+            if self.certificates.is_http_only_for_domain(&host) {
+                let Some(address) = route.address_for_request().await else {
+                    respond_with_headers(
+                        session,
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "Target is unavailable".to_string(),
+                        &[("Retry-After", "5")],
+                    )
+                    .await?;
+                    return Ok(true);
+                };
+                context.upstream_address = Some(address);
+                context.route = Some(route);
+                return Ok(false);
+            }
             respond_with_headers(
                 session,
                 StatusCode::SERVICE_UNAVAILABLE,

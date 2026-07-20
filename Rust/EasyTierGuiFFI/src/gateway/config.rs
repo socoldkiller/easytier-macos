@@ -8,7 +8,7 @@ use http::HeaderValue;
 use serde::{Deserialize, Serialize};
 use url::{Host, Url};
 
-pub const GATEWAY_SCHEMA_VERSION: u32 = 3;
+pub const GATEWAY_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -50,18 +50,16 @@ pub struct AcmeConfig {
     pub terms_of_service_agreed: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AcmeDirectoryConfig {
+    #[default]
     LetsencryptStaging,
     LetsencryptProduction,
-    Custom { url: String, ca_cert_path: PathBuf },
-}
-
-impl Default for AcmeDirectoryConfig {
-    fn default() -> Self {
-        Self::LetsencryptStaging
-    }
+    Custom {
+        url: String,
+        ca_cert_path: PathBuf,
+    },
 }
 
 impl AcmeDirectoryConfig {
@@ -89,9 +87,13 @@ pub struct CertificateConfig {
     pub challenge: ChallengeConfig,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ChallengeConfig {
+    Automatic {
+        #[serde(default)]
+        dns01: Option<Dns01Config>,
+    },
     Http01,
     Dns01 {
         provider: DnsProviderKind,
@@ -99,26 +101,41 @@ pub enum ChallengeConfig {
     },
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Dns01Config {
+    pub provider: DnsProviderKind,
+    pub credential_id: String,
+}
+
 impl ChallengeConfig {
     pub fn kind(&self) -> &'static str {
         match self {
+            Self::Automatic { .. } => "automatic",
             Self::Http01 => "http01",
             Self::Dns01 { .. } => "dns01",
         }
     }
 
-    pub fn credential_id(&self) -> Option<&str> {
+    pub fn dns01(&self) -> Option<(DnsProviderKind, &str)> {
         match self {
-            Self::Http01 => None,
-            Self::Dns01 { credential_id, .. } => Some(credential_id),
+            Self::Automatic { dns01: Some(dns01) } => {
+                Some((dns01.provider, dns01.credential_id.as_str()))
+            }
+            Self::Dns01 {
+                provider,
+                credential_id,
+            } => Some((*provider, credential_id.as_str())),
+            Self::Automatic { dns01: None } | Self::Http01 => None,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum DnsProviderKind {
     Cloudflare,
+    Aliyun,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -155,12 +172,21 @@ pub struct GatewaySecrets {
     pub schema_version: u32,
     #[serde(default)]
     pub cloudflare: BTreeMap<String, CloudflareSecret>,
+    #[serde(default)]
+    pub aliyun: BTreeMap<String, AliyunSecret>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CloudflareSecret {
     pub api_token: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AliyunSecret {
+    pub access_key_id: String,
+    pub access_key_secret: String,
 }
 
 #[derive(Clone, Debug)]
@@ -239,8 +265,15 @@ impl GatewayConfig {
         if !self.storage_dir.is_absolute() {
             return Err("storage_dir must be an absolute path".to_string());
         }
-        if !self.certificates.is_empty() && !self.acme.terms_of_service_agreed {
-            return Err("acme.terms_of_service_agreed must be true".to_string());
+        if !self.certificates.is_empty() {
+            if !self.acme.terms_of_service_agreed {
+                return Err("acme.terms_of_service_agreed must be true".to_string());
+            }
+            if self.acme.contact_email.is_none() {
+                return Err(
+                    "acme.contact_email is required when certificates are enabled".to_string(),
+                );
+            }
         }
         if let Some(email) = self.acme.contact_email.as_deref() {
             validate_email(email)?;
@@ -298,6 +331,17 @@ impl GatewayConfig {
                 }
                 ChallengeConfig::Dns01 { credential_id, .. } => {
                     validate_identifier(credential_id, "credential id")?;
+                }
+                ChallengeConfig::Automatic { dns01 } => {
+                    if domains.iter().any(|domain| domain.starts_with("*.")) && dns01.is_none() {
+                        return Err(format!(
+                            "certificate {} uses Automatic for a wildcard but has no DNS credential",
+                            certificate.id
+                        ));
+                    }
+                    if let Some(dns01) = dns01 {
+                        validate_identifier(&dns01.credential_id, "credential id")?;
+                    }
                 }
                 ChallengeConfig::Http01 => {}
             }
@@ -386,20 +430,22 @@ impl GatewaySecrets {
                 ));
             }
         }
+        for (credential_id, secret) in &secrets.aliyun {
+            validate_identifier(credential_id, "credential id")?;
+            if secret.access_key_id.trim().is_empty() || secret.access_key_secret.trim().is_empty()
+            {
+                return Err(format!(
+                    "Aliyun credential {credential_id} has an empty access key field"
+                ));
+            }
+        }
         Ok(secrets)
     }
 
     pub fn validate_references(&self, config: &ValidatedGatewayConfig) -> Result<(), String> {
-        for certificate in config.certificates.values() {
-            if let Some(credential_id) = certificate.challenge.credential_id()
-                && !self.cloudflare.contains_key(credential_id)
-            {
-                return Err(format!(
-                    "certificate {} references missing Cloudflare credential {credential_id}",
-                    certificate.id
-                ));
-            }
-        }
+        // Keychain items can be unavailable at launch. ACME treats a missing DNS
+        // credential as an attempt failure and keeps the Gateway in HTTP-only mode.
+        let _ = config;
         Ok(())
     }
 }
@@ -519,10 +565,10 @@ fn parse_upstream(config: &UpstreamConfig) -> Result<ParsedUpstream, String> {
         }
         _ => {}
     }
-    if let (Some(cidr), Some(expected)) = (allowed_ipv4_cidr, config.expected_ipv4) {
-        if !cidr.contains(expected) {
-            return Err("expected_ipv4 must be inside allowed_ipv4_cidr".to_string());
-        }
+    if let (Some(cidr), Some(expected)) = (allowed_ipv4_cidr, config.expected_ipv4)
+        && !cidr.contains(expected)
+    {
+        return Err("expected_ipv4 must be inside allowed_ipv4_cidr".to_string());
     }
 
     Ok(ParsedUpstream {

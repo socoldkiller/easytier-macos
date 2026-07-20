@@ -10,7 +10,7 @@ struct GatewayTLSRequirementBanner: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("SSL Setup Required")
                     .bold()
-                Text("Configure Let’s Encrypt before publishing services.")
+                Text("Configure Automatic HTTPS before publishing services.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

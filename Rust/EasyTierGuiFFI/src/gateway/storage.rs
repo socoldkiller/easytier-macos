@@ -26,6 +26,8 @@ struct StoredCertificateMetadata {
     domains: Vec<String>,
     chain_sha256: String,
     key_sha256: String,
+    #[serde(default = "default_certificate_authority")]
+    authority: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -121,8 +123,13 @@ impl GatewayStorage {
             ));
         }
 
-        CertifiedMaterial::from_pem(&chain, &key, expected_domains)
-            .map(|material| Some(Arc::new(material)))
+        CertifiedMaterial::from_pem_with_authority(
+            &chain,
+            &key,
+            expected_domains,
+            metadata.authority,
+        )
+        .map(|material| Some(Arc::new(material)))
     }
 
     pub fn store_certificate(
@@ -131,11 +138,13 @@ impl GatewayStorage {
         domains: &[String],
         certificate_chain_pem: &str,
         private_key_pem: &str,
+        authority: &str,
     ) -> Result<Arc<CertifiedMaterial>, String> {
-        let material = Arc::new(CertifiedMaterial::from_pem(
+        let material = Arc::new(CertifiedMaterial::from_pem_with_authority(
             certificate_chain_pem,
             private_key_pem,
             domains,
+            authority.to_string(),
         )?);
         let directory = self.certificate_directory(certificate_id);
         create_private_directory(&directory)?;
@@ -144,6 +153,7 @@ impl GatewayStorage {
             domains: domains.to_vec(),
             chain_sha256: sha256_hex(certificate_chain_pem.as_bytes()),
             key_sha256: sha256_hex(private_key_pem.as_bytes()),
+            authority: authority.to_string(),
         };
         let metadata_bytes = serde_json::to_vec_pretty(&metadata)
             .map_err(|error| format!("failed to encode certificate metadata: {error}"))?;
@@ -247,6 +257,10 @@ impl GatewayStorage {
     fn cleanup_journal_path(&self) -> PathBuf {
         self.root.join("dns-cleanup-journal.json")
     }
+}
+
+fn default_certificate_authority() -> String {
+    "letsencrypt".to_string()
 }
 
 fn create_private_directory(path: &Path) -> Result<(), String> {

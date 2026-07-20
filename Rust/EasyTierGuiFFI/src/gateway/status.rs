@@ -85,12 +85,22 @@ pub enum CertificateState {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CertificateServingMode {
+    #[default]
+    PendingHttps,
+    Https,
+    HttpOnly,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct CertificateStatus {
     pub id: String,
     pub domains: Vec<String>,
     pub challenge: String,
     pub state: CertificateState,
+    pub serving_mode: CertificateServingMode,
     pub not_before: Option<String>,
     pub not_after: Option<String>,
     pub next_renewal_at: Option<String>,
@@ -105,6 +115,7 @@ impl CertificateStatus {
             domains,
             challenge,
             state: CertificateState::Pending,
+            serving_mode: CertificateServingMode::PendingHttps,
             not_before: None,
             not_after: None,
             next_renewal_at: None,
