@@ -1,13 +1,13 @@
 import SwiftUI
 
 enum PublishedServiceGridColumn: String, CaseIterable, WorkspaceDataGridColumn {
-    case domain = "Domain"
-    case proxyIPv4 = "Proxy IPv4"
-    case port = "Port"
-    case `protocol` = "Protocol"
+    case service = "Service"
+    case ipv4 = "IPv4"
+    case target = "Target"
     case ssl = "SSL"
-    case status = "Status"
+    case expires = "Expires"
     case lastOnline = "Last Online"
+    case enabled = "Enabled"
     case more = ""
 
     var id: Self { self }
@@ -15,27 +15,27 @@ enum PublishedServiceGridColumn: String, CaseIterable, WorkspaceDataGridColumn {
 
     var minimumWidth: CGFloat {
         switch self {
-        case .domain: 320
-        case .proxyIPv4: 130
-        case .port: 70
-        case .protocol: 80
+        case .service: 324
+        case .ipv4: 142
+        case .target: 248
         case .ssl: 130
-        case .status: 180
-        case .lastOnline: 145
-        case .more: 44
+        case .expires: 162
+        case .lastOnline: 128
+        case .enabled: 88
+        case .more: 58
         }
     }
 
     var idealWidth: CGFloat {
         switch self {
-        case .domain: 380
-        case .proxyIPv4: 150
-        case .port: 80
-        case .protocol: 90
-        case .ssl: 150
-        case .status: 205
-        case .lastOnline: 170
-        case .more: 44
+        case .service: 398
+        case .ipv4: 156
+        case .target: 336
+        case .ssl: 163
+        case .expires: 191
+        case .lastOnline: 182
+        case .enabled: 106
+        case .more: 64
         }
     }
 }

@@ -47,7 +47,7 @@ private struct MemberStatusIdentity: View {
         if let configureAction {
             Button(action: configureAction) {
                 identityContent
-                    .padding(.vertical, 5)
+                    .workspaceDataGridTwoLineContent()
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
             }
@@ -58,11 +58,11 @@ private struct MemberStatusIdentity: View {
             .contextMenu { memberContextMenu }
         } else if renameAction != nil || canPublish {
             identityContent
-                .padding(.vertical, 5)
+                .workspaceDataGridTwoLineContent()
                 .contextMenu { memberContextMenu }
         } else {
             identityContent
-                .padding(.vertical, 5)
+                .workspaceDataGridTwoLineContent()
         }
     }
 
@@ -197,7 +197,7 @@ private struct PublicServerGroupIdentity: View {
                     .lineLimit(1)
             }
         }
-        .padding(.vertical, 5)
+        .workspaceDataGridTwoLineContent()
         .memberIdentityHighlight(isHighlighted: isHighlighted)
     }
 }
@@ -528,24 +528,6 @@ extension String {
     }
 }
 
-private enum IPv4CellMetrics {
-    static let horizontalPadding: CGFloat = 10
-    static let verticalPadding: CGFloat = 6
-    static let trailingReservation: CGFloat = 28
-
-    @MainActor static func width(for value: String) -> CGFloat {
-        let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        let measuredTextWidth = textWidth(for: text.isEmpty ? "255.255.255.255" : text)
-        let targetWidth = measuredTextWidth + horizontalPadding * 2 + trailingReservation
-        return max(ceil(targetWidth), 120)
-    }
-
-    private static func textWidth(for value: String) -> CGFloat {
-        let font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-        return ceil((value as NSString).size(withAttributes: [.font: font]).width)
-    }
-}
-
 extension NetworkMemberStatus {
     var displayedIPv4Address: String {
         let value = copyableIPv4Address ?? virtualIPv4.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -557,9 +539,6 @@ private struct CopyableIPv4Cell: View {
     @Environment(AppContext.self) private var appContext
 
     var member: NetworkMemberStatus
-    @State private var isHovering = false
-    @State private var didCopy = false
-    @State private var copyFeedbackToken = 0
 
     private var store: EasyTierAppStore { appContext.workspace.store }
 
@@ -574,43 +553,7 @@ private struct CopyableIPv4Cell: View {
                 .foregroundStyle(.secondary)
                 .help("Last known IPv4 address while reconnecting")
         } else if let ip = member.copyableIPv4Address {
-            Button {
-                copy(ip)
-            } label: {
-                Text(ip)
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .padding(.trailing, IPv4CellMetrics.trailingReservation)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, IPv4CellMetrics.horizontalPadding)
-                    .padding(.vertical, IPv4CellMetrics.verticalPadding)
-                    .frame(minWidth: IPv4CellMetrics.width(for: ip), alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    .background {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(cellBackground)
-                    }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .strokeBorder(cellBorder, lineWidth: isHovering || didCopy ? 1 : 0)
-                    }
-                    .overlay(alignment: .trailing) {
-                        trailingIndicator
-                            .padding(.trailing, IPv4CellMetrics.horizontalPadding)
-                    }
-            }
-            .buttonStyle(CopyFeedbackButtonStyle())
-            .onHover { hovering in
-                isHovering = hovering
-            }
-            .animation(.easeOut(duration: 0.18), value: didCopy)
-            .help(didCopy ? "Copied \(ip)" : "Copy IP \(ip)")
-            .contextMenu {
-                Button("Copy IP") {
-                    copy(ip)
-                }
+            CopyableIPv4AddressCell(ipv4Address: ip) {
                 if let domain = magicDNSDomain {
                     Button("Copy Domain") {
                         NSPasteboard.general.clearContents()
@@ -618,43 +561,11 @@ private struct CopyableIPv4Cell: View {
                     }
                 }
             }
-            .accessibilityLabel(Text(didCopy ? "Copied IP \(ip)" : "Copy IP \(ip)"))
-            .accessibilityHint(Text("Copies the IPv4 address to the clipboard."))
         } else {
             Text(member.virtualIPv4)
                 .monospacedDigit()
                 .lineLimit(1)
         }
-    }
-
-    private var trailingIndicator: some View {
-        ZStack(alignment: .trailing) {
-            if didCopy {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.green)
-                    .transition(.scale(scale: 0.9).combined(with: .opacity))
-            } else {
-                Image(systemName: isHovering ? "doc.on.doc.fill" : "doc.on.doc")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(isHovering ? Color.accentColor : Color.secondary)
-                    .opacity(isHovering ? 1 : 0.64)
-                    .transition(.opacity)
-            }
-        }
-        .frame(width: 16, alignment: .trailing)
-    }
-
-    private var cellBackground: Color {
-        if didCopy { return EasyTierColors.statusConnected.opacity(0.16) }
-        if isHovering { return Color.accentColor.opacity(0.12) }
-        return Color.secondary.opacity(0.06)
-    }
-
-    private var cellBorder: Color {
-        if didCopy { return EasyTierColors.statusConnected.opacity(0.72) }
-        if isHovering { return Color.accentColor.opacity(0.5) }
-        return Color.clear
     }
 
     private var magicDNSDomain: String? {
@@ -663,35 +574,5 @@ private struct CopyableIPv4Cell: View {
             config: store.selectedConfig,
             settings: store.magicDNSSettings
         )
-    }
-
-    private func copy(_ ip: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(ip, forType: .string)
-        copyFeedbackToken += 1
-        let token = copyFeedbackToken
-
-        withAnimation(.spring(response: 0.22, dampingFraction: 0.74)) {
-            didCopy = true
-        }
-
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(1.35))
-            guard copyFeedbackToken == token else { return }
-            withAnimation(.easeOut(duration: 0.2)) {
-                didCopy = false
-            }
-        }
-    }
-}
-
-private struct CopyFeedbackButtonStyle: ButtonStyle {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(!reduceMotion && configuration.isPressed ? 0.97 : 1)
-            .opacity(configuration.isPressed ? 0.82 : 1)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }

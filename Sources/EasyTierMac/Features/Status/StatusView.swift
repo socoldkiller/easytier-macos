@@ -11,13 +11,13 @@ struct StatusView: View {
     @State private var memberSearchText = ""
     @State private var memberTableIsScrolling = false
     @State private var displayedMembers: [NetworkMemberStatus] = []
-    @State private var publishServiceMember: NetworkMemberStatus?
 
     var highlightedMemberPeerID: String? = nil
     var onRenameLocalHostname: (String) -> Void = { _ in }
     var onRenameRemoteHostname: (NetworkMemberStatus, String) async -> Bool = { _, _ in false }
     var onConfigureLocalMember: () -> Void = {}
     var onConfigureRemoteMember: (NetworkMemberStatus) -> Void = { _ in }
+    var onPublishService: (NetworkMemberStatus) -> Void = { _ in }
 
     private var store: EasyTierAppStore { appContext.workspace.store }
     private var gateway: GatewayRuntimeController { appContext.runtime.gateway }
@@ -95,9 +95,6 @@ struct StatusView: View {
                 }
             }
         }
-        .sheet(item: $publishServiceMember) { member in
-            PublishServiceSheet(member: member)
-        }
     }
 
     @ViewBuilder
@@ -170,9 +167,7 @@ struct StatusView: View {
             onRenameHostname: beginRenamingHostname,
             onConfigureLocalMember: onConfigureLocalMember,
             onConfigureRemoteMember: onConfigureRemoteMember,
-            onPublishService: { member in
-                publishServiceMember = member
-            }
+            onPublishService: onPublishService
         )
     }
 

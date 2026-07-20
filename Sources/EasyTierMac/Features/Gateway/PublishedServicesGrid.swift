@@ -20,7 +20,7 @@ struct PublishedServicesGrid: View {
         WorkspaceDataGrid(
             rows: rows,
             columns: PublishedServiceGridColumn.allCases,
-            minimumRowHeight: 50,
+            minimumRowHeight: 44,
             isScrolling: $isScrolling,
             globalScrolling: $globalScrolling
         ) { row, layout in

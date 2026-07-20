@@ -45,6 +45,12 @@ struct WorkspaceDataGrid<
                     Section {
                         ForEach(rows) { row in
                             rowContent(row, layout)
+                                // Keep row decoration aligned with the table when column widths round differently.
+                                .frame(
+                                    width: layout.tableWidth,
+                                    height: nil,
+                                    alignment: .topLeading
+                                )
                                 .frame(minHeight: minimumRowHeight)
                                 .background {
                                     if !rowOffsets[row.id, default: 0].isMultiple(of: 2) {

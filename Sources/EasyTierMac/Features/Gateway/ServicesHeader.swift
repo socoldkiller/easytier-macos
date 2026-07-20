@@ -3,35 +3,34 @@ import SwiftUI
 struct ServicesHeader: View {
     var gatewayStatus: String
     var gatewayIsInProgress: Bool
-    var serviceCount: Int
-    var liveCount: Int
+    var serviceSummary: String
     var networkName: String
+    var modeLabel: String
 
     var body: some View {
         HStack(spacing: 10) {
             StatusBadge(
+                title: "Network",
+                value: networkName,
+                systemImage: "globe"
+            )
+            StatusBadge(
                 title: "Gateway",
                 value: gatewayStatus,
                 systemImage: "network.badge.shield.half.filled",
-                width: 142,
+                width: 150,
                 showsProgress: gatewayIsInProgress
             )
             StatusBadge(
                 title: "Services",
-                value: serviceCount.formatted(),
+                value: serviceSummary,
                 systemImage: "rectangle.stack",
-                width: 122
+                width: 160
             )
             StatusBadge(
-                title: "Live",
-                value: liveCount.formatted(),
-                systemImage: "checkmark.circle.fill",
-                width: 112
-            )
-            StatusBadge(
-                title: "Network",
-                value: networkName,
-                systemImage: "globe"
+                title: "Mode",
+                value: modeLabel,
+                systemImage: "slider.horizontal.3"
             )
             Spacer(minLength: 0)
         }

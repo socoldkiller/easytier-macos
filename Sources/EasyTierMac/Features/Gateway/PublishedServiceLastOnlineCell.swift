@@ -7,14 +7,8 @@ struct PublishedServiceLastOnlineCell: View {
     var body: some View {
         Group {
             if let lastOnlineAt {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(lastOnlineAt, format: .relative(presentation: .named))
-                        .lineLimit(1)
-                    Text(lastOnlineAt, format: .dateTime.month(.abbreviated).day().hour().minute())
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+                Text(lastOnlineAt, format: .relative(presentation: .named))
+                    .lineLimit(1)
                 .help(lastOnlineAt.formatted(date: .complete, time: .standard))
             } else {
                 Text("—")

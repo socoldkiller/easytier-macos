@@ -60,6 +60,10 @@ struct PublishedServicesDisplayModel: Equatable, Sendable {
                 presentation: presentation,
                 proxyIPv4: resolvedIPv4 ?? "—",
                 sslProvider: sslProvider,
+                certificatePresentation: PublishedServiceCertificatePresentation(
+                    provider: sslProvider,
+                    certificate: certificate
+                ),
                 lastOnlineAt: Self.date(from: route?.lastOnlineAt)
             )
         }
@@ -76,6 +80,14 @@ struct PublishedServicesDisplayModel: Equatable, Sendable {
         if rows.isEmpty { return "services-empty" }
         if searchIsActive, filteredRows.isEmpty { return "services-search-empty" }
         return searchIsActive ? "services-search" : "services-all"
+    }
+
+    var serviceSummary: String {
+        Self.serviceSummary(liveCount: liveCount, serviceCount: rows.count)
+    }
+
+    static func serviceSummary(liveCount: Int, serviceCount: Int) -> String {
+        "\(liveCount) of \(serviceCount) live"
     }
 
     private static func date(from timestamp: String?) -> Date? {

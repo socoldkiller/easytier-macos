@@ -27,6 +27,97 @@ import Testing
     #expect(PublishedServiceSSLProvider.letsEncrypt.urlScheme == "https")
 }
 
+@Test func publishedServiceCertificatePresentationDistinguishesExpiryStates() throws {
+    let now = try Date("2026-07-20T00:00:00Z", strategy: .iso8601)
+    let futureExpiration = try Date("2026-09-21T00:00:00Z", strategy: .iso8601)
+    let soonExpiration = try Date("2026-08-01T00:00:00Z", strategy: .iso8601)
+    let expiredAt = try Date("2026-07-01T00:00:00Z", strategy: .iso8601)
+
+    let future = PublishedServiceCertificatePresentation(
+        provider: .letsEncrypt,
+        certificate: servicesTestCertificate(
+            id: "future",
+            domain: "future.et.net",
+            state: .active,
+            notAfter: "2026-09-21T00:00:00Z"
+        ),
+        now: now
+    )
+    let soon = PublishedServiceCertificatePresentation(
+        provider: .letsEncrypt,
+        certificate: servicesTestCertificate(
+            id: "soon",
+            domain: "soon.et.net",
+            state: .active,
+            notAfter: "2026-08-01T00:00:00Z"
+        ),
+        now: now
+    )
+    let expired = PublishedServiceCertificatePresentation(
+        provider: .letsEncrypt,
+        certificate: servicesTestCertificate(
+            id: "expired",
+            domain: "expired.et.net",
+            state: .active,
+            notAfter: "2026-07-01T00:00:00Z"
+        ),
+        now: now
+    )
+
+    #expect(future.state == .expires(futureExpiration))
+    #expect(future.tone == .positive)
+    #expect(soon.state == .expiresSoon(soonExpiration))
+    #expect(soon.tone == .warning)
+    #expect(expired.state == .expired(expiredAt))
+    #expect(expired.tone == .warning)
+}
+
+@Test func publishedServiceCertificatePresentationHandlesOperationalStates() {
+    let httpOnly = PublishedServiceCertificatePresentation(
+        provider: .httpOnly,
+        certificate: nil
+    )
+    let notIssued = PublishedServiceCertificatePresentation(
+        provider: .letsEncrypt,
+        certificate: nil
+    )
+    let renewing = PublishedServiceCertificatePresentation(
+        provider: .letsEncrypt,
+        certificate: servicesTestCertificate(
+            id: "renewing",
+            domain: "renewing.et.net",
+            state: .renewing
+        )
+    )
+    let failed = PublishedServiceCertificatePresentation(
+        provider: .letsEncrypt,
+        certificate: servicesTestCertificate(
+            id: "failed",
+            domain: "failed.et.net",
+            state: .failed,
+            lastError: "ACME request failed"
+        )
+    )
+    let degraded = PublishedServiceCertificatePresentation(
+        provider: .letsEncrypt,
+        certificate: servicesTestCertificate(
+            id: "degraded",
+            domain: "degraded.et.net",
+            state: .degraded
+        )
+    )
+
+    #expect(httpOnly.state == .unavailable)
+    #expect(httpOnly.label == "—")
+    #expect(notIssued.state == .notIssued)
+    #expect(renewing.state == .renewing)
+    #expect(renewing.label == "Renewing…")
+    #expect(degraded.state == .degraded)
+    #expect(degraded.label == "Delayed")
+    #expect(failed.state == .failed)
+    #expect(failed.helpText == "ACME request failed")
+}
+
 @Test func publishedServiceTargetIPv4UsesTopologyInsteadOfGatewayDNS() {
     let service = servicesTestService(id: "service-a", hostname: "service-a.a.et.net", port: 3_000)
     let member = servicesTestMember(peerID: service.targetPeerID, ipv4: "10.0.0.5/24")
@@ -79,7 +170,7 @@ import Testing
 
     #expect(options.map(\.peerID) == ["peer-a", "peer-b"])
     #expect(options.first?.ipv4 == "10.0.0.5")
-    #expect(options.last?.label == "10.0.0.8 - beta")
+    #expect(options.last?.label == "beta — 10.0.0.8")
 }
 
 @Test func publishedServicePresentationDoesNotReportStaleLiveStateWhileStarting() {
@@ -152,13 +243,105 @@ import Testing
     #expect(display.networkName == "Production")
     #expect(display.rows.count == 2)
     #expect(display.liveCount == 2)
+    #expect(display.serviceSummary == "2 of 2 live")
     #expect(display.filteredRows.map(\.id) == [serviceA.id])
     #expect(display.filteredRows.first?.targetDomain == "alpha.et.net")
     #expect(display.filteredRows.first?.protocolLabel == "HTTP")
+    #expect(display.filteredRows.first?.targetEndpointLabel == "alpha.et.net:3000")
+    #expect(display.filteredRows.first?.targetDetailLabel == "HTTP")
     #expect(display.filteredRows.first?.sslProvider == .letsEncrypt)
     #expect(
         display.filteredRows.first?.lastOnlineAt
             == (try? Date("2026-07-19T10:20:30.123456789Z", strategy: .iso8601))
+    )
+}
+
+@Test(
+    "Service summaries combine live and total counts",
+    arguments: [
+        (0, 0, "0 of 0 live"),
+        (1, 3, "1 of 3 live"),
+        (3, 3, "3 of 3 live"),
+    ]
+)
+func publishedServiceSummary(liveCount: Int, serviceCount: Int, expected: String) {
+    #expect(
+        PublishedServicesDisplayModel.serviceSummary(
+            liveCount: liveCount,
+            serviceCount: serviceCount
+        ) == expected
+    )
+}
+
+@Test func publishedServiceCreationTargetsPreferLocalAndFilterUnavailableMembers() {
+    let members = [
+        servicesTestMember(
+            peerID: "peer-zeta",
+            ipv4: "10.0.0.9/24",
+            hostname: "zeta"
+        ),
+        servicesTestMember(
+            peerID: "peer-offline",
+            ipv4: "10.0.0.8/24",
+            hostname: "offline",
+            availability: .connecting
+        ),
+        servicesTestMember(
+            peerID: "-",
+            ipv4: "10.0.0.7/24",
+            hostname: "invalid"
+        ),
+        servicesTestMember(
+            peerID: "peer-local",
+            ipv4: "",
+            hostname: "local",
+            isLocal: true
+        ),
+        servicesTestMember(
+            peerID: "peer-alpha",
+            ipv4: "10.0.0.2/24",
+            hostname: "alpha"
+        ),
+        servicesTestMember(
+            peerID: "peer-alpha",
+            ipv4: "10.0.0.3/24",
+            hostname: "duplicate"
+        ),
+    ]
+
+    let options = PublishedServiceTargetOption.creationOptions(members: members)
+
+    #expect(options.map(\.peerID) == ["peer-local", "peer-alpha", "peer-zeta"])
+    #expect(options.first?.label == "local — Address unavailable")
+    #expect(options[1].label == "alpha — 10.0.0.2")
+}
+
+@Test func publishedServiceCreationTargetSelectionUsesPreferredThenLocal() {
+    let options = PublishedServiceTargetOption.creationOptions(members: [
+        servicesTestMember(
+            peerID: "peer-remote",
+            ipv4: "10.0.0.2/24",
+            hostname: "remote"
+        ),
+        servicesTestMember(
+            peerID: "peer-local",
+            ipv4: "10.0.0.1/24",
+            hostname: "local",
+            isLocal: true
+        ),
+    ])
+
+    #expect(
+        PublishedServiceTargetOption.initialPeerID(
+            in: options,
+            preferredPeerID: "peer-remote"
+        ) == "peer-remote"
+    )
+    #expect(
+        PublishedServiceTargetOption.initialPeerID(
+            in: options,
+            preferredPeerID: "missing"
+        ) == "peer-local"
     )
 }
 
@@ -170,8 +353,13 @@ import Testing
     #expect(WorkspaceTab.services.systemImage == "network.badge.shield.half.filled")
     #expect(
         PublishedServiceGridColumn.allCases.map(\.title)
-            == ["Domain", "Proxy IPv4", "Port", "Protocol", "SSL", "Status", "Last Online", ""]
+            == ["Service", "IPv4", "Target", "SSL", "Expires", "Last Online", "Enabled", ""]
     )
+    #expect(PublishedServiceGridColumn.service.minimumWidth == 324)
+    #expect(PublishedServiceGridColumn.service.idealWidth == 398)
+    #expect(PublishedServiceGridColumn.ipv4.minimumWidth == 142)
+    #expect(PublishedServiceGridColumn.ipv4.idealWidth == 156)
+    #expect(PublishedServiceGridColumn.target.idealWidth >= 200)
 }
 
 private func servicesTestService(
@@ -198,7 +386,10 @@ private func servicesTestService(
 private func servicesTestCertificate(
     id: String,
     domain: String,
-    state: GatewayCertificateState
+    state: GatewayCertificateState,
+    notAfter: String? = nil,
+    nextRenewalAt: String? = nil,
+    lastError: String? = nil
 ) -> GatewayCertificateStatus {
     GatewayCertificateStatus(
         id: id,
@@ -206,10 +397,10 @@ private func servicesTestCertificate(
         challenge: "http-01",
         state: state,
         notBefore: nil,
-        notAfter: nil,
-        nextRenewalAt: nil,
+        notAfter: notAfter,
+        nextRenewalAt: nextRenewalAt,
         lastAttemptAt: nil,
-        lastError: nil
+        lastError: lastError
     )
 }
 
@@ -252,11 +443,13 @@ private func servicesTestMember(
     peerID: String,
     instanceID: String = "network-a",
     ipv4: String,
-    hostname: String = "target"
+    hostname: String = "target",
+    isLocal: Bool = false,
+    availability: RuntimeMemberAvailability = .online
 ) -> NetworkMemberStatus {
     NetworkMemberStatus(
         id: "peer-\(peerID)",
-        isLocal: false,
+        isLocal: isLocal,
         peerID: peerID,
         instanceID: instanceID,
         virtualIPv4: ipv4,
@@ -272,6 +465,6 @@ private func servicesTestMember(
         isPublicServer: false,
         txBytes: 1_024,
         rxBytes: 2_048,
-        availability: .online
+        availability: availability
     )
 }

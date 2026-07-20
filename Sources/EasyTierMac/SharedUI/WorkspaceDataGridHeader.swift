@@ -20,7 +20,7 @@ struct WorkspaceDataGridHeader<Column: WorkspaceDataGridColumn>: View {
                     }
             }
         }
-        .frame(height: 28)
+        .frame(width: layout.tableWidth, height: 28, alignment: .leading)
         .background(.background.opacity(0.001))
         .overlay(alignment: .bottom) {
             Rectangle()

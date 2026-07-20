@@ -18,7 +18,7 @@ struct GatewayTLSRequirementBanner: View {
             Button("Configure SSL…", systemImage: "gearshape", action: action)
                 .controlSize(.small)
         }
-        .padding(12)
-        .background(.orange.opacity(0.08), in: .rect(cornerRadius: 10))
+        .padding(10)
+        .background(.orange.opacity(0.08), in: .rect(cornerRadius: 8))
     }
 }

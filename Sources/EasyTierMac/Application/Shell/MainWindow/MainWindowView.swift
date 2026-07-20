@@ -24,6 +24,7 @@ struct MainWindowView: View {
     @State private var selectedConfigIDLocal: String?
     @State private var showingDeleteRunningNetworkConfirmation = false
     @State private var configEditorScrolledPastTop = false
+    @State private var publishServiceRequest: PublishServiceRequest?
 
     private static let tabTransitionDistance: CGFloat = 14
     private static let networkTransitionDistance: CGFloat = 7
@@ -31,6 +32,7 @@ struct MainWindowView: View {
     private static let sidebarTopClearance: CGFloat = 8
 
     private var store: EasyTierAppStore { appContext.workspace.store }
+    private var gateway: GatewayRuntimeController { appContext.runtime.gateway }
     private var appearanceSettings: AppAppearanceSettings { appContext.settings.appearance }
     private var allowedWorkspaceTabs: [WorkspaceTab] {
         WorkspaceTab.displayOrder.filter { $0 != .services || appContext.runtime.gateway.servicesVisible }
@@ -149,6 +151,9 @@ struct MainWindowView: View {
         .sheet(isPresented: $store.isShowingLinuxInstallGuide) {
             LinuxInstallGuideView()
         }
+        .sheet(item: $publishServiceRequest) { request in
+            PublishServiceSheet(preferredTargetPeerID: request.preferredTargetPeerID)
+        }
         .alert(
             "EasyTier",
             isPresented: Binding(
@@ -206,10 +211,15 @@ struct MainWindowView: View {
                 onRenameLocalHostname: renameSelectedHostname,
                 onRenameRemoteHostname: renameRemoteHostname,
                 onConfigureLocalMember: { selectWorkspaceTab(.config) },
-                onConfigureRemoteMember: configureRemoteMember
+                onConfigureRemoteMember: configureRemoteMember,
+                onPublishService: { member in
+                    beginPublishingService(preferredTargetPeerID: member.peerID)
+                }
             )
         case .services:
-            ServicesView()
+            ServicesView {
+                beginPublishingService()
+            }
         case .view:
             TrafficView()
         case .config:
@@ -358,6 +368,15 @@ struct MainWindowView: View {
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
+            if store.selectedTab == .services {
+                Button("Publish Service", systemImage: "plus") {
+                    beginPublishingService()
+                }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .disabled(!canBeginPublishingService)
+                .help(publishServiceHelp)
+            }
+
             if let remoteSession = remoteToolbarSession {
                 Button {
                     Task { await applyRemoteToolbarChanges() }
@@ -486,6 +505,31 @@ struct MainWindowView: View {
 
     private var selectedConfigCanStop: Bool {
         store.selectedConfigCanStop
+    }
+
+    private var serviceCreationTargets: [PublishedServiceTargetOption] {
+        PublishedServiceTargetOption.creationOptions(members: gateway.topologyMembers)
+    }
+
+    private var canBeginPublishingService: Bool {
+        gateway.magicDNSState == .ready && !serviceCreationTargets.isEmpty
+    }
+
+    private var publishServiceHelp: String {
+        if gateway.magicDNSState != .ready {
+            return "Wait for Magic DNS to become ready"
+        }
+        if serviceCreationTargets.isEmpty {
+            return "Run a network with at least one online member first"
+        }
+        return "Publish a service from an online network member"
+    }
+
+    private func beginPublishingService(preferredTargetPeerID: String? = nil) {
+        guard canBeginPublishingService else { return }
+        publishServiceRequest = PublishServiceRequest(
+            preferredTargetPeerID: preferredTargetPeerID
+        )
     }
 
     private var selectedConfigIsReady: Bool {

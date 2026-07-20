@@ -1,5 +1,15 @@
 import SwiftUI
 
+private enum WorkspaceDataGridCellMetrics {
+    static let verticalPadding: CGFloat = 5
+}
+
+extension View {
+    func workspaceDataGridTwoLineContent() -> some View {
+        padding(.vertical, WorkspaceDataGridCellMetrics.verticalPadding)
+    }
+}
+
 struct WorkspaceDataGridCell<Column: WorkspaceDataGridColumn, Content: View>: View {
     private let column: Column
     private let layout: WorkspaceDataGridLayout<Column>
@@ -22,7 +32,7 @@ struct WorkspaceDataGridCell<Column: WorkspaceDataGridColumn, Content: View>: Vi
         content
             .font(.callout)
             .padding(.horizontal, 8)
-            .padding(.vertical, 5)
+            .padding(.vertical, WorkspaceDataGridCellMetrics.verticalPadding)
             .frame(width: layout[column], alignment: alignment)
     }
 }

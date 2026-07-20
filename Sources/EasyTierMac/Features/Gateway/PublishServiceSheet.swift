@@ -8,11 +8,13 @@ struct PublishServiceSheet: View {
     @Environment(AppContext.self) private var appContext
     @FocusState private var focusedField: Field?
 
-    let member: NetworkMemberStatus
+    let preferredTargetPeerID: String?
 
     @State private var serviceLabel = ""
     @State private var targetPort = "3000"
+    @State private var selectedTargetPeerID: String
     @State private var draftID: String?
+    @State private var draftTarget: PublishedServiceTargetOption?
     @State private var isWorking = false
     @State private var errorMessage: String?
 
@@ -24,12 +26,29 @@ struct PublishServiceSheet: View {
     private var store: EasyTierAppStore { appContext.workspace.store }
     private var gateway: GatewayRuntimeController { appContext.runtime.gateway }
 
+    private var targetOptions: [PublishedServiceTargetOption] {
+        PublishedServiceTargetOption.creationOptions(members: gateway.topologyMembers)
+    }
+
+    private var targetOptionIDs: [String] {
+        targetOptions.map(\.peerID)
+    }
+
+    private var selectedTarget: PublishedServiceTargetOption? {
+        targetOptions.first { $0.peerID == selectedTargetPeerID }
+    }
+
+    private var effectiveTarget: PublishedServiceTargetOption? {
+        draftTarget ?? selectedTarget
+    }
+
     private var targetDomain: String {
-        MagicDNSDisplay.memberDomain(
-            hostname: member.hostname,
+        guard let effectiveTarget else { return "member" }
+        return MagicDNSDisplay.memberDomain(
+            hostname: effectiveTarget.hostname,
             config: store.selectedConfig,
             settings: store.magicDNSSettings
-        ) ?? "\(member.hostname).\(trimmedDNSSuffix)"
+        ) ?? "\(effectiveTarget.hostname).\(trimmedDNSSuffix)"
     }
 
     private var publicHostname: String {
@@ -54,13 +73,18 @@ struct PublishServiceSheet: View {
     private var canPublish: Bool {
         guard let port = Int(targetPort) else { return false }
         return !isWorking
+            && !gateway.isBusy
             && !serviceLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && (1 ... 65_535).contains(port)
             && gateway.isTLSConfigured
             && store.selectedConfig != nil
             && gateway.magicDNSState == .ready
-            && member.isLive
-            && member.peerID != "-"
+            && effectiveTarget != nil
+    }
+
+    init(preferredTargetPeerID: String? = nil) {
+        self.preferredTargetPeerID = preferredTargetPeerID
+        _selectedTargetPeerID = State(initialValue: preferredTargetPeerID ?? "")
     }
 
     var body: some View {
@@ -74,6 +98,23 @@ struct PublishServiceSheet: View {
             }
 
             Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 12) {
+                GridRow {
+                    Text("Target Member")
+                        .foregroundStyle(.secondary)
+                    if targetOptions.isEmpty {
+                        Text("No online members available")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Picker("Target Member", selection: $selectedTargetPeerID) {
+                            ForEach(targetOptions) { target in
+                                Text(target.label)
+                                    .tag(target.peerID)
+                            }
+                        }
+                        .labelsHidden()
+                        .disabled(draftID != nil || isWorking)
+                    }
+                }
                 GridRow {
                     Text("Service Name")
                         .foregroundStyle(.secondary)
@@ -93,11 +134,13 @@ struct PublishServiceSheet: View {
             }
             .gridColumnAlignment(.leading)
 
-            PublishedServicePreview(
-                publicURL: publicURL,
-                target: targetSummary,
-                copyAction: copyPublicURL
-            )
+            if effectiveTarget != nil {
+                PublishedServicePreview(
+                    publicURL: publicURL,
+                    target: targetSummary,
+                    copyAction: copyPublicURL
+                )
+            }
 
             if !gateway.isTLSConfigured {
                 GatewayTLSRequirementBanner(action: openGatewaySettings)
@@ -123,18 +166,32 @@ struct PublishServiceSheet: View {
                 Spacer(minLength: 0)
                 Button("Cancel", role: .cancel, action: dismiss.callAsFunction)
                     .disabled(isWorking)
+                    .keyboardShortcut(.cancelAction)
                 Button("Publish", systemImage: "checkmark.shield", action: publish)
                     .buttonStyle(.borderedProminent)
                     .disabled(!canPublish)
+                    .keyboardShortcut(.defaultAction)
             }
         }
         .padding(22)
         .frame(width: 520)
         .task(prepare)
+        .onChange(of: targetOptionIDs) { _, _ in
+            reconcileTargetSelection()
+        }
     }
 
     private func prepare() async {
+        reconcileTargetSelection()
         focusedField = .serviceLabel
+    }
+
+    private func reconcileTargetSelection() {
+        guard draftID == nil else { return }
+        selectedTargetPeerID = PublishedServiceTargetOption.initialPeerID(
+            in: targetOptions,
+            preferredPeerID: selectedTargetPeerID.nilIfEmpty ?? preferredTargetPeerID
+        ) ?? ""
     }
 
     private func publish() {
@@ -154,7 +211,8 @@ struct PublishServiceSheet: View {
                     )
                 }
                 guard let config = store.selectedConfig,
-                      let port = Int(targetPort)
+                      let port = Int(targetPort),
+                      let effectiveTarget
                 else {
                     throw GatewayConfigurationValidationError.invalid(
                         "Select a running EasyTier network and enter a valid target port."
@@ -166,15 +224,16 @@ struct PublishServiceSheet: View {
                 } else {
                     let draft = try await gateway.createDraft(
                         networkConfigID: config.instance_id,
-                        targetPeerID: member.peerID,
-                        targetInstanceID: member.instanceID,
-                        targetHostname: member.hostname,
+                        targetPeerID: effectiveTarget.peerID,
+                        targetInstanceID: effectiveTarget.instanceID,
+                        targetHostname: effectiveTarget.hostname,
                         magicDNSSuffix: gateway.appliedMagicDNSSuffix
                             ?? store.magicDNSSettings.dnsSuffix,
                         serviceLabel: serviceLabel,
                         targetPort: port
                     )
                     draftID = draft.id
+                    draftTarget = effectiveTarget
                     serviceID = draft.id
                 }
                 try await gateway.setServiceEnabled(true, serviceID: serviceID)

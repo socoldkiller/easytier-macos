@@ -15,41 +15,57 @@ struct ServicesView: View {
     @State private var deletionCandidate: GatewayPublishedService?
     @State private var errorMessage: String?
 
+    var onPublishService: () -> Void = {}
+
     private var store: EasyTierAppStore { appContext.workspace.store }
     private var gateway: GatewayRuntimeController { appContext.runtime.gateway }
+
+    private var serviceCreationTargets: [PublishedServiceTargetOption] {
+        PublishedServiceTargetOption.creationOptions(members: gateway.topologyMembers)
+    }
+
+    private var canBeginPublishingService: Bool {
+        gateway.magicDNSState == .ready && !serviceCreationTargets.isEmpty
+    }
+
+    private var publishingEmptyStateDescription: String {
+        if gateway.magicDNSState != .ready {
+            return "Wait for Magic DNS to become ready before publishing a service."
+        }
+        if serviceCreationTargets.isEmpty {
+            return "Run a network with at least one online member before publishing a service."
+        }
+        return "Publish an HTTP service from an online network member."
+    }
 
     private var displayedError: String? {
         errorMessage ?? gateway.lastError ?? gateway.status.lastError
     }
 
-    var body: some View {
-        @Bindable var store = self.store
-        let members = gateway.topologyMembers
-        let display = PublishedServicesDisplayModel(
+    private var display: PublishedServicesDisplayModel {
+        PublishedServicesDisplayModel(
             services: gateway.services,
             status: gateway.status,
             gatewayEnabled: gateway.desiredEnabled,
             acmeConfiguration: gateway.acmeConfiguration,
             networkName: gateway.publishingNetworkName,
-            members: members,
+            members: gateway.topologyMembers,
             searchText: searchText,
             magicDNSState: gateway.magicDNSState,
             magicDNSStateByServiceID: gateway.magicDNSStateByServiceID
         )
+    }
+
+    var body: some View {
+        @Bindable var store = self.store
 
         VStack(alignment: .leading, spacing: 14) {
-            ServicesHeader(
-                gatewayStatus: display.runtimePresentation.statusLabel,
-                gatewayIsInProgress: display.runtimePresentation.isInProgress,
-                serviceCount: display.rows.count,
-                liveCount: display.liveCount,
-                networkName: display.networkName
-            )
+            header
 
             if !display.rows.isEmpty || display.searchIsActive {
                 WorkspaceSearchField(
                     text: $searchText,
-                    prompt: "Search domains, IPv4 addresses, ports, protocols, SSL, or status",
+                    prompt: "Search services",
                     resultCount: display.filteredRows.count,
                     totalCount: display.rows.count
                 )
@@ -66,41 +82,7 @@ struct ServicesView: View {
             }
 
             MotionSwitch(id: display.contentMotionID, insertionEdge: .bottom) {
-                if display.rows.isEmpty {
-                    ContentUnavailableView(
-                        "No Published Services",
-                        systemImage: "rectangle.stack.badge.plus",
-                        description: Text(
-                            "Right-click an online member in Status and choose Publish Service…"
-                        )
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if display.searchIsActive, display.filteredRows.isEmpty {
-                    ContentUnavailableView(
-                        "No Search Results",
-                        systemImage: "magnifyingglass",
-                        description: Text(
-                            "Try a domain, IPv4 address, port, protocol, SSL provider, or service status."
-                        )
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    PublishedServicesGrid(
-                        rows: display.filteredRows,
-                        isScrolling: $serviceGridIsScrolling,
-                        globalScrolling: $store.isAnyViewScrolling,
-                        gatewayBusy: gateway.isBusy,
-                        workingServiceID: workingServiceID,
-                        onSetEnabled: setEnabled,
-                        onOpen: open,
-                        onCopyDomain: copyDomain,
-                        onCopyProxyIPv4: copyProxyIPv4,
-                        onEditService: editService,
-                        onConfigureSSL: openGatewaySettings,
-                        onRetryCertificate: retryCertificate,
-                        onDelete: requestDeletion
-                    )
-                }
+                servicesContent(display)
             }
         }
         .padding()
@@ -118,7 +100,7 @@ struct ServicesView: View {
                 targetOptions: PublishedServiceTargetOption.options(
                     for: service,
                     currentIPv4: row?.proxyIPv4 ?? "—",
-                    members: members
+                    members: gateway.topologyMembers
                 ),
                 sslProvider: row?.sslProvider
                     ?? PublishedServiceSSLProvider(acmeConfiguration: gateway.acmeConfiguration),
@@ -140,6 +122,61 @@ struct ServicesView: View {
             }
         } message: { _ in
             Text("The public domain and its certificate configuration will be removed.")
+        }
+    }
+
+    private var header: some View {
+        ServicesHeader(
+            gatewayStatus: display.runtimePresentation.statusLabel,
+            gatewayIsInProgress: display.runtimePresentation.isInProgress,
+            serviceSummary: display.serviceSummary,
+            networkName: display.networkName,
+            modeLabel: store.mode.label
+        )
+    }
+
+    @ViewBuilder
+    private func servicesContent(_ display: PublishedServicesDisplayModel) -> some View {
+        @Bindable var store = self.store
+        if display.rows.isEmpty {
+            ContentUnavailableView {
+                Label(
+                    "No Published Services",
+                    systemImage: "rectangle.stack.badge.plus"
+                )
+            } description: {
+                Text(publishingEmptyStateDescription)
+            } actions: {
+                Button("Publish Service…", systemImage: "plus", action: onPublishService)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canBeginPublishingService)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if display.searchIsActive, display.filteredRows.isEmpty {
+            ContentUnavailableView(
+                "No Search Results",
+                systemImage: "magnifyingglass",
+                description: Text(
+                    "Try a domain, target, address, protocol, SSL provider, or status."
+                )
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            PublishedServicesGrid(
+                rows: display.filteredRows,
+                isScrolling: $serviceGridIsScrolling,
+                globalScrolling: $store.isAnyViewScrolling,
+                gatewayBusy: gateway.isBusy,
+                workingServiceID: workingServiceID,
+                onSetEnabled: setEnabled,
+                onOpen: open,
+                onCopyDomain: copyDomain,
+                onCopyProxyIPv4: copyProxyIPv4,
+                onEditService: editService,
+                onConfigureSSL: openGatewaySettings,
+                onRetryCertificate: retryCertificate,
+                onDelete: requestDeletion
+            )
         }
     }
 

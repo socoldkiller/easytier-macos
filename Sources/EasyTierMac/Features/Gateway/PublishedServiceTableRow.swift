@@ -6,6 +6,7 @@ struct PublishedServiceTableRow: Identifiable, Equatable, Sendable {
     let presentation: PublishedServicePresentation
     let proxyIPv4: String
     let sslProvider: PublishedServiceSSLProvider
+    let certificatePresentation: PublishedServiceCertificatePresentation
     let lastOnlineAt: Date?
 
     var id: String { service.id }
@@ -13,6 +14,8 @@ struct PublishedServiceTableRow: Identifiable, Equatable, Sendable {
     var targetDomain: String { service.targetDomain }
     var targetPort: Int { service.targetPort }
     var protocolLabel: String { service.upstreamProtocol.rawValue.uppercased() }
+    var targetEndpointLabel: String { "\(targetDomain):\(targetPort)" }
+    var targetDetailLabel: String { protocolLabel }
     var publicURL: URL? {
         URL(string: "\(sslProvider.urlScheme)://\(publicHostname)")
     }
@@ -25,6 +28,7 @@ struct PublishedServiceTableRow: Identifiable, Equatable, Sendable {
             String(service.targetPort),
             protocolLabel,
             sslProvider.label,
+            certificatePresentation.label,
             "SSL",
             presentation.statusLabel,
             presentation.detailLabel,
