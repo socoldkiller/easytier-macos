@@ -3,7 +3,7 @@ import Testing
 @testable import EasyTierMac
 @testable import EasyTierShared
 
-@Test func publishedServiceSSLProviderReflectsConfiguredACMEProvider() {
+@Test func publishedServiceSSLProviderUsesCertificateServingMode() {
     let notAccepted = GatewayACMEConfiguration(
         directory: .letsencryptProduction,
         termsOfServiceAgreed: false
@@ -19,12 +19,13 @@ import Testing
 
     #expect(PublishedServiceSSLProvider(acmeConfiguration: nil) == .httpOnly)
     #expect(PublishedServiceSSLProvider(acmeConfiguration: notAccepted) == .httpOnly)
-    #expect(PublishedServiceSSLProvider(acmeConfiguration: production) == .letsEncrypt)
-    #expect(PublishedServiceSSLProvider(acmeConfiguration: staging) == .letsEncrypt)
+    #expect(PublishedServiceSSLProvider(acmeConfiguration: production) == .requesting)
+    #expect(PublishedServiceSSLProvider(acmeConfiguration: staging) == .requesting)
     #expect(PublishedServiceSSLProvider.httpOnly.label == "HTTP Only")
-    #expect(PublishedServiceSSLProvider.letsEncrypt.label == "Let's Encrypt")
+    #expect(PublishedServiceSSLProvider.managedHTTPS.label == "Managed HTTPS")
+    #expect(PublishedServiceSSLProvider.requesting.label == "Requesting Certificate")
     #expect(PublishedServiceSSLProvider.httpOnly.urlScheme == "http")
-    #expect(PublishedServiceSSLProvider.letsEncrypt.urlScheme == "https")
+    #expect(PublishedServiceSSLProvider.managedHTTPS.urlScheme == "https")
 }
 
 @Test func publishedServiceTargetIPv4UsesTopologyInsteadOfGatewayDNS() {
@@ -146,7 +147,7 @@ import Testing
         ),
         networkName: "Production",
         members: [servicesTestMember(peerID: serviceA.targetPeerID, ipv4: "10.0.0.10/24")],
-        searchText: "SERVICE-A 10.0.0.10 ENCRYPT LIVE"
+        searchText: "SERVICE-A 10.0.0.10 MANAGED LIVE"
     )
 
     #expect(display.networkName == "Production")
@@ -155,7 +156,7 @@ import Testing
     #expect(display.filteredRows.map(\.id) == [serviceA.id])
     #expect(display.filteredRows.first?.targetDomain == "alpha.et.net")
     #expect(display.filteredRows.first?.protocolLabel == "HTTP")
-    #expect(display.filteredRows.first?.sslProvider == .letsEncrypt)
+    #expect(display.filteredRows.first?.sslProvider == .managedHTTPS)
     #expect(
         display.filteredRows.first?.lastOnlineAt
             == (try? Date("2026-07-19T10:20:30.123456789Z", strategy: .iso8601))
@@ -205,6 +206,7 @@ private func servicesTestCertificate(
         domains: [domain],
         challenge: "http-01",
         state: state,
+        servingMode: state == .active ? .https : .pendingHTTPS,
         notBefore: nil,
         notAfter: nil,
         nextRenewalAt: nil,

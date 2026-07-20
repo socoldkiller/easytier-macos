@@ -13,6 +13,8 @@ struct PublishServiceSheet: View {
     @State private var serviceLabel = ""
     @State private var targetPort = "3000"
     @State private var draftID: String?
+    @State private var challengeMode = PublishedServiceChallengeMode.automatic
+    @State private var dnsCredentialID: String?
     @State private var isWorking = false
     @State private var errorMessage: String?
 
@@ -53,6 +55,7 @@ struct PublishServiceSheet: View {
 
     private var canPublish: Bool {
         guard let port = Int(targetPort) else { return false }
+        guard challengeMode.challenge(credentialID: dnsCredentialID) != nil else { return false }
         return !isWorking
             && !serviceLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && (1 ... 65_535).contains(port)
@@ -81,6 +84,32 @@ struct PublishServiceSheet: View {
                         .textFieldStyle(.glassField)
                         .focused($focusedField, equals: .serviceLabel)
                         .disabled(draftID != nil || isWorking)
+                }
+                GridRow {
+                    Text("Certificate")
+                        .foregroundStyle(.secondary)
+                    Picker("Certificate Challenge", selection: $challengeMode) {
+                        ForEach(PublishedServiceChallengeMode.allCases) { mode in
+                            Text(mode.label).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                }
+                if challengeMode == .automatic || challengeMode == .dns01 {
+                    GridRow {
+                        Text(challengeMode == .automatic ? "DNS Fallback" : "DNS Credential")
+                            .foregroundStyle(.secondary)
+                        Picker("DNS Credential", selection: $dnsCredentialID) {
+                            if challengeMode == .automatic {
+                                Text("None").tag(String?.none)
+                            }
+                            ForEach(gateway.dnsCredentials) { credential in
+                                Text("\(credential.label) · \(credential.provider.displayName)")
+                                    .tag(Optional(credential.id))
+                            }
+                        }
+                        .labelsHidden()
+                    }
                 }
                 GridRow {
                     Text("Port")
@@ -161,6 +190,11 @@ struct PublishServiceSheet: View {
                     )
                 }
                 let serviceID: String
+                guard let challenge = challengeMode.challenge(credentialID: dnsCredentialID) else {
+                    throw GatewayConfigurationValidationError.invalid(
+                        "Choose a DNS credential for DNS-01."
+                    )
+                }
                 if let draftID {
                     serviceID = draftID
                 } else {
@@ -177,6 +211,7 @@ struct PublishServiceSheet: View {
                     draftID = draft.id
                     serviceID = draft.id
                 }
+                try await gateway.updateChallenge(serviceID: serviceID, challenge: challenge)
                 try await gateway.setServiceEnabled(true, serviceID: serviceID)
                 dismiss()
             } catch {

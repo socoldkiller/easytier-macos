@@ -17,6 +17,7 @@ struct GatewaySettingsView: View {
                 }
 
                 GatewayTLSSettingsSection(gateway: gateway)
+                GatewayDNSCredentialsSettingsSection(gateway: gateway)
                 GatewayAdvancedSettingsSection(gateway: gateway)
             }
             .padding(.horizontal, 20)

@@ -28,7 +28,11 @@ final class GatewayRuntimeController {
     var services: [GatewayPublishedService] { persistedState?.services ?? [] }
     var publishingNetworkConfigID: String? { persistedState?.publishingNetworkConfigID }
     var acmeConfiguration: GatewayACMEConfiguration? { persistedState?.acmeAccount }
-    var isTLSConfigured: Bool { acmeConfiguration?.termsOfServiceAgreed == true }
+    var dnsCredentials: [GatewayDNSCredentialDescriptor] { persistedState?.dnsCredentials ?? [] }
+    var isTLSConfigured: Bool {
+        acmeConfiguration?.termsOfServiceAgreed == true
+            && acmeConfiguration?.contactEmail?.isEmpty == false
+    }
 
     func magicDNSState(for serviceID: String) -> MagicDNSOperationalState {
         magicDNSStateByServiceID[serviceID] ?? magicDNSState
@@ -36,6 +40,7 @@ final class GatewayRuntimeController {
 
     @ObservationIgnored private let client: any GatewayClient
     @ObservationIgnored private let configurationStore: any GatewayConfigurationStoring
+    @ObservationIgnored private let credentialStore: any GatewayCredentialStoring
     @ObservationIgnored let helperRegistration: HelperRegistrationService?
     @ObservationIgnored private let connectionMonitor: (any GatewayConnectionMonitoring)?
     @ObservationIgnored private let magicDNSResolver: any MagicDNSResolving
@@ -48,18 +53,21 @@ final class GatewayRuntimeController {
     @ObservationIgnored private var recoveryEnabled = false
     @ObservationIgnored private var retainsRuntimeAfterDisconnect = false
     @ObservationIgnored private var lastAppliedConfiguration: GatewayConfiguration?
+    @ObservationIgnored private var lastAppliedCredentialRevisions: [String: UInt64] = [:]
     @ObservationIgnored private var mutationLocked = false
     @ObservationIgnored private var mutationWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(
         client: any GatewayClient,
         configurationStore: any GatewayConfigurationStoring,
+        credentialStore: any GatewayCredentialStoring = SystemGatewayCredentialStore(),
         helperRegistration: HelperRegistrationService?,
         connectionMonitor: (any GatewayConnectionMonitoring)? = nil,
         magicDNSResolver: any MagicDNSResolving = SystemMagicDNSResolver()
     ) {
         self.client = client
         self.configurationStore = configurationStore
+        self.credentialStore = credentialStore
         self.helperRegistration = helperRegistration
         self.connectionMonitor = connectionMonitor
         self.magicDNSResolver = magicDNSResolver
@@ -206,7 +214,12 @@ final class GatewayRuntimeController {
                 }
                 guard let acme = state.acmeAccount, acme.termsOfServiceAgreed else {
                     throw GatewayConfigurationValidationError.invalid(
-                        "Accept the Let's Encrypt terms before enabling this service."
+                        "Accept the certificate service terms before enabling this service."
+                    )
+                }
+                guard acme.contactEmail != nil else {
+                    throw GatewayConfigurationValidationError.invalid(
+                        "Enter a certificate contact email before enabling this service."
                     )
                 }
                 guard state.lastKnownNetworkIPv4CIDR != nil else {
@@ -241,13 +254,75 @@ final class GatewayRuntimeController {
         }
     }
 
+    func updateChallenge(
+        serviceID: String,
+        challenge: GatewayPublishedServiceChallenge
+    ) async throws {
+        try await withMutation {
+            guard var state = persistedState,
+                  let index = state.services.firstIndex(where: { $0.id == serviceID })
+            else {
+                throw GatewayConfigurationValidationError.invalid("Published service was not found.")
+            }
+            state.services[index].challenge = challenge
+            try await save(state)
+            await reconcileWithoutLock()
+        }
+    }
+
+    func saveDNSCredential(
+        descriptor: GatewayDNSCredentialDescriptor,
+        secret: GatewayCredentialSecret
+    ) async throws {
+        try await withMutation {
+            var state = persistedState ?? .empty
+            var descriptor = descriptor
+            if let index = state.dnsCredentials.firstIndex(where: { $0.id == descriptor.id }) {
+                descriptor.revision = state.dnsCredentials[index].revision &+ 1
+                state.dnsCredentials[index] = descriptor
+            } else {
+                state.dnsCredentials.append(descriptor)
+            }
+            try await credentialStore.save(secret, id: descriptor.id)
+            try await save(state)
+            await reconcileWithoutLock()
+        }
+    }
+
+    func loadDNSCredentialSecret(id: String) async throws -> GatewayCredentialSecret? {
+        try await credentialStore.load(id: id)
+    }
+
+    func deleteDNSCredential(id: String) async throws {
+        try await withMutation {
+            guard var state = persistedState else { return }
+            let isReferenced = state.services.contains { service in
+                switch service.challenge {
+                case let .automatic(dnsCredentialID): dnsCredentialID == id
+                case .http01: false
+                case let .dns01(credentialID): credentialID == id
+                }
+            }
+            guard !isReferenced else {
+                throw GatewayConfigurationValidationError.invalid(
+                    "Change services that use this DNS credential before deleting it."
+                )
+            }
+            state.dnsCredentials.removeAll { $0.id == id }
+            try await credentialStore.remove(id: id)
+            try await save(state)
+            await reconcileWithoutLock()
+        }
+    }
+
     func updateService(
         serviceID: String,
         targetPeerID: String,
         targetInstanceID: String? = nil,
         targetHostname: String,
         magicDNSSuffix: String,
-        port: Int
+        port: Int,
+        challenge: GatewayPublishedServiceChallenge? = nil
     ) async throws {
         try await withMutation {
             guard var state = persistedState,
@@ -262,6 +337,9 @@ final class GatewayRuntimeController {
             updated.lastKnownTargetHostname = targetHostname
             updated.lastKnownMagicDNSSuffix = magicDNSSuffix
             updated.targetPort = port
+            if let challenge {
+                updated.challenge = challenge
+            }
             guard updated != state.services[index] else { return }
 
             state.services[index] = updated
@@ -415,10 +493,15 @@ final class GatewayRuntimeController {
             )
             let shouldStart = lastAppliedConfiguration == nil || status.state == .stopped
             let configurationChanged = lastAppliedConfiguration != configuration
-            if !shouldStart, !configurationChanged, status.state == .running {
+            let credentialRevisions = Dictionary(
+                uniqueKeysWithValues: state.dnsCredentials.map { ($0.id, $0.revision) }
+            )
+            let credentialsChanged = credentialRevisions != lastAppliedCredentialRevisions
+            if !shouldStart, !configurationChanged, !credentialsChanged, status.state == .running {
                 startStatusPolling()
                 return
             }
+            let secrets = try await credentialStore.resolve(state.dnsCredentials)
             isBusy = true
             status.state = .starting
             defer { isBusy = false }
@@ -426,11 +509,12 @@ final class GatewayRuntimeController {
             try await connectionMonitor?.probeHelperAvailability()
             try await client.setRetainsRuntimeAfterDisconnect(retainsRuntimeAfterDisconnect)
             if shouldStart {
-                try await client.start(configuration: configuration)
-            } else if configurationChanged {
-                try await client.apply(configuration: configuration)
+                try await client.start(configuration: configuration, secrets: secrets)
+            } else if configurationChanged || credentialsChanged {
+                try await client.apply(configuration: configuration, secrets: secrets)
             }
             lastAppliedConfiguration = configuration
+            lastAppliedCredentialRevisions = credentialRevisions
             status = try await client.status()
             lastError = status.lastError
             startStatusPolling()
@@ -450,6 +534,7 @@ final class GatewayRuntimeController {
             try await client.stop()
             status = .stopped
             lastAppliedConfiguration = nil
+            lastAppliedCredentialRevisions = [:]
             lastError = nil
         } catch {
             status.state = .failed

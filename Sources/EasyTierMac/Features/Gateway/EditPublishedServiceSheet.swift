@@ -6,12 +6,15 @@ struct EditPublishedServiceSheet: View {
 
     let service: GatewayPublishedService
     let targetOptions: [PublishedServiceTargetOption]
+    let dnsCredentials: [GatewayDNSCredentialDescriptor]
     let sslProvider: PublishedServiceSSLProvider
     let onConfigureSSL: () -> Void
-    let onSave: (PublishedServiceTargetOption, Int) -> Void
+    let onSave: (PublishedServiceTargetOption, Int, GatewayPublishedServiceChallenge) -> Void
 
     @State private var portText: String
     @State private var selectedTargetPeerID: String
+    @State private var challengeMode: PublishedServiceChallengeMode
+    @State private var dnsCredentialID: String?
     @FocusState private var portFocused: Bool
 
     private var parsedPort: Int? {
@@ -21,10 +24,12 @@ struct EditPublishedServiceSheet: View {
 
     private var canSave: Bool {
         guard parsedPort != nil, let selectedTarget else { return false }
+        guard let challenge = challengeMode.challenge(credentialID: dnsCredentialID) else { return false }
         return parsedPort != service.targetPort
             || selectedTarget.peerID != service.targetPeerID
             || selectedTarget.instanceID != service.targetInstanceID
             || selectedTarget.hostname != service.lastKnownTargetHostname
+            || challenge != service.challenge
     }
 
     private var selectedTarget: PublishedServiceTargetOption? {
@@ -34,12 +39,18 @@ struct EditPublishedServiceSheet: View {
     init(
         service: GatewayPublishedService,
         targetOptions: [PublishedServiceTargetOption],
+        dnsCredentials: [GatewayDNSCredentialDescriptor],
         sslProvider: PublishedServiceSSLProvider,
         onConfigureSSL: @escaping () -> Void,
-        onSave: @escaping (PublishedServiceTargetOption, Int) -> Void
+        onSave: @escaping (
+            PublishedServiceTargetOption,
+            Int,
+            GatewayPublishedServiceChallenge
+        ) -> Void
     ) {
         self.service = service
         self.targetOptions = targetOptions
+        self.dnsCredentials = dnsCredentials
         self.sslProvider = sslProvider
         self.onConfigureSSL = onConfigureSSL
         self.onSave = onSave
@@ -51,6 +62,8 @@ struct EditPublishedServiceSheet: View {
             return option.instanceID == targetInstanceID
         }?.peerID ?? service.targetPeerID
         _selectedTargetPeerID = State(initialValue: currentPeerID)
+        _challengeMode = State(initialValue: PublishedServiceChallengeMode(service.challenge))
+        _dnsCredentialID = State(initialValue: service.challenge.dnsCredentialID)
     }
 
     var body: some View {
@@ -95,6 +108,33 @@ struct EditPublishedServiceSheet: View {
                             .buttonStyle(.borderless)
                     }
                 }
+                SettingsRowDivider()
+                SettingsInlineRow("Challenge") {
+                    Picker("Certificate Challenge", selection: $challengeMode) {
+                        ForEach(PublishedServiceChallengeMode.allCases) { mode in
+                            Text(mode.label).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 250)
+                }
+                if challengeMode == .automatic || challengeMode == .dns01 {
+                    SettingsRowDivider()
+                    SettingsInlineRow(
+                        challengeMode == .automatic ? "DNS Fallback" : "DNS Credential"
+                    ) {
+                        Picker("DNS Credential", selection: $dnsCredentialID) {
+                            if challengeMode == .automatic {
+                                Text("None").tag(String?.none)
+                            }
+                            ForEach(dnsCredentials) { credential in
+                                Text(credential.label).tag(Optional(credential.id))
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 250)
+                    }
+                }
             }
 
             HStack {
@@ -114,8 +154,12 @@ struct EditPublishedServiceSheet: View {
     }
 
     private func save() {
-        guard let parsedPort, let selectedTarget, canSave else { return }
-        onSave(selectedTarget, parsedPort)
+        guard let parsedPort,
+              let selectedTarget,
+              let challenge = challengeMode.challenge(credentialID: dnsCredentialID),
+              canSave
+        else { return }
+        onSave(selectedTarget, parsedPort, challenge)
         dismiss()
     }
 

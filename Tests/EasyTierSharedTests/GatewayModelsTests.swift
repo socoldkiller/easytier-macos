@@ -25,7 +25,10 @@ import Testing
 @Test func gatewayFactoryCarriesExactExpectedTargetIPv4() throws {
     let state = GatewayPersistedState(
         gatewayEnabled: true,
-        acmeAccount: GatewayACMEConfiguration(termsOfServiceAgreed: true),
+        acmeAccount: GatewayACMEConfiguration(
+            contactEmail: "ops@example.com",
+            termsOfServiceAgreed: true
+        ),
         publishingNetworkConfigID: "network-a",
         lastKnownNetworkIPv4CIDR: "10.0.0.0/24",
         services: [
@@ -123,11 +126,11 @@ func gatewayValidationRejectsNonExactCertificateDomains(_ domain: String) {
     }
 }
 
-@Test func gatewayConfigurationRejectsDNS01AtDecodeBoundary() {
+@Test func gatewayConfigurationDecodesDNS01() throws {
     let data = Data(
         """
         {
-          "schema_version": 2,
+          "schema_version": 4,
           "acme": {
             "directory": {"kind": "letsencrypt_staging"},
             "contact_email": "ops@example.com",
@@ -148,9 +151,11 @@ func gatewayValidationRejectsNonExactCertificateDomains(_ domain: String) {
         """.utf8
     )
 
-    #expect(throws: DecodingError.self) {
-        try JSONDecoder().decode(GatewayConfiguration.self, from: data)
-    }
+    let configuration = try JSONDecoder().decode(GatewayConfiguration.self, from: data)
+    #expect(
+        configuration.certificates.first?.challenge
+            == .dns01(GatewayDNS01Configuration(provider: .cloudflare, credentialID: "main"))
+    )
 }
 
 @Test func gatewayConfigurationStorePersistsAtomicallyWithPrivatePermissions() async throws {

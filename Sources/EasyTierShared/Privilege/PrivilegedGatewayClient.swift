@@ -17,16 +17,26 @@ package final class PrivilegedGatewayClient: GatewayClient, @unchecked Sendable 
     }
 
     package func start(configuration: GatewayConfiguration) async throws {
+        try await start(configuration: configuration, secrets: .empty)
+    }
+
+    package func start(configuration: GatewayConfiguration, secrets: GatewaySecrets) async throws {
         let payload = try encodeValidated(configuration)
+        let secretsPayload = try encode(secrets)
         try await call(timeout: Self.operationTimeout, timeoutError: { Self.operationTimeoutError("start") }) {
-            $0.start(configurationJSON: payload, reply: $1)
+            $0.start(configurationJSON: payload, secretsJSON: secretsPayload, reply: $1)
         }
     }
 
     package func apply(configuration: GatewayConfiguration) async throws {
+        try await apply(configuration: configuration, secrets: .empty)
+    }
+
+    package func apply(configuration: GatewayConfiguration, secrets: GatewaySecrets) async throws {
         let payload = try encodeValidated(configuration)
+        let secretsPayload = try encode(secrets)
         try await call(timeout: Self.operationTimeout, timeoutError: { Self.operationTimeoutError("apply") }) {
-            $0.apply(configurationJSON: payload, reply: $1)
+            $0.apply(configurationJSON: payload, secretsJSON: secretsPayload, reply: $1)
         }
     }
 
@@ -103,6 +113,16 @@ package final class PrivilegedGatewayClient: GatewayClient, @unchecked Sendable 
         let data = try encoder.encode(normalized)
         guard let string = String(data: data, encoding: .utf8) else {
             throw PrivilegedHelperError.invalidPayload("Failed to encode Gateway configuration as UTF-8 JSON.")
+        }
+        return string
+    }
+
+    private func encode(_ value: some Encodable) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(value)
+        guard let string = String(data: data, encoding: .utf8) else {
+            throw PrivilegedHelperError.invalidPayload("Failed to encode Gateway payload as UTF-8 JSON.")
         }
         return string
     }

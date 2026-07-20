@@ -262,11 +262,17 @@ private func presentationCertificate(
     state: GatewayCertificateState,
     error: String? = nil
 ) throws -> GatewayCertificateStatus {
+    let servingMode: GatewayCertificateServingMode = switch state {
+    case .active, .renewing, .degraded: .https
+    case .failed: .httpOnly
+    case .pending, .issuing: .pendingHTTPS
+    }
     let payload: [String: Any?] = [
         "id": "service-a",
         "domains": ["service-a.a.et.net"],
         "challenge": "http-01",
         "state": state.rawValue,
+        "serving_mode": servingMode.rawValue,
         "not_before": nil,
         "not_after": nil,
         "next_renewal_at": nil,

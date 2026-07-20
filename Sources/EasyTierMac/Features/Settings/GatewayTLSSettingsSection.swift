@@ -32,15 +32,15 @@ struct GatewayTLSSettingsSection: View {
             }
 
             CardSection(
-                "SSL Certificate",
+                "Managed Certificate",
                 systemImage: "lock.shield",
                 footer: "Certificates are requested automatically when a Published Service is enabled."
             ) {
                 HStack(spacing: 10) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Let’s Encrypt")
+                        Text("Automatic HTTPS")
                             .bold()
-                        Text("Production · HTTP-01")
+                        Text("Certificate services are selected automatically")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -52,20 +52,14 @@ struct GatewayTLSSettingsSection: View {
                 }
                 SettingsRowDivider()
                 SettingsInlineRow("Contact Email") {
-                    TextField("Optional", text: $contactEmail)
+                    TextField("Required for published services", text: $contactEmail)
                         .textFieldStyle(.glassField)
                         .frame(maxWidth: 320)
                         .disabled(isSaving)
                 }
                 SettingsRowDivider()
                 Toggle(isOn: $termsOfServiceAgreed) {
-                    HStack(spacing: 6) {
-                        Text("Accept Let’s Encrypt Terms of Service")
-                        if let termsURL = URL(string: "https://letsencrypt.org/repository/") {
-                            Link("Review", destination: termsURL)
-                                .font(.caption)
-                        }
-                    }
+                    Text("Enable automatic certificates and accept the certificate service terms")
                 }
                 .disabled(isSaving)
                 SettingsRowDivider()

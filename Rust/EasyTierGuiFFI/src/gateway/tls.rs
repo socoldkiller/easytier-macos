@@ -25,6 +25,7 @@ const H1_PROTOCOL: &[u8] = b"http/1.1";
 #[derive(Clone, Debug)]
 pub struct CertificateMetadata {
     pub domains: Vec<String>,
+    pub authority: String,
     pub not_before: OffsetDateTime,
     pub not_after: OffsetDateTime,
     pub not_before_rfc3339: String,
@@ -49,10 +50,25 @@ impl std::fmt::Debug for CertifiedMaterial {
 }
 
 impl CertifiedMaterial {
+    #[cfg(test)]
     pub fn from_pem(
         certificate_chain_pem: &str,
         private_key_pem: &str,
         expected_domains: &[String],
+    ) -> Result<Self, String> {
+        Self::from_pem_with_authority(
+            certificate_chain_pem,
+            private_key_pem,
+            expected_domains,
+            "letsencrypt".to_string(),
+        )
+    }
+
+    pub fn from_pem_with_authority(
+        certificate_chain_pem: &str,
+        private_key_pem: &str,
+        expected_domains: &[String],
+        authority: String,
     ) -> Result<Self, String> {
         let mut certificates = X509::stack_from_pem(certificate_chain_pem.as_bytes())
             .map_err(|error| format!("failed to parse certificate chain PEM: {error}"))?;
@@ -118,6 +134,7 @@ impl CertifiedMaterial {
             private_key,
             metadata: CertificateMetadata {
                 domains: domains.into_iter().collect(),
+                authority,
                 not_before,
                 not_after,
                 not_before_rfc3339,
@@ -143,6 +160,7 @@ impl CertifiedMaterial {
 pub struct DynamicCertificateStore {
     certificates: ArcSwap<BTreeMap<String, Arc<CertifiedMaterial>>>,
     sni_to_certificate: ArcSwap<BTreeMap<String, String>>,
+    http_only_certificates: ArcSwap<BTreeSet<String>>,
     callback_error: Mutex<Option<String>>,
 }
 
@@ -151,6 +169,7 @@ impl DynamicCertificateStore {
         Arc::new(Self {
             certificates: ArcSwap::from_pointee(BTreeMap::new()),
             sni_to_certificate: ArcSwap::from_pointee(BTreeMap::new()),
+            http_only_certificates: ArcSwap::from_pointee(BTreeSet::new()),
             callback_error: Mutex::new(None),
         })
     }
@@ -166,8 +185,11 @@ impl DynamicCertificateStore {
 
     pub fn install(&self, certificate_id: String, material: Arc<CertifiedMaterial>) {
         let mut certificates = self.certificates.load().as_ref().clone();
-        certificates.insert(certificate_id, material);
+        certificates.insert(certificate_id.clone(), material);
         self.certificates.store(Arc::new(certificates));
+        let mut http_only = self.http_only_certificates.load().as_ref().clone();
+        http_only.remove(&certificate_id);
+        self.http_only_certificates.store(Arc::new(http_only));
     }
 
     pub fn reconcile(&self, config: &ValidatedGatewayConfig) {
@@ -179,6 +201,28 @@ impl DynamicCertificateStore {
                 .is_some_and(|certificate| certificate.domains == material.metadata.domains)
         });
         self.certificates.store(Arc::new(certificates));
+        let mut http_only = self.http_only_certificates.load().as_ref().clone();
+        http_only.retain(|certificate_id| config.certificates.contains_key(certificate_id));
+        self.http_only_certificates.store(Arc::new(http_only));
+    }
+
+    pub fn mark_http_only(&self, certificate_id: &str) {
+        let mut http_only = self.http_only_certificates.load().as_ref().clone();
+        http_only.insert(certificate_id.to_string());
+        self.http_only_certificates.store(Arc::new(http_only));
+    }
+
+    pub fn remove(&self, certificate_id: &str) {
+        let mut certificates = self.certificates.load().as_ref().clone();
+        certificates.remove(certificate_id);
+        self.certificates.store(Arc::new(certificates));
+    }
+
+    pub fn is_http_only_for_domain(&self, domain: &str) -> bool {
+        let Some(certificate_id) = self.sni_to_certificate.load().get(domain).cloned() else {
+            return false;
+        };
+        self.http_only_certificates.load().contains(&certificate_id)
     }
 
     pub fn get(&self, certificate_id: &str) -> Option<Arc<CertifiedMaterial>> {
@@ -338,7 +382,7 @@ mod tests {
         store.install("app-cert".to_string(), test_material("old.example.com"));
         let config = GatewayConfig::parse(
             &json!({
-                "schema_version": 3,
+                "schema_version": 4,
                 "storage_dir": PathBuf::from("/tmp/easytier-gateway-tls-test"),
                 "listeners": {
                     "http": "127.0.0.1:5002",
@@ -352,7 +396,7 @@ mod tests {
                 },
                 "acme": {
                     "directory": { "kind": "letsencrypt_staging" },
-                    "contact_email": null,
+                    "contact_email": "gateway@example.com",
                     "terms_of_service_agreed": true
                 },
                 "certificates": [{

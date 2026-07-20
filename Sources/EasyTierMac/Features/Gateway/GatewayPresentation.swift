@@ -136,6 +136,13 @@ struct PublishedServicePresentation: Equatable, Sendable {
             presentation = ("Stopping", "Stopping gateway", .neutral, true)
         } else if gatewayState == .stopped {
             presentation = ("Waiting", "Waiting for gateway", .neutral, false)
+        } else if certificate?.servingMode == .httpOnly, route?.resolutionState == .ready {
+            presentation = (
+                "HTTP Only",
+                "Retrying managed HTTPS",
+                .warning,
+                false
+            )
         } else if certificate?.state == .failed {
             presentation = (
                 "SSL Error",
@@ -187,7 +194,7 @@ struct PublishedServicePresentation: Equatable, Sendable {
             || (tlsConfigured && magicDNSState != .disabled)
         canOpen = isRunning
             && magicDNSState == .ready
-            && certificate?.state == .active
+            && (certificate?.servingMode == .https || certificate?.servingMode == .httpOnly)
             && route?.resolutionState == .ready
         canRetryCertificate = isRunning && tlsConfigured && magicDNSState == .ready
         certificateActionTitle = certificate?.state == .failed || certificate?.state == .degraded

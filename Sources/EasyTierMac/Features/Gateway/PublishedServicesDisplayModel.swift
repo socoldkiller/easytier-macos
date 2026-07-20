@@ -27,7 +27,7 @@ struct PublishedServicesDisplayModel: Equatable, Sendable {
             magicDNSState: magicDNSState
         )
         self.networkName = networkName
-        let sslProvider = PublishedServiceSSLProvider(acmeConfiguration: acmeConfiguration)
+        let tlsConfigured = acmeConfiguration?.termsOfServiceAgreed == true
 
         var certificatesByID: [String: GatewayCertificateStatus] = [:]
         for certificate in status.certificates {
@@ -46,7 +46,7 @@ struct PublishedServicesDisplayModel: Equatable, Sendable {
                 certificate: certificate,
                 route: route,
                 gatewayEnabled: gatewayEnabled,
-                tlsConfigured: sslProvider.isSecure,
+                tlsConfigured: tlsConfigured,
                 gatewayState: status.state,
                 magicDNSState: magicDNSStateByServiceID[service.id] ?? magicDNSState
             )
@@ -59,7 +59,10 @@ struct PublishedServicesDisplayModel: Equatable, Sendable {
                 service: service,
                 presentation: presentation,
                 proxyIPv4: resolvedIPv4 ?? "—",
-                sslProvider: sslProvider,
+                sslProvider: PublishedServiceSSLProvider(
+                    acmeConfiguration: acmeConfiguration,
+                    certificate: certificate
+                ),
                 lastOnlineAt: Self.date(from: route?.lastOnlineAt)
             )
         }

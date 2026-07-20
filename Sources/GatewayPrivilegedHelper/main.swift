@@ -42,16 +42,32 @@ private final class GatewayPrivilegedService: NSObject, GatewayPrivilegedService
         }
     }
 
-    func start(configurationJSON: String, reply: @escaping (String?, String?) -> Void) {
+    func start(
+        configurationJSON: String,
+        secretsJSON: String,
+        reply: @escaping (String?, String?) -> Void
+    ) {
         run(code: "gatewayStartFailed", reply: reply) { [controller, session] in
-            try await controller.start(configurationJSON: configurationJSON, session: session)
+            try await controller.start(
+                configurationJSON: configurationJSON,
+                secretsJSON: secretsJSON,
+                session: session
+            )
             return "ok"
         }
     }
 
-    func apply(configurationJSON: String, reply: @escaping (String?, String?) -> Void) {
+    func apply(
+        configurationJSON: String,
+        secretsJSON: String,
+        reply: @escaping (String?, String?) -> Void
+    ) {
         run(code: "gatewayApplyFailed", reply: reply) { [controller, session] in
-            try await controller.apply(configurationJSON: configurationJSON, session: session)
+            try await controller.apply(
+                configurationJSON: configurationJSON,
+                secretsJSON: secretsJSON,
+                session: session
+            )
             return "ok"
         }
     }

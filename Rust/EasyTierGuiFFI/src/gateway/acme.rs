@@ -1,6 +1,7 @@
 use std::{collections::BTreeSet, net::SocketAddr, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
+use base64::Engine as _;
 use cloudflare::{
     endpoints::{
         dns::dns::{CreateDnsRecord, CreateDnsRecordParams, DeleteDnsRecord, DnsContent},
@@ -19,24 +20,28 @@ use hickory_resolver::{
     name_server::TokioConnectionProvider,
     proto::xfer::Protocol,
 };
+use hmac::{Hmac, Mac};
 #[cfg(test)]
 use instant_acme::HttpClient;
 use instant_acme::{
-    Account, AccountBuilder, AuthorizationStatus, CertificateIdentifier, ChallengeType, Identifier,
-    NewAccount, NewOrder, OrderStatus, RetryPolicy,
+    Account, AuthorizationStatus, CertificateIdentifier, ChallengeType, Identifier, NewOrder,
+    OrderStatus, RetryPolicy,
 };
 use rustls_pki_types::CertificateDer;
+use serde::{Deserialize, de::DeserializeOwned};
+use sha1::Sha1;
 use time::OffsetDateTime;
-#[cfg(test)]
-use tokio::sync::Mutex;
 use tokio::{
-    sync::{OnceCell, RwLock, watch},
+    sync::{RwLock, watch},
     time::sleep,
 };
 use zeroize::Zeroizing;
 
 use super::{
-    config::{AcmeConfig, ChallengeConfig, ValidatedCertificate, normalize_domain},
+    authority::{AuthorityKind, AuthorityPool},
+    config::{
+        AcmeConfig, ChallengeConfig, DnsProviderKind, ValidatedCertificate, normalize_domain,
+    },
     proxy::Http01ChallengeStore,
     storage::{GatewayStorage, PendingDnsCleanup},
     tls::CertifiedMaterial,
@@ -49,11 +54,9 @@ const ACME_POLL_TIMEOUT: Duration = Duration::from_secs(120);
 pub struct AcmeContext {
     config: RwLock<AcmeConfig>,
     storage: GatewayStorage,
-    account: Arc<OnceCell<Account>>,
+    authorities: AuthorityPool,
     challenges: Arc<Http01ChallengeStore>,
-    dns_provider: Arc<dyn Dns01Provider>,
-    #[cfg(test)]
-    test_http: Mutex<Option<Box<dyn HttpClient>>>,
+    dns_providers: DnsProviderRegistry,
 }
 
 pub struct AcmeJobOutput {
@@ -72,13 +75,68 @@ enum ProvisionedChallenge {
 trait Dns01Provider: Send + Sync {
     async fn present(
         &self,
-        api_token: &str,
+        credential: &DnsCredential,
         credential_id: &str,
         domain: &str,
         value: &str,
     ) -> Result<PendingDnsCleanup, Dns01PresentError>;
 
-    async fn cleanup(&self, api_token: &str, cleanup: &PendingDnsCleanup) -> Result<(), String>;
+    async fn cleanup(
+        &self,
+        credential: &DnsCredential,
+        cleanup: &PendingDnsCleanup,
+    ) -> Result<(), String>;
+}
+
+#[derive(Clone)]
+pub(super) enum DnsCredential {
+    Cloudflare {
+        api_token: Zeroizing<String>,
+    },
+    Aliyun {
+        access_key_id: Zeroizing<String>,
+        access_key_secret: Zeroizing<String>,
+    },
+}
+
+struct DnsProviderRegistry {
+    cloudflare: Arc<dyn Dns01Provider>,
+    aliyun: Arc<dyn Dns01Provider>,
+}
+
+impl DnsProviderRegistry {
+    fn production() -> Self {
+        Self {
+            cloudflare: Arc::new(CloudflareDnsProvider),
+            aliyun: Arc::new(AliyunDnsProvider),
+        }
+    }
+
+    #[cfg(test)]
+    fn testing(provider: Arc<dyn Dns01Provider>) -> Self {
+        Self {
+            cloudflare: provider.clone(),
+            aliyun: provider,
+        }
+    }
+
+    fn provider(&self, kind: DnsProviderKind) -> &Arc<dyn Dns01Provider> {
+        match kind {
+            DnsProviderKind::Cloudflare => &self.cloudflare,
+            DnsProviderKind::Aliyun => &self.aliyun,
+        }
+    }
+
+    fn provider_for_cleanup(
+        &self,
+        cleanup: &PendingDnsCleanup,
+    ) -> Result<&Arc<dyn Dns01Provider>, String> {
+        match cleanup.provider.as_str() {
+            "cloudflare" => Ok(&self.cloudflare),
+            "aliyun" => Ok(&self.aliyun),
+            provider => Err(format!("unsupported DNS cleanup provider {provider}")),
+        }
+    }
 }
 
 struct Dns01PresentError {
@@ -92,11 +150,17 @@ struct CloudflareDnsProvider;
 impl Dns01Provider for CloudflareDnsProvider {
     async fn present(
         &self,
-        api_token: &str,
+        credential: &DnsCredential,
         credential_id: &str,
         domain: &str,
         value: &str,
     ) -> Result<PendingDnsCleanup, Dns01PresentError> {
+        let DnsCredential::Cloudflare { api_token } = credential else {
+            return Err(Dns01PresentError {
+                message: "Cloudflare DNS credential has the wrong provider type".to_string(),
+                cleanup: None,
+            });
+        };
         let (cleanup, name_servers) =
             create_cloudflare_dns01(api_token, credential_id, domain, value)
                 .await
@@ -115,8 +179,75 @@ impl Dns01Provider for CloudflareDnsProvider {
         Ok(cleanup)
     }
 
-    async fn cleanup(&self, api_token: &str, cleanup: &PendingDnsCleanup) -> Result<(), String> {
+    async fn cleanup(
+        &self,
+        credential: &DnsCredential,
+        cleanup: &PendingDnsCleanup,
+    ) -> Result<(), String> {
+        let DnsCredential::Cloudflare { api_token } = credential else {
+            return Err("Cloudflare DNS credential has the wrong provider type".to_string());
+        };
         delete_cloudflare_record(api_token, &cleanup.zone_id, &cleanup.record_id).await
+    }
+}
+
+struct AliyunDnsProvider;
+
+#[async_trait]
+impl Dns01Provider for AliyunDnsProvider {
+    async fn present(
+        &self,
+        credential: &DnsCredential,
+        credential_id: &str,
+        domain: &str,
+        value: &str,
+    ) -> Result<PendingDnsCleanup, Dns01PresentError> {
+        let DnsCredential::Aliyun {
+            access_key_id,
+            access_key_secret,
+        } = credential
+        else {
+            return Err(Dns01PresentError {
+                message: "Aliyun DNS credential has the wrong provider type".to_string(),
+                cleanup: None,
+            });
+        };
+        let (cleanup, name_servers) = create_aliyun_dns01(
+            access_key_id,
+            access_key_secret,
+            credential_id,
+            domain,
+            value,
+        )
+        .await
+        .map_err(|message| Dns01PresentError {
+            message,
+            cleanup: None,
+        })?;
+        if let Err(message) =
+            wait_for_authoritative_txt(&name_servers, &cleanup.record_name, value).await
+        {
+            return Err(Dns01PresentError {
+                message,
+                cleanup: Some(cleanup),
+            });
+        }
+        Ok(cleanup)
+    }
+
+    async fn cleanup(
+        &self,
+        credential: &DnsCredential,
+        cleanup: &PendingDnsCleanup,
+    ) -> Result<(), String> {
+        let DnsCredential::Aliyun {
+            access_key_id,
+            access_key_secret,
+        } = credential
+        else {
+            return Err("Aliyun DNS credential has the wrong provider type".to_string());
+        };
+        delete_aliyun_record(access_key_id, access_key_secret, &cleanup.record_id).await
     }
 }
 
@@ -132,14 +263,13 @@ impl AcmeContext {
         storage: GatewayStorage,
         challenges: Arc<Http01ChallengeStore>,
     ) -> Arc<Self> {
+        let authorities = AuthorityPool::production(&config);
         Arc::new(Self {
             config: RwLock::new(config),
             storage,
-            account: Arc::new(OnceCell::new()),
+            authorities,
             challenges,
-            dns_provider: Arc::new(CloudflareDnsProvider),
-            #[cfg(test)]
-            test_http: Mutex::new(None),
+            dns_providers: DnsProviderRegistry::production(),
         })
     }
 
@@ -150,13 +280,13 @@ impl AcmeContext {
         challenges: Arc<Http01ChallengeStore>,
         http: Box<dyn HttpClient>,
     ) -> Arc<Self> {
+        let authorities = AuthorityPool::testing(&config, http);
         Arc::new(Self {
             config: RwLock::new(config),
             storage,
-            account: Arc::new(OnceCell::new()),
+            authorities,
             challenges,
-            dns_provider: Arc::new(CloudflareDnsProvider),
-            test_http: Mutex::new(Some(http)),
+            dns_providers: DnsProviderRegistry::production(),
         })
     }
 
@@ -168,49 +298,90 @@ impl AcmeContext {
         http: Box<dyn HttpClient>,
         dns_provider: Arc<dyn Dns01Provider>,
     ) -> Arc<Self> {
+        let authorities = AuthorityPool::testing(&config, http);
         Arc::new(Self {
             config: RwLock::new(config),
             storage,
-            account: Arc::new(OnceCell::new()),
+            authorities,
             challenges,
-            dns_provider,
-            test_http: Mutex::new(Some(http)),
+            dns_providers: DnsProviderRegistry::testing(dns_provider),
         })
     }
 
     pub async fn issue(
         &self,
         certificate: ValidatedCertificate,
-        cloudflare_token: Option<Zeroizing<String>>,
+        dns_credential: Option<DnsCredential>,
         current_leaf_der: Option<Vec<u8>>,
         mut cancellation: watch::Receiver<bool>,
     ) -> AcmeJobOutput {
         let certificate_id = certificate.id.clone();
-        let mut provisioned = Vec::new();
-        let cloudflare_token_ref = cloudflare_token.as_ref().map(|token| token.as_str());
-        let issue = self.issue_inner(
-            &certificate,
-            cloudflare_token_ref,
-            current_leaf_der.as_deref(),
-            &mut provisioned,
-        );
-        let result = tokio::select! {
-            result = issue => result,
-            changed = cancellation.changed() => {
-                match changed {
-                    Ok(()) if *cancellation.borrow() => Err("ACME operation was cancelled".to_string()),
-                    Ok(()) | Err(_) => Err("ACME cancellation channel closed".to_string()),
+        let dns_credential_ref = dns_credential.as_ref();
+        let config = self.config.read().await.clone();
+        let mut result = Err("automatic certificate request did not run".to_string());
+        let mut attempt_errors = Vec::new();
+        let mut cleanup_failures = Vec::new();
+        let mut cleanup_journal_error = None;
+
+        'authorities: for authority in self.authorities.ordered_kinds() {
+            let account = match self
+                .authorities
+                .account(authority, &config, &self.storage)
+                .await
+            {
+                Ok(account) => account,
+                Err(error) => {
+                    attempt_errors.push(error);
+                    continue;
+                }
+            };
+            for challenge in challenge_attempts(&certificate) {
+                let mut attempted_certificate = certificate.clone();
+                attempted_certificate.challenge = challenge;
+                let mut provisioned = Vec::new();
+                let issue = self.issue_inner(
+                    &account,
+                    authority,
+                    &attempted_certificate,
+                    dns_credential_ref,
+                    current_leaf_der.as_deref(),
+                    &mut provisioned,
+                );
+                let attempt = tokio::select! {
+                    result = issue => result,
+                    changed = cancellation.changed() => {
+                        match changed {
+                            Ok(()) if *cancellation.borrow() => Err("ACME operation was cancelled".to_string()),
+                            Ok(()) | Err(_) => Err("ACME cancellation channel closed".to_string()),
+                        }
+                    }
+                };
+                let failed_cleanups = self
+                    .cleanup_challenges(provisioned, dns_credential_ref)
+                    .await;
+                cleanup_failures.extend(failed_cleanups);
+                match attempt {
+                    Ok(material) => {
+                        result = Ok(material);
+                        break 'authorities;
+                    }
+                    Err(error) if error.contains("cancel") => {
+                        result = Err(error);
+                        break 'authorities;
+                    }
+                    Err(error) => attempt_errors.push(error),
                 }
             }
-        };
-        let cleanup_failures = self
-            .cleanup_challenges(provisioned, cloudflare_token_ref)
-            .await;
-        let cleanup_journal_error = if cleanup_failures.is_empty() {
-            None
-        } else {
-            self.storage.merge_cleanup_journal(&cleanup_failures).err()
-        };
+        }
+        if result.is_err() && !attempt_errors.is_empty() {
+            result = Err(format!(
+                "automatic certificate services were unavailable after {} attempt(s)",
+                attempt_errors.len()
+            ));
+        }
+        if !cleanup_failures.is_empty() {
+            cleanup_journal_error = self.storage.merge_cleanup_journal(&cleanup_failures).err();
+        }
         AcmeJobOutput {
             certificate_id,
             result,
@@ -223,7 +394,12 @@ impl AcmeContext {
         &self,
         material: &CertifiedMaterial,
     ) -> Result<Option<(OffsetDateTime, Duration)>, String> {
-        let account = self.account().await?;
+        let config = self.config.read().await.clone();
+        let authority = AuthorityKind::from_storage(&material.metadata.authority);
+        let account = self
+            .authorities
+            .account(authority, &config, &self.storage)
+            .await?;
         let certificate_der = CertificateDer::from(material.metadata.leaf_der.clone());
         let identifier = CertificateIdentifier::try_from(&certificate_der)
             .map_err(|error| format!("failed to derive ARI certificate identifier: {error}"))?;
@@ -248,20 +424,12 @@ impl AcmeContext {
     }
 
     pub async fn update_config(&self, config: AcmeConfig) -> Result<(), String> {
-        if let Some(account) = self.account.get() {
-            let contact = config
-                .contact_email
-                .as_deref()
-                .map(|email| format!("mailto:{email}"));
-            let contacts = contact
-                .as_deref()
-                .map(|contact| vec![contact])
-                .unwrap_or_default();
-            account
-                .update_contacts(&contacts)
-                .await
-                .map_err(|error| format!("failed to update ACME account contact: {error}"))?;
-        }
+        let contact = config
+            .contact_email
+            .as_deref()
+            .map(|email| format!("mailto:{email}"));
+        let contacts = contact.as_deref().into_iter().collect::<Vec<_>>();
+        self.authorities.update_contacts(&contacts).await?;
         *self.config.write().await = config;
         Ok(())
     }
@@ -269,19 +437,23 @@ impl AcmeContext {
     pub async fn retry_cleanup(
         &self,
         cleanup: &PendingDnsCleanup,
-        cloudflare_token: &str,
+        credential: &DnsCredential,
     ) -> Result<(), String> {
-        self.dns_provider.cleanup(cloudflare_token, cleanup).await
+        self.dns_providers
+            .provider_for_cleanup(cleanup)?
+            .cleanup(credential, cleanup)
+            .await
     }
 
     async fn issue_inner(
         &self,
+        account: &Account,
+        authority: AuthorityKind,
         certificate: &ValidatedCertificate,
-        cloudflare_token: Option<&str>,
+        dns_credential: Option<&DnsCredential>,
         current_leaf_der: Option<&[u8]>,
         provisioned: &mut Vec<ProvisionedChallenge>,
     ) -> Result<Arc<CertifiedMaterial>, String> {
-        let account = self.account().await?;
         let identifiers = certificate
             .domains
             .iter()
@@ -320,6 +492,11 @@ impl AcmeContext {
                 let challenge_type = match certificate.challenge {
                     ChallengeConfig::Http01 => ChallengeType::Http01,
                     ChallengeConfig::Dns01 { .. } => ChallengeType::Dns01,
+                    ChallengeConfig::Automatic { .. } => {
+                        return Err(
+                            "Automatic challenge was not resolved before issuance".to_string()
+                        );
+                    }
                 };
                 let mut challenge = authorization
                     .challenge(challenge_type.clone())
@@ -337,18 +514,22 @@ impl AcmeContext {
                         );
                         provisioned.push(ProvisionedChallenge::Http01 { domain, token });
                     }
-                    ChallengeConfig::Dns01 { credential_id, .. } => {
-                        let token = cloudflare_token.ok_or_else(|| {
+                    ChallengeConfig::Dns01 {
+                        provider,
+                        credential_id,
+                    } => {
+                        let credential = dns_credential.ok_or_else(|| {
                             format!(
-                                "Cloudflare credential {credential_id} is unavailable for certificate {}",
+                                "DNS credential {credential_id} is unavailable for certificate {}",
                                 certificate.id
                             )
                         })?;
                         let domain = identifier.trim_start_matches("*.");
                         let dns_value = key_authorization.dns_value();
                         let cleanup = match self
-                            .dns_provider
-                            .present(token, credential_id, domain, &dns_value)
+                            .dns_providers
+                            .provider(*provider)
+                            .present(credential, credential_id, domain, &dns_value)
                             .await
                         {
                             Ok(cleanup) => cleanup,
@@ -363,6 +544,7 @@ impl AcmeContext {
                             cleanup: cleanup.clone(),
                         });
                     }
+                    ChallengeConfig::Automatic { .. } => unreachable!(),
                 }
                 challenge
                     .set_ready()
@@ -393,13 +575,14 @@ impl AcmeContext {
             &certificate.domains,
             &certificate_chain_pem,
             &private_key_pem,
+            authority.storage_value(),
         )
     }
 
     async fn cleanup_challenges(
         &self,
         provisioned: Vec<ProvisionedChallenge>,
-        cloudflare_token: Option<&str>,
+        dns_credential: Option<&DnsCredential>,
     ) -> Vec<PendingDnsCleanup> {
         let mut failures = Vec::new();
         for challenge in provisioned {
@@ -408,11 +591,13 @@ impl AcmeContext {
                     self.challenges.remove(&domain, &token);
                 }
                 ProvisionedChallenge::Dns01 { cleanup } => {
-                    let result = match cloudflare_token {
-                        Some(token) => self.dns_provider.cleanup(token, &cleanup).await,
-                        None => {
-                            Err("Cloudflare credential is unavailable during cleanup".to_string())
-                        }
+                    let result = match dns_credential {
+                        Some(credential) => match self.dns_providers.provider_for_cleanup(&cleanup)
+                        {
+                            Ok(provider) => provider.cleanup(credential, &cleanup).await,
+                            Err(error) => Err(error),
+                        },
+                        None => Err("DNS credential is unavailable during cleanup".to_string()),
                     };
                     if result.is_err() {
                         failures.push(cleanup);
@@ -422,60 +607,214 @@ impl AcmeContext {
         }
         failures
     }
+}
 
-    async fn account(&self) -> Result<Account, String> {
-        let config = self.config.read().await.clone();
-        self.account
-            .get_or_try_init(|| async {
-                let directory_url = config.directory.url().to_string();
-                let builder = self.account_builder(&config).await?;
-                if let Some(credentials) = self.storage.load_account(&directory_url)? {
-                    return builder
-                        .from_credentials(credentials)
-                        .await
-                        .map_err(|error| format!("failed to restore ACME account: {error}"));
-                }
-
-                let contact = config
-                    .contact_email
-                    .as_deref()
-                    .map(|email| format!("mailto:{email}"));
-                let contact_refs = contact
-                    .as_deref()
-                    .map(|contact| vec![contact])
-                    .unwrap_or_default();
-                let (account, credentials) = builder
-                    .create(
-                        &NewAccount {
-                            contact: &contact_refs,
-                            terms_of_service_agreed: config.terms_of_service_agreed,
-                            only_return_existing: false,
-                        },
-                        directory_url.clone(),
-                        None,
-                    )
-                    .await
-                    .map_err(|error| format!("failed to create ACME account: {error}"))?;
-                self.storage.store_account(&directory_url, &credentials)?;
-                Ok(account)
-            })
-            .await
-            .cloned()
-    }
-
-    async fn account_builder(&self, config: &AcmeConfig) -> Result<AccountBuilder, String> {
-        #[cfg(test)]
-        if let Some(http) = self.test_http.lock().await.take() {
-            return Ok(Account::builder_with_http(http));
+fn challenge_attempts(certificate: &ValidatedCertificate) -> Vec<ChallengeConfig> {
+    match &certificate.challenge {
+        ChallengeConfig::Automatic { dns01 } => {
+            let has_wildcard = certificate
+                .domains
+                .iter()
+                .any(|domain| domain.starts_with("*."));
+            let mut attempts = Vec::with_capacity(2);
+            if !has_wildcard {
+                attempts.push(ChallengeConfig::Http01);
+            }
+            if let Some(dns01) = dns01 {
+                attempts.push(ChallengeConfig::Dns01 {
+                    provider: dns01.provider,
+                    credential_id: dns01.credential_id.clone(),
+                });
+            }
+            attempts
         }
+        challenge => vec![challenge.clone()],
+    }
+}
 
-        match config.directory.custom_ca_cert_path() {
-            Some(path) => Account::builder_with_root(path)
-                .map_err(|error| format!("failed to configure custom ACME CA: {error}")),
-            None => Account::builder()
-                .map_err(|error| format!("failed to create ACME HTTP client: {error}")),
+#[derive(Deserialize)]
+struct AliyunDomainInfo {
+    #[serde(rename = "DnsServers")]
+    dns_servers: Option<AliyunDnsServers>,
+}
+
+#[derive(Deserialize)]
+struct AliyunDnsServers {
+    #[serde(rename = "DnsServer", default)]
+    values: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct AliyunAddRecordResponse {
+    #[serde(rename = "RecordId")]
+    record_id: String,
+}
+
+async fn create_aliyun_dns01(
+    access_key_id: &str,
+    access_key_secret: &str,
+    credential_id: &str,
+    domain: &str,
+    value: &str,
+) -> Result<(PendingDnsCleanup, Vec<String>), String> {
+    let (zone, name_servers) =
+        discover_aliyun_zone(access_key_id, access_key_secret, domain).await?;
+    let record_name = format!("_acme-challenge.{domain}");
+    let relative = record_name
+        .strip_suffix(&format!(".{zone}"))
+        .unwrap_or(&record_name);
+    let response: AliyunAddRecordResponse = aliyun_request(
+        access_key_id,
+        access_key_secret,
+        "AddDomainRecord",
+        &[
+            ("DomainName", zone.as_str()),
+            ("RR", relative),
+            ("Type", "TXT"),
+            ("Value", value),
+        ],
+    )
+    .await?;
+    Ok((
+        PendingDnsCleanup {
+            provider: "aliyun".to_string(),
+            credential_id: credential_id.to_string(),
+            zone_id: zone,
+            record_id: response.record_id,
+            record_name,
+        },
+        name_servers,
+    ))
+}
+
+async fn discover_aliyun_zone(
+    access_key_id: &str,
+    access_key_secret: &str,
+    domain: &str,
+) -> Result<(String, Vec<String>), String> {
+    let labels = domain.split('.').collect::<Vec<_>>();
+    for index in 0..labels.len().saturating_sub(1) {
+        let candidate = labels[index..].join(".");
+        let result: Result<AliyunDomainInfo, String> = aliyun_request(
+            access_key_id,
+            access_key_secret,
+            "DescribeDomainInfo",
+            &[("DomainName", candidate.as_str())],
+        )
+        .await;
+        if let Ok(info) = result {
+            let name_servers = info
+                .dns_servers
+                .map(|servers| servers.values)
+                .unwrap_or_default();
+            if name_servers.is_empty() {
+                return Err(format!(
+                    "Aliyun DNS zone {candidate} did not provide authoritative nameservers"
+                ));
+            }
+            return Ok((candidate, name_servers));
         }
     }
+    Err(format!("no Aliyun DNS zone covers {domain}"))
+}
+
+async fn delete_aliyun_record(
+    access_key_id: &str,
+    access_key_secret: &str,
+    record_id: &str,
+) -> Result<(), String> {
+    let _: serde_json::Value = aliyun_request(
+        access_key_id,
+        access_key_secret,
+        "DeleteDomainRecord",
+        &[("RecordId", record_id)],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn aliyun_request<T: DeserializeOwned>(
+    access_key_id: &str,
+    access_key_secret: &str,
+    action: &str,
+    action_parameters: &[(&str, &str)],
+) -> Result<T, String> {
+    let timestamp = OffsetDateTime::now_utc()
+        .replace_nanosecond(0)
+        .map_err(|error| format!("failed to construct Aliyun request time: {error}"))?
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|error| format!("failed to format Aliyun request time: {error}"))?;
+    let nonce = uuid::Uuid::new_v4().to_string();
+    let mut parameters = std::collections::BTreeMap::from([
+        ("AccessKeyId".to_string(), access_key_id.to_string()),
+        ("Action".to_string(), action.to_string()),
+        ("Format".to_string(), "JSON".to_string()),
+        ("SignatureMethod".to_string(), "HMAC-SHA1".to_string()),
+        ("SignatureNonce".to_string(), nonce),
+        ("SignatureVersion".to_string(), "1.0".to_string()),
+        ("Timestamp".to_string(), timestamp),
+        ("Version".to_string(), "2015-01-09".to_string()),
+    ]);
+    for (key, value) in action_parameters {
+        parameters.insert((*key).to_string(), (*value).to_string());
+    }
+    let signature = aliyun_signature(&parameters, access_key_secret)?;
+    parameters.insert("Signature".to_string(), signature);
+
+    let response = reqwest::Client::new()
+        .post("https://alidns.aliyuncs.com/")
+        .form(&parameters)
+        .send()
+        .await
+        .map_err(|error| format!("Aliyun DNS request failed: {error}"))?;
+    let status = response.status();
+    let body = response
+        .bytes()
+        .await
+        .map_err(|error| format!("failed to read Aliyun DNS response: {error}"))?;
+    if !status.is_success() {
+        return Err(format!("Aliyun DNS returned HTTP {status}"));
+    }
+    if let Ok(error) = serde_json::from_slice::<AliyunErrorResponse>(&body)
+        && error.code.is_some()
+    {
+        return Err(format!(
+            "Aliyun DNS request was rejected: {}",
+            error.code.as_deref().unwrap_or("unknown error")
+        ));
+    }
+    serde_json::from_slice(&body)
+        .map_err(|error| format!("Aliyun DNS response was invalid: {error}"))
+}
+
+#[derive(Deserialize)]
+struct AliyunErrorResponse {
+    #[serde(rename = "Code")]
+    code: Option<String>,
+}
+
+fn aliyun_encode(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes())
+        .collect::<String>()
+        .replace('+', "%20")
+        .replace('*', "%2A")
+        .replace("%7E", "~")
+}
+
+fn aliyun_signature(
+    parameters: &std::collections::BTreeMap<String, String>,
+    access_key_secret: &str,
+) -> Result<String, String> {
+    let canonical_query = parameters
+        .iter()
+        .map(|(key, value)| format!("{}={}", aliyun_encode(key), aliyun_encode(value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    let string_to_sign = format!("POST&%2F&{}", aliyun_encode(&canonical_query));
+    let mut mac = Hmac::<Sha1>::new_from_slice(format!("{access_key_secret}&").as_bytes())
+        .map_err(|_| "failed to initialize Aliyun request signing".to_string())?;
+    mac.update(string_to_sign.as_bytes());
+    Ok(base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes()))
 }
 
 async fn create_cloudflare_dns01(
@@ -717,7 +1056,87 @@ mod tests {
     };
 
     use super::*;
-    use crate::gateway::config::{AcmeDirectoryConfig, DnsProviderKind};
+    use crate::gateway::config::{AcmeDirectoryConfig, Dns01Config, DnsProviderKind};
+
+    #[test]
+    fn automatic_challenge_uses_http01_without_dns_fallback() {
+        let certificate = ValidatedCertificate {
+            id: "certificate".to_string(),
+            domains: vec!["app.example.com".to_string()],
+            challenge: ChallengeConfig::Automatic { dns01: None },
+        };
+
+        assert_eq!(
+            challenge_attempts(&certificate),
+            vec![ChallengeConfig::Http01]
+        );
+    }
+
+    #[test]
+    fn automatic_challenge_tries_http01_then_dns01() {
+        let certificate = ValidatedCertificate {
+            id: "certificate".to_string(),
+            domains: vec!["app.example.com".to_string()],
+            challenge: ChallengeConfig::Automatic {
+                dns01: Some(Dns01Config {
+                    provider: DnsProviderKind::Aliyun,
+                    credential_id: "aliyun-main".to_string(),
+                }),
+            },
+        };
+
+        assert_eq!(
+            challenge_attempts(&certificate),
+            vec![
+                ChallengeConfig::Http01,
+                ChallengeConfig::Dns01 {
+                    provider: DnsProviderKind::Aliyun,
+                    credential_id: "aliyun-main".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn automatic_wildcard_skips_http01() {
+        let certificate = ValidatedCertificate {
+            id: "certificate".to_string(),
+            domains: vec!["*.example.com".to_string()],
+            challenge: ChallengeConfig::Automatic {
+                dns01: Some(Dns01Config {
+                    provider: DnsProviderKind::Cloudflare,
+                    credential_id: "cloudflare-main".to_string(),
+                }),
+            },
+        };
+
+        assert_eq!(
+            challenge_attempts(&certificate),
+            vec![ChallengeConfig::Dns01 {
+                provider: DnsProviderKind::Cloudflare,
+                credential_id: "cloudflare-main".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn aliyun_encoding_follows_rfc3986_rules() {
+        assert_eq!(aliyun_encode("a b+c*~"), "a%20b%2Bc%2A~");
+    }
+
+    #[test]
+    fn aliyun_signature_is_stable_for_fixed_parameters() {
+        let parameters = std::collections::BTreeMap::from([
+            ("AccessKeyId".to_string(), "testid".to_string()),
+            ("Action".to_string(), "DescribeDomainInfo".to_string()),
+            ("Format".to_string(), "JSON".to_string()),
+        ]);
+
+        assert_eq!(
+            aliyun_signature(&parameters, "testsecret").unwrap(),
+            "OGQcOUWTZczjcr/IKcdpEByndvs="
+        );
+    }
 
     #[test]
     fn dns01_record_name_removes_wildcard_prefix() {
@@ -970,7 +1389,9 @@ mod tests {
             let output = context
                 .issue(
                     certificate,
-                    Some(Zeroizing::new("cloudflare-token".to_string())),
+                    Some(DnsCredential::Cloudflare {
+                        api_token: Zeroizing::new("cloudflare-token".to_string()),
+                    }),
                     None,
                     shutdown,
                 )
@@ -1046,12 +1467,17 @@ mod tests {
             let output = context
                 .issue(
                     certificate,
-                    Some(Zeroizing::new("cloudflare-token".to_string())),
+                    Some(DnsCredential::Cloudflare {
+                        api_token: Zeroizing::new("cloudflare-token".to_string()),
+                    }),
                     None,
                     shutdown,
                 )
                 .await;
-            assert!(output.result.unwrap_err().contains("did not propagate"));
+            assert_eq!(
+                output.result.unwrap_err(),
+                "automatic certificate services were unavailable after 1 attempt(s)"
+            );
             assert_eq!(output.cleanup_failures.len(), 1);
             assert!(*cleanup_attempted.lock().unwrap());
             let journal = storage.load_cleanup_journal().unwrap();
@@ -1299,11 +1725,14 @@ mod tests {
     impl Dns01Provider for MockDnsProvider {
         async fn present(
             &self,
-            api_token: &str,
+            credential: &DnsCredential,
             credential_id: &str,
             domain: &str,
             value: &str,
         ) -> Result<PendingDnsCleanup, Dns01PresentError> {
+            let DnsCredential::Cloudflare { api_token } = credential else {
+                panic!("expected Cloudflare credential");
+            };
             self.state
                 .lock()
                 .unwrap()
@@ -1325,7 +1754,7 @@ mod tests {
 
         async fn cleanup(
             &self,
-            _api_token: &str,
+            _credential: &DnsCredential,
             cleanup: &PendingDnsCleanup,
         ) -> Result<(), String> {
             self.state.lock().unwrap().cleaned.push(cleanup.clone());
@@ -1341,7 +1770,7 @@ mod tests {
     impl Dns01Provider for FailingDnsProvider {
         async fn present(
             &self,
-            _api_token: &str,
+            _credential: &DnsCredential,
             credential_id: &str,
             domain: &str,
             _value: &str,
@@ -1360,7 +1789,7 @@ mod tests {
 
         async fn cleanup(
             &self,
-            _api_token: &str,
+            _credential: &DnsCredential,
             _cleanup: &PendingDnsCleanup,
         ) -> Result<(), String> {
             *self.cleanup_attempted.lock().unwrap() = true;
