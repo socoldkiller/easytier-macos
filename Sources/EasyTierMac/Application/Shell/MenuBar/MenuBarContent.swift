@@ -5,6 +5,7 @@ import SwiftUI
 
 struct MenuBarContent: View {
     @Environment(AppContext.self) private var appContext
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismiss) private var dismiss
 
@@ -22,16 +23,16 @@ struct MenuBarContent: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .top, spacing: 12) {
+            HStack(alignment: .center, spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("EasyTier")
                         .font(.body.weight(.medium))
-                    HStack(spacing: 6) {
+                    HStack(spacing: 5) {
                         Circle()
                             .fill(connectionIndicatorColor)
-                            .frame(width: 6, height: 6)
+                            .frame(width: 5, height: 5)
                         Text(connectionSubtitle)
-                            .font(.body)
+                            .font(.callout)
                             .foregroundStyle(MenuBarPalette.secondaryText)
                     }
                 }
@@ -43,10 +44,10 @@ struct MenuBarContent: View {
                         phase: store.selectedRuntimeReadinessPhase,
                         isBusy: store.isBusy
                     )
-                    .padding(4)
+                    .padding(2)
                     .background(
                         connectionSwitchBackground,
-                        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        in: .rect(cornerRadius: 7)
                     )
                 }
                 .buttonStyle(QuietPressButtonStyle(pressedScale: 0.94, pressedOpacity: 0.86))
@@ -57,9 +58,8 @@ struct MenuBarContent: View {
                 .accessibilityHint(Text(connectionSwitchAccessibilityHint))
                 .accessibilityAddTraits(.isButton)
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 8)
-            .padding(.bottom, 10)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
 
             MenuBarDivider()
 
@@ -84,11 +84,6 @@ struct MenuBarContent: View {
             MenuBarPlainRow(title: devicesTitle, isMuted: true)
 
             MenuBarDivider()
-
-            if store.isQuitting {
-                MenuBarPlainRow(title: "Quitting EasyTier...", isMuted: true)
-                MenuBarDivider()
-            }
 
             MenuBarListButton(
                 title: "Check for Updates…",
@@ -139,14 +134,14 @@ struct MenuBarContent: View {
                 action: quit
             )
         }
-        .frame(width: 292)
+        .frame(width: 280)
         .foregroundStyle(MenuBarPalette.primaryText)
-        .background(
-            FrostedGlass(
-                role: .popover,
-                renderCoordinator: appContext.presentation.glassRenderCoordinator
-            )
-        )
+        .background(menuBackgroundTint)
+    }
+
+    private var menuBackgroundTint: Color {
+        Color(nsColor: .windowBackgroundColor)
+            .opacity(colorScheme == .dark ? 0.58 : 0.68)
     }
 
     private var selectedNetworkState: ConnectionGlyphState {

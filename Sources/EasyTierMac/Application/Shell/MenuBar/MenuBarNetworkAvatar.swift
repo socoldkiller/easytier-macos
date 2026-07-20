@@ -8,10 +8,10 @@ struct MenuBarNetworkAvatar: View {
         ZStack {
             Circle()
                 .fill(avatarColor)
-            ConnectionGlyph(state: state, size: 20)
+            ConnectionGlyph(state: state, size: 17)
                 .opacity(0.78)
         }
-        .frame(width: 36, height: 36)
+        .frame(width: 30, height: 30)
     }
 
     private var avatarColor: Color {

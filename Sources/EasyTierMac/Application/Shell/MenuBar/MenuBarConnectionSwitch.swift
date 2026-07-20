@@ -23,9 +23,9 @@ struct MenuBarConnectionSwitch: View {
                         .stroke(Color.black.opacity(0.16), lineWidth: 0.5)
                 }
                 .shadow(color: .black.opacity(0.16), radius: 1, x: 0, y: 1)
-                .padding(2.5)
+                .padding(2)
         }
-        .frame(width: 40, height: 24)
+        .frame(width: 36, height: 20)
         .opacity(isBusy ? 0.58 : 1)
         .animation(EasyTierMotion.selection(reduceMotion: reduceMotion), value: phase)
         .accessibilityLabel(Text(accessibilityLabel))

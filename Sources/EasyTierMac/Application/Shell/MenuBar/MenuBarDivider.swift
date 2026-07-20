@@ -5,6 +5,6 @@ struct MenuBarDivider: View {
         Rectangle()
             .fill(MenuBarPalette.divider)
             .frame(height: 1)
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 10)
     }
 }

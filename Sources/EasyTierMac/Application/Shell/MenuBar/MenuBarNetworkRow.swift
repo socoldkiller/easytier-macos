@@ -19,7 +19,7 @@ struct MenuBarNetworkRow: View {
     var body: some View {
         HStack(spacing: 0) {
             Button(action: open) {
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
                     MenuBarNetworkAvatar(state: state)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(name)
@@ -27,7 +27,7 @@ struct MenuBarNetworkRow: View {
                             .foregroundStyle(primaryTextColor)
                             .lineLimit(1)
                         Text(subtitle)
-                            .font(.body)
+                            .font(.callout)
                             .foregroundStyle(secondaryTextColor)
                             .lineLimit(1)
                     }
@@ -42,7 +42,7 @@ struct MenuBarNetworkRow: View {
                 .contentShape(Rectangle())
                 .padding(.leading, 8)
                 .padding(.trailing, canSwitch ? 0 : 8)
-                .padding(.vertical, 6)
+                .padding(.vertical, 4)
             }
             .buttonStyle(QuietPressButtonStyle(pressedScale: 0.985, pressedOpacity: 0.82))
             .frame(maxWidth: .infinity)
@@ -66,7 +66,7 @@ struct MenuBarNetworkRow: View {
                 .padding(.trailing, 4)
             }
         }
-        .background(rowBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(rowBackground, in: .rect(cornerRadius: MenuBarPalette.selectedRowCornerRadius))
         .padding(.horizontal, MenuBarPalette.selectedRowHorizontalInset)
         .padding(.vertical, MenuBarPalette.selectedRowVerticalInset)
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: isOpenHovering)
@@ -101,7 +101,7 @@ struct MenuBarNetworkRow: View {
             Image(systemName: systemName)
                 .font(.body.weight(.semibold))
                 .foregroundStyle(inlineChevronColor(isHovering: isHovering.wrappedValue))
-                .frame(width: 24, height: 32)
+                .frame(width: 22, height: 30)
                 .contentShape(Rectangle())
         }
         .buttonStyle(QuietPressButtonStyle(pressedScale: 0.9, pressedOpacity: 0.76))

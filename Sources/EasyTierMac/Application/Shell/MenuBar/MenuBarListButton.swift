@@ -12,7 +12,7 @@ struct MenuBarListButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 12) {
+            HStack(spacing: 8) {
                 Text(title)
                     .font(.body)
                     .foregroundStyle(primaryTextColor)
@@ -24,9 +24,9 @@ struct MenuBarListButton: View {
                 }
             }
             .contentShape(Rectangle())
-            .padding(.horizontal, 12)
+            .padding(.horizontal, MenuBarPalette.selectedRowContentHorizontalPadding)
             .padding(.vertical, MenuBarPalette.selectedRowContentVerticalPadding)
-            .background(rowBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(rowBackground, in: .rect(cornerRadius: MenuBarPalette.selectedRowCornerRadius))
             .padding(.horizontal, MenuBarPalette.selectedRowHorizontalInset)
             .padding(.vertical, MenuBarPalette.selectedRowVerticalInset)
         }

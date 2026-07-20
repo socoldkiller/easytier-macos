@@ -7,9 +7,11 @@ enum MenuBarPalette {
     static let divider = Color.primary.opacity(0.14)
     static let rowHighlight = Color.primary.opacity(0.08)
     static let selectedRow = EasyTierColors.menuBarSelectedRow
-    static let selectedRowHorizontalInset: CGFloat = 12
-    static let selectedRowVerticalInset: CGFloat = 5
-    static let selectedRowContentVerticalPadding: CGFloat = 4
+    static let selectedRowHorizontalInset: CGFloat = 6
+    static let selectedRowVerticalInset: CGFloat = 3
+    static let selectedRowContentHorizontalPadding: CGFloat = 8
+    static let selectedRowContentVerticalPadding: CGFloat = 3
+    static let selectedRowCornerRadius: CGFloat = 6
     static let connected = EasyTierColors.menuBarConnected
     static let selectedRowText = Color(nsColor: .selectedMenuItemTextColor)
 }

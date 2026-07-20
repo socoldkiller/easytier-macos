@@ -22,7 +22,7 @@ final class MenuBarStatusItemController: NSObject {
     private var screenAvailable = true
     private var sessionActive = true
 
-    private static let popoverSize = NSSize(width: 292, height: 370)
+    private static let popoverSize = NSSize(width: 280, height: 340)
     private static let counterclockwiseNodeIndexes = [0, 1, 2]
     private static let stepDuration: Duration = .milliseconds(340)
 

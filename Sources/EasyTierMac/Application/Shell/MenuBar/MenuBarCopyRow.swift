@@ -21,14 +21,14 @@ struct MenuBarCopyRow: View {
                 Image(systemName: isCopied ? "checkmark.circle.fill" : "doc.on.doc")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(iconColor)
-                    .frame(width: 18, height: 18)
+                    .frame(width: 16, height: 16)
                     .opacity(isDisabled ? 0 : 1)
                     .contentTransition(.symbolEffect(.replace))
             }
             .contentShape(Rectangle())
-            .padding(.horizontal, 12)
+            .padding(.horizontal, MenuBarPalette.selectedRowContentHorizontalPadding)
             .padding(.vertical, MenuBarPalette.selectedRowContentVerticalPadding)
-            .background(rowBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(rowBackground, in: .rect(cornerRadius: MenuBarPalette.selectedRowCornerRadius))
             .padding(.horizontal, MenuBarPalette.selectedRowHorizontalInset)
             .padding(.vertical, MenuBarPalette.selectedRowVerticalInset)
         }
