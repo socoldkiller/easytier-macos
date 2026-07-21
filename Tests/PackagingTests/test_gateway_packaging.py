@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
 import plistlib
 import re
+import subprocess
+import tempfile
 import unittest
 
 
@@ -131,6 +134,115 @@ class GatewayPackagingTests(unittest.TestCase):
         self.assertLess(replace_index, register_index)
         self.assertLess(register_index, open_index)
         self.assertIn("EASYTIER_SKIP_LEGACY_HELPER_UNINSTALL=1", install_script)
+
+    def test_debug_install_temporarily_exposes_the_signing_keychain_to_xcode(self) -> None:
+        build_script = (ROOT_DIR / "scripts" / "build-debug-app.sh").read_text(
+            encoding="utf-8"
+        )
+        wrapper = ROOT_DIR / "scripts" / "with-signing-keychain.sh"
+
+        self.assertIn('"$ROOT_DIR/scripts/with-signing-keychain.sh" xcodebuild', build_script)
+        self.assertTrue(wrapper.is_file())
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = pathlib.Path(temporary_directory)
+            fake_bin = temporary_path / "bin"
+            fake_bin.mkdir()
+            signing_keychain = temporary_path / "signing.keychain-db"
+            signing_keychain.touch()
+            security_log = temporary_path / "security.log"
+            command_log = temporary_path / "command.log"
+
+            fake_security = fake_bin / "security"
+            fake_security.write_text(
+                """#!/bin/bash
+set -eu
+printf '%s\n' "$*" >> "$SECURITY_LOG"
+if [[ "$1 $2 $3" == "list-keychains -d user" ]]; then
+  if [[ "$#" -eq 3 ]]; then
+    printf '    \"/Users/test/Library/Keychains/login.keychain-db\"\n'
+  fi
+  exit 0
+fi
+exit 64
+""",
+                encoding="utf-8",
+            )
+            fake_security.chmod(0o755)
+
+            fake_command = fake_bin / "fake-xcodebuild"
+            fake_command.write_text(
+                """#!/bin/bash
+set -eu
+printf 'ran\n' > "$COMMAND_LOG"
+""",
+                encoding="utf-8",
+            )
+            fake_command.chmod(0o755)
+
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "PATH": f"{fake_bin}:{environment['PATH']}",
+                    "EASYTIER_CODESIGN_KEYCHAIN": str(signing_keychain),
+                    "SECURITY_LOG": str(security_log),
+                    "COMMAND_LOG": str(command_log),
+                }
+            )
+            subprocess.run(
+                [str(wrapper), str(fake_command)],
+                check=True,
+                cwd=ROOT_DIR,
+                env=environment,
+            )
+
+            security_calls = security_log.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(command_log.read_text(encoding="utf-8"), "ran\n")
+            self.assertEqual(
+                security_calls,
+                [
+                    "list-keychains -d user",
+                    "list-keychains -d user -s "
+                    f"{signing_keychain} /Users/test/Library/Keychains/login.keychain-db",
+                    "list-keychains -d user -s /Users/test/Library/Keychains/login.keychain-db",
+                ],
+            )
+
+    def test_public_build_targets_use_the_unified_build_driver(self) -> None:
+        makefile = (ROOT_DIR / "Makefile").read_text(encoding="utf-8")
+
+        self.assertIn("./scripts/build.sh app debug", makefile)
+        self.assertIn("./scripts/build.sh app release", makefile)
+        self.assertIn("./scripts/build.sh debug-install", makefile)
+        self.assertIn("./scripts/build.sh package", makefile)
+        self.assertEqual(makefile.count("xcodebuild -project EasyTier.xcodeproj"), 1)
+        self.assertIn(
+            "test-xcode-project:\n\txcodebuild -project EasyTier.xcodeproj",
+            makefile,
+        )
+
+    def test_xcode_build_paths_share_one_metadata_argument_module(self) -> None:
+        archive_script = (ROOT_DIR / "scripts" / "archive-app.sh").read_text(
+            encoding="utf-8"
+        )
+        debug_script = (ROOT_DIR / "scripts" / "build-debug-app.sh").read_text(
+            encoding="utf-8"
+        )
+        metadata_script = ROOT_DIR / "scripts" / "xcode-metadata-arguments.sh"
+
+        shared_source = 'source "$ROOT_DIR/scripts/xcode-metadata-arguments.sh"'
+        self.assertIn(shared_source, archive_script)
+        self.assertIn(shared_source, debug_script)
+        self.assertTrue(metadata_script.is_file())
+
+    def test_release_compatibility_script_dispatches_to_deep_modules(self) -> None:
+        release_script = (ROOT_DIR / "scripts" / "release.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("release-artifact.sh", release_script)
+        self.assertIn("release-publish.sh", release_script)
+        self.assertLess(len(release_script.splitlines()), 50)
 
 
 if __name__ == "__main__":

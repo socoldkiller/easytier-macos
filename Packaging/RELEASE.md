@@ -1,8 +1,16 @@
 # Release Pipeline
 
-EasyTier has one release implementation: `scripts/release.sh`. Xcode owns the
-native App archive and nested signing; local builds and GitHub Actions provide
-credentials to the same release module for notarization, DMG, and Sparkle.
+EasyTier has one public build interface: `scripts/build.sh`. The Makefile and
+GitHub Actions are thin adapters around that interface, while
+`scripts/release.sh` remains a compatibility dispatcher for existing callers.
+Xcode owns the native App archive and nested signing; local builds and GitHub
+Actions provide credentials to the same artifact pipeline for notarization,
+DMG construction, and verification.
+
+Build identity is resolved once by `scripts/build_context.py`. Its output is
+limited to non-secret values such as channel, version, build number/time, tag,
+and exact GUI/Core revisions. Signing identities, private keys, passwords, and
+notarization credentials never enter the serialized build context.
 
 ## Final DMG on a trusted Mac
 
@@ -93,20 +101,29 @@ They also require:
   `SPARKLE_EDDSA_PRIVATE_KEY`.
 
 The workflow keeps only the platform adapters: checkout, certificate import,
-artifact transfer, and the official GitHub Pages actions. It calls:
+artifact transfer, and the official GitHub Pages actions. Its public commands
+are:
 
 ```bash
-./scripts/release.sh artifact
-./scripts/release.sh publish
-./scripts/release.sh verify-deployed-feeds
-./scripts/release.sh prune-nightlies
+./scripts/build.sh package
+./scripts/build.sh publish
+./scripts/build.sh verify-deployed-feeds
+./scripts/build.sh prune-nightlies
 ```
 
-`publish` verifies the downloaded DMG again, enforces monotonic build numbers,
-generates release notes, updates only the selected branch in the signed Sparkle
-appcast, and then creates the GitHub Release. Stable publication updates the
-legacy-compatible `update.json`; Nightly publication updates `nightly.json` and
-preserves `update.json` byte-for-byte.
+Internally, `scripts/release-artifact.sh` owns the Apple artifact state machine,
+and `scripts/release-publish.sh` owns GitHub Release, Sparkle feed, deployment
+verification, and Nightly retention. `scripts/release-common.sh` contains only
+their shared configuration and lifecycle helpers. Do not call those internal
+modules from new automation; use `scripts/build.sh`.
+
+`publish` verifies the downloaded DMG again, then loads channel, build time, and
+GUI revision from its validated `.metadata.json`. The artifact metadata—not
+duplicated workflow environment—is the publication source of truth. It then
+enforces monotonic build numbers, generates release notes, updates only the
+selected branch in the signed Sparkle appcast, and creates the GitHub Release.
+Stable publication updates the legacy-compatible `update.json`; Nightly
+publication updates `nightly.json` and preserves `update.json` byte-for-byte.
 
 Tag reruns are recoverable. If an immutable DMG already exists on the GitHub
 Release, the pipeline downloads and verifies that exact asset and generates the
@@ -151,6 +168,20 @@ Sparkle key creation and backup are documented in `Packaging/SPARKLE.md`.
 Never commit certificates, profiles, private keys, passwords, or exported
 Sparkle seeds. Do not copy the low-level release commands into a second manual;
 keep operational notes limited to credential locations and the unified command.
+
+## Maintenance boundaries
+
+- Keep public `make` targets compatible and route new orchestration through
+  `scripts/build.sh`.
+- Keep Xcode metadata build settings in `scripts/xcode-metadata-arguments.sh`;
+  Debug and Release must not maintain separate copies.
+- Let Xcode assemble and sign the App and nested helpers. Shell scripts may
+  verify, notarize, staple, and package that output, but must not reconstruct it.
+- Treat App and DMG notarization as separate required stages. Validate the App
+  before DMG construction and validate the quarantined mounted App again from
+  the final stapled DMG.
+- Keep build context non-secret and fail closed when a release version or exact
+  source revision cannot be established.
 
 ## Verification
 

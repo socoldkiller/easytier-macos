@@ -206,6 +206,13 @@ def validate_artifact(
         raise ReleaseError(f"Release DMG is empty: {dmg_path}")
 
 
+def publication_context(metadata_path: pathlib.Path) -> str:
+    metadata = validated_metadata(metadata_path)
+    return "\t".join(
+        (metadata["channel"], metadata["buildTime"], metadata["guiCommit"])
+    )
+
+
 def validate_notary_result(path: pathlib.Path, label: str) -> None:
     result = read_json(path)
     if result.get("status") != "Accepted":
@@ -468,6 +475,9 @@ def build_parser() -> argparse.ArgumentParser:
     artifact.add_argument("--dmg", required=True, type=pathlib.Path)
     artifact.add_argument("--architecture", required=True)
 
+    context = subparsers.add_parser("publication-context")
+    context.add_argument("--metadata", required=True, type=pathlib.Path)
+
     notary = subparsers.add_parser("validate-notary")
     notary.add_argument("--input", required=True, type=pathlib.Path)
     notary.add_argument("--label", required=True)
@@ -515,6 +525,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             write_metadata(args.app, args.output, args.architecture)
         elif args.command == "validate-artifact":
             validate_artifact(args.metadata, args.dmg, args.architecture)
+        elif args.command == "publication-context":
+            print(publication_context(args.metadata))
         elif args.command == "validate-notary":
             validate_notary_result(args.input, args.label)
         elif args.command == "validate-order":

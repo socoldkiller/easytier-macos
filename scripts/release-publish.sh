@@ -1,0 +1,489 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT_DIR/scripts/release-common.sh"
+
+find_artifact_pair() {
+  local directory="$1"
+  local nullglob_was_set=0
+  local dmg_files metadata_files
+  shopt -q nullglob && nullglob_was_set=1
+  shopt -s nullglob
+  dmg_files=("$directory"/*.dmg)
+  metadata_files=("$directory"/*.metadata.json)
+  if [[ "$nullglob_was_set" == "0" ]]; then
+    shopt -u nullglob
+  fi
+
+  if [[ "${#dmg_files[@]}" -ne 1 || "${#metadata_files[@]}" -ne 1 ]]; then
+    die "Expected one DMG and one metadata file in $directory; found ${#dmg_files[@]} DMG(s) and ${#metadata_files[@]} metadata file(s)."
+  fi
+  FOUND_DMG="${dmg_files[0]}"
+  FOUND_METADATA="${metadata_files[0]}"
+}
+
+validate_artifact_pair() {
+  local dmg_path="$1"
+  local metadata_path="$2"
+  "$PYTHON_BIN" "$RELEASE_FEED_HELPER" validate-artifact \
+    --metadata "$metadata_path" \
+    --dmg "$dmg_path" \
+    --architecture "ARM64"
+  "$VERIFY_DMG_SCRIPT" "$dmg_path"
+}
+
+load_publication_context() {
+  local metadata_path="$1"
+  local context
+  context="$(
+    "$PYTHON_BIN" "$RELEASE_FEED_HELPER" publication-context \
+      --metadata "$metadata_path"
+  )"
+  IFS=$'\t' read -r RELEASE_CHANNEL PUBLISH_BUILD_TIME PUBLISH_GUI_REVISION <<< "$context"
+  [[ -n "$RELEASE_CHANNEL" && -n "$PUBLISH_BUILD_TIME" && -n "$PUBLISH_GUI_REVISION" ]] \
+    || die "Could not load the publication context from $metadata_path."
+  export EASYTIER_RELEASE_CHANNEL="$RELEASE_CHANNEL"
+  export EASYTIER_BUILD_CHANNEL="$RELEASE_CHANNEL"
+}
+
+release_tag() {
+  local value="${TAG_NAME:-${GITHUB_REF_NAME:-${EASYTIER_RELEASE_TAG:-}}}"
+  [[ -n "$value" ]] || die "TAG_NAME, GITHUB_REF_NAME, or EASYTIER_RELEASE_TAG is required."
+  printf '%s\n' "$value"
+}
+
+validate_published_order() {
+  local metadata_path="$1"
+  local tag="$2"
+  local current_feed="${EASYTIER_CURRENT_FEED_PATH:-}"
+  local feed_name="update.json"
+  local allow_missing_channel="${EASYTIER_ALLOW_MISSING_CHANNEL_FEED:-${EASYTIER_ALLOW_MISSING_CURRENT_FEED:-0}}"
+  [[ "$RELEASE_CHANNEL" == "nightly" ]] && feed_name="nightly.json"
+  if [[ -z "$current_feed" ]]; then
+    current_feed="$TEMP_ROOT/current-$feed_name"
+    local cache_bust="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$(date +%s)"
+    log "Checking the currently deployed build ordering"
+    if ! curl -fsSL -H 'Cache-Control: no-cache' \
+      "$UPDATE_BASE_URL/$feed_name?ordering=$cache_bust" \
+      -o "$current_feed"; then
+      if [[ "$allow_missing_channel" == "1" ]]; then
+        if [[ "$RELEASE_CHANNEL" == "nightly" ]]; then
+          local current_appcast="$TEMP_ROOT/current-ordering-appcast.xml"
+          curl -fsSL -H 'Cache-Control: no-cache' \
+            "$UPDATE_BASE_URL/appcast.xml?ordering=$cache_bust" \
+            -o "$current_appcast" \
+            || die "Could not load the existing appcast while bootstrapping Nightly."
+          if grep -q '<sparkle:channel>nightly</sparkle:channel>' "$current_appcast"; then
+            die "nightly.json is missing even though the appcast already contains Nightly."
+          fi
+        fi
+        log "No current update feed was found; initial-feed override is enabled"
+        return
+      fi
+      die "Could not load the existing update feed for monotonic build validation."
+    fi
+  fi
+  "$PYTHON_BIN" "$RELEASE_FEED_HELPER" validate-order \
+    --metadata "$metadata_path" \
+    --current-feed "$current_feed" \
+    --tag "$tag"
+}
+
+prepare_canonical_release_asset() {
+  local local_dmg="$1"
+  local metadata_path="$2"
+  local tag="$3"
+  local asset_names="$TEMP_ROOT/existing-dmg-assets.txt"
+  local remote_dir="$TEMP_ROOT/existing-release-assets"
+  local asset_count=0
+  local asset_name=""
+
+  CANONICAL_DMG="$local_dmg"
+  RELEASE_EXISTS=0
+  REMOTE_ASSET_EXISTS=0
+
+  if gh release view "$tag" --repo "$REPOSITORY" \
+    --json assets \
+    --jq '.assets[].name | select(endswith(".dmg"))' > "$asset_names" 2>/dev/null; then
+    RELEASE_EXISTS=1
+    asset_count="$(awk 'NF { count += 1 } END { print count + 0 }' "$asset_names")"
+    if [[ "$asset_count" -gt 1 ]]; then
+      die "Existing release $tag contains more than one DMG; refusing an ambiguous rerun."
+    fi
+    if [[ "$asset_count" == "1" ]]; then
+      asset_name="$(awk 'NF { print; exit }' "$asset_names")"
+      mkdir -p "$remote_dir"
+      log "Reusing the immutable DMG already published for $tag: $asset_name"
+      gh release download "$tag" \
+        --repo "$REPOSITORY" \
+        --pattern "$asset_name" \
+        --dir "$remote_dir"
+      CANONICAL_DMG="$remote_dir/$asset_name"
+      validate_artifact_pair "$CANONICAL_DMG" "$metadata_path"
+      REMOTE_ASSET_EXISTS=1
+    fi
+  fi
+}
+
+prepare_sparkle_private_key() {
+  local key_contents="${SPARKLE_EDDSA_PRIVATE_KEY:-}"
+  local key_file="${EASYTIER_SPARKLE_PRIVATE_KEY_FILE:-}"
+
+  if [[ -n "$key_contents" && -n "$key_file" ]]; then
+    die "Choose either SPARKLE_EDDSA_PRIVATE_KEY or EASYTIER_SPARKLE_PRIVATE_KEY_FILE, not both."
+  fi
+  if [[ -n "$key_file" ]]; then
+    [[ -s "$key_file" ]] || die "Sparkle private key file is unavailable: $key_file"
+    SPARKLE_PRIVATE_KEY_FILE="$key_file"
+  elif [[ -n "$key_contents" ]]; then
+    SPARKLE_PRIVATE_KEY_FILE="$TEMP_ROOT/sparkle-private-key"
+    umask 077
+    printf '%s' "$key_contents" > "$SPARKLE_PRIVATE_KEY_FILE"
+  else
+    die "Set SPARKLE_EDDSA_PRIVATE_KEY or EASYTIER_SPARKLE_PRIVATE_KEY_FILE."
+  fi
+}
+
+ensure_swift_6() {
+  local swift_version swift_major candidate
+  swift_version="$(swift --version)"
+  swift_major="$(printf '%s\n' "$swift_version" | sed -n 's/.*Swift version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+  if [[ -n "$swift_major" && "$swift_major" -ge 6 ]]; then
+    printf '%s\n' "$swift_version"
+    return
+  fi
+
+  for candidate in /Applications/Xcode_16*.app /Applications/Xcode.app; do
+    if [[ -d "$candidate/Contents/Developer" ]]; then
+      export DEVELOPER_DIR="$candidate/Contents/Developer"
+      swift_version="$(swift --version)"
+      swift_major="$(printf '%s\n' "$swift_version" | sed -n 's/.*Swift version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+      if [[ -n "$swift_major" && "$swift_major" -ge 6 ]]; then
+        printf '%s\n' "$swift_version"
+        return
+      fi
+    fi
+  done
+  die "Swift 6 or newer is required to resolve the pinned Sparkle tools."
+}
+
+resolve_sparkle_tools() {
+  local configured="${EASYTIER_SPARKLE_TOOLS_DIR:-}"
+  local scratch_path="${EASYTIER_SPARKLE_SCRATCH_PATH:-$ROOT_DIR/.build/sparkle-tools}"
+  if [[ -n "$configured" ]]; then
+    SPARKLE_TOOLS_DIR="$configured"
+  else
+    ensure_swift_6
+    swift package \
+      --package-path "$ROOT_DIR" \
+      --scratch-path "$scratch_path" \
+      resolve
+    SPARKLE_TOOLS_DIR="$scratch_path/artifacts/sparkle/Sparkle/bin"
+  fi
+
+  [[ -x "$SPARKLE_TOOLS_DIR/generate_appcast" ]] \
+    || die "Pinned Sparkle generate_appcast tool was not resolved in $SPARKLE_TOOLS_DIR."
+  [[ -x "$SPARKLE_TOOLS_DIR/sign_update" ]] \
+    || die "Pinned Sparkle sign_update tool was not resolved in $SPARKLE_TOOLS_DIR."
+}
+
+bootstrap_pages_state() {
+  local source_dir="${EASYTIER_CURRENT_PAGES_DIR:-}"
+  local allow_missing="${EASYTIER_ALLOW_MISSING_CURRENT_FEED:-0}"
+  local cache_bust="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$(date +%s)"
+  local name
+
+  rm -rf "$PAGES_DIR"
+  mkdir -p "$PAGES_DIR"
+
+  if [[ -n "$source_dir" ]]; then
+    [[ -d "$source_dir" ]] || die "Current Pages directory does not exist: $source_dir"
+    for name in appcast.xml update.json nightly.json; do
+      if [[ -f "$source_dir/$name" ]]; then
+        cp "$source_dir/$name" "$PAGES_DIR/$name"
+      fi
+    done
+  else
+    for name in appcast.xml update.json nightly.json; do
+      curl -fsSL -H 'Cache-Control: no-cache' \
+        "$UPDATE_BASE_URL/$name?state=$cache_bust" \
+        -o "$PAGES_DIR/$name" 2>/dev/null || rm -f "$PAGES_DIR/$name"
+    done
+  fi
+
+  if [[ ! -s "$PAGES_DIR/appcast.xml" && "$allow_missing" != "1" ]]; then
+    die "Could not load the existing appcast; refusing to replace another update channel."
+  fi
+  if [[ "$RELEASE_CHANNEL" == "nightly" && ! -s "$PAGES_DIR/update.json" && "$allow_missing" != "1" ]]; then
+    die "Could not load the Stable update manifest before publishing Nightly."
+  fi
+  if [[ -s "$PAGES_DIR/appcast.xml" ]] && \
+    grep -q '<sparkle:channel>nightly</sparkle:channel>' "$PAGES_DIR/appcast.xml" && \
+    [[ ! -s "$PAGES_DIR/nightly.json" ]]; then
+    die "The appcast contains Nightly but nightly.json could not be preserved."
+  fi
+}
+
+generate_and_validate_feeds() {
+  local dmg_path="$1"
+  local metadata_path="$2"
+  local tag="$3"
+  local notes_path="$4"
+  local appcast_input="$TEMP_ROOT/appcast-input"
+  local appcast_path="$PAGES_DIR/appcast.xml"
+  local channel_feed_path="$PAGES_DIR/update.json"
+  local notes_name="$(basename "${dmg_path%.dmg}.md")"
+  local generate_output signature
+  local generate_args
+
+  [[ "$RELEASE_CHANNEL" == "nightly" ]] && channel_feed_path="$PAGES_DIR/nightly.json"
+  bootstrap_pages_state
+  rm -rf "$appcast_input"
+  mkdir -p "$appcast_input"
+  cp "$dmg_path" "$appcast_input/$(basename "$dmg_path")"
+  cp "$notes_path" "$appcast_input/$notes_name"
+
+  resolve_sparkle_tools
+  prepare_sparkle_private_key
+  log "Generating the signed Sparkle appcast"
+  generate_args=(
+    --ed-key-file "$SPARKLE_PRIVATE_KEY_FILE"
+    --download-url-prefix "https://github.com/$REPOSITORY/releases/download/$tag/"
+    --embed-release-notes
+    --maximum-versions 1
+    -o "$appcast_path"
+  )
+  if [[ "$RELEASE_CHANNEL" == "nightly" ]]; then
+    generate_args+=(--channel nightly)
+  fi
+  if ! generate_output="$(
+    "$SPARKLE_TOOLS_DIR/generate_appcast" "${generate_args[@]}" "$appcast_input" 2>&1
+  )"; then
+    printf '%s\n' "$generate_output" >&2
+    die "Sparkle appcast generation failed."
+  fi
+  printf '%s\n' "$generate_output"
+  if [[ "$generate_output" == *"does not match"* ]]; then
+    die "Sparkle private key does not match SUPublicEDKey in the packaged app."
+  fi
+
+  "$PYTHON_BIN" "$RELEASE_FEED_HELPER" channel-feed \
+    --metadata "$metadata_path" \
+    --dmg "$dmg_path" \
+    --tag "$tag" \
+    --repository "$REPOSITORY" \
+    --minimum-system-version "$MINIMUM_SYSTEM_VERSION" \
+    --output "$channel_feed_path"
+
+  signature="$(
+    "$PYTHON_BIN" "$RELEASE_FEED_HELPER" validate-appcast \
+      --appcast "$appcast_path" \
+      --metadata "$metadata_path" \
+      --dmg "$dmg_path" \
+      --tag "$tag" \
+      --repository "$REPOSITORY" \
+      --minimum-system-version "$MINIMUM_SYSTEM_VERSION" \
+      --architecture "ARM64"
+  )"
+  "$SPARKLE_TOOLS_DIR/sign_update" \
+    --verify \
+    --ed-key-file "$SPARKLE_PRIVATE_KEY_FILE" \
+    "$dmg_path" \
+    "$signature"
+  "$SPARKLE_TOOLS_DIR/sign_update" \
+    --verify \
+    --ed-key-file "$SPARKLE_PRIVATE_KEY_FILE" \
+    "$appcast_path"
+}
+
+publish_github_release() {
+  local dmg_path="$1"
+  local tag="$2"
+  local notes_path="$3"
+  local title="$tag"
+  local release_args=()
+
+  if [[ "$RELEASE_CHANNEL" == "nightly" ]]; then
+    nightly_date="$(
+      "$PYTHON_BIN" -c \
+        'from datetime import datetime, timedelta; import sys; value = datetime.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ") + timedelta(hours=8); print(value.strftime("%Y-%m-%d"))' \
+        "$PUBLISH_BUILD_TIME"
+    )"
+    title="Nightly $nightly_date"
+    release_args=(--prerelease --target "$PUBLISH_GUI_REVISION")
+  fi
+
+  if [[ "$RELEASE_EXISTS" == "0" ]]; then
+    log "Creating GitHub Release $tag"
+    local create_args=(--repo "$REPOSITORY" --title "$title" --notes-file "$notes_path")
+    if [[ "$RELEASE_CHANNEL" == "nightly" ]]; then
+      create_args+=("${release_args[@]}")
+    fi
+    gh release create "$tag" "${create_args[@]}"
+    RELEASE_EXISTS=1
+  else
+    local edit_args=(--repo "$REPOSITORY" --title "$title" --notes-file "$notes_path")
+    [[ "$RELEASE_CHANNEL" == "nightly" ]] && edit_args+=(--prerelease)
+    gh release edit "$tag" "${edit_args[@]}"
+  fi
+
+  if [[ "$REMOTE_ASSET_EXISTS" == "0" ]]; then
+    log "Uploading immutable release asset $(basename "$dmg_path")"
+    gh release upload "$tag" "$dmg_path" --repo "$REPOSITORY"
+  else
+    log "Existing release asset was verified and left unchanged"
+  fi
+}
+
+publish_release() {
+  require_command curl
+  require_command gh
+  require_command swift
+  require_command "$PYTHON_BIN"
+  require_executable "$RELEASE_FEED_HELPER"
+  require_executable "$VERIFY_DMG_SCRIPT"
+  ensure_temp_root
+
+  local tag notes_path
+  tag="$(release_tag)"
+  find_artifact_pair "$ARTIFACTS_DIR"
+  validate_artifact_pair "$FOUND_DMG" "$FOUND_METADATA"
+  load_publication_context "$FOUND_METADATA"
+  configure_release_channel
+  validate_published_order "$FOUND_METADATA" "$tag"
+
+  notes_path="$ARTIFACTS_DIR/RELEASE_NOTES.md"
+  if [[ "$RELEASE_CHANNEL" == "nightly" ]]; then
+    "$PYTHON_BIN" "$RELEASE_FEED_HELPER" nightly-release-notes \
+      --metadata "$FOUND_METADATA" \
+      --repository "$REPOSITORY" \
+      --core-repository "$CORE_REPOSITORY" \
+      --output "$notes_path"
+  else
+    "$PYTHON_BIN" "$RELEASE_FEED_HELPER" release-notes \
+      --changelog "$ROOT_DIR/CHANGELOG.md" \
+      --tag "$tag" \
+      --output "$notes_path"
+  fi
+
+  prepare_canonical_release_asset "$FOUND_DMG" "$FOUND_METADATA" "$tag"
+  generate_and_validate_feeds "$CANONICAL_DMG" "$FOUND_METADATA" "$tag" "$notes_path"
+  publish_github_release "$CANONICAL_DMG" "$tag" "$notes_path"
+  log "GitHub Release and signed feed payloads are ready"
+  printf 'Release asset: %s\nPages directory: %s\n' "$CANONICAL_DMG" "$PAGES_DIR"
+}
+
+verify_deployed_feeds() {
+  configure_release_channel
+  require_command cmp
+  require_command curl
+  ensure_temp_root
+  [[ -s "$PAGES_DIR/appcast.xml" && -s "$PAGES_DIR/update.json" ]] \
+    || die "Expected generated feeds in $PAGES_DIR."
+  if [[ "$RELEASE_CHANNEL" == "nightly" && ! -s "$PAGES_DIR/nightly.json" ]]; then
+    die "Nightly publication did not generate nightly.json."
+  fi
+
+  local attempts="${EASYTIER_DEPLOY_VERIFY_ATTEMPTS:-12}"
+  local delay="${EASYTIER_DEPLOY_VERIFY_DELAY_SECONDS:-5}"
+  local deployed_appcast="$TEMP_ROOT/deployed-appcast.xml"
+  local deployed_legacy="$TEMP_ROOT/deployed-update.json"
+  local deployed_nightly="$TEMP_ROOT/deployed-nightly.json"
+  local attempt cache_bust feeds_match
+  [[ "$attempts" =~ ^[1-9][0-9]*$ ]] || die "EASYTIER_DEPLOY_VERIFY_ATTEMPTS must be positive."
+  [[ "$delay" =~ ^[0-9]+$ ]] || die "EASYTIER_DEPLOY_VERIFY_DELAY_SECONDS must be non-negative."
+
+  attempt=1
+  while [[ "$attempt" -le "$attempts" ]]; do
+    cache_bust="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$attempt"
+    feeds_match=0
+    if curl -fsSL -H 'Cache-Control: no-cache' \
+        "$UPDATE_BASE_URL/appcast.xml?deploy=$cache_bust" \
+        -o "$deployed_appcast" && \
+      curl -fsSL -H 'Cache-Control: no-cache' \
+        "$UPDATE_BASE_URL/update.json?deploy=$cache_bust" \
+        -o "$deployed_legacy" && \
+      cmp "$PAGES_DIR/appcast.xml" "$deployed_appcast" && \
+      cmp "$PAGES_DIR/update.json" "$deployed_legacy"; then
+      feeds_match=1
+      if [[ -s "$PAGES_DIR/nightly.json" ]]; then
+        if ! curl -fsSL -H 'Cache-Control: no-cache' \
+            "$UPDATE_BASE_URL/nightly.json?deploy=$cache_bust" \
+            -o "$deployed_nightly" || \
+          ! cmp "$PAGES_DIR/nightly.json" "$deployed_nightly"; then
+          feeds_match=0
+        fi
+      fi
+    fi
+    if [[ "$feeds_match" == "1" ]]; then
+      log "GitHub Pages is serving the newly signed update feeds"
+      return
+    fi
+    if [[ "$attempt" -lt "$attempts" && "$delay" -gt 0 ]]; then
+      sleep "$delay"
+    fi
+    attempt=$((attempt + 1))
+  done
+  die "GitHub Pages did not serve the expected update feeds after $attempts attempt(s)."
+}
+
+prune_nightly_releases() {
+  require_command gh
+  local keep="${EASYTIER_NIGHTLY_RELEASES_TO_KEEP:-14}"
+  local index tag
+  local tags=()
+  [[ "$keep" =~ ^[1-9][0-9]*$ ]] || die "EASYTIER_NIGHTLY_RELEASES_TO_KEEP must be positive."
+
+  while IFS= read -r tag; do
+    [[ -n "$tag" ]] && tags+=("$tag")
+  done < <(
+    gh release list \
+      --repo "$REPOSITORY" \
+      --limit 100 \
+      --json tagName,isPrerelease \
+      --jq '.[] | select(.isPrerelease and (.tagName | startswith("nightly-"))) | .tagName' \
+      | sort -r
+  )
+
+  index="$keep"
+  while [[ "$index" -lt "${#tags[@]}" ]]; do
+    tag="${tags[$index]}"
+    log "Deleting expired Nightly release $tag"
+    gh release delete "$tag" --repo "$REPOSITORY" --cleanup-tag --yes
+    index=$((index + 1))
+  done
+}
+
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: scripts/release-publish.sh <command>
+
+Commands:
+  publish                Publish a prepared DMG and update feeds.
+  verify-deployed-feeds  Verify the deployed Pages feed payloads.
+  prune-nightlies        Remove expired Nightly releases and tags.
+EOF
+}
+
+main() {
+  local command="${1:-}"
+  case "$command" in
+    publish)
+      publish_release
+      ;;
+    verify-deployed-feeds)
+      verify_deployed_feeds
+      ;;
+    prune-nightlies)
+      prune_nightly_releases
+      ;;
+    *)
+      usage
+      exit 64
+      ;;
+  esac
+}
+
+main "$@"

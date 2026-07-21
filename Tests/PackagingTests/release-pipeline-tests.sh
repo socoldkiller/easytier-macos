@@ -86,6 +86,23 @@ dmg_path="$1"
 printf 'verify-dmg\n' >> "$TRACE_FILE"
 EOF
 
+cat > "$FAKE_HELPERS/verify-app" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+app_path="$1"
+stage="${2:-signed}"
+[[ "$stage" == "notarized" ]] || {
+  echo "Expected notarized App verification, got: $stage" >&2
+  exit 1
+}
+[[ -f "$app_path.stapled" ]] || {
+  echo "App verification ran before stapling." >&2
+  exit 1
+}
+printf 'codesign-app\n' >> "$TRACE_FILE"
+printf 'gatekeeper-app\n' >> "$TRACE_FILE"
+EOF
+
 cat > "$FAKE_BIN/ditto" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -163,6 +180,7 @@ run_artifact() {
   EASYTIER_RELEASE_ARCHITECTURE=ARM64 \
   EASYTIER_RELEASE_ARCHIVE_APP_SCRIPT="$FAKE_HELPERS/archive-app" \
   EASYTIER_RELEASE_CREATE_DMG_SCRIPT="$FAKE_HELPERS/create-dmg" \
+  EASYTIER_RELEASE_VERIFY_APP_SCRIPT="$FAKE_HELPERS/verify-app" \
   EASYTIER_RELEASE_VERIFY_DMG_SCRIPT="$FAKE_HELPERS/verify-dmg" \
   EASYTIER_CODESIGN_IDENTITY="Developer ID Application: Test (ABCDEFGHIJ)" \
   EASYTIER_PROVISIONING_PROFILE="$PROFILE_PATH" \
@@ -728,10 +746,6 @@ EASYTIER_ARTIFACTS_DIR="$NIGHTLY_ARTIFACTS" \
 EASYTIER_PAGES_DIR="$NIGHTLY_PAGES" \
 EASYTIER_CURRENT_PAGES_DIR="$NIGHTLY_CURRENT_PAGES" \
 EASYTIER_CURRENT_FEED_PATH="$NIGHTLY_CURRENT_FEED" \
-EASYTIER_RELEASE_CHANNEL=nightly \
-EASYTIER_BUILD_TIME=2026-07-15T02:00:00Z \
-EASYTIER_GUI_REVISION="$GUI_REVISION" \
-EASYTIER_CORE_REVISION="$CORE_REVISION" \
 EASYTIER_RELEASE_TEMP_PARENT="$TEMP_PARENT" \
 EASYTIER_RELEASE_VERIFY_DMG_SCRIPT="$FAKE_HELPERS/verify-nightly-dmg" \
 EASYTIER_SPARKLE_TOOLS_DIR="$SPARKLE_TOOLS" \

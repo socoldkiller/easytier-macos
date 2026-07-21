@@ -62,6 +62,12 @@ class ReleaseFeedTests(unittest.TestCase):
         self.assertEqual(value["signing"], "developer-id")
         self.assertIs(value["notarized"], True)
 
+    def test_publication_context_comes_from_validated_metadata(self) -> None:
+        self.assertEqual(
+            release_feed.publication_context(self.metadata),
+            f"stable\t2026-07-14T01:02:03Z\t{GUI_COMMIT}",
+        )
+
     def test_rejects_unaccepted_notarization(self) -> None:
         result = self.root / "notary.json"
         result.write_text('{"status":"Invalid","id":"submission"}', encoding="utf-8")

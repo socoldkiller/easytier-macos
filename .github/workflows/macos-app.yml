@@ -76,136 +76,16 @@ jobs:
         id: context
         env:
           GH_TOKEN: ${{ github.token }}
+          DISPATCH_MODE: ${{ inputs.mode || 'ci' }}
           NIGHTLY_RELEASES_ENABLED: ${{ vars.NIGHTLY_RELEASES_ENABLED }}
-          UPDATE_BASE_URL: https://socoldkiller.github.io/easytier-macos
         run: |
           set -euo pipefail
-
-          release_channel=none
-          should_publish=false
-          app_version=""
-          build_number=""
-          build_time=""
-          tag_name=""
-          gui_revision="$(git rev-parse HEAD)"
-          core_revision="$(git -C Vendor/EasyTier rev-parse HEAD)"
-          core_version="$(git -C Vendor/EasyTier describe --tags --always)"
-
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            release_channel=stable
-            should_publish=true
-            tag_name="$GITHUB_REF_NAME"
-            app_version="${GITHUB_REF_NAME#v}"
-          elif [[ "$GITHUB_EVENT_NAME" == schedule || ( "$GITHUB_EVENT_NAME" == workflow_dispatch && "${{ inputs.mode }}" == nightly ) ]]; then
-            release_channel=nightly
-
-            git -C Vendor/EasyTier fetch --no-tags origin main
-            core_revision="$(git -C Vendor/EasyTier rev-parse FETCH_HEAD)"
-            git -C Vendor/EasyTier checkout --detach "$core_revision"
-            core_version="$(git -C Vendor/EasyTier describe --tags --always)"
-
-            stable_tag="$(
-              git for-each-ref --merged=HEAD --sort=-creatordate --format='%(refname:short)' refs/tags \
-                | grep -E '^v[0-9]+(\.[0-9]+){1,2}$' \
-                | head -n 1 \
-                || true
-            )"
-            [[ -n "$stable_tag" ]] || {
-              echo "Nightly requires a reachable numeric Stable tag." >&2
-              exit 1
-            }
-            app_version="${stable_tag#v}"
-            [[ "$app_version" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]
-
-            run_created_at="$(
-              curl -fsSL \
-                -H "Authorization: Bearer $GH_TOKEN" \
-                -H "X-GitHub-Api-Version: 2022-11-28" \
-                "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-                | python3 -c 'import json, sys; print(json.load(sys.stdin)["created_at"])'
-            )"
-            build_values="$(python3 - "$run_created_at" <<'PY'
-          from datetime import datetime, timezone
-          import sys
-
-          value = datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")).astimezone(timezone.utc)
-          print(value.strftime("%Y-%m-%dT%H:%M:%SZ"), value.strftime("%Y%m%d%H%M%S"))
-          PY
-            )"
-            build_time="${build_values%% *}"
-            build_number="${build_values##* }"
-            tag_name="nightly-$build_number"
-
-            sources_changed=true
-            source_state_available=true
-            current_nightly="$RUNNER_TEMP/current-nightly.json"
-            if curl -fsSL -H 'Cache-Control: no-cache' \
-              "$UPDATE_BASE_URL/nightly.json?source=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
-              -o "$current_nightly"; then
-              if comparison="$(python3 - "$current_nightly" "$gui_revision" "$core_revision" <<'PY'
-          import json
-          import pathlib
-          import sys
-
-          manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-          same_sources = manifest.get("guiCommit") == sys.argv[2] and manifest.get("coreCommit") == sys.argv[3]
-          print("same" if same_sources else "changed")
-          PY
-              )"; then
-                [[ "$comparison" == same ]] && sources_changed=false
-              else
-                source_state_available=false
-                echo "Could not validate nightly.json; this run will test but not publish." >&2
-              fi
-            else
-              current_appcast="$RUNNER_TEMP/current-appcast.xml"
-              if curl -fsSL -H 'Cache-Control: no-cache' \
-                "$UPDATE_BASE_URL/appcast.xml?source=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
-                -o "$current_appcast"; then
-                if grep -q '<sparkle:channel>nightly</sparkle:channel>' "$current_appcast"; then
-                  source_state_available=false
-                  echo "nightly.json is unavailable for an existing Nightly channel; this run will test but not publish." >&2
-                fi
-              else
-                source_state_available=false
-                echo "The deployed update state is unavailable; this run will test but not publish." >&2
-              fi
-            fi
-
-            if [[ "$source_state_available" == false ]]; then
-                sources_changed=false
-            fi
-
-            publish_enabled=false
-            if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch || "$NIGHTLY_RELEASES_ENABLED" == true ]]; then
-              publish_enabled=true
-            fi
-            if [[ "$publish_enabled" == true && "$source_state_available" == true && "$sources_changed" == true ]]; then
-              should_publish=true
-            fi
-
-            {
-              printf 'EASYTIER_RELEASE_CHANNEL=nightly\n'
-              printf 'EASYTIER_APP_VERSION=%s\n' "$app_version"
-              printf 'EASYTIER_BUILD_NUMBER=%s\n' "$build_number"
-              printf 'EASYTIER_BUILD_TIME=%s\n' "$build_time"
-              printf 'EASYTIER_GUI_REVISION=%s\n' "$gui_revision"
-              printf 'EASYTIER_CORE_REVISION=%s\n' "$core_revision"
-              printf 'EASYTIER_CORE_VERSION=%s\n' "$core_version"
-            } >> "$GITHUB_ENV"
-          fi
-
-          {
-            printf 'release_channel=%s\n' "$release_channel"
-            printf 'should_publish=%s\n' "$should_publish"
-            printf 'app_version=%s\n' "$app_version"
-            printf 'build_number=%s\n' "$build_number"
-            printf 'build_time=%s\n' "$build_time"
-            printf 'tag_name=%s\n' "$tag_name"
-            printf 'gui_revision=%s\n' "$gui_revision"
-            printf 'core_revision=%s\n' "$core_revision"
-            printf 'core_version=%s\n' "$core_version"
-          } >> "$GITHUB_OUTPUT"
+          ./scripts/build.sh context github \
+            --dispatch-mode "$DISPATCH_MODE" \
+            --nightly-releases-enabled "${NIGHTLY_RELEASES_ENABLED:-false}" \
+            --github-env "$GITHUB_ENV" \
+            --github-output "$GITHUB_OUTPUT" \
+            --json "$RUNNER_TEMP/easytier-build-context.json"
 
       - name: Install native build dependencies
         run: brew install cmake protobuf
@@ -290,7 +170,7 @@ jobs:
           APPLE_NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-        run: ./scripts/release.sh artifact
+        run: ./scripts/build.sh package
 
       - name: Upload release artifact
         if: steps.context.outputs.should_publish == 'true'
@@ -322,13 +202,6 @@ jobs:
     env:
       EASYTIER_ARTIFACTS_DIR: ${{ github.workspace }}/.build/release-artifacts
       EASYTIER_PAGES_DIR: ${{ github.workspace }}/.build/pages
-      EASYTIER_RELEASE_CHANNEL: ${{ needs.build.outputs.release_channel }}
-      EASYTIER_APP_VERSION: ${{ needs.build.outputs.app_version }}
-      EASYTIER_BUILD_NUMBER: ${{ needs.build.outputs.build_number }}
-      EASYTIER_BUILD_TIME: ${{ needs.build.outputs.build_time }}
-      EASYTIER_GUI_REVISION: ${{ needs.build.outputs.gui_revision }}
-      EASYTIER_CORE_REVISION: ${{ needs.build.outputs.core_revision }}
-      EASYTIER_CORE_VERSION: ${{ needs.build.outputs.core_version }}
       EASYTIER_ALLOW_MISSING_CHANNEL_FEED: ${{ needs.build.outputs.release_channel == 'nightly' && '1' || '0' }}
       EASYTIER_ALLOW_MISSING_CURRENT_FEED: ${{ needs.build.outputs.tag_name == 'v1.4.0' && '1' || '0' }}
 
@@ -361,7 +234,7 @@ jobs:
           TAG_NAME: ${{ needs.build.outputs.tag_name }}
           REPOSITORY: ${{ github.repository }}
           SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
-        run: ./scripts/release.sh publish
+        run: ./scripts/build.sh publish
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
@@ -382,7 +255,7 @@ jobs:
         uses: actions/deploy-pages@v4
 
       - name: Verify deployed update feeds
-        run: ./scripts/release.sh verify-deployed-feeds
+        run: ./scripts/build.sh verify-deployed-feeds
 
       - name: Prune expired Nightly releases
         if: needs.build.outputs.release_channel == 'nightly'
@@ -390,4 +263,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           EASYTIER_NIGHTLY_RELEASES_TO_KEEP: 14
-        run: ./scripts/release.sh prune-nightlies
+        run: ./scripts/build.sh prune-nightlies

@@ -255,6 +255,16 @@ archive_app() {
   rm -rf "$ARCHIVE_PATH" "$DERIVED_DATA_DIR"
   mkdir -p "$(dirname "$ARCHIVE_PATH")" "$SOURCE_PACKAGES_DIR"
 
+  EASYTIER_APP_VERSION="$APP_VERSION"
+  EASYTIER_BUILD_CHANNEL="$BUILD_CHANNEL"
+  EASYTIER_BUILD_NUMBER="$BUILD_NUMBER"
+  EASYTIER_BUILD_TIME="$BUILD_TIME_UTC"
+  EASYTIER_GUI_COMMIT="$gui_commit"
+  EASYTIER_GATEWAY_VERSION="$gateway_version"
+  EASYTIER_CORE_TAG="$core_version"
+  EASYTIER_CORE_COMMIT="$core_commit"
+  source "$ROOT_DIR/scripts/xcode-metadata-arguments.sh"
+
   local args=(
     -project "$PROJECT_PATH"
     -scheme "$SCHEME"
@@ -265,16 +275,7 @@ archive_app() {
     -disableAutomaticPackageResolution
     -onlyUsePackageVersionsFromResolvedFile
     -archivePath "$ARCHIVE_PATH"
-    "MARKETING_VERSION=$APP_VERSION"
-    "CURRENT_PROJECT_VERSION=$BUILD_NUMBER"
-    "EASYTIER_BUILD_TIME=$BUILD_TIME_UTC"
-    "EASYTIER_BUILD_CHANNEL=$BUILD_CHANNEL"
-    "EASYTIER_GUI_COMMIT=$gui_commit"
-    "GATEWAY_BUILD_TIME=$BUILD_TIME_UTC"
-    "GATEWAY_COMMIT=$gui_commit"
-    "GATEWAY_VERSION=$gateway_version"
-    "EASYTIER_CORE_TAG=$core_version"
-    "EASYTIER_CORE_COMMIT=$core_commit"
+    "${EASYTIER_XCODE_METADATA_ARGS[@]}"
     "EASYTIER_SPARKLE_FEED_URL=$SPARKLE_FEED_URL"
     "EASYTIER_SPARKLE_PUBLIC_ED_KEY=$SPARKLE_PUBLIC_ED_KEY"
     "EASYTIER_DEVELOPMENT_TEAM=$SIGNING_TEAM_ID"

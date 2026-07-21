@@ -58,18 +58,6 @@ APP_PATH="$MOUNT_DIR/EasyTier.app"
   exit 1
 }
 
-"$ROOT_DIR/scripts/verify-app.sh" "$APP_PATH"
-xcrun stapler validate "$APP_PATH"
-
-if ! GATEKEEPER_OUTPUT="$(spctl -a -vv -t exec "$APP_PATH" 2>&1)"; then
-  printf '%s\n' "$GATEKEEPER_OUTPUT" >&2
-  exit 1
-fi
-printf '%s\n' "$GATEKEEPER_OUTPUT"
-
-if [[ "$GATEKEEPER_OUTPUT" != *"source=Notarized Developer ID"* ]]; then
-  echo "Gatekeeper did not identify EasyTier.app as a notarized Developer ID app." >&2
-  exit 1
-fi
+"$ROOT_DIR/scripts/verify-app.sh" "$APP_PATH" notarized
 
 echo "Release DMG passed integrity, notarization, signing, helper, and Gatekeeper checks."

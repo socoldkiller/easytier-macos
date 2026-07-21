@@ -23,6 +23,10 @@ RELEASE_TAG ?=
 APP_VERSION ?=
 BUILD_NUMBER ?=
 
+export ARTIFACTS_DIR APP_PRODUCTS_DIR SWIFT_BUILD_DIR APP_PATH INSTALL_APP_PATH DMG_PATH
+export CODESIGN_IDENTITY CODESIGN_KEYCHAIN PROVISIONING_PROFILE SPARKLE_PUBLIC_ED_KEY
+export NOTARY_PROFILE NOTARY_KEYCHAIN RELEASE_TAG APP_VERSION BUILD_NUMBER
+
 # Rust FFI/core optimization knobs. Defaults favor the smallest release app.
 RUST_OPT_LEVEL ?= z
 RUST_LTO ?= fat
@@ -132,91 +136,21 @@ require-codesign-identity:
 	esac
 
 app-debug: require-codesign-identity
-	mkdir -p "$(ARTIFACTS_DIR)"
-	EASYTIER_BUILD_CONFIGURATION=debug \
-	EASYTIER_APP_PRODUCTS_DIR="$(APP_PRODUCTS_DIR)" \
-	EASYTIER_SWIFT_BUILD_DIR="$(SWIFT_BUILD_DIR)" \
-	EASYTIER_CODESIGN_IDENTITY="$(CODESIGN_IDENTITY)" \
-	EASYTIER_CODESIGN_KEYCHAIN="$(CODESIGN_KEYCHAIN)" \
-	EASYTIER_PROVISIONING_PROFILE="$(PROVISIONING_PROFILE)" \
-	EASYTIER_SPARKLE_PUBLIC_ED_KEY="$(SPARKLE_PUBLIC_ED_KEY)" \
-	EASYTIER_APP_VERSION="$(APP_VERSION)" \
-	EASYTIER_BUILD_NUMBER="$(BUILD_NUMBER)" \
-	EASYTIER_EXPORT_APP_DIR="$(APP_PATH)" \
-	./scripts/archive-app.sh
+	./scripts/build.sh app debug
 
 app-release-signed: require-codesign-identity
-	mkdir -p "$(ARTIFACTS_DIR)"
-	EASYTIER_BUILD_CONFIGURATION=release \
-	EASYTIER_APP_PRODUCTS_DIR="$(APP_PRODUCTS_DIR)" \
-	EASYTIER_SWIFT_BUILD_DIR="$(SWIFT_BUILD_DIR)" \
-	EASYTIER_CODESIGN_IDENTITY="$(CODESIGN_IDENTITY)" \
-	EASYTIER_CODESIGN_KEYCHAIN="$(CODESIGN_KEYCHAIN)" \
-	EASYTIER_PROVISIONING_PROFILE="$(PROVISIONING_PROFILE)" \
-	EASYTIER_SPARKLE_PUBLIC_ED_KEY="$(SPARKLE_PUBLIC_ED_KEY)" \
-	EASYTIER_APP_VERSION="$(APP_VERSION)" \
-	EASYTIER_BUILD_NUMBER="$(BUILD_NUMBER)" \
-	EASYTIER_EXPORT_APP_DIR="$(APP_PATH)" \
-	./scripts/archive-app.sh
+	./scripts/build.sh app release
 
 debug-install:
-	@build_number="$$(date -u +%Y%m%d%H%M%S)"; \
-	build_time="$$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
-	gui_commit="$$(git -C "$(ROOT_DIR)" rev-parse HEAD 2>/dev/null || printf unknown)"; \
-	core_commit="$$(git -C "$(ROOT_DIR)/Vendor/EasyTier" rev-parse HEAD 2>/dev/null || printf unknown)"; \
-	core_tag="$$(git -C "$(ROOT_DIR)/Vendor/EasyTier" describe --tags --always 2>/dev/null || printf unknown)"; \
-	gateway_version="$$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$(ROOT_DIR)/Rust/EasyTierGuiFFI/Cargo.toml" | head -n 1)"; \
-	if test -n "$$(git -C "$(ROOT_DIR)" status --short --untracked-files=no --ignore-submodules=all 2>/dev/null)"; then gui_commit="$$gui_commit-dirty"; fi; \
-	if test -n "$$(git -C "$(ROOT_DIR)/Vendor/EasyTier" status --short --untracked-files=no 2>/dev/null)"; then core_commit="$$core_commit-dirty"; core_tag="$$core_tag-dirty"; fi; \
-	printf 'Building local Debug app: build=%s time=%s GUI/Gateway=%s Gateway=%s Core=%s (%s)\n' "$$build_number" "$$build_time" "$$gui_commit" "$$gateway_version" "$$core_tag" "$$core_commit"; \
-	xcodebuild -project EasyTier.xcodeproj \
-		-scheme EasyTierMac \
-		-configuration Debug \
-		-destination 'platform=macOS,arch=arm64' \
-		-derivedDataPath "$(APP_PRODUCTS_DIR)/DebugDerivedData" \
-		"CURRENT_PROJECT_VERSION=$$build_number" \
-		"EASYTIER_BUILD_TIME=$$build_time" \
-		"EASYTIER_GUI_COMMIT=$$gui_commit" \
-		"GATEWAY_BUILD_TIME=$$build_time" \
-		"GATEWAY_COMMIT=$$gui_commit" \
-		"GATEWAY_VERSION=$$gateway_version" \
-		"EASYTIER_CORE_TAG=$$core_tag" \
-		"EASYTIER_CORE_COMMIT=$$core_commit" \
-		build
-	EASYTIER_INSTALL_APP_PATH="$(INSTALL_APP_PATH)" \
-	EASYTIER_OPEN_APP=1 \
-	./scripts/install-xcode-debug-app.sh \
-		"$(APP_PRODUCTS_DIR)/DebugDerivedData/Build/Products/Debug/EasyTier.app"
+	EASYTIER_OPEN_APP=1 ./scripts/build.sh debug-install
 
 dmg: release-dmg
 
 release-dmg: require-codesign-identity
-	EASYTIER_ARTIFACTS_DIR="$(ARTIFACTS_DIR)" \
-	EASYTIER_APP_PRODUCTS_DIR="$(APP_PRODUCTS_DIR)" \
-	EASYTIER_SWIFT_BUILD_DIR="$(SWIFT_BUILD_DIR)" \
-	EASYTIER_CODESIGN_IDENTITY="$(CODESIGN_IDENTITY)" \
-	EASYTIER_CODESIGN_KEYCHAIN="$(CODESIGN_KEYCHAIN)" \
-	EASYTIER_PROVISIONING_PROFILE="$(PROVISIONING_PROFILE)" \
-	EASYTIER_SPARKLE_PUBLIC_ED_KEY="$(SPARKLE_PUBLIC_ED_KEY)" \
-	EASYTIER_NOTARY_KEYCHAIN_PROFILE="$(NOTARY_PROFILE)" \
-	EASYTIER_NOTARY_KEYCHAIN="$(NOTARY_KEYCHAIN)" \
-	EASYTIER_RELEASE_TAG="$(RELEASE_TAG)" \
-	EASYTIER_APP_VERSION="$(APP_VERSION)" \
-	EASYTIER_BUILD_NUMBER="$(BUILD_NUMBER)" \
-	EASYTIER_EXPORT_APP_DIR="$(APP_PATH)" \
-	EASYTIER_DMG_PATH="$(DMG_PATH)" \
-	./scripts/release.sh artifact
+	./scripts/build.sh package
 
 verify-app:
-	./scripts/verify-app.sh "$(APP_PATH)"
+	./scripts/build.sh verify app "$(APP_PATH)"
 
 install-helper: require-codesign-identity
-	EASYTIER_APP_PRODUCTS_DIR="$(APP_PRODUCTS_DIR)" \
-	EASYTIER_SWIFT_BUILD_DIR="$(SWIFT_BUILD_DIR)" \
-	EASYTIER_CODESIGN_IDENTITY="$(CODESIGN_IDENTITY)" \
-	EASYTIER_CODESIGN_KEYCHAIN="$(CODESIGN_KEYCHAIN)" \
-	EASYTIER_PROVISIONING_PROFILE="$(PROVISIONING_PROFILE)" \
-	EASYTIER_SPARKLE_PUBLIC_ED_KEY="$(SPARKLE_PUBLIC_ED_KEY)" \
-	EASYTIER_EXPORT_APP_DIR="$(INSTALL_APP_PATH)" \
-	EASYTIER_OPEN_APP=1 \
-	./scripts/dev-install-helper.sh
+	EASYTIER_OPEN_APP=1 ./scripts/build.sh install-helper

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 APP_PATH="${1:-}"
+VERIFY_STAGE="${2:-signed}"
 GUI_BINARY=""
 HELPER_BINARY=""
 GATEWAY_HELPER_BINARY=""
@@ -27,8 +28,8 @@ REQUIRED_GATEWAY_SYMBOLS=(
   gateway_request_renewal
 )
 
-if [[ -z "$APP_PATH" ]]; then
-  echo "Usage: scripts/verify-app.sh /path/to/EasyTier.app" >&2
+if [[ -z "$APP_PATH" || ( "$VERIFY_STAGE" != "signed" && "$VERIFY_STAGE" != "notarized" ) ]]; then
+  echo "Usage: scripts/verify-app.sh /path/to/EasyTier.app [signed|notarized]" >&2
   exit 2
 fi
 
@@ -276,7 +277,22 @@ verify_binary_symbols() {
   echo "Binary symbol checks passed: the GUI is FFI-free and each helper contains only its own FFI entry points."
 }
 
+verify_notarization() {
+  xcrun stapler validate "$APP_PATH"
+  local gatekeeper_output
+  if ! gatekeeper_output="$(spctl -a -vv -t exec "$APP_PATH" 2>&1)"; then
+    printf '%s\n' "$gatekeeper_output" >&2
+    fail "Gatekeeper rejected the notarized EasyTier.app."
+  fi
+  printf '%s\n' "$gatekeeper_output"
+  [[ "$gatekeeper_output" == *"source=Notarized Developer ID"* ]] \
+    || fail "Gatekeeper did not identify EasyTier.app as a notarized Developer ID app."
+}
+
 verify_app_bundle
 verify_binary_symbols
+if [[ "$VERIFY_STAGE" == "notarized" ]]; then
+  verify_notarization
+fi
 
-echo "Packaged app contains an FFI-free GUI plus isolated EasyTier and Gateway privileged helpers."
+echo "Packaged app passed the $VERIFY_STAGE verification stage with isolated EasyTier and Gateway privileged helpers."
