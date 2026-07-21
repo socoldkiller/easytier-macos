@@ -16,6 +16,22 @@ unset \
   EASYTIER_CORE_TAG \
   EASYTIER_CORE_VERSION
 unset EASYTIER_GATEWAY_VERSION
+unset \
+  ARTIFACTS_DIR \
+  APP_PRODUCTS_DIR \
+  SWIFT_BUILD_DIR \
+  APP_PATH \
+  INSTALL_APP_PATH \
+  DMG_PATH \
+  CODESIGN_IDENTITY \
+  CODESIGN_KEYCHAIN \
+  PROVISIONING_PROFILE \
+  SPARKLE_PUBLIC_ED_KEY \
+  NOTARY_PROFILE \
+  NOTARY_KEYCHAIN \
+  RELEASE_TAG \
+  APP_VERSION \
+  BUILD_NUMBER
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/easytier-release-tests.XXXXXX")"
@@ -177,6 +193,14 @@ EOF
 
 chmod +x "$FAKE_BIN"/* "$FAKE_HELPERS"/*
 
+execute_artifact() {
+  if [[ "${USE_BUILD_ENTRYPOINT:-0}" == "1" ]]; then
+    "$ROOT_DIR/scripts/build.sh" package
+  else
+    "$ROOT_DIR/scripts/release.sh" artifact
+  fi
+}
+
 run_artifact() {
   PATH="$FAKE_BIN:$PATH" \
   TRACE_FILE="$TRACE_FILE" \
@@ -193,9 +217,12 @@ run_artifact() {
   EASYTIER_SPARKLE_PUBLIC_ED_KEY="$PUBLIC_KEY" \
   EASYTIER_APP_VERSION="${TEST_APP_VERSION:-1.4.0}" \
   EASYTIER_BUILD_NUMBER="${TEST_BUILD_NUMBER:-20260714010203}" \
-  "$ROOT_DIR/scripts/release.sh" artifact
+  execute_artifact
 }
 
+USE_BUILD_ENTRYPOINT=1 \
+EASYTIER_GUI_REVISION=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+EASYTIER_CORE_REVISION=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
 APPLE_NOTARY_KEY=fake-private-key \
 APPLE_NOTARY_KEY_ID=FAKEKEY123 \
 APPLE_NOTARY_ISSUER_ID=00000000-0000-0000-0000-000000000000 \
