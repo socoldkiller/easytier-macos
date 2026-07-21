@@ -15,7 +15,8 @@ struct PublishServiceSheet: View {
     @State private var selectedTargetPeerID: String
     @State private var draftID: String?
     @State private var draftTarget: PublishedServiceTargetOption?
-    @State private var challengeMode = PublishedServiceChallengeMode.automatic
+    @State private var certificateAuthority = GatewayCertificateAuthority.letsEncrypt
+    @State private var challengeMode = PublishedServiceChallengeMode.http01
     @State private var dnsCredentialID: String?
     @State private var isWorking = false
     @State private var errorMessage: String?
@@ -127,7 +128,17 @@ struct PublishServiceSheet: View {
                         .disabled(draftID != nil || isWorking)
                 }
                 GridRow {
-                    Text("Certificate")
+                    Text("Certificate Authority")
+                        .foregroundStyle(.secondary)
+                    Picker("Certificate Authority", selection: $certificateAuthority) {
+                        ForEach(GatewayCertificateAuthority.allCases, id: \.self) { authority in
+                            Text(authority.label).tag(authority)
+                        }
+                    }
+                    .labelsHidden()
+                }
+                GridRow {
+                    Text("Validation Method")
                         .foregroundStyle(.secondary)
                     Picker("Certificate Challenge", selection: $challengeMode) {
                         ForEach(PublishedServiceChallengeMode.allCases) { mode in
@@ -136,14 +147,11 @@ struct PublishServiceSheet: View {
                     }
                     .labelsHidden()
                 }
-                if challengeMode == .automatic || challengeMode == .dns01 {
+                if challengeMode == .dns01 {
                     GridRow {
-                        Text(challengeMode == .automatic ? "DNS Fallback" : "DNS Credential")
+                        Text("DNS Credential")
                             .foregroundStyle(.secondary)
                         Picker("DNS Credential", selection: $dnsCredentialID) {
-                            if challengeMode == .automatic {
-                                Text("None").tag(String?.none)
-                            }
                             ForEach(gateway.dnsCredentials) { credential in
                                 Text("\(credential.label) · \(credential.provider.displayName)")
                                     .tag(Optional(credential.id))
@@ -270,7 +278,13 @@ struct PublishServiceSheet: View {
                     draftTarget = effectiveTarget
                     serviceID = draft.id
                 }
-                try await gateway.updateChallenge(serviceID: serviceID, challenge: challenge)
+                try await gateway.updateCertificatePolicy(
+                    serviceID: serviceID,
+                    policy: GatewayCertificatePolicy(
+                        authority: certificateAuthority,
+                        challenge: challenge
+                    )
+                )
                 try await gateway.setServiceEnabled(true, serviceID: serviceID)
                 dismiss()
             } catch {

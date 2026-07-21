@@ -117,11 +117,11 @@ struct ServicesView: View {
                 sslProvider: row?.sslProvider
                     ?? PublishedServiceSSLProvider(acmeConfiguration: gateway.acmeConfiguration),
                 onConfigureSSL: openGatewaySettings
-            ) { target, port, challenge in
+            ) { target, port, certificatePolicy in
                 updateService(
                     target: target,
                     port: port,
-                    challenge: challenge,
+                    certificatePolicy: certificatePolicy,
                     service: service
                 )
             }
@@ -230,7 +230,7 @@ struct ServicesView: View {
     private func updateService(
         target: PublishedServiceTargetOption,
         port: Int,
-        challenge: GatewayPublishedServiceChallenge,
+        certificatePolicy: GatewayCertificatePolicy,
         service: GatewayPublishedService
     ) {
         perform(service) {
@@ -242,7 +242,7 @@ struct ServicesView: View {
                 magicDNSSuffix: gateway.appliedMagicDNSSuffix
                     ?? store.magicDNSSettings.dnsSuffix,
                 port: port,
-                challenge: challenge
+                certificatePolicy: certificatePolicy
             )
         }
     }

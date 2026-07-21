@@ -1263,7 +1263,7 @@ mod tests {
 
         let temp = tempfile::tempdir().unwrap();
         let mut config = serde_json::json!({
-            "schema_version": 4,
+            "schema_version": 5,
             "storage_dir": temp.path().join("gateway"),
             "listeners": {
                 "http": "127.0.0.1:0",
@@ -1276,7 +1276,6 @@ mod tests {
                 "ttl": 30
             },
             "acme": {
-                "directory": { "kind": "letsencrypt_staging" },
                 "contact_email": null,
                 "terms_of_service_agreed": true
             },
@@ -1284,7 +1283,7 @@ mod tests {
             "routes": []
         });
         let secrets = serde_json::json!({
-            "schema_version": 4,
+            "schema_version": 5,
             "cloudflare": {
                 "cf-main": { "api_token": "super-secret-cloudflare-token" }
             }

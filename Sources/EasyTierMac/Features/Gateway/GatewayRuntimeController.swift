@@ -164,7 +164,6 @@ final class GatewayRuntimeController {
         try await withMutation {
             var state = persistedState ?? .empty
             state.acmeAccount = GatewayACMEConfiguration(
-                directory: .letsencryptProduction,
                 contactEmail: contactEmail,
                 termsOfServiceAgreed: termsOfServiceAgreed
             )
@@ -254,9 +253,9 @@ final class GatewayRuntimeController {
         }
     }
 
-    func updateChallenge(
+    func updateCertificatePolicy(
         serviceID: String,
-        challenge: GatewayPublishedServiceChallenge
+        policy: GatewayCertificatePolicy
     ) async throws {
         try await withMutation {
             guard var state = persistedState,
@@ -264,7 +263,7 @@ final class GatewayRuntimeController {
             else {
                 throw GatewayConfigurationValidationError.invalid("Published service was not found.")
             }
-            state.services[index].challenge = challenge
+            state.services[index].certificatePolicy = policy
             try await save(state)
             await reconcileWithoutLock()
         }
@@ -297,8 +296,7 @@ final class GatewayRuntimeController {
         try await withMutation {
             guard var state = persistedState else { return }
             let isReferenced = state.services.contains { service in
-                switch service.challenge {
-                case let .automatic(dnsCredentialID): dnsCredentialID == id
+                switch service.certificatePolicy.challenge {
                 case .http01: false
                 case let .dns01(credentialID): credentialID == id
                 }
@@ -322,7 +320,7 @@ final class GatewayRuntimeController {
         targetHostname: String,
         magicDNSSuffix: String,
         port: Int,
-        challenge: GatewayPublishedServiceChallenge? = nil
+        certificatePolicy: GatewayCertificatePolicy? = nil
     ) async throws {
         try await withMutation {
             guard var state = persistedState,
@@ -337,8 +335,8 @@ final class GatewayRuntimeController {
             updated.lastKnownTargetHostname = targetHostname
             updated.lastKnownMagicDNSSuffix = magicDNSSuffix
             updated.targetPort = port
-            if let challenge {
-                updated.challenge = challenge
+            if let certificatePolicy {
+                updated.certificatePolicy = certificatePolicy
             }
             guard updated != state.services[index] else { return }
 

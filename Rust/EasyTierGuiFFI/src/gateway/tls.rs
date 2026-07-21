@@ -17,7 +17,10 @@ use pingora::{
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use x509_parser::{extensions::GeneralName, parse_x509_certificate};
 
-use super::config::{ValidatedGatewayConfig, normalize_certificate_domain, normalize_domain};
+use super::config::{
+    CertificateAuthorityKind, ChallengeConfig, ValidatedGatewayConfig,
+    normalize_certificate_domain, normalize_domain,
+};
 
 const H2_PROTOCOL: &[u8] = b"h2";
 const H1_PROTOCOL: &[u8] = b"http/1.1";
@@ -25,7 +28,8 @@ const H1_PROTOCOL: &[u8] = b"http/1.1";
 #[derive(Clone, Debug)]
 pub struct CertificateMetadata {
     pub domains: Vec<String>,
-    pub authority: String,
+    pub authority: CertificateAuthorityKind,
+    pub challenge: ChallengeConfig,
     pub not_before: OffsetDateTime,
     pub not_after: OffsetDateTime,
     pub not_before_rfc3339: String,
@@ -56,19 +60,21 @@ impl CertifiedMaterial {
         private_key_pem: &str,
         expected_domains: &[String],
     ) -> Result<Self, String> {
-        Self::from_pem_with_authority(
+        Self::from_pem_with_policy(
             certificate_chain_pem,
             private_key_pem,
             expected_domains,
-            "letsencrypt".to_string(),
+            CertificateAuthorityKind::Letsencrypt,
+            ChallengeConfig::Http01,
         )
     }
 
-    pub fn from_pem_with_authority(
+    pub fn from_pem_with_policy(
         certificate_chain_pem: &str,
         private_key_pem: &str,
         expected_domains: &[String],
-        authority: String,
+        authority: CertificateAuthorityKind,
+        challenge: ChallengeConfig,
     ) -> Result<Self, String> {
         let mut certificates = X509::stack_from_pem(certificate_chain_pem.as_bytes())
             .map_err(|error| format!("failed to parse certificate chain PEM: {error}"))?;
@@ -135,6 +141,7 @@ impl CertifiedMaterial {
             metadata: CertificateMetadata {
                 domains: domains.into_iter().collect(),
                 authority,
+                challenge,
                 not_before,
                 not_after,
                 not_before_rfc3339,
@@ -382,7 +389,7 @@ mod tests {
         store.install("app-cert".to_string(), test_material("old.example.com"));
         let config = GatewayConfig::parse(
             &json!({
-                "schema_version": 4,
+                "schema_version": 5,
                 "storage_dir": PathBuf::from("/tmp/easytier-gateway-tls-test"),
                 "listeners": {
                     "http": "127.0.0.1:5002",
@@ -395,13 +402,13 @@ mod tests {
                     "ttl": 30
                 },
                 "acme": {
-                    "directory": { "kind": "letsencrypt_staging" },
                     "contact_email": "gateway@example.com",
                     "terms_of_service_agreed": true
                 },
                 "certificates": [{
                     "id": "app-cert",
                     "domains": ["new.example.com"],
+                    "authority": "letsencrypt",
                     "challenge": { "type": "http01" }
                 }],
                 "routes": []

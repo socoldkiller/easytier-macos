@@ -33,20 +33,23 @@ These crates are compiled into the Rust `staticlib`; BoringSSL is not a runtime 
 
 ## Configuration
 
-Configuration and secrets are separate UTF-8 JSON documents. Both currently use schema version 1.
+Configuration and secrets are separate UTF-8 JSON documents. Both currently use schema version 5.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 5,
   "storage_dir": "/Users/example/Library/Application Support/EasyTier/Gateway",
   "listeners": {
     "http": "127.0.0.1:5002",
-    "https": "127.0.0.1:5443"
+    "https": "127.0.0.1:5443",
+    "dns": "127.0.0.1:53535"
+  },
+  "local_dns": {
+    "domains": ["admin.example.com", "grafana.apps.example.com"],
+    "answer_ipv4": "127.0.0.1",
+    "ttl": 30
   },
   "acme": {
-    "directory": {
-      "kind": "letsencrypt_staging"
-    },
     "contact_email": "ops@example.com",
     "terms_of_service_agreed": true
   },
@@ -56,6 +59,7 @@ Configuration and secrets are separate UTF-8 JSON documents. Both currently use 
       "domains": [
         "admin.example.com"
       ],
+      "authority": "letsencrypt",
       "challenge": {
         "type": "http01"
       }
@@ -65,6 +69,7 @@ Configuration and secrets are separate UTF-8 JSON documents. Both currently use 
       "domains": [
         "*.apps.example.com"
       ],
+      "authority": "zerossl",
       "challenge": {
         "type": "dns01",
         "provider": "cloudflare",
@@ -95,19 +100,21 @@ Configuration and secrets are separate UTF-8 JSON documents. Both currently use 
 }
 ```
 
-Supported ACME directory values are:
+Each certificate selects exactly one authority:
 
 ```json
-{ "kind": "letsencrypt_staging" }
-{ "kind": "letsencrypt_production" }
-{ "kind": "custom", "url": "https://acme.example/directory", "ca_cert_path": "/absolute/ca.pem" }
+"letsencrypt"
+"zerossl"
 ```
+
+There is no authority or challenge fallback. A failed request retries only the configured authority
+and the configured HTTP-01 or DNS-01 challenge.
 
 Secrets use credential references rather than embedding tokens in the main configuration:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 5,
   "cloudflare": {
     "cloudflare-main": {
       "api_token": "runtime-token"
@@ -176,8 +183,8 @@ sensitive runtime fields before calling Rust:
 
 - HTTP listens on `0.0.0.0:80` and HTTPS listens on `0.0.0.0:443`.
 - Runtime storage is `/Library/Application Support/EasyTier/Gateway/<uid>/runtime`.
-- The first Swift integration accepts HTTP-01 with Let's Encrypt staging or production only.
-- DNS-01 secrets and custom ACME CA paths remain Rust capabilities but are not exposed by Swift v1.
+- Every published service explicitly selects Let's Encrypt or ZeroSSL and HTTP-01 or DNS-01.
+- DNS-01 credentials support Cloudflare and Aliyun and remain stored in Keychain.
 
 The user's desired state is stored at
 `~/Library/Application Support/com.kkrainbow.easytier.mac/gateway/config.json`. The helper validates
@@ -186,10 +193,7 @@ FFI calls, and stops the listeners when the owning GUI exits or its XPC lease ex
 runtime data is preserved across normal quit and software updates so ACME accounts and certificates
 can be reused.
 
-SwiftUI editing, DNS-01 credential management, and custom CA import are deferred.
-
-The automated tests run the ACME protocol, Cloudflare API shape, challenge ordering, certificate
+The automated tests run the ACME protocol, Cloudflare API shape, exact authority/challenge selection, certificate
 issuance, ARI replacement, cleanup persistence, TLS termination, and proxying against controlled
-local servers. A real Let's Encrypt staging issuance still requires a user-controlled public domain,
-Cloudflare token, and public port/DNS routing, so it remains a deployment smoke test rather than a
-repository test.
+local servers. Real Let's Encrypt or ZeroSSL issuance still requires a user-controlled public domain,
+DNS credentials or public port routing, so it remains a deployment smoke test rather than a repository test.

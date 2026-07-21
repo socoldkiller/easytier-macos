@@ -8,7 +8,7 @@ use http::HeaderValue;
 use serde::{Deserialize, Serialize};
 use url::{Host, Url};
 
-pub const GATEWAY_SCHEMA_VERSION: u32 = 4;
+pub const GATEWAY_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -44,39 +44,15 @@ pub struct LocalDnsConfig {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AcmeConfig {
-    #[serde(default)]
-    pub directory: AcmeDirectoryConfig,
     pub contact_email: Option<String>,
     pub terms_of_service_agreed: bool,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum AcmeDirectoryConfig {
-    #[default]
-    LetsencryptStaging,
-    LetsencryptProduction,
-    Custom {
-        url: String,
-        ca_cert_path: PathBuf,
-    },
-}
-
-impl AcmeDirectoryConfig {
-    pub fn url(&self) -> &str {
-        match self {
-            Self::LetsencryptStaging => instant_acme::LetsEncrypt::Staging.url(),
-            Self::LetsencryptProduction => instant_acme::LetsEncrypt::Production.url(),
-            Self::Custom { url, .. } => url,
-        }
-    }
-
-    pub fn custom_ca_cert_path(&self) -> Option<&PathBuf> {
-        match self {
-            Self::Custom { ca_cert_path, .. } => Some(ca_cert_path),
-            _ => None,
-        }
-    }
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CertificateAuthorityKind {
+    Letsencrypt,
+    Zerossl,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -84,16 +60,13 @@ impl AcmeDirectoryConfig {
 pub struct CertificateConfig {
     pub id: String,
     pub domains: Vec<String>,
+    pub authority: CertificateAuthorityKind,
     pub challenge: ChallengeConfig,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ChallengeConfig {
-    Automatic {
-        #[serde(default)]
-        dns01: Option<Dns01Config>,
-    },
     Http01,
     Dns01 {
         provider: DnsProviderKind,
@@ -101,17 +74,9 @@ pub enum ChallengeConfig {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct Dns01Config {
-    pub provider: DnsProviderKind,
-    pub credential_id: String,
-}
-
 impl ChallengeConfig {
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::Automatic { .. } => "automatic",
             Self::Http01 => "http01",
             Self::Dns01 { .. } => "dns01",
         }
@@ -119,14 +84,11 @@ impl ChallengeConfig {
 
     pub fn dns01(&self) -> Option<(DnsProviderKind, &str)> {
         match self {
-            Self::Automatic { dns01: Some(dns01) } => {
-                Some((dns01.provider, dns01.credential_id.as_str()))
-            }
             Self::Dns01 {
                 provider,
                 credential_id,
             } => Some((*provider, credential_id.as_str())),
-            Self::Automatic { dns01: None } | Self::Http01 => None,
+            Self::Http01 => None,
         }
     }
 }
@@ -204,6 +166,7 @@ pub struct ValidatedGatewayConfig {
 pub struct ValidatedCertificate {
     pub id: String,
     pub domains: Vec<String>,
+    pub authority: CertificateAuthorityKind,
     pub challenge: ChallengeConfig,
 }
 
@@ -278,8 +241,6 @@ impl GatewayConfig {
         if let Some(email) = self.acme.contact_email.as_deref() {
             validate_email(email)?;
         }
-        validate_acme_directory(&self.acme.directory)?;
-
         let http_addr = parse_listener(&self.listeners.http, "listeners.http")?;
         let https_addr = parse_listener(&self.listeners.https, "listeners.https")?;
         let dns_addr = parse_listener(&self.listeners.dns, "listeners.dns")?;
@@ -332,23 +293,13 @@ impl GatewayConfig {
                 ChallengeConfig::Dns01 { credential_id, .. } => {
                     validate_identifier(credential_id, "credential id")?;
                 }
-                ChallengeConfig::Automatic { dns01 } => {
-                    if domains.iter().any(|domain| domain.starts_with("*.")) && dns01.is_none() {
-                        return Err(format!(
-                            "certificate {} uses Automatic for a wildcard but has no DNS credential",
-                            certificate.id
-                        ));
-                    }
-                    if let Some(dns01) = dns01 {
-                        validate_identifier(&dns01.credential_id, "credential id")?;
-                    }
-                }
                 ChallengeConfig::Http01 => {}
             }
 
             let validated = ValidatedCertificate {
                 id: certificate.id.clone(),
                 domains,
+                authority: certificate.authority,
                 challenge: certificate.challenge.clone(),
             };
             if certificates
@@ -611,25 +562,6 @@ fn parse_ipv4_cidr(raw: &str) -> Result<Ipv4Cidr, String> {
     })
 }
 
-fn validate_acme_directory(directory: &AcmeDirectoryConfig) -> Result<(), String> {
-    let AcmeDirectoryConfig::Custom { url, ca_cert_path } = directory else {
-        return Ok(());
-    };
-    let parsed = Url::parse(url).map_err(|error| format!("invalid ACME directory URL: {error}"))?;
-    if parsed.scheme() != "https" {
-        return Err("custom ACME directory URL must use HTTPS".to_string());
-    }
-    if !parsed.username().is_empty() || parsed.password().is_some() || parsed.fragment().is_some() {
-        return Err(
-            "custom ACME directory URL must not include credentials or fragment".to_string(),
-        );
-    }
-    if !ca_cert_path.is_absolute() {
-        return Err("custom ACME ca_cert_path must be absolute".to_string());
-    }
-    Ok(())
-}
-
 fn validate_identifier(value: &str, label: &str) -> Result<(), String> {
     if value.is_empty() || value.len() > 64 {
         return Err(format!("{label} must contain 1 to 64 characters"));
@@ -687,13 +619,13 @@ mod tests {
                 ttl: 30,
             },
             acme: AcmeConfig {
-                directory: AcmeDirectoryConfig::LetsencryptStaging,
                 contact_email: Some("ops@example.com".to_string()),
                 terms_of_service_agreed: true,
             },
             certificates: vec![CertificateConfig {
                 id: "app-cert".to_string(),
                 domains: vec!["app.example.com".to_string()],
+                authority: CertificateAuthorityKind::Letsencrypt,
                 challenge: ChallengeConfig::Http01,
             }],
             routes: vec![RouteConfig {

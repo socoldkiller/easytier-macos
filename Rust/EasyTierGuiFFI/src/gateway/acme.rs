@@ -38,9 +38,10 @@ use tokio::{
 use zeroize::Zeroizing;
 
 use super::{
-    authority::{AuthorityKind, AuthorityPool},
+    authority::AuthorityPool,
     config::{
-        AcmeConfig, ChallengeConfig, DnsProviderKind, ValidatedCertificate, normalize_domain,
+        AcmeConfig, CertificateAuthorityKind, ChallengeConfig, DnsProviderKind,
+        ValidatedCertificate, normalize_domain,
     },
     proxy::Http01ChallengeStore,
     storage::{GatewayStorage, PendingDnsCleanup},
@@ -270,7 +271,7 @@ impl AcmeContext {
         storage: GatewayStorage,
         challenges: Arc<Http01ChallengeStore>,
     ) -> Arc<Self> {
-        let authorities = AuthorityPool::production(&config);
+        let authorities = AuthorityPool::production();
         Arc::new(Self {
             config: RwLock::new(config),
             storage,
@@ -285,9 +286,10 @@ impl AcmeContext {
         config: AcmeConfig,
         storage: GatewayStorage,
         challenges: Arc<Http01ChallengeStore>,
+        authority: CertificateAuthorityKind,
         http: Box<dyn HttpClient>,
     ) -> Arc<Self> {
-        let authorities = AuthorityPool::testing(&config, http);
+        let authorities = AuthorityPool::testing(authority, http);
         Arc::new(Self {
             config: RwLock::new(config),
             storage,
@@ -302,10 +304,11 @@ impl AcmeContext {
         config: AcmeConfig,
         storage: GatewayStorage,
         challenges: Arc<Http01ChallengeStore>,
+        authority: CertificateAuthorityKind,
         http: Box<dyn HttpClient>,
         dns_provider: Arc<dyn Dns01Provider>,
     ) -> Arc<Self> {
-        let authorities = AuthorityPool::testing(&config, http);
+        let authorities = AuthorityPool::testing(authority, http);
         Arc::new(Self {
             config: RwLock::new(config),
             storage,
@@ -325,32 +328,20 @@ impl AcmeContext {
         let certificate_id = certificate.id.clone();
         let dns_credential_ref = dns_credential.as_ref();
         let config = self.config.read().await.clone();
-        let mut result = Err("automatic certificate request did not run".to_string());
-        let mut attempt_errors = Vec::new();
         let mut cleanup_failures = Vec::new();
         let mut cleanup_journal_error = None;
-
-        'authorities: for authority in self.authorities.ordered_kinds() {
-            let account = match self
-                .authorities
-                .account(authority, &config, &self.storage)
-                .await
-            {
-                Ok(account) => account,
-                Err(error) => {
-                    attempt_errors.push(format!("{} account: {error}", authority.display_name()));
-                    continue;
-                }
-            };
-            for challenge in challenge_attempts(&certificate) {
-                let challenge_name = challenge_name(&challenge);
-                let mut attempted_certificate = certificate.clone();
-                attempted_certificate.challenge = challenge;
+        let authority = certificate.authority;
+        let challenge_name = challenge_name(&certificate.challenge);
+        let result = match self
+            .authorities
+            .account(authority, &config, &self.storage)
+            .await
+        {
+            Ok(account) => {
                 let mut provisioned = Vec::new();
                 let issue = self.issue_inner(
                     &account,
-                    authority,
-                    &attempted_certificate,
+                    &certificate,
                     dns_credential_ref,
                     current_leaf_der.as_deref(),
                     &mut provisioned,
@@ -364,33 +355,19 @@ impl AcmeContext {
                         }
                     }
                 };
-                let failed_cleanups = self
-                    .cleanup_challenges(provisioned, dns_credential_ref)
-                    .await;
-                cleanup_failures.extend(failed_cleanups);
-                match attempt {
-                    Ok(material) => {
-                        result = Ok(material);
-                        break 'authorities;
-                    }
-                    Err(error) if error.contains("cancel") => {
-                        result = Err(error);
-                        break 'authorities;
-                    }
-                    Err(error) => attempt_errors.push(format!(
-                        "{} via {challenge_name}: {error}",
-                        authority.display_name()
-                    )),
-                }
+                cleanup_failures.extend(
+                    self.cleanup_challenges(provisioned, dns_credential_ref).await,
+                );
+                attempt
             }
+            Err(error) => Err(format!("account: {error}")),
         }
-        if result.is_err() && !attempt_errors.is_empty() {
-            result = Err(format!(
-                "automatic certificate services were unavailable after {} attempt(s): {}",
-                attempt_errors.len(),
-                attempt_errors.join("; ")
-            ));
-        }
+        .map_err(|error| {
+            format!(
+                "{} / {challenge_name}: {error}",
+                authority.display_name()
+            )
+        });
         if !cleanup_failures.is_empty() {
             cleanup_journal_error = self.storage.merge_cleanup_journal(&cleanup_failures).err();
         }
@@ -408,7 +385,7 @@ impl AcmeContext {
         material: &CertifiedMaterial,
     ) -> Result<Option<(OffsetDateTime, Duration)>, String> {
         let config = self.config.read().await.clone();
-        let authority = AuthorityKind::from_storage(&material.metadata.authority);
+        let authority = material.metadata.authority;
         let account = self
             .authorities
             .account(authority, &config, &self.storage)
@@ -461,7 +438,6 @@ impl AcmeContext {
     async fn issue_inner(
         &self,
         account: &Account,
-        authority: AuthorityKind,
         certificate: &ValidatedCertificate,
         dns_credential: Option<&DnsCredential>,
         current_leaf_der: Option<&[u8]>,
@@ -505,11 +481,6 @@ impl AcmeContext {
                 let challenge_type = match certificate.challenge {
                     ChallengeConfig::Http01 => ChallengeType::Http01,
                     ChallengeConfig::Dns01 { .. } => ChallengeType::Dns01,
-                    ChallengeConfig::Automatic { .. } => {
-                        return Err(
-                            "Automatic challenge was not resolved before issuance".to_string()
-                        );
-                    }
                 };
                 let mut challenge = authorization
                     .challenge(challenge_type.clone())
@@ -557,7 +528,6 @@ impl AcmeContext {
                             cleanup: cleanup.clone(),
                         });
                     }
-                    ChallengeConfig::Automatic { .. } => unreachable!(),
                 }
                 challenge
                     .set_ready()
@@ -583,13 +553,8 @@ impl AcmeContext {
             .poll_certificate(&retry)
             .await
             .map_err(|error| format!("failed to retrieve ACME certificate: {error}"))?;
-        self.storage.store_certificate(
-            &certificate.id,
-            &certificate.domains,
-            &certificate_chain_pem,
-            &private_key_pem,
-            authority.storage_value(),
-        )
+        self.storage
+            .store_certificate(certificate, &certificate_chain_pem, &private_key_pem)
     }
 
     async fn cleanup_challenges(
@@ -622,34 +587,10 @@ impl AcmeContext {
     }
 }
 
-fn challenge_attempts(certificate: &ValidatedCertificate) -> Vec<ChallengeConfig> {
-    match &certificate.challenge {
-        ChallengeConfig::Automatic { dns01 } => {
-            let has_wildcard = certificate
-                .domains
-                .iter()
-                .any(|domain| domain.starts_with("*."));
-            let mut attempts = Vec::with_capacity(2);
-            if !has_wildcard {
-                attempts.push(ChallengeConfig::Http01);
-            }
-            if let Some(dns01) = dns01 {
-                attempts.push(ChallengeConfig::Dns01 {
-                    provider: dns01.provider,
-                    credential_id: dns01.credential_id.clone(),
-                });
-            }
-            attempts
-        }
-        challenge => vec![challenge.clone()],
-    }
-}
-
 fn challenge_name(challenge: &ChallengeConfig) -> &'static str {
     match challenge {
         ChallengeConfig::Http01 => "HTTP-01",
         ChallengeConfig::Dns01 { .. } => "DNS-01",
-        ChallengeConfig::Automatic { .. } => "automatic challenge",
     }
 }
 
@@ -1077,68 +1018,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::gateway::config::{AcmeDirectoryConfig, Dns01Config, DnsProviderKind};
-
-    #[test]
-    fn automatic_challenge_uses_http01_without_dns_fallback() {
-        let certificate = ValidatedCertificate {
-            id: "certificate".to_string(),
-            domains: vec!["app.example.com".to_string()],
-            challenge: ChallengeConfig::Automatic { dns01: None },
-        };
-
-        assert_eq!(
-            challenge_attempts(&certificate),
-            vec![ChallengeConfig::Http01]
-        );
-    }
-
-    #[test]
-    fn automatic_challenge_tries_http01_then_dns01() {
-        let certificate = ValidatedCertificate {
-            id: "certificate".to_string(),
-            domains: vec!["app.example.com".to_string()],
-            challenge: ChallengeConfig::Automatic {
-                dns01: Some(Dns01Config {
-                    provider: DnsProviderKind::Aliyun,
-                    credential_id: "aliyun-main".to_string(),
-                }),
-            },
-        };
-
-        assert_eq!(
-            challenge_attempts(&certificate),
-            vec![
-                ChallengeConfig::Http01,
-                ChallengeConfig::Dns01 {
-                    provider: DnsProviderKind::Aliyun,
-                    credential_id: "aliyun-main".to_string(),
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn automatic_wildcard_skips_http01() {
-        let certificate = ValidatedCertificate {
-            id: "certificate".to_string(),
-            domains: vec!["*.example.com".to_string()],
-            challenge: ChallengeConfig::Automatic {
-                dns01: Some(Dns01Config {
-                    provider: DnsProviderKind::Cloudflare,
-                    credential_id: "cloudflare-main".to_string(),
-                }),
-            },
-        };
-
-        assert_eq!(
-            challenge_attempts(&certificate),
-            vec![ChallengeConfig::Dns01 {
-                provider: DnsProviderKind::Cloudflare,
-                credential_id: "cloudflare-main".to_string(),
-            }]
-        );
-    }
+    use crate::gateway::config::{CertificateAuthorityKind, DnsProviderKind};
 
     #[test]
     fn aliyun_encoding_follows_rfc3986_rules() {
@@ -1275,17 +1155,18 @@ mod tests {
             let mock_state = mock.state.clone();
             let context = AcmeContext::new_with_http(
                 AcmeConfig {
-                    directory: AcmeDirectoryConfig::LetsencryptStaging,
                     contact_email: Some("ops@example.com".to_string()),
                     terms_of_service_agreed: true,
                 },
                 storage.clone(),
                 challenges.clone(),
+                CertificateAuthorityKind::Letsencrypt,
                 Box::new(mock),
             );
             let certificate = ValidatedCertificate {
                 id: "http01-cert".to_string(),
                 domains: vec!["app.acme.test".to_string()],
+                authority: CertificateAuthorityKind::Letsencrypt,
                 challenge: ChallengeConfig::Http01,
             };
             let (_shutdown_sender, shutdown) = watch::channel(false);
@@ -1388,18 +1269,19 @@ mod tests {
             let mock_dns = Arc::new(MockDnsProvider::default());
             let context = AcmeContext::new_with_http_and_dns_provider(
                 AcmeConfig {
-                    directory: AcmeDirectoryConfig::LetsencryptStaging,
                     contact_email: None,
                     terms_of_service_agreed: true,
                 },
                 storage.clone(),
                 challenges,
+                CertificateAuthorityKind::Letsencrypt,
                 Box::new(mock_acme),
                 mock_dns.clone(),
             );
             let certificate = ValidatedCertificate {
                 id: "dns01-cert".to_string(),
                 domains: vec!["*.acme.test".to_string()],
+                authority: CertificateAuthorityKind::Letsencrypt,
                 challenge: ChallengeConfig::Dns01 {
                     provider: DnsProviderKind::Cloudflare,
                     credential_id: "cf-main".to_string(),
@@ -1454,6 +1336,82 @@ mod tests {
     }
 
     #[test]
+    fn every_explicit_authority_and_challenge_combination_issues_without_fallback() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            for authority in [
+                CertificateAuthorityKind::Letsencrypt,
+                CertificateAuthorityKind::Zerossl,
+            ] {
+                for uses_dns01 in [false, true] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let storage = GatewayStorage::initialize(temp.path().join("gateway")).unwrap();
+                    let challenges = Http01ChallengeStore::new();
+                    let mock_acme = if uses_dns01 {
+                        MockAcmeClient::new_wildcard(challenges.clone())
+                    } else {
+                        MockAcmeClient::new(challenges.clone())
+                    };
+                    let mock_state = mock_acme.state.clone();
+                    let mock_dns = Arc::new(MockDnsProvider::default());
+                    let context = AcmeContext::new_with_http_and_dns_provider(
+                        AcmeConfig {
+                            contact_email: Some("ops@example.com".to_string()),
+                            terms_of_service_agreed: true,
+                        },
+                        storage,
+                        challenges,
+                        authority,
+                        Box::new(mock_acme),
+                        mock_dns.clone(),
+                    );
+                    let challenge = if uses_dns01 {
+                        ChallengeConfig::Dns01 {
+                            provider: DnsProviderKind::Cloudflare,
+                            credential_id: "cf-main".to_string(),
+                        }
+                    } else {
+                        ChallengeConfig::Http01
+                    };
+                    let certificate = ValidatedCertificate {
+                        id: format!("{authority:?}-{uses_dns01}"),
+                        domains: vec![if uses_dns01 {
+                            "*.acme.test".to_string()
+                        } else {
+                            "app.acme.test".to_string()
+                        }],
+                        authority,
+                        challenge: challenge.clone(),
+                    };
+                    let dns_credential = uses_dns01.then(|| DnsCredential::Cloudflare {
+                        api_token: Zeroizing::new("cloudflare-token".to_string()),
+                    });
+                    let (_shutdown_sender, shutdown) = watch::channel(false);
+
+                    let material = context
+                        .issue(certificate, dns_credential, None, shutdown)
+                        .await
+                        .result
+                        .unwrap();
+
+                    assert_eq!(material.metadata.authority, authority);
+                    assert_eq!(material.metadata.challenge, challenge);
+                    let state = mock_state.lock().unwrap();
+                    assert_eq!(
+                        state.challenge_was_provisioned, !uses_dns01,
+                        "HTTP-01 state must only be touched for an explicit HTTP-01 policy"
+                    );
+                    assert_eq!(
+                        mock_dns.state.lock().unwrap().presented.len(),
+                        usize::from(uses_dns01),
+                        "DNS-01 provider must only be called for an explicit DNS-01 policy"
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
     fn dns01_propagation_failure_persists_failed_cleanup() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
@@ -1464,12 +1422,12 @@ mod tests {
             let cleanup_attempted = Arc::new(StdMutex::new(false));
             let context = AcmeContext::new_with_http_and_dns_provider(
                 AcmeConfig {
-                    directory: AcmeDirectoryConfig::LetsencryptStaging,
                     contact_email: None,
                     terms_of_service_agreed: true,
                 },
                 storage.clone(),
                 challenges,
+                CertificateAuthorityKind::Letsencrypt,
                 Box::new(mock_acme),
                 Arc::new(FailingDnsProvider {
                     cleanup_attempted: cleanup_attempted.clone(),
@@ -1478,6 +1436,7 @@ mod tests {
             let certificate = ValidatedCertificate {
                 id: "failed-dns01-cert".to_string(),
                 domains: vec!["app.acme.test".to_string()],
+                authority: CertificateAuthorityKind::Letsencrypt,
                 challenge: ChallengeConfig::Dns01 {
                     provider: DnsProviderKind::Cloudflare,
                     credential_id: "cf-main".to_string(),
@@ -1497,7 +1456,7 @@ mod tests {
                 .await;
             assert_eq!(
                 output.result.unwrap_err(),
-                "automatic certificate services were unavailable after 1 attempt(s): Let's Encrypt via DNS-01: DNS-01 TXT record did not propagate"
+                "Let's Encrypt / DNS-01: DNS-01 TXT record did not propagate"
             );
             assert_eq!(output.cleanup_failures.len(), 1);
             assert!(*cleanup_attempted.lock().unwrap());
@@ -1562,7 +1521,7 @@ mod tests {
                 .push(format!("{method} {path}"));
 
             match (method.as_str(), path.as_str()) {
-                ("GET", "/directory") => Ok(acme_json_response(
+                ("GET", "/directory" | "/v2/DV90") => Ok(acme_json_response(
                     StatusCode::OK,
                     json!({
                         "newNonce": "https://acme.test/new-nonce",

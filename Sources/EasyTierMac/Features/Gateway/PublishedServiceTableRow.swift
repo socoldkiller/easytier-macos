@@ -13,6 +13,10 @@ struct PublishedServiceTableRow: Identifiable, Equatable, Sendable {
     var publicHostname: String { service.publicHostname }
     var targetDomain: String { service.targetDomain }
     var targetPort: Int { service.targetPort }
+    var certificateAuthority: GatewayCertificateAuthority { service.certificatePolicy.authority }
+    var certificateChallengeLabel: String {
+        PublishedServiceChallengeMode(service.certificatePolicy.challenge).label
+    }
     var protocolLabel: String { service.upstreamProtocol.rawValue.uppercased() }
     var targetEndpointLabel: String { "\(targetDomain):\(targetPort)" }
     var targetDetailLabel: String { protocolLabel }
@@ -28,6 +32,8 @@ struct PublishedServiceTableRow: Identifiable, Equatable, Sendable {
             String(service.targetPort),
             protocolLabel,
             sslProvider.label,
+            certificateAuthority.label,
+            certificateChallengeLabel,
             certificatePresentation.label,
             "SSL",
             presentation.statusLabel,

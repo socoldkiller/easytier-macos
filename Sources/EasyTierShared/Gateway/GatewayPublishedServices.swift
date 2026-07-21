@@ -40,9 +40,6 @@ package enum GatewayPublishedServicesValidator {
 
         var normalized = state
         if var acme = state.acmeAccount {
-            guard acme.directory == .letsencryptProduction else {
-                throw invalid("Published Services requires the production automatic certificate service.")
-            }
             if let email = acme.contactEmail {
                 let email = email.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard isValidEmail(email) else {
@@ -107,11 +104,7 @@ package enum GatewayPublishedServicesValidator {
                 throw invalid("Duplicate public hostname \(publicHostname).")
             }
             service.publicHostname = publicHostname
-            switch service.challenge {
-            case let .automatic(dnsCredentialID):
-                if let dnsCredentialID, !credentialIDs.contains(dnsCredentialID) {
-                    throw invalid("Service references an unknown DNS credential.")
-                }
+            switch service.certificatePolicy.challenge {
             case .http01:
                 break
             case let .dns01(credentialID):
@@ -251,7 +244,6 @@ package enum GatewayConfigurationFactory {
             allowedIPv4CIDR = networkIPv4CIDR
         }
         let acme = state.acmeAccount ?? GatewayACMEConfiguration(
-            directory: .letsencryptProduction,
             contactEmail: nil,
             termsOfServiceAgreed: false
         )
@@ -263,8 +255,9 @@ package enum GatewayConfigurationFactory {
                     GatewayCertificateConfiguration(
                         id: service.id,
                         domains: [service.publicHostname],
+                        authority: service.certificatePolicy.authority,
                         challenge: try runtimeChallenge(
-                            service.challenge,
+                            service.certificatePolicy.challenge,
                             credentials: state.dnsCredentials
                         )
                     )
@@ -298,17 +291,6 @@ package enum GatewayConfigurationFactory {
         credentials: [GatewayDNSCredentialDescriptor]
     ) throws -> GatewayChallengeConfiguration {
         switch challenge {
-        case let .automatic(dnsCredentialID):
-            guard let dnsCredentialID else {
-                return .automatic(dns01: nil)
-            }
-            let credential = try credential(id: dnsCredentialID, in: credentials)
-            return .automatic(
-                dns01: GatewayDNS01Configuration(
-                    provider: credential.provider,
-                    credentialID: credential.id
-                )
-            )
         case .http01:
             return .http01
         case let .dns01(credentialID):

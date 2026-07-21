@@ -9,10 +9,11 @@ struct EditPublishedServiceSheet: View {
     let dnsCredentials: [GatewayDNSCredentialDescriptor]
     let sslProvider: PublishedServiceSSLProvider
     let onConfigureSSL: () -> Void
-    let onSave: (PublishedServiceTargetOption, Int, GatewayPublishedServiceChallenge) -> Void
+    let onSave: (PublishedServiceTargetOption, Int, GatewayCertificatePolicy) -> Void
 
     @State private var portText: String
     @State private var selectedTargetPeerID: String
+    @State private var certificateAuthority: GatewayCertificateAuthority
     @State private var challengeMode: PublishedServiceChallengeMode
     @State private var dnsCredentialID: String?
     @FocusState private var portFocused: Bool
@@ -25,11 +26,15 @@ struct EditPublishedServiceSheet: View {
     private var canSave: Bool {
         guard parsedPort != nil, let selectedTarget else { return false }
         guard let challenge = challengeMode.challenge(credentialID: dnsCredentialID) else { return false }
+        let policy = GatewayCertificatePolicy(
+            authority: certificateAuthority,
+            challenge: challenge
+        )
         return parsedPort != service.targetPort
             || selectedTarget.peerID != service.targetPeerID
             || selectedTarget.instanceID != service.targetInstanceID
             || selectedTarget.hostname != service.lastKnownTargetHostname
-            || challenge != service.challenge
+            || policy != service.certificatePolicy
     }
 
     private var selectedTarget: PublishedServiceTargetOption? {
@@ -45,7 +50,7 @@ struct EditPublishedServiceSheet: View {
         onSave: @escaping (
             PublishedServiceTargetOption,
             Int,
-            GatewayPublishedServiceChallenge
+            GatewayCertificatePolicy
         ) -> Void
     ) {
         self.service = service
@@ -62,8 +67,11 @@ struct EditPublishedServiceSheet: View {
             return option.instanceID == targetInstanceID
         }?.peerID ?? service.targetPeerID
         _selectedTargetPeerID = State(initialValue: currentPeerID)
-        _challengeMode = State(initialValue: PublishedServiceChallengeMode(service.challenge))
-        _dnsCredentialID = State(initialValue: service.challenge.dnsCredentialID)
+        _certificateAuthority = State(initialValue: service.certificatePolicy.authority)
+        _challengeMode = State(
+            initialValue: PublishedServiceChallengeMode(service.certificatePolicy.challenge)
+        )
+        _dnsCredentialID = State(initialValue: service.certificatePolicy.challenge.dnsCredentialID)
     }
 
     var body: some View {
@@ -109,7 +117,17 @@ struct EditPublishedServiceSheet: View {
                     }
                 }
                 SettingsRowDivider()
-                SettingsInlineRow("Challenge") {
+                SettingsInlineRow("Certificate Authority") {
+                    Picker("Certificate Authority", selection: $certificateAuthority) {
+                        ForEach(GatewayCertificateAuthority.allCases, id: \.self) { authority in
+                            Text(authority.label).tag(authority)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 250)
+                }
+                SettingsRowDivider()
+                SettingsInlineRow("Validation Method") {
                     Picker("Certificate Challenge", selection: $challengeMode) {
                         ForEach(PublishedServiceChallengeMode.allCases) { mode in
                             Text(mode.label).tag(mode)
@@ -118,15 +136,10 @@ struct EditPublishedServiceSheet: View {
                     .labelsHidden()
                     .frame(width: 250)
                 }
-                if challengeMode == .automatic || challengeMode == .dns01 {
+                if challengeMode == .dns01 {
                     SettingsRowDivider()
-                    SettingsInlineRow(
-                        challengeMode == .automatic ? "DNS Fallback" : "DNS Credential"
-                    ) {
+                    SettingsInlineRow("DNS Credential") {
                         Picker("DNS Credential", selection: $dnsCredentialID) {
-                            if challengeMode == .automatic {
-                                Text("None").tag(String?.none)
-                            }
                             ForEach(dnsCredentials) { credential in
                                 Text(credential.label).tag(Optional(credential.id))
                             }
@@ -159,7 +172,11 @@ struct EditPublishedServiceSheet: View {
               let challenge = challengeMode.challenge(credentialID: dnsCredentialID),
               canSave
         else { return }
-        onSave(selectedTarget, parsedPort, challenge)
+        onSave(
+            selectedTarget,
+            parsedPort,
+            GatewayCertificatePolicy(authority: certificateAuthority, challenge: challenge)
+        )
         dismiss()
     }
 

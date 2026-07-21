@@ -10,6 +10,7 @@ use instant_acme::AccountCredentials;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::config::{CertificateAuthorityKind, ChallengeConfig, ValidatedCertificate};
 use super::tls::CertifiedMaterial;
 
 const DIRECTORY_MODE: u32 = 0o700;
@@ -26,8 +27,8 @@ struct StoredCertificateMetadata {
     domains: Vec<String>,
     chain_sha256: String,
     key_sha256: String,
-    #[serde(default = "default_certificate_authority")]
-    authority: String,
+    authority: CertificateAuthorityKind,
+    challenge: ChallengeConfig,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -123,37 +124,38 @@ impl GatewayStorage {
             ));
         }
 
-        CertifiedMaterial::from_pem_with_authority(
+        CertifiedMaterial::from_pem_with_policy(
             &chain,
             &key,
             expected_domains,
             metadata.authority,
+            metadata.challenge,
         )
         .map(|material| Some(Arc::new(material)))
     }
 
     pub fn store_certificate(
         &self,
-        certificate_id: &str,
-        domains: &[String],
+        certificate: &ValidatedCertificate,
         certificate_chain_pem: &str,
         private_key_pem: &str,
-        authority: &str,
     ) -> Result<Arc<CertifiedMaterial>, String> {
-        let material = Arc::new(CertifiedMaterial::from_pem_with_authority(
+        let material = Arc::new(CertifiedMaterial::from_pem_with_policy(
             certificate_chain_pem,
             private_key_pem,
-            domains,
-            authority.to_string(),
+            &certificate.domains,
+            certificate.authority,
+            certificate.challenge.clone(),
         )?);
-        let directory = self.certificate_directory(certificate_id);
+        let directory = self.certificate_directory(&certificate.id);
         create_private_directory(&directory)?;
 
         let metadata = StoredCertificateMetadata {
-            domains: domains.to_vec(),
+            domains: certificate.domains.clone(),
             chain_sha256: sha256_hex(certificate_chain_pem.as_bytes()),
             key_sha256: sha256_hex(private_key_pem.as_bytes()),
-            authority: authority.to_string(),
+            authority: certificate.authority,
+            challenge: certificate.challenge.clone(),
         };
         let metadata_bytes = serde_json::to_vec_pretty(&metadata)
             .map_err(|error| format!("failed to encode certificate metadata: {error}"))?;
@@ -257,10 +259,6 @@ impl GatewayStorage {
     fn cleanup_journal_path(&self) -> PathBuf {
         self.root.join("dns-cleanup-journal.json")
     }
-}
-
-fn default_certificate_authority() -> String {
-    "letsencrypt".to_string()
 }
 
 fn create_private_directory(path: &Path) -> Result<(), String> {

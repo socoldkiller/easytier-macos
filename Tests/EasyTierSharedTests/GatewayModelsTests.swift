@@ -9,13 +9,14 @@ import Testing
         JSONSerialization.jsonObject(with: data) as? [String: Any]
     )
     let acme = try #require(object["acme"] as? [String: Any])
-    let directory = try #require(acme["directory"] as? [String: Any])
     let certificates = try #require(object["certificates"] as? [[String: Any]])
-    let challenge = try #require(certificates.first?["challenge"] as? [String: Any])
+    let certificate = try #require(certificates.first)
+    let challenge = try #require(certificate["challenge"] as? [String: Any])
 
     #expect((object["schema_version"] as? NSNumber)?.uint32Value == GatewaySchema.version)
-    #expect(directory["kind"] as? String == "letsencrypt_staging")
+    #expect(acme["directory"] == nil)
     #expect(acme["contact_email"] as? String == "ops@example.com")
+    #expect(certificate["authority"] as? String == "letsencrypt")
     #expect(challenge["type"] as? String == "http01")
     #expect(object["storage_dir"] == nil)
     #expect(object["listeners"] == nil)
@@ -130,15 +131,15 @@ func gatewayValidationRejectsNonExactCertificateDomains(_ domain: String) {
     let data = Data(
         """
         {
-          "schema_version": 4,
+          "schema_version": 5,
           "acme": {
-            "directory": {"kind": "letsencrypt_staging"},
             "contact_email": "ops@example.com",
             "terms_of_service_agreed": true
           },
           "certificates": [{
             "id": "app-cert",
             "domains": ["app.example.com"],
+            "authority": "zerossl",
             "challenge": {
               "type": "dns01",
               "provider": "cloudflare",
@@ -156,6 +157,86 @@ func gatewayValidationRejectsNonExactCertificateDomains(_ domain: String) {
         configuration.certificates.first?.challenge
             == .dns01(GatewayDNS01Configuration(provider: .cloudflare, credentialID: "main"))
     )
+    #expect(configuration.certificates.first?.authority == .zeroSSL)
+}
+
+@Test func publishedServicePersistsAnExplicitCertificatePolicy() throws {
+    let state = gatewayPersistedTestState()
+    let data = try JSONEncoder().encode(state)
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    let services = try #require(object["services"] as? [[String: Any]])
+    let policy = try #require(services.first?["certificate_policy"] as? [String: Any])
+    let challenge = try #require(policy["challenge"] as? [String: Any])
+
+    #expect(policy["authority"] as? String == "letsencrypt")
+    #expect(challenge["type"] as? String == "http01")
+}
+
+@Test func allCertificatePoliciesRoundTrip() throws {
+    for authority in GatewayCertificateAuthority.allCases {
+        for challenge in [
+            GatewayPublishedServiceChallenge.http01,
+            .dns01(credentialID: "dns-main"),
+        ] {
+            var state = gatewayPersistedTestState()
+            state.services[0].certificatePolicy = GatewayCertificatePolicy(
+                authority: authority,
+                challenge: challenge
+            )
+
+            let decoded = try JSONDecoder().decode(
+                GatewayPersistedState.self,
+                from: JSONEncoder().encode(state)
+            )
+
+            #expect(decoded == state)
+        }
+    }
+}
+
+@Test func newPublishedServicesDefaultToLetsEncryptHTTP01() throws {
+    let draft = try GatewayPublishedServicesValidator.makeDraft(
+        networkConfigID: "network-a",
+        targetPeerID: "peer-a",
+        targetHostname: "alpha",
+        magicDNSSuffix: "et.net",
+        serviceLabel: "web",
+        targetPort: 443
+    )
+
+    #expect(draft.certificatePolicy == GatewayCertificatePolicy(
+        authority: .letsEncrypt,
+        challenge: .http01
+    ))
+}
+
+@Test func runtimeCertificateRejectsMissingAuthorityAndAutomaticChallenge() throws {
+    let missingAuthority = Data(
+        """
+        {
+          "id": "app-cert",
+          "domains": ["app.example.com"],
+          "challenge": {"type": "http01"}
+        }
+        """.utf8
+    )
+    let automaticChallenge = Data(
+        """
+        {
+          "id": "app-cert",
+          "domains": ["app.example.com"],
+          "authority": "letsencrypt",
+          "challenge": {"type": "automatic"}
+        }
+        """.utf8
+    )
+
+    #expect(throws: DecodingError.self) {
+        try JSONDecoder().decode(GatewayCertificateConfiguration.self, from: missingAuthority)
+    }
+    #expect(throws: DecodingError.self) {
+        try JSONDecoder().decode(GatewayCertificateConfiguration.self, from: automaticChallenge)
+    }
 }
 
 @Test func gatewayConfigurationStorePersistsAtomicallyWithPrivatePermissions() async throws {
@@ -213,7 +294,7 @@ func gatewayValidationRejectsNonExactCertificateDomains(_ domain: String) {
         from: gatewayPersistedTestState()
     )
 
-    #expect(configuration.acme.directory == .letsencryptProduction)
+    #expect(configuration.certificates.first?.authority == .letsEncrypt)
     #expect(configuration.certificates.map(\.domains) == [["abc.a.et.net"]])
     #expect(configuration.routes.first?.upstream.url == "http://a.et.net:3000")
     #expect(configuration.routes.first?.upstream.allowedIPv4CIDR == "10.0.0.0/24")
@@ -334,12 +415,9 @@ func gatewayValidationRejectsNonExactCertificateDomains(_ domain: String) {
     #expect(PrivilegedHelperClientRequirement.debug == "identifier \"com.kkrainbow.easytier.mac\"")
 }
 
-private func gatewayTestConfiguration(
-    directory: GatewayACMEDirectory = .letsencryptStaging
-) -> GatewayConfiguration {
+private func gatewayTestConfiguration() -> GatewayConfiguration {
     GatewayConfiguration(
         acme: GatewayACMEConfiguration(
-            directory: directory,
             contactEmail: "ops@example.com",
             termsOfServiceAgreed: true
         ),
@@ -367,7 +445,6 @@ private func gatewayPersistedTestState() -> GatewayPersistedState {
     GatewayPersistedState(
         gatewayEnabled: true,
         acmeAccount: GatewayACMEConfiguration(
-            directory: .letsencryptProduction,
             contactEmail: "ops@example.com",
             termsOfServiceAgreed: true
         ),

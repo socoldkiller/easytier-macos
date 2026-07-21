@@ -270,7 +270,10 @@ private func presentationCertificate(
     let payload: [String: Any?] = [
         "id": "service-a",
         "domains": ["service-a.a.et.net"],
+        "authority": "letsencrypt",
         "challenge": "http-01",
+        "active_authority": servingMode == .https ? "letsencrypt" : nil,
+        "active_challenge": servingMode == .https ? "http-01" : nil,
         "state": state.rawValue,
         "serving_mode": servingMode.rawValue,
         "not_before": nil,

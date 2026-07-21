@@ -45,7 +45,7 @@ use status::{
     CertificateServingMode, CertificateState, CertificateStatus, GatewayState, ListenerStatus,
 };
 use storage::{GatewayStorage, PendingDnsCleanup};
-use tls::{DynamicCertificateStore, build_tls_acceptor};
+use tls::{CertifiedMaterial, DynamicCertificateStore, build_tls_acceptor};
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECTION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -296,6 +296,7 @@ impl GatewayInstance {
             let mut status = CertificateStatus::pending(
                 certificate.id.clone(),
                 certificate.domains.clone(),
+                certificate.authority,
                 certificate.challenge.kind().to_string(),
             );
             match storage.load_certificate(&certificate.id, &certificate.domains) {
@@ -304,6 +305,8 @@ impl GatewayInstance {
                     status.serving_mode = CertificateServingMode::Https;
                     status.not_before = Some(material.metadata.not_before_rfc3339.clone());
                     status.not_after = Some(material.metadata.not_after_rfc3339.clone());
+                    status.active_authority = Some(material.metadata.authority);
+                    status.active_challenge = Some(material.metadata.challenge.kind().to_string());
                     certificates.install(certificate.id.clone(), material);
                 }
                 Ok(None) => {}
@@ -510,6 +513,7 @@ impl GatewayInstance {
         for certificate in config.certificates.values() {
             let status = if let Some(status) = self.certificate_status.get(&certificate.id)
                 && status.domains == certificate.domains
+                && status.authority == certificate.authority
                 && status.challenge == certificate.challenge.kind()
             {
                 status.clone()
@@ -524,7 +528,10 @@ impl GatewayInstance {
                         CertificateStatus {
                             id: certificate.id.clone(),
                             domains: certificate.domains.clone(),
+                            authority: certificate.authority,
                             challenge: certificate.challenge.kind().to_string(),
+                            active_authority: Some(material.metadata.authority),
+                            active_challenge: Some(material.metadata.challenge.kind().to_string()),
                             state: CertificateState::Active,
                             serving_mode: CertificateServingMode::Https,
                             not_before: Some(material.metadata.not_before_rfc3339.clone()),
@@ -537,12 +544,14 @@ impl GatewayInstance {
                     Ok(None) => CertificateStatus::pending(
                         certificate.id.clone(),
                         certificate.domains.clone(),
+                        certificate.authority,
                         certificate.challenge.kind().to_string(),
                     ),
                     Err(error) => {
                         let mut status = CertificateStatus::pending(
                             certificate.id.clone(),
                             certificate.domains.clone(),
+                            certificate.authority,
                             certificate.challenge.kind().to_string(),
                         );
                         status.state = CertificateState::Failed;
@@ -599,12 +608,13 @@ impl GatewayInstance {
 
             match self.certificates.get(&certificate_id) {
                 Some(material) => {
-                    let renewal_at = fallback_renewal_time(
-                        material.metadata.not_before,
-                        material.metadata.not_after,
-                    );
+                    let certificate = &self.config.certificates[&certificate_id];
+                    let policy_matches = certificate_policy_matches(certificate, &material);
+                    let renewal_at = initial_renewal_time(certificate, &material, now);
                     self.set_renewal_time(&certificate_id, renewal_at);
-                    self.request_ari(&certificate_id, material);
+                    if policy_matches {
+                        self.request_ari(&certificate_id, material);
+                    }
                 }
                 None => self.set_renewal_time(&certificate_id, now),
             }
@@ -777,6 +787,9 @@ impl GatewayInstance {
                             status.serving_mode = CertificateServingMode::Https;
                             status.not_before = Some(material.metadata.not_before_rfc3339.clone());
                             status.not_after = Some(material.metadata.not_after_rfc3339.clone());
+                            status.active_authority = Some(material.metadata.authority);
+                            status.active_challenge =
+                                Some(material.metadata.challenge.kind().to_string());
                             status.last_error = None;
                         }
                         let renewal_at = fallback_renewal_time(
@@ -961,9 +974,6 @@ impl GatewayInstance {
         if self.config.source.listeners != config.source.listeners {
             return Err("listener changes require gateway stop/start".to_string());
         }
-        if self.config.source.acme.directory != config.source.acme.directory {
-            return Err("ACME directory changes require gateway stop/start".to_string());
-        }
         Ok(())
     }
 
@@ -1053,6 +1063,26 @@ fn fallback_renewal_time(not_before: OffsetDateTime, not_after: OffsetDateTime) 
     let maximum_jitter_seconds = time::Duration::hours(12).whole_seconds();
     let jitter_seconds = rand::random_range(0..=maximum_jitter_seconds);
     fallback_renewal_time_with_jitter(not_before, not_after, jitter_seconds)
+}
+
+fn certificate_policy_matches(
+    certificate: &ValidatedCertificate,
+    material: &CertifiedMaterial,
+) -> bool {
+    material.metadata.authority == certificate.authority
+        && material.metadata.challenge == certificate.challenge
+}
+
+fn initial_renewal_time(
+    certificate: &ValidatedCertificate,
+    material: &CertifiedMaterial,
+    now: OffsetDateTime,
+) -> OffsetDateTime {
+    if certificate_policy_matches(certificate, material) {
+        fallback_renewal_time(material.metadata.not_before, material.metadata.not_after)
+    } else {
+        now
+    }
 }
 
 fn fallback_renewal_time_with_jitter(
@@ -1240,19 +1270,21 @@ mod tests {
     }
 
     #[test]
-    fn changing_certificate_challenge_resets_the_acme_attempt() {
+    fn changing_certificate_policy_resets_the_acme_attempt() {
         let certificate_id = "gateway-cert".to_string();
         let current = BTreeMap::from([(
             certificate_id.clone(),
             ValidatedCertificate {
                 id: certificate_id.clone(),
                 domains: vec!["gateway.test".to_string()],
+                authority: config::CertificateAuthorityKind::Letsencrypt,
                 challenge: config::ChallengeConfig::Http01,
             },
         )]);
         let next_certificate = ValidatedCertificate {
             id: certificate_id.clone(),
             domains: vec!["gateway.test".to_string()],
+            authority: config::CertificateAuthorityKind::Letsencrypt,
             challenge: config::ChallengeConfig::Dns01 {
                 provider: DnsProviderKind::Aliyun,
                 credential_id: "aliyun-main".to_string(),
@@ -1260,7 +1292,10 @@ mod tests {
         };
         let next = BTreeMap::from([(certificate_id.clone(), next_certificate.clone())]);
 
-        assert_eq!(changed_certificate_ids(&current, &next), [certificate_id]);
+        assert_eq!(
+            changed_certificate_ids(&current, &next),
+            [certificate_id.clone()]
+        );
         let stale_output = AcmeJobOutput {
             certificate_id: "gateway-cert".to_string(),
             attempted_certificate: current["gateway-cert"].clone(),
@@ -1269,6 +1304,47 @@ mod tests {
             cleanup_journal_error: None,
         };
         assert!(!stale_output.matches(&next_certificate));
+
+        let changed_authority = ValidatedCertificate {
+            authority: config::CertificateAuthorityKind::Zerossl,
+            challenge: config::ChallengeConfig::Http01,
+            ..current["gateway-cert"].clone()
+        };
+        assert_eq!(
+            changed_certificate_ids(
+                &current,
+                &BTreeMap::from([(certificate_id, changed_authority.clone())])
+            ),
+            ["gateway-cert"]
+        );
+        assert!(!stale_output.matches(&changed_authority));
+    }
+
+    #[test]
+    fn stored_certificate_with_a_different_policy_renews_immediately() {
+        let domains = ["gateway.test"];
+        let (certificate_pem, private_key_pem, _) = test_certificate(&domains);
+        let material = CertifiedMaterial::from_pem_with_policy(
+            &certificate_pem,
+            &private_key_pem,
+            &[domains[0].to_string()],
+            config::CertificateAuthorityKind::Letsencrypt,
+            config::ChallengeConfig::Http01,
+        )
+        .unwrap();
+        let configured = ValidatedCertificate {
+            id: "gateway-cert".to_string(),
+            domains: vec![domains[0].to_string()],
+            authority: config::CertificateAuthorityKind::Zerossl,
+            challenge: config::ChallengeConfig::Dns01 {
+                provider: DnsProviderKind::Cloudflare,
+                credential_id: "cloudflare-main".to_string(),
+            },
+        };
+        let now = OffsetDateTime::now_utc();
+
+        assert_eq!(initial_renewal_time(&configured, &material, now), now);
+        assert!(!certificate_policy_matches(&configured, &material));
     }
 
     #[test]
@@ -1277,7 +1353,7 @@ mod tests {
         runtime.block_on(async {
             let temp = tempfile::tempdir().unwrap();
             let config = json!({
-                "schema_version": 4,
+                "schema_version": 5,
                 "storage_dir": temp.path().join("gateway"),
                 "listeners": {
                     "http": "127.0.0.1:0",
@@ -1290,7 +1366,6 @@ mod tests {
                     "ttl": 30
                 },
                 "acme": {
-                    "directory": { "kind": "letsencrypt_production" },
                     "contact_email": null,
                     "terms_of_service_agreed": false
                 },
@@ -1324,18 +1399,15 @@ mod tests {
             let storage_dir = temp.path().join("gateway");
             let domains = ["app.gateway.test", "other.gateway.test"];
             let (certificate_pem, private_key_pem, certificate_der) = test_certificate(&domains);
+            let stored_certificate = ValidatedCertificate {
+                id: "gateway-cert".to_string(),
+                domains: domains.iter().map(|domain| domain.to_string()).collect(),
+                authority: config::CertificateAuthorityKind::Letsencrypt,
+                challenge: config::ChallengeConfig::Http01,
+            };
             GatewayStorage::initialize(storage_dir.clone())
                 .unwrap()
-                .store_certificate(
-                    "gateway-cert",
-                    &domains
-                        .iter()
-                        .map(|domain| domain.to_string())
-                        .collect::<Vec<_>>(),
-                    &certificate_pem,
-                    &private_key_pem,
-                    "letsencrypt",
-                )
+                .store_certificate(&stored_certificate, &certificate_pem, &private_key_pem)
                 .unwrap();
 
             let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1503,14 +1575,18 @@ mod tests {
             let domain = "h2.gateway.test";
             let (certificate_pem, private_key_pem, certificate_der) =
                 test_certificate(&[domain]);
+            let stored_certificate = ValidatedCertificate {
+                id: "gateway-cert".to_string(),
+                domains: vec![domain.to_string()],
+                authority: config::CertificateAuthorityKind::Letsencrypt,
+                challenge: config::ChallengeConfig::Http01,
+            };
             GatewayStorage::initialize(storage_dir.clone())
                 .unwrap()
                 .store_certificate(
-                    "gateway-cert",
-                    &[domain.to_string()],
+                    &stored_certificate,
                     &certificate_pem,
                     &private_key_pem,
-                    "letsencrypt",
                 )
                 .unwrap();
 
@@ -1565,7 +1641,7 @@ mod tests {
         https_listener: &str,
     ) -> Value {
         json!({
-            "schema_version": 4,
+            "schema_version": 5,
             "storage_dir": storage_dir,
             "listeners": {
                 "http": http_listener,
@@ -1578,13 +1654,13 @@ mod tests {
                 "ttl": 30
             },
             "acme": {
-                "directory": { "kind": "letsencrypt_staging" },
                 "contact_email": "gateway@example.com",
                 "terms_of_service_agreed": true
             },
             "certificates": [{
                 "id": "gateway-cert",
                 "domains": domains,
+                "authority": "letsencrypt",
                 "challenge": { "type": "http01" }
             }],
             "routes": domains.iter().map(|domain| json!({
@@ -1603,7 +1679,7 @@ mod tests {
     }
 
     fn empty_secrets() -> Value {
-        json!({ "schema_version": 4, "cloudflare": {}, "aliyun": {} })
+        json!({ "schema_version": 5, "cloudflare": {}, "aliyun": {} })
     }
 
     fn test_certificate(domains: &[&str]) -> (String, String, CertificateDer<'static>) {

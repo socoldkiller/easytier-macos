@@ -34,13 +34,13 @@ struct GatewayTLSSettingsSection: View {
             CardSection(
                 "Managed Certificate",
                 systemImage: "lock.shield",
-                footer: "Certificates are requested automatically when a Published Service is enabled."
+                footer: "Choose Let's Encrypt or ZeroSSL and a validation method for each Published Service."
             ) {
                 HStack(spacing: 10) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Automatic HTTPS")
+                        Text("Managed HTTPS")
                             .bold()
-                        Text("Certificate services are selected automatically")
+                        Text("Certificate authority and validation are selected per service")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -59,7 +59,7 @@ struct GatewayTLSSettingsSection: View {
                 }
                 SettingsRowDivider()
                 Toggle(isOn: $termsOfServiceAgreed) {
-                    Text("Enable automatic certificates and accept the certificate service terms")
+                    Text("Enable managed certificates and accept the selected authorities' terms")
                 }
                 .disabled(isSaving)
                 SettingsRowDivider()

@@ -42,7 +42,12 @@ struct PublishedServiceGridRowView: View {
             }
 
             WorkspaceDataGridCell(.ssl, layout: layout) {
-                PublishedServiceSSLCell(provider: row.sslProvider)
+                PublishedServiceSSLCell(
+                    provider: row.sslProvider,
+                    authority: row.certificateAuthority,
+                    activeAuthority: row.certificatePresentation.activeAuthority,
+                    challenge: row.certificateChallengeLabel
+                )
             }
 
             WorkspaceDataGridCell(.expires, layout: layout) {
@@ -102,7 +107,7 @@ struct PublishedServiceGridRowView: View {
             "Proxy IPv4: \(row.proxyIPv4)",
             "Port: \(row.targetPort)",
             "Protocol: \(row.protocolLabel)",
-            "SSL: \(row.sslProvider.label)",
+            "Certificate: \(row.certificateAuthority.label), \(row.certificateChallengeLabel)",
             "Certificate expiration: \(row.certificatePresentation.label)",
             "Status: \(row.presentation.statusLabel), \(row.presentation.detailLabel)",
             row.service.desiredEnabled ? "Enabled" : "Disabled",

@@ -18,6 +18,7 @@ struct PublishedServiceCertificatePresentation: Equatable, Sendable {
     let state: State
     let renewalAt: Date?
     let errorMessage: String?
+    let activeAuthority: GatewayCertificateAuthority?
 
     init(
         provider: PublishedServiceSSLProvider,
@@ -26,6 +27,7 @@ struct PublishedServiceCertificatePresentation: Equatable, Sendable {
     ) {
         renewalAt = Self.date(from: certificate?.nextRenewalAt)
         errorMessage = certificate?.lastError
+        activeAuthority = certificate?.activeAuthority
 
         guard provider != .httpOnly else {
             state = .unavailable

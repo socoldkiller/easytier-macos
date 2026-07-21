@@ -5,15 +5,12 @@ import Testing
 
 @Test func publishedServiceSSLProviderUsesCertificateServingMode() {
     let notAccepted = GatewayACMEConfiguration(
-        directory: .letsencryptProduction,
         termsOfServiceAgreed: false
     )
     let production = GatewayACMEConfiguration(
-        directory: .letsencryptProduction,
         termsOfServiceAgreed: true
     )
     let staging = GatewayACMEConfiguration(
-        directory: .letsencryptStaging,
         termsOfServiceAgreed: true
     )
 
@@ -233,7 +230,6 @@ import Testing
         status: status,
         gatewayEnabled: true,
         acmeConfiguration: GatewayACMEConfiguration(
-            directory: .letsencryptProduction,
             termsOfServiceAgreed: true
         ),
         networkName: "Production",
@@ -289,7 +285,6 @@ import Testing
         ),
         gatewayEnabled: true,
         acmeConfiguration: GatewayACMEConfiguration(
-            directory: .letsencryptProduction,
             termsOfServiceAgreed: true
         ),
         networkName: "Production",
@@ -405,7 +400,7 @@ func publishedServiceSummary(liveCount: Int, serviceCount: Int, expected: String
     #expect(WorkspaceTab.services.systemImage == "network.badge.shield.half.filled")
     #expect(
         PublishedServiceGridColumn.allCases.map(\.title)
-            == ["Service", "IPv4", "Target", "SSL", "Expires", "Last Online", "Enabled", ""]
+            == ["Service", "IPv4", "Target", "Certificate", "Expires", "Last Online", "Enabled", ""]
     )
     #expect(PublishedServiceGridColumn.service.minimumWidth == 324)
     #expect(PublishedServiceGridColumn.service.idealWidth == 398)
@@ -446,7 +441,10 @@ private func servicesTestCertificate(
     GatewayCertificateStatus(
         id: id,
         domains: [domain],
+        authority: .letsEncrypt,
         challenge: "http-01",
+        activeAuthority: .letsEncrypt,
+        activeChallenge: "http-01",
         state: state,
         servingMode: state == .active ? .https : .pendingHTTPS,
         notBefore: nil,

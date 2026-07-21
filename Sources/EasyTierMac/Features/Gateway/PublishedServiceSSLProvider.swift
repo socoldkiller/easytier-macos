@@ -49,7 +49,7 @@ enum PublishedServiceSSLProvider: Equatable, Sendable {
     var helpText: String {
         switch self {
         case .httpOnly: "Certificate services are unavailable. HTTP remains available while HTTPS is retried."
-        case .managedHTTPS: "The service uses an automatically managed certificate."
+        case .managedHTTPS: "The service uses a managed certificate from its selected authority."
         case .requesting: "A managed certificate is being requested."
         }
     }

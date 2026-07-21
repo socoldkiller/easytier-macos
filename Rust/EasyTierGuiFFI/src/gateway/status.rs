@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use super::config::GATEWAY_SCHEMA_VERSION;
+use super::config::{CertificateAuthorityKind, GATEWAY_SCHEMA_VERSION};
 
 #[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -98,7 +98,10 @@ pub enum CertificateServingMode {
 pub struct CertificateStatus {
     pub id: String,
     pub domains: Vec<String>,
+    pub authority: CertificateAuthorityKind,
     pub challenge: String,
+    pub active_authority: Option<CertificateAuthorityKind>,
+    pub active_challenge: Option<String>,
     pub state: CertificateState,
     pub serving_mode: CertificateServingMode,
     pub not_before: Option<String>,
@@ -109,11 +112,19 @@ pub struct CertificateStatus {
 }
 
 impl CertificateStatus {
-    pub fn pending(id: String, domains: Vec<String>, challenge: String) -> Self {
+    pub fn pending(
+        id: String,
+        domains: Vec<String>,
+        authority: CertificateAuthorityKind,
+        challenge: String,
+    ) -> Self {
         Self {
             id,
             domains,
+            authority,
             challenge,
+            active_authority: None,
+            active_challenge: None,
             state: CertificateState::Pending,
             serving_mode: CertificateServingMode::PendingHttps,
             not_before: None,

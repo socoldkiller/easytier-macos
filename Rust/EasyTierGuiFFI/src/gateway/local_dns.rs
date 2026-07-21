@@ -58,9 +58,9 @@ pub async fn bind_local_dns(
     };
 
     for attempt in 0..attempts {
-        let tcp = TcpListener::bind(requested)
-            .await
-            .map_err(|error| format!("failed to bind local DNS TCP listener {requested}: {error}"))?;
+        let tcp = TcpListener::bind(requested).await.map_err(|error| {
+            format!("failed to bind local DNS TCP listener {requested}: {error}")
+        })?;
         let address = tcp
             .local_addr()
             .map_err(|error| format!("failed to inspect local DNS listener: {error}"))?;
@@ -364,7 +364,7 @@ mod tests {
     fn test_config(domain: &str) -> super::ValidatedGatewayConfig {
         GatewayConfig::parse(
             &serde_json::json!({
-                "schema_version": 4,
+                "schema_version": 5,
                 "storage_dir": "/tmp/easytier-local-dns-test",
                 "listeners": {
                     "http": "127.0.0.1:0",
@@ -377,13 +377,13 @@ mod tests {
                     "ttl": 30
                 },
                 "acme": {
-                    "directory": { "kind": "letsencrypt_staging" },
                     "contact_email": "gateway@example.com",
                     "terms_of_service_agreed": true
                 },
                 "certificates": [{
                     "id": "app-cert",
                     "domains": [domain],
+                    "authority": "letsencrypt",
                     "challenge": { "type": "http01" }
                 }],
                 "routes": [{

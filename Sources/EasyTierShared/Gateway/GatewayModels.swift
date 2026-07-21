@@ -1,8 +1,8 @@
 import Foundation
 
 package enum GatewaySchema {
-    package static let version: UInt32 = 4
-    package static let persistedVersion: UInt32 = 3
+    package static let version: UInt32 = 5
+    package static let persistedVersion: UInt32 = 4
     package static let runtimeVersion: UInt32 = version
 }
 
@@ -37,71 +37,56 @@ package struct GatewayConfiguration: Codable, Equatable, Sendable {
 }
 
 package struct GatewayACMEConfiguration: Codable, Equatable, Sendable {
-    package var directory: GatewayACMEDirectory
     package var contactEmail: String?
     package var termsOfServiceAgreed: Bool
 
     package init(
-        directory: GatewayACMEDirectory = .letsencryptProduction,
         contactEmail: String? = nil,
         termsOfServiceAgreed: Bool
     ) {
-        self.directory = directory
         self.contactEmail = contactEmail
         self.termsOfServiceAgreed = termsOfServiceAgreed
     }
 
     private enum CodingKeys: String, CodingKey {
-        case directory
         case contactEmail = "contact_email"
         case termsOfServiceAgreed = "terms_of_service_agreed"
     }
 }
 
-package enum GatewayACMEDirectory: Equatable, Sendable {
-    case letsencryptStaging
-    case letsencryptProduction
+package enum GatewayCertificateAuthority: String, Codable, CaseIterable, Equatable, Sendable {
+    case letsEncrypt = "letsencrypt"
+    case zeroSSL = "zerossl"
 }
 
-extension GatewayACMEDirectory: Codable {
-    private enum CodingKeys: String, CodingKey { case kind }
-    private enum Kind: String, Codable {
-        case letsencryptStaging = "letsencrypt_staging"
-        case letsencryptProduction = "letsencrypt_production"
-    }
+package struct GatewayCertificatePolicy: Codable, Equatable, Sendable {
+    package var authority: GatewayCertificateAuthority
+    package var challenge: GatewayPublishedServiceChallenge
 
-    package init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        switch try container.decode(Kind.self, forKey: .kind) {
-        case .letsencryptStaging:
-            self = .letsencryptStaging
-        case .letsencryptProduction:
-            self = .letsencryptProduction
-        }
-    }
-
-    package func encode(to encoder: any Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        let kind: Kind = switch self {
-        case .letsencryptStaging: .letsencryptStaging
-        case .letsencryptProduction: .letsencryptProduction
-        }
-        try container.encode(kind, forKey: .kind)
+    package init(
+        authority: GatewayCertificateAuthority = .letsEncrypt,
+        challenge: GatewayPublishedServiceChallenge = .http01
+    ) {
+        self.authority = authority
+        self.challenge = challenge
     }
 }
 
 package struct GatewayCertificateConfiguration: Codable, Equatable, Sendable {
     package var id: String
     package var domains: [String]
+    package var authority: GatewayCertificateAuthority
     package var challenge: GatewayChallengeConfiguration
 
     package init(
         id: String,
         domains: [String],
+        authority: GatewayCertificateAuthority = .letsEncrypt,
         challenge: GatewayChallengeConfiguration = .http01
     ) {
         self.id = id
         self.domains = domains
+        self.authority = authority
         self.challenge = challenge
     }
 }
@@ -127,7 +112,6 @@ package enum GatewayDNSProvider: String, Codable, Equatable, Sendable {
 }
 
 package enum GatewayChallengeConfiguration: Equatable, Sendable {
-    case automatic(dns01: GatewayDNS01Configuration?)
     case http01
     case dns01(GatewayDNS01Configuration)
 }
@@ -135,12 +119,10 @@ package enum GatewayChallengeConfiguration: Equatable, Sendable {
 extension GatewayChallengeConfiguration: Codable {
     private enum CodingKeys: String, CodingKey {
         case type
-        case dns01
         case provider
         case credentialID = "credential_id"
     }
     private enum Kind: String, Codable {
-        case automatic
         case http01
         case dns01
     }
@@ -148,13 +130,6 @@ extension GatewayChallengeConfiguration: Codable {
     package init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(Kind.self, forKey: .type) {
-        case .automatic:
-            self = .automatic(
-                dns01: try container.decodeIfPresent(
-                    GatewayDNS01Configuration.self,
-                    forKey: .dns01
-                )
-            )
         case .http01:
             self = .http01
         case .dns01:
@@ -170,9 +145,6 @@ extension GatewayChallengeConfiguration: Codable {
     package func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case let .automatic(dns01):
-            try container.encode(Kind.automatic, forKey: .type)
-            try container.encodeIfPresent(dns01, forKey: .dns01)
         case .http01:
             try container.encode(Kind.http01, forKey: .type)
         case let .dns01(configuration):
@@ -294,8 +266,7 @@ package struct GatewayPersistedState: Codable, Equatable, Sendable {
 
     package init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let decodedVersion = try container.decode(UInt32.self, forKey: .schemaVersion)
-        schemaVersion = decodedVersion == 2 ? GatewaySchema.persistedVersion : decodedVersion
+        schemaVersion = try container.decode(UInt32.self, forKey: .schemaVersion)
         acmeAccount = try container.decodeIfPresent(GatewayACMEConfiguration.self, forKey: .acmeAccount)
         publishingNetworkConfigID = try container.decodeIfPresent(
             String.self,
@@ -350,7 +321,6 @@ package struct GatewayDNSCredentialDescriptor: Codable, Equatable, Identifiable,
 }
 
 package enum GatewayPublishedServiceChallenge: Equatable, Sendable {
-    case automatic(dnsCredentialID: String?)
     case http01
     case dns01(credentialID: String)
 }
@@ -358,27 +328,17 @@ package enum GatewayPublishedServiceChallenge: Equatable, Sendable {
 extension GatewayPublishedServiceChallenge: Codable {
     private enum CodingKeys: String, CodingKey {
         case type
-        case dnsCredentialID = "dns_credential_id"
         case credentialID = "credential_id"
     }
 
     private enum Kind: String, Codable {
-        case automatic
         case http01
         case dns01
     }
 
     package init(from decoder: any Decoder) throws {
-        if let legacy = try? decoder.singleValueContainer().decode(String.self), legacy == "http01" {
-            self = .automatic(dnsCredentialID: nil)
-            return
-        }
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(Kind.self, forKey: .type) {
-        case .automatic:
-            self = .automatic(
-                dnsCredentialID: try container.decodeIfPresent(String.self, forKey: .dnsCredentialID)
-            )
         case .http01:
             self = .http01
         case .dns01:
@@ -391,9 +351,6 @@ extension GatewayPublishedServiceChallenge: Codable {
     package func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case let .automatic(dnsCredentialID):
-            try container.encode(Kind.automatic, forKey: .type)
-            try container.encodeIfPresent(dnsCredentialID, forKey: .dnsCredentialID)
         case .http01:
             try container.encode(Kind.http01, forKey: .type)
         case let .dns01(credentialID):
@@ -417,7 +374,7 @@ package struct GatewayPublishedService: Codable, Equatable, Identifiable, Sendab
     package var targetPort: Int
     package var desiredEnabled: Bool
     package var upstreamProtocol: GatewayPublishedServiceUpstreamProtocol
-    package var challenge: GatewayPublishedServiceChallenge
+    package var certificatePolicy: GatewayCertificatePolicy
 
     package init(
         id: String = UUID().uuidString.lowercased(),
@@ -433,7 +390,7 @@ package struct GatewayPublishedService: Codable, Equatable, Identifiable, Sendab
         targetPort: Int,
         desiredEnabled: Bool = false,
         upstreamProtocol: GatewayPublishedServiceUpstreamProtocol = .http,
-        challenge: GatewayPublishedServiceChallenge = .automatic(dnsCredentialID: nil)
+        certificatePolicy: GatewayCertificatePolicy = GatewayCertificatePolicy()
     ) {
         self.id = id
         self.networkConfigID = networkConfigID
@@ -448,7 +405,7 @@ package struct GatewayPublishedService: Codable, Equatable, Identifiable, Sendab
         self.targetPort = targetPort
         self.desiredEnabled = desiredEnabled
         self.upstreamProtocol = upstreamProtocol
-        self.challenge = challenge
+        self.certificatePolicy = certificatePolicy
     }
 
     package var targetDomain: String {
@@ -472,7 +429,7 @@ package struct GatewayPublishedService: Codable, Equatable, Identifiable, Sendab
         case targetPort = "target_port"
         case desiredEnabled = "desired_enabled"
         case upstreamProtocol = "upstream_protocol"
-        case challenge
+        case certificatePolicy = "certificate_policy"
     }
 }
 
@@ -736,7 +693,10 @@ package enum GatewayCertificateServingMode: String, Codable, Equatable, Sendable
 package struct GatewayCertificateStatus: Codable, Equatable, Sendable {
     package var id: String
     package var domains: [String]
+    package var authority: GatewayCertificateAuthority
     package var challenge: String
+    package var activeAuthority: GatewayCertificateAuthority?
+    package var activeChallenge: String?
     package var state: GatewayCertificateState
     package var servingMode: GatewayCertificateServingMode
     package var notBefore: String?
@@ -748,7 +708,10 @@ package struct GatewayCertificateStatus: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id
         case domains
+        case authority
         case challenge
+        case activeAuthority = "active_authority"
+        case activeChallenge = "active_challenge"
         case state
         case servingMode = "serving_mode"
         case notBefore = "not_before"

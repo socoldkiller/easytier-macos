@@ -1135,7 +1135,6 @@ private func gatewayControllerTestState(
     GatewayPersistedState(
         gatewayEnabled: gatewayEnabled,
         acmeAccount: GatewayACMEConfiguration(
-            directory: .letsencryptProduction,
             contactEmail: "ops@example.com",
             termsOfServiceAgreed: true
         ),
