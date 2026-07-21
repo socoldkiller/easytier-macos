@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, net::SocketAddr, sync::Arc};
+use std::{collections::BTreeSet, io::ErrorKind, net::SocketAddr, sync::Arc};
 
 use arc_swap::ArcSwap;
 use hickory_resolver::proto::{
@@ -50,16 +50,38 @@ impl SharedLocalDnsTable {
 pub async fn bind_local_dns(
     requested: SocketAddr,
 ) -> Result<(TcpListener, UdpSocket, SocketAddr), String> {
-    let tcp = TcpListener::bind(requested)
-        .await
-        .map_err(|error| format!("failed to bind local DNS TCP listener {requested}: {error}"))?;
-    let address = tcp
-        .local_addr()
-        .map_err(|error| format!("failed to inspect local DNS listener: {error}"))?;
-    let udp = UdpSocket::bind(address)
-        .await
-        .map_err(|error| format!("failed to bind local DNS UDP listener {address}: {error}"))?;
-    Ok((tcp, udp, address))
+    const EPHEMERAL_BIND_ATTEMPTS: usize = 32;
+    let attempts = if requested.port() == 0 {
+        EPHEMERAL_BIND_ATTEMPTS
+    } else {
+        1
+    };
+
+    for attempt in 0..attempts {
+        let tcp = TcpListener::bind(requested)
+            .await
+            .map_err(|error| format!("failed to bind local DNS TCP listener {requested}: {error}"))?;
+        let address = tcp
+            .local_addr()
+            .map_err(|error| format!("failed to inspect local DNS listener: {error}"))?;
+        match UdpSocket::bind(address).await {
+            Ok(udp) => return Ok((tcp, udp, address)),
+            Err(error)
+                if requested.port() == 0
+                    && error.kind() == ErrorKind::AddrInUse
+                    && attempt + 1 < attempts =>
+            {
+                // TCP and UDP allocate ephemeral ports independently, so retry the pair.
+            }
+            Err(error) => {
+                return Err(format!(
+                    "failed to bind local DNS UDP listener {address}: {error}"
+                ));
+            }
+        }
+    }
+
+    unreachable!("ephemeral DNS binding attempts always return or continue")
 }
 
 pub fn spawn_local_dns(
@@ -288,6 +310,21 @@ mod tests {
         for task in tasks {
             task.await.unwrap();
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_ephemeral_bindings_do_not_collide_between_tcp_and_udp() {
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..512 {
+            tasks.spawn(bind_local_dns("127.0.0.1:0".parse().unwrap()));
+        }
+
+        let mut listeners = Vec::new();
+        while let Some(result) = tasks.join_next().await {
+            listeners.push(result.unwrap().unwrap());
+        }
+
+        assert_eq!(listeners.len(), 512);
     }
 
     fn dns_request(domain: &str, record_type: RecordType) -> Message {
