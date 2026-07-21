@@ -28,6 +28,13 @@ pub enum AuthorityKind {
 }
 
 impl AuthorityKind {
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::LetsEncrypt => "Let's Encrypt",
+            Self::ZeroSsl => "ZeroSSL",
+        }
+    }
+
     pub fn storage_value(self) -> &'static str {
         match self {
             Self::LetsEncrypt => "letsencrypt",

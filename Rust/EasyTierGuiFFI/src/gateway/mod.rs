@@ -34,7 +34,9 @@ pub use config::{GatewayConfig, GatewaySecrets};
 pub use status::GatewayStatusSnapshot;
 
 use acme::{AcmeContext, AcmeJobOutput, DnsCredential};
-use config::{DnsProviderKind, GATEWAY_SCHEMA_VERSION, ValidatedGatewayConfig};
+use config::{
+    DnsProviderKind, GATEWAY_SCHEMA_VERSION, ValidatedCertificate, ValidatedGatewayConfig,
+};
 use local_dns::{LocalDnsTable, SharedLocalDnsTable, bind_local_dns, spawn_local_dns};
 use proxy::{
     GatewayProxy, Http01ChallengeStore, SharedRouteTable, build_route_table, spawn_route_resolvers,
@@ -495,17 +497,8 @@ impl GatewayInstance {
         secrets: Option<RuntimeSecrets>,
     ) -> Result<(), String> {
         self.validate_immutable_config(&config)?;
-        let changed_certificate_ids = config
-            .certificates
-            .iter()
-            .filter(|(certificate_id, certificate)| {
-                self.config
-                    .certificates
-                    .get(*certificate_id)
-                    .is_some_and(|current| current.domains != certificate.domains)
-            })
-            .map(|(certificate_id, _)| certificate_id.clone())
-            .collect::<Vec<_>>();
+        let changed_certificate_ids =
+            changed_certificate_ids(&self.config.certificates, &config.certificates);
         match secrets.as_ref() {
             Some(secrets) => secrets.validate_references(&config)?,
             None => self.secrets.validate_references(&config)?,
@@ -734,6 +727,11 @@ impl GatewayInstance {
         match event {
             AcmeEvent::JobFinished(output) => {
                 self.in_flight_certificates.remove(&output.certificate_id);
+                let output_matches_current = self
+                    .config
+                    .certificates
+                    .get(&output.certificate_id)
+                    .is_some_and(|certificate| output.matches(certificate));
                 status_error = output.cleanup_journal_error;
                 if !output.cleanup_failures.is_empty() {
                     self.merge_pending_cleanups(output.cleanup_failures);
@@ -755,6 +753,17 @@ impl GatewayInstance {
                     self.publish_status(self.operational_state(), status_error);
                     return;
                 };
+
+                if !output_matches_current {
+                    self.renewal_at
+                        .insert(output.certificate_id.clone(), OffsetDateTime::now_utc());
+                    self.queued_certificates
+                        .insert(output.certificate_id.clone());
+                    self.enqueue_due_certificates();
+                    self.drain_certificate_queue();
+                    self.publish_status(self.operational_state(), status_error);
+                    return;
+                }
 
                 match output.result {
                     Ok(material) if material.metadata.domains == certificate.domains => {
@@ -1026,6 +1035,20 @@ impl GatewayInstance {
     }
 }
 
+fn changed_certificate_ids(
+    current: &BTreeMap<String, ValidatedCertificate>,
+    next: &BTreeMap<String, ValidatedCertificate>,
+) -> Vec<String> {
+    next.iter()
+        .filter(|(certificate_id, certificate)| {
+            current
+                .get(*certificate_id)
+                .is_some_and(|current| current != *certificate)
+        })
+        .map(|(certificate_id, _)| certificate_id.clone())
+        .collect()
+}
+
 fn fallback_renewal_time(not_before: OffsetDateTime, not_after: OffsetDateTime) -> OffsetDateTime {
     let maximum_jitter_seconds = time::Duration::hours(12).whole_seconds();
     let jitter_seconds = rand::random_range(0..=maximum_jitter_seconds);
@@ -1214,6 +1237,38 @@ mod tests {
             assert!(delay >= Duration::from_secs(seconds));
             assert!(delay <= Duration::from_secs(21_600));
         }
+    }
+
+    #[test]
+    fn changing_certificate_challenge_resets_the_acme_attempt() {
+        let certificate_id = "gateway-cert".to_string();
+        let current = BTreeMap::from([(
+            certificate_id.clone(),
+            ValidatedCertificate {
+                id: certificate_id.clone(),
+                domains: vec!["gateway.test".to_string()],
+                challenge: config::ChallengeConfig::Http01,
+            },
+        )]);
+        let next_certificate = ValidatedCertificate {
+            id: certificate_id.clone(),
+            domains: vec!["gateway.test".to_string()],
+            challenge: config::ChallengeConfig::Dns01 {
+                provider: DnsProviderKind::Aliyun,
+                credential_id: "aliyun-main".to_string(),
+            },
+        };
+        let next = BTreeMap::from([(certificate_id.clone(), next_certificate.clone())]);
+
+        assert_eq!(changed_certificate_ids(&current, &next), [certificate_id]);
+        let stale_output = AcmeJobOutput {
+            certificate_id: "gateway-cert".to_string(),
+            attempted_certificate: current["gateway-cert"].clone(),
+            result: Err("HTTP-01 authorization failed".to_string()),
+            cleanup_failures: Vec::new(),
+            cleanup_journal_error: None,
+        };
+        assert!(!stale_output.matches(&next_certificate));
     }
 
     #[test]

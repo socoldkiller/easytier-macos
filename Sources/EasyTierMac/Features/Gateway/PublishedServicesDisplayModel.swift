@@ -6,6 +6,7 @@ struct PublishedServicesDisplayModel: Equatable, Sendable {
     let networkName: String
     let rows: [PublishedServiceTableRow]
     let filteredRows: [PublishedServiceTableRow]
+    let certificateFailures: [PublishedServiceCertificateFailure]
     let searchIsActive: Bool
     let liveCount: Int
 
@@ -70,6 +71,27 @@ struct PublishedServicesDisplayModel: Equatable, Sendable {
                 ),
                 lastOnlineAt: Self.date(from: route?.lastOnlineAt)
             )
+        }
+
+        certificateFailures = rows.compactMap { row in
+            guard row.service.desiredEnabled,
+                  let message = row.certificatePresentation.errorMessage?
+                      .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !message.isEmpty
+            else {
+                return nil
+            }
+            switch row.certificatePresentation.state {
+            case .degraded, .failed:
+                return PublishedServiceCertificateFailure(
+                    id: row.id,
+                    hostname: row.publicHostname,
+                    message: message
+                )
+            case .unavailable, .notIssued, .issuing, .renewing, .active, .expires,
+                 .expiresSoon, .expired:
+                return nil
+            }
         }
 
         let tokens = searchText

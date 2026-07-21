@@ -61,9 +61,16 @@ pub struct AcmeContext {
 
 pub struct AcmeJobOutput {
     pub certificate_id: String,
+    pub attempted_certificate: ValidatedCertificate,
     pub result: Result<Arc<CertifiedMaterial>, String>,
     pub cleanup_failures: Vec<PendingDnsCleanup>,
     pub cleanup_journal_error: Option<String>,
+}
+
+impl AcmeJobOutput {
+    pub fn matches(&self, certificate: &ValidatedCertificate) -> bool {
+        self.attempted_certificate == *certificate
+    }
 }
 
 enum ProvisionedChallenge {
@@ -331,11 +338,12 @@ impl AcmeContext {
             {
                 Ok(account) => account,
                 Err(error) => {
-                    attempt_errors.push(error);
+                    attempt_errors.push(format!("{} account: {error}", authority.display_name()));
                     continue;
                 }
             };
             for challenge in challenge_attempts(&certificate) {
+                let challenge_name = challenge_name(&challenge);
                 let mut attempted_certificate = certificate.clone();
                 attempted_certificate.challenge = challenge;
                 let mut provisioned = Vec::new();
@@ -369,14 +377,18 @@ impl AcmeContext {
                         result = Err(error);
                         break 'authorities;
                     }
-                    Err(error) => attempt_errors.push(error),
+                    Err(error) => attempt_errors.push(format!(
+                        "{} via {challenge_name}: {error}",
+                        authority.display_name()
+                    )),
                 }
             }
         }
         if result.is_err() && !attempt_errors.is_empty() {
             result = Err(format!(
-                "automatic certificate services were unavailable after {} attempt(s)",
-                attempt_errors.len()
+                "automatic certificate services were unavailable after {} attempt(s): {}",
+                attempt_errors.len(),
+                attempt_errors.join("; ")
             ));
         }
         if !cleanup_failures.is_empty() {
@@ -384,6 +396,7 @@ impl AcmeContext {
         }
         AcmeJobOutput {
             certificate_id,
+            attempted_certificate: certificate,
             result,
             cleanup_failures,
             cleanup_journal_error,
@@ -629,6 +642,14 @@ fn challenge_attempts(certificate: &ValidatedCertificate) -> Vec<ChallengeConfig
             attempts
         }
         challenge => vec![challenge.clone()],
+    }
+}
+
+fn challenge_name(challenge: &ChallengeConfig) -> &'static str {
+    match challenge {
+        ChallengeConfig::Http01 => "HTTP-01",
+        ChallengeConfig::Dns01 { .. } => "DNS-01",
+        ChallengeConfig::Automatic { .. } => "automatic challenge",
     }
 }
 
@@ -1476,7 +1497,7 @@ mod tests {
                 .await;
             assert_eq!(
                 output.result.unwrap_err(),
-                "automatic certificate services were unavailable after 1 attempt(s)"
+                "automatic certificate services were unavailable after 1 attempt(s): Let's Encrypt via DNS-01: DNS-01 TXT record did not propagate"
             );
             assert_eq!(output.cleanup_failures.len(), 1);
             assert!(*cleanup_attempted.lock().unwrap());

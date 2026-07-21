@@ -200,7 +200,7 @@ pub struct ValidatedGatewayConfig {
     pub routes: BTreeMap<String, ValidatedRoute>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidatedCertificate {
     pub id: String,
     pub domains: Vec<String>,

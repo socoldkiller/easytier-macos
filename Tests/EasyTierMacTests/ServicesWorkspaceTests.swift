@@ -257,6 +257,57 @@ import Testing
     )
 }
 
+@Test func publishedServicesDisplayExposesCertificateFailuresForBanner() {
+    let failedService = servicesTestService(
+        id: "failed-service",
+        hostname: "failed.example.com",
+        port: 8_080
+    )
+    let activeService = servicesTestService(
+        id: "active-service",
+        hostname: "active.example.com",
+        port: 3_000
+    )
+    let display = PublishedServicesDisplayModel(
+        services: [failedService, activeService],
+        status: servicesTestStatus(
+            state: .running,
+            certificates: [
+                servicesTestCertificate(
+                    id: failedService.id,
+                    domain: failedService.publicHostname,
+                    state: .failed,
+                    lastError: "ACME authorization timed out"
+                ),
+                servicesTestCertificate(
+                    id: activeService.id,
+                    domain: activeService.publicHostname,
+                    state: .active,
+                    lastError: "stale error"
+                ),
+            ]
+        ),
+        gatewayEnabled: true,
+        acmeConfiguration: GatewayACMEConfiguration(
+            directory: .letsencryptProduction,
+            termsOfServiceAgreed: true
+        ),
+        networkName: "Production",
+        members: [],
+        searchText: ""
+    )
+
+    #expect(
+        display.certificateFailures == [
+            PublishedServiceCertificateFailure(
+                id: failedService.id,
+                hostname: failedService.publicHostname,
+                message: "ACME authorization timed out"
+            ),
+        ]
+    )
+}
+
 @Test(
     "Service summaries combine live and total counts",
     arguments: [

@@ -81,6 +81,11 @@ struct ServicesView: View {
                     .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 8))
             }
 
+            if !display.certificateFailures.isEmpty {
+                GatewayCertificateErrorBanner(failures: display.certificateFailures)
+                    .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 8))
+            }
+
             MotionSwitch(id: display.contentMotionID, insertionEdge: .bottom) {
                 servicesContent(display)
             }
@@ -91,6 +96,12 @@ struct ServicesView: View {
                 ? EasyTierMotion.content(reduceMotion: reduceMotion)
                 : nil,
             value: displayedError
+        )
+        .animation(
+            presentationActivity.allowsAnimations
+                ? EasyTierMotion.content(reduceMotion: reduceMotion)
+                : nil,
+            value: display.certificateFailures
         )
         .task(prepare)
         .sheet(item: $editingService) { service in
