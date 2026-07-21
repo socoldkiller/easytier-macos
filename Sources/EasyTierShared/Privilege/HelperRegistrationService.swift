@@ -12,6 +12,7 @@ public final class HelperRegistrationService {
 
     private let backend: Backend
     private let helperName: String
+    private var didAttemptEnabledRepair = false
 
     public enum State: Equatable, Sendable {
         case notRegistered
@@ -58,16 +59,22 @@ public final class HelperRegistrationService {
     public func ensureRegistered() async throws {
         let useLegacy = await backend.useLegacyInstaller()
         await refreshAsync(useLegacy: useLegacy)
+        var repairingEnabledHelper = false
         switch state {
         case .enabled:
             do {
                 try await backend.probeHelper()
                 return
-            } catch where Self.isProtocolMismatch(error) {
-                break
-            } catch {
-                await refreshAfterRegistrationFailure(error, useLegacy: useLegacy)
+            } catch let error as CancellationError {
                 throw error
+            } catch {
+                guard !didAttemptEnabledRepair else {
+                    await refreshAfterRegistrationFailure(error, useLegacy: useLegacy)
+                    throw error
+                }
+                didAttemptEnabledRepair = true
+                repairingEnabledHelper = true
+                break
             }
         case .registering:
             await waitForBusy()
@@ -109,6 +116,9 @@ public final class HelperRegistrationService {
                 }
             } else {
                 _ = try? await backend.unregister()
+                if repairingEnabledHelper {
+                    try await backend.waitAfterUnregister()
+                }
                 if await backend.legacyArtifactsExist() {
                     try await backend.uninstallLegacy()
                 }
@@ -194,15 +204,11 @@ public final class HelperRegistrationService {
         detail = message
     }
 
-    private static func isProtocolMismatch(_ error: Error) -> Bool {
-        guard case let PrivilegedHelperError.helperReported(payload) = error else { return false }
-        return payload.code == "protocolMismatch"
-    }
-
     struct Backend {
         var status: @MainActor () async -> SMAppService.Status
         var register: @MainActor () async throws -> Void
         var unregister: @MainActor () async throws -> Void
+        var waitAfterUnregister: @MainActor () async throws -> Void
         var canInstallHelper: @MainActor () -> Bool
         var useLegacyInstaller: @MainActor () async -> Bool
         var legacyArtifactsExist: @MainActor () async -> Bool
@@ -262,13 +268,14 @@ public final class HelperRegistrationService {
             status: { await Self.readServiceStatus(box) },
             register: { try await Self.serviceRegister(box) },
             unregister: { try await Self.serviceUnregister(box) },
+            waitAfterUnregister: { try await Task.sleep(for: .seconds(1)) },
             canInstallHelper: { Self.currentBundleCanInstallHelper },
             useLegacyInstaller: { await Self.readShouldUseLegacyInstaller() },
             legacyArtifactsExist: { await Self.readLegacyArtifactsExist() },
             legacyIsInstalled: { await Self.readLegacyIsInstalled() },
             installLegacy: { try await Self.installLegacy() },
             uninstallLegacy: { try await Self.uninstallLegacy() },
-            probeHelper: { try await Self.probeModernHelper() }
+            probeHelper: { try await Self.validateModernHelper() }
         )
     }
 
@@ -278,13 +285,14 @@ public final class HelperRegistrationService {
             status: { await Self.readServiceStatus(box) },
             register: { try await Self.serviceRegister(box) },
             unregister: { try await Self.serviceUnregister(box) },
+            waitAfterUnregister: { try await Task.sleep(for: .seconds(1)) },
             canInstallHelper: { Self.currentBundleCanInstallHelper },
             useLegacyInstaller: { false },
             legacyArtifactsExist: { false },
             legacyIsInstalled: { false },
             installLegacy: {},
             uninstallLegacy: {},
-            probeHelper: { try await PrivilegedGatewayClient().probeHelperAvailability() }
+            probeHelper: { try await Self.validateGatewayHelper() }
         )
     }
 
@@ -296,8 +304,57 @@ public final class HelperRegistrationService {
         try await Task.detached { @Sendable in try LegacyPrivilegedHelperService.uninstallUsingAdministratorPrivileges() }.value
     }
 
-    private nonisolated static func probeModernHelper() async throws {
-        try await PrivilegedEasyTierClient().probeHelperAvailability()
+    private nonisolated static func validateModernHelper() async throws {
+        let client = PrivilegedEasyTierClient()
+        try await client.probeHelperAvailability()
+        let installed = try await client.helperBuildInfo()
+        let bundled = PrivilegedHelperBuildInfo(bundle: .main)
+        guard modernHelperBuildMatches(installed: installed, bundled: bundled) else {
+            throw PrivilegedHelperError.helperReported(
+                PrivilegedHelperErrorPayload(
+                    code: "helperBuildMismatch",
+                    message: "Privileged helper build \(installed.binaryDisplay) does not match this app build \(bundled.binaryDisplay).",
+                    recoverySuggestion: "Reinstall the privileged helper from this EasyTier app."
+                )
+            )
+        }
+    }
+
+    private nonisolated static func validateGatewayHelper() async throws {
+        let client = PrivilegedGatewayClient()
+        try await client.probeHelperAvailability()
+        let installed = try await client.helperBuildInfo()
+        let bundled = GatewayHelperBuildInfo(bundle: .main)
+        guard gatewayHelperBuildMatches(installed: installed, bundled: bundled) else {
+            throw PrivilegedHelperError.helperReported(
+                PrivilegedHelperErrorPayload(
+                    code: "helperBuildMismatch",
+                    message: "Gateway helper build \(installed.binaryDisplay) does not match this app build \(bundled.binaryDisplay).",
+                    recoverySuggestion: "Reinstall the Gateway helper from this app."
+                )
+            )
+        }
+    }
+
+    nonisolated static func modernHelperBuildMatches(
+        installed: PrivilegedHelperBuildInfo,
+        bundled: PrivilegedHelperBuildInfo
+    ) -> Bool {
+        installed.version == bundled.version
+            && installed.build == bundled.build
+            && installed.protocolVersion == bundled.protocolVersion
+            && (bundled.guiCommit == "unknown" || installed.guiCommit == bundled.guiCommit)
+    }
+
+    nonisolated static func gatewayHelperBuildMatches(
+        installed: GatewayHelperBuildInfo,
+        bundled: GatewayHelperBuildInfo
+    ) -> Bool {
+        installed.build == bundled.build
+            && installed.gatewayVersion == bundled.gatewayVersion
+            && installed.protocolVersion == bundled.protocolVersion
+            && installed.schemaVersion == bundled.schemaVersion
+            && (bundled.gatewayCommit == "unknown" || installed.gatewayCommit == bundled.gatewayCommit)
     }
 }
 

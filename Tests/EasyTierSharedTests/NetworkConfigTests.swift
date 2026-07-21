@@ -3940,8 +3940,98 @@ import Testing
 
     #expect(backend.probeCount == 2)
     #expect(backend.unregisterCount == 1)
+    #expect(backend.waitAfterUnregisterCount == 1)
     #expect(backend.registerCount == 1)
     #expect(registration.state == .enabled)
+}
+
+@MainActor
+@Test func ensureRegisteredReplacesAnEnabledHelperWhenTheProbeFails() async throws {
+    let backend = HelperRegistrationBackendSpy(status: .enabled)
+    backend.statusAfterRegister = .enabled
+    backend.probeErrors = [
+        PrivilegedHelperError.helperReported(
+            PrivilegedHelperErrorPayload(
+                code: "helperProbeTimeout",
+                message: "old helper did not respond"
+            )
+        ),
+    ]
+    let registration = HelperRegistrationService(backend: backend.backend(), refreshOnInit: false)
+
+    try await registration.ensureRegistered()
+
+    #expect(backend.probeCount == 2)
+    #expect(backend.unregisterCount == 1)
+    #expect(backend.waitAfterUnregisterCount == 1)
+    #expect(backend.registerCount == 1)
+    #expect(registration.state == .enabled)
+}
+
+@MainActor
+@Test func ensureRegisteredOnlyAttemptsEnabledHelperRepairOncePerLaunch() async throws {
+    let backend = HelperRegistrationBackendSpy(status: .enabled)
+    backend.statusAfterRegister = .enabled
+    backend.probeError = PrivilegedHelperError.helperReported(
+        PrivilegedHelperErrorPayload(
+            code: "helperProbeTimeout",
+            message: "helper remains unavailable"
+        )
+    )
+    let registration = HelperRegistrationService(backend: backend.backend(), refreshOnInit: false)
+
+    for _ in 0 ..< 2 {
+        do {
+            try await registration.ensureRegistered()
+            Issue.record("ensureRegistered should surface the persistent helper failure")
+        } catch {
+            // The second call may probe again, but must not mutate the registration again.
+        }
+    }
+
+    #expect(backend.unregisterCount == 1)
+    #expect(backend.waitAfterUnregisterCount == 1)
+    #expect(backend.registerCount == 1)
+}
+
+@Test func helperBuildCompatibilityDetectsStaleEasyTierAndGatewayBuilds() {
+    let appInfo: [String: Any] = [
+        "CFBundleShortVersionString": "2.4.5",
+        "CFBundleVersion": "20260721100346",
+        "EasyTierGUICommit": "1e55428b3ab78cf7baa3b135a48a781e1eaee914",
+        "GatewayVersion": "1.3.2",
+        "GatewayCommit": "gateway-current",
+    ]
+    let bundledEasyTier = PrivilegedHelperBuildInfo(infoDictionary: appInfo)
+    var installedEasyTier = bundledEasyTier
+    let bundledGateway = GatewayHelperBuildInfo(infoDictionary: appInfo)
+    var installedGateway = GatewayHelperBuildInfo(infoDictionary: [
+        "CFBundleShortVersionString": "1.3.2",
+        "CFBundleVersion": "20260721100346",
+        "GatewayVersion": "1.3.2",
+        "GatewayCommit": "gateway-current",
+    ])
+
+    #expect(HelperRegistrationService.modernHelperBuildMatches(
+        installed: installedEasyTier,
+        bundled: bundledEasyTier
+    ))
+    #expect(HelperRegistrationService.gatewayHelperBuildMatches(
+        installed: installedGateway,
+        bundled: bundledGateway
+    ))
+
+    installedEasyTier.build = "20260719193734"
+    installedGateway.build = "20260719193734"
+
+    #expect(!HelperRegistrationService.modernHelperBuildMatches(
+        installed: installedEasyTier,
+        bundled: bundledEasyTier
+    ))
+    #expect(!HelperRegistrationService.gatewayHelperBuildMatches(
+        installed: installedGateway,
+        bundled: bundledGateway
+    ))
 }
 
 @Test func xpcCodeSigningRequirementRequiresTheExpectedPeerAndTeam() throws {
@@ -4883,6 +4973,7 @@ private final class HelperRegistrationBackendSpy {
     var legacyInstalled = false
     var registerCount = 0
     var unregisterCount = 0
+    var waitAfterUnregisterCount = 0
     var uninstallLegacyCount = 0
     var probeCount = 0
     var probeError: Error?
@@ -4907,6 +4998,7 @@ private final class HelperRegistrationBackendSpy {
                 }
             },
             unregister: { self.unregisterCount += 1 },
+            waitAfterUnregister: { self.waitAfterUnregisterCount += 1 },
             canInstallHelper: { true },
             useLegacyInstaller: { false },
             legacyArtifactsExist: { self.legacyArtifactsPresent },
