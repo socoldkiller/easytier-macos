@@ -3,13 +3,19 @@ set -euo pipefail
 
 # Fixtures define their own release context and must not inherit workflow state.
 unset \
+  EASYTIER_BUILD_CHANNEL \
   EASYTIER_RELEASE_CHANNEL \
+  EASYTIER_RELEASE_TAG \
   EASYTIER_APP_VERSION \
   EASYTIER_BUILD_NUMBER \
   EASYTIER_BUILD_TIME \
+  EASYTIER_GUI_COMMIT \
   EASYTIER_GUI_REVISION \
+  EASYTIER_CORE_COMMIT \
   EASYTIER_CORE_REVISION \
+  EASYTIER_CORE_TAG \
   EASYTIER_CORE_VERSION
+unset EASYTIER_GATEWAY_VERSION
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/easytier-release-tests.XXXXXX")"

@@ -161,6 +161,27 @@ class BuildContextTests(unittest.TestCase):
         self.assertNotIn('git -C Vendor/EasyTier fetch --no-tags origin main', workflow)
         self.assertNotIn('release_channel=none', workflow)
 
+    def test_release_fixtures_do_not_inherit_build_context(self) -> None:
+        fixture = (
+            ROOT_DIR / "Tests" / "PackagingTests" / "release-pipeline-tests.sh"
+        ).read_text(encoding="utf-8")
+        context = build_context.BuildContext(
+            mode="release",
+            release_channel="nightly",
+            should_publish=True,
+            app_version="1.4.1",
+            build_number="20260721153610",
+            build_time="2026-07-21T15:36:10Z",
+            tag_name="nightly-20260721153610",
+            gui_revision="a" * 40,
+            core_revision="b" * 40,
+            core_version="v2.6.4",
+            gateway_version="0.1.0",
+        )
+
+        for key in context.environment():
+            self.assertIn(key, fixture)
+
 
 if __name__ == "__main__":
     unittest.main()
