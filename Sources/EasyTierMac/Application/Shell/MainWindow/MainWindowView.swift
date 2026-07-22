@@ -327,7 +327,7 @@ struct MainWindowView: View {
         }
         .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
         .hideScrollViewScrollers()
-        .safeAreaInset(edge: .bottom) {
+        .easyTierSafeAreaBar(edge: .bottom) {
             HStack {
                 Button {
                     flushPendingLocalDraft()

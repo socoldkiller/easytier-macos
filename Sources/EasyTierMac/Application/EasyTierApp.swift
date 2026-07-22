@@ -22,6 +22,7 @@ struct EasyTierApp: App {
         Window("EasyTier", id: EasyTierWindowID.main) {
             MainWindowView()
                 .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
+                .easyTierScrollEdgeEffect()
                 .easyTierWindowBackground(
                     glassEffectsEnabled: appearanceSettings.glassEffectsEnabled,
                     renderCoordinator: appContext.presentation.glassRenderCoordinator
@@ -75,6 +76,7 @@ struct EasyTierApp: App {
                 Task { await store.applyMode(mode, magicDNSSettings: magicDNSSettings) }
             }
             .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+            .easyTierScrollEdgeEffect()
             .easyTierWindowBackground(
                 glassEffectsEnabled: appearanceSettings.glassEffectsEnabled,
                 renderCoordinator: appContext.presentation.glassRenderCoordinator
