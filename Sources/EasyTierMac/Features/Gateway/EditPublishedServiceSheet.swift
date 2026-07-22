@@ -16,7 +16,6 @@ struct EditPublishedServiceSheet: View {
     @State private var certificateAuthority: GatewayCertificateAuthority
     @State private var challengeMode: PublishedServiceChallengeMode
     @State private var dnsCredentialID: String?
-    @FocusState private var portFocused: Bool
 
     private var parsedPort: Int? {
         guard let port = Int(portText), (1 ... 65_535).contains(port) else { return nil }
@@ -39,6 +38,22 @@ struct EditPublishedServiceSheet: View {
 
     private var selectedTarget: PublishedServiceTargetOption? {
         targetOptions.first { $0.peerID == selectedTargetPeerID }
+    }
+
+    private var sslStatusIcon: String {
+        switch sslProvider {
+        case .unavailable: "exclamationmark.triangle.fill"
+        case .managedHTTPS: "checkmark.circle.fill"
+        case .requesting: "clock.arrow.circlepath"
+        }
+    }
+
+    private var sslStatusColor: Color {
+        switch sslProvider {
+        case .unavailable: .orange
+        case .managedHTTPS: .green
+        case .requesting: .blue
+        }
     }
 
     init(
@@ -75,94 +90,168 @@ struct EditPublishedServiceSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Edit Service")
-                    .font(.title3)
-                    .bold()
-                Text(service.publicHostname)
-                    .font(.callout.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 20) {
+                header
 
-            SettingsCard {
-                SettingsInlineRow("Proxy IPv4") {
-                    Picker("Proxy IPv4", selection: $selectedTargetPeerID) {
-                        ForEach(targetOptions) { target in
-                            Text(target.label)
-                                .tag(target.peerID)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 250)
-                    .help("Choose the EasyTier member that receives this service's proxy traffic.")
-                }
-                SettingsRowDivider()
-                SettingsInlineRow("Port") {
-                    TextField("Port", text: $portText)
-                        .textFieldStyle(.glassField)
-                        .font(.body.monospacedDigit())
-                        .frame(width: 120)
-                        .focused($portFocused)
-                        .onSubmit(save)
-                }
-                SettingsRowDivider()
-                SettingsInlineRow("SSL") {
-                    HStack(spacing: 8) {
-                        Text(sslProvider.label)
-                            .foregroundStyle(sslProvider.isSecure ? .primary : .secondary)
-                        Button("Settings…", systemImage: "lock.shield", action: configureSSL)
-                            .buttonStyle(.borderless)
-                    }
-                }
-                SettingsRowDivider()
-                SettingsInlineRow("Certificate Authority") {
-                    Picker("Certificate Authority", selection: $certificateAuthority) {
-                        ForEach(GatewayCertificateAuthority.allCases, id: \.self) { authority in
-                            Text(authority.label).tag(authority)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 250)
-                }
-                SettingsRowDivider()
-                SettingsInlineRow("Validation Method") {
-                    Picker("Certificate Challenge", selection: $challengeMode) {
-                        ForEach(PublishedServiceChallengeMode.allCases) { mode in
-                            Text(mode.label).tag(mode)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 250)
-                }
-                if challengeMode == .dns01 {
-                    SettingsRowDivider()
-                    SettingsInlineRow("DNS Credential") {
-                        Picker("DNS Credential", selection: $dnsCredentialID) {
-                            ForEach(dnsCredentials) { credential in
-                                Text(credential.label).tag(Optional(credential.id))
+                EditServiceSection("Destination", systemImage: "arrow.left.arrow.right") {
+                    EditServiceFormRow("Target Member") {
+                        Picker("Target Member", selection: $selectedTargetPeerID) {
+                            ForEach(targetOptions) { target in
+                                Text(target.label)
+                                    .tag(target.peerID)
                             }
                         }
                         .labelsHidden()
-                        .frame(width: 250)
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: .infinity)
+                        .help("Choose the EasyTier member that receives this service's proxy traffic.")
+                    }
+
+                    EditServiceRowDivider()
+
+                    EditServiceFormRow("HTTP Port") {
+                        HStack(spacing: 8) {
+                            TextField("Port", text: $portText)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.body.monospacedDigit())
+                                .frame(width: 112)
+                                .onSubmit(save)
+
+                            if !portText.isEmpty, parsedPort == nil {
+                                Image(systemName: "exclamationmark.circle.fill")
+                                    .foregroundStyle(.red)
+                                    .help("Enter a port from 1 to 65535.")
+                            }
+
+                            Spacer(minLength: 0)
+                        }
+                    }
+                }
+
+                EditServiceSection("HTTPS", systemImage: "lock.shield") {
+                    EditServiceFormRow("Status") {
+                        HStack(spacing: 10) {
+                            Image(systemName: sslStatusIcon)
+                                .foregroundStyle(sslStatusColor)
+                                .frame(width: 16)
+
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(sslProvider.label)
+                                Text(sslProvider.helpText)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+
+                            Spacer(minLength: 8)
+
+                            Button("Manage…", action: configureSSL)
+                                .controlSize(.small)
+                        }
+                    }
+
+                    EditServiceRowDivider()
+
+                    EditServiceFormRow("Authority") {
+                        Picker("Certificate Authority", selection: $certificateAuthority) {
+                            ForEach(GatewayCertificateAuthority.allCases, id: \.self) { authority in
+                                Text(authority.label).tag(authority)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: .infinity)
+                    }
+
+                    EditServiceRowDivider()
+
+                    EditServiceFormRow("Validation") {
+                        Picker("Certificate Challenge", selection: $challengeMode) {
+                            ForEach(PublishedServiceChallengeMode.allCases) { mode in
+                                Text(mode.label).tag(mode)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: .infinity)
+                    }
+
+                    if challengeMode == .dns01 {
+                        EditServiceRowDivider()
+
+                        EditServiceFormRow("DNS Credential") {
+                            if dnsCredentials.isEmpty {
+                                HStack {
+                                    Text("No credentials configured")
+                                        .foregroundStyle(.secondary)
+                                    Spacer(minLength: 8)
+                                    Button("Manage…", action: configureSSL)
+                                        .controlSize(.small)
+                                }
+                            } else {
+                                Picker("DNS Credential", selection: $dnsCredentialID) {
+                                    ForEach(dnsCredentials) { credential in
+                                        Text(credential.label).tag(Optional(credential.id))
+                                    }
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                                .frame(maxWidth: .infinity)
+                            }
+                        }
                     }
                 }
             }
+            .padding(.horizontal, 28)
+            .padding(.top, 26)
+            .padding(.bottom, 24)
 
-            HStack {
+            Divider()
+
+            HStack(spacing: 8) {
                 Spacer(minLength: 0)
                 Button("Cancel", role: .cancel) { dismiss() }
-                Button("Save", systemImage: "checkmark", action: save)
+                    .keyboardShortcut(.cancelAction)
+                Button("Save", action: save)
                     .buttonStyle(.borderedProminent)
                     .disabled(!canSave)
                     .keyboardShortcut(.defaultAction)
             }
+            .padding(.horizontal, 28)
+            .padding(.vertical, 16)
         }
-        .padding(22)
-        .frame(width: 420)
-        .task {
-            portFocused = true
+        .frame(width: 540)
+        .controlSize(.regular)
+    }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: "network")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(.tint)
+                .frame(width: 42, height: 42)
+                .background(
+                    Color.accentColor.opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Edit Service")
+                    .font(.title2.weight(.semibold))
+
+                HStack(spacing: 5) {
+                    Image(systemName: "globe")
+                        .font(.caption)
+                    Text(service.publicHostname)
+                        .font(.callout.monospaced())
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .help(service.publicHostname)
+            }
         }
     }
 
@@ -183,5 +272,70 @@ struct EditPublishedServiceSheet: View {
     private func configureSSL() {
         dismiss()
         onConfigureSSL()
+    }
+}
+
+private struct EditServiceSection<Content: View>: View {
+    let title: String
+    let systemImage: String
+    @ViewBuilder let content: Content
+
+    init(
+        _ title: String,
+        systemImage: String,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.title = title
+        self.systemImage = systemImage
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: systemImage)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            VStack(spacing: 0) {
+                content
+            }
+            .background(
+                Color.primary.opacity(0.045),
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(.primary.opacity(0.08), lineWidth: 0.5)
+            }
+        }
+    }
+}
+
+private struct EditServiceFormRow<Content: View>: View {
+    let label: String
+    @ViewBuilder let content: Content
+
+    init(_ label: String, @ViewBuilder content: () -> Content) {
+        self.label = label
+        self.content = content()
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 16) {
+            Text(label)
+                .frame(width: 126, alignment: .leading)
+
+            content
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+}
+
+private struct EditServiceRowDivider: View {
+    var body: some View {
+        Divider()
+            .padding(.leading, 156)
     }
 }
