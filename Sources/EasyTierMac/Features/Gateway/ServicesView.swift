@@ -39,7 +39,8 @@ struct ServicesView: View {
     }
 
     private var displayedError: String? {
-        errorMessage ?? gateway.lastError ?? gateway.status.lastError
+        errorMessage ?? gateway.convergence.message ?? gateway.lastError
+            ?? gateway.status.runtimeIssues.last?.message
     }
 
     private var display: PublishedServicesDisplayModel {
@@ -52,7 +53,8 @@ struct ServicesView: View {
             members: gateway.topologyMembers,
             searchText: searchText,
             magicDNSState: gateway.magicDNSState,
-            magicDNSStateByServiceID: gateway.magicDNSStateByServiceID
+            magicDNSStateByServiceID: gateway.magicDNSStateByServiceID,
+            convergence: gateway.convergence
         )
     }
 

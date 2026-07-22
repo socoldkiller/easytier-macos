@@ -26,10 +26,10 @@ struct PublishedServiceCertificatePresentation: Equatable, Sendable {
         now: Date = .now
     ) {
         renewalAt = Self.date(from: certificate?.nextRenewalAt)
-        errorMessage = certificate?.lastError
+        errorMessage = certificate?.failure?.message
         activeAuthority = certificate?.activeAuthority
 
-        guard provider != .httpOnly else {
+        guard provider != .unavailable else {
             state = .unavailable
             return
         }
@@ -38,16 +38,20 @@ struct PublishedServiceCertificatePresentation: Equatable, Sendable {
             return
         }
 
-        switch certificate.state {
-        case .pending, .issuing:
+        switch certificate.operation {
+        case .queued, .issuing:
             state = .issuing
-        case .renewing:
+        case .renewing, .replacing:
             state = .renewing
-        case .failed:
+        case .suspended:
             state = .failed
-        case .degraded:
+        case .waitingRetry:
             state = .degraded
-        case .active:
+        case .idle:
+            guard certificate.availability != .unavailable else {
+                state = .notIssued
+                return
+            }
             guard let expirationDate = Self.date(from: certificate.notAfter) else {
                 state = .active
                 return
@@ -87,7 +91,7 @@ struct PublishedServiceCertificatePresentation: Equatable, Sendable {
     var helpText: String {
         switch state {
         case .unavailable:
-            "HTTP Only services do not use a certificate."
+            "Managed HTTPS is not configured for this service."
         case .notIssued:
             "A certificate has not been issued for this service."
         case .issuing:

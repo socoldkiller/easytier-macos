@@ -167,7 +167,6 @@ impl CertifiedMaterial {
 pub struct DynamicCertificateStore {
     certificates: ArcSwap<BTreeMap<String, Arc<CertifiedMaterial>>>,
     sni_to_certificate: ArcSwap<BTreeMap<String, String>>,
-    http_only_certificates: ArcSwap<BTreeSet<String>>,
     callback_error: Mutex<Option<String>>,
 }
 
@@ -176,7 +175,6 @@ impl DynamicCertificateStore {
         Arc::new(Self {
             certificates: ArcSwap::from_pointee(BTreeMap::new()),
             sni_to_certificate: ArcSwap::from_pointee(BTreeMap::new()),
-            http_only_certificates: ArcSwap::from_pointee(BTreeSet::new()),
             callback_error: Mutex::new(None),
         })
     }
@@ -192,44 +190,27 @@ impl DynamicCertificateStore {
 
     pub fn install(&self, certificate_id: String, material: Arc<CertifiedMaterial>) {
         let mut certificates = self.certificates.load().as_ref().clone();
-        certificates.insert(certificate_id.clone(), material);
+        certificates.insert(certificate_id, material);
         self.certificates.store(Arc::new(certificates));
-        let mut http_only = self.http_only_certificates.load().as_ref().clone();
-        http_only.remove(&certificate_id);
-        self.http_only_certificates.store(Arc::new(http_only));
     }
 
     pub fn reconcile(&self, config: &ValidatedGatewayConfig) {
+        let now = OffsetDateTime::now_utc();
         let mut certificates = self.certificates.load().as_ref().clone();
         certificates.retain(|certificate_id, material| {
-            config
-                .certificates
-                .get(certificate_id)
-                .is_some_and(|certificate| certificate.domains == material.metadata.domains)
+            material.metadata.not_after > now
+                && config
+                    .certificates
+                    .get(certificate_id)
+                    .is_some_and(|certificate| certificate.domains == material.metadata.domains)
         });
         self.certificates.store(Arc::new(certificates));
-        let mut http_only = self.http_only_certificates.load().as_ref().clone();
-        http_only.retain(|certificate_id| config.certificates.contains_key(certificate_id));
-        self.http_only_certificates.store(Arc::new(http_only));
-    }
-
-    pub fn mark_http_only(&self, certificate_id: &str) {
-        let mut http_only = self.http_only_certificates.load().as_ref().clone();
-        http_only.insert(certificate_id.to_string());
-        self.http_only_certificates.store(Arc::new(http_only));
     }
 
     pub fn remove(&self, certificate_id: &str) {
         let mut certificates = self.certificates.load().as_ref().clone();
         certificates.remove(certificate_id);
         self.certificates.store(Arc::new(certificates));
-    }
-
-    pub fn is_http_only_for_domain(&self, domain: &str) -> bool {
-        let Some(certificate_id) = self.sni_to_certificate.load().get(domain).cloned() else {
-            return false;
-        };
-        self.http_only_certificates.load().contains(&certificate_id)
     }
 
     pub fn get(&self, certificate_id: &str) -> Option<Arc<CertifiedMaterial>> {
@@ -389,7 +370,12 @@ mod tests {
         store.install("app-cert".to_string(), test_material("old.example.com"));
         let config = GatewayConfig::parse(
             &json!({
-                "schema_version": 5,
+                "schema_version": 6,
+                "deployment": {
+                    "configuration_id": "00000000-0000-0000-0000-000000000000",
+                    "revision": 0,
+                    "fingerprint": "tls-test"
+                },
                 "storage_dir": PathBuf::from("/tmp/easytier-gateway-tls-test"),
                 "listeners": {
                     "http": "127.0.0.1:5002",

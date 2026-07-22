@@ -364,7 +364,12 @@ mod tests {
     fn test_config(domain: &str) -> super::ValidatedGatewayConfig {
         GatewayConfig::parse(
             &serde_json::json!({
-                "schema_version": 5,
+                "schema_version": 6,
+                "deployment": {
+                    "configuration_id": "00000000-0000-0000-0000-000000000000",
+                    "revision": 0,
+                    "fingerprint": "local-dns-test"
+                },
                 "storage_dir": "/tmp/easytier-local-dns-test",
                 "listeners": {
                     "http": "127.0.0.1:0",

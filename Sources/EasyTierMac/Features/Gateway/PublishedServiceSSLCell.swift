@@ -6,6 +6,9 @@ struct PublishedServiceSSLCell: View {
     var authority: GatewayCertificateAuthority
     var activeAuthority: GatewayCertificateAuthority?
     var challenge: String
+    var runtimeAuthority: GatewayCertificateAuthority?
+    var runtimeChallenge: String?
+    var configurationApplied: Bool
 
     var body: some View {
         Label {
@@ -23,6 +26,13 @@ struct PublishedServiceSSLCell: View {
     }
 
     private var helpText: String {
+        if !configurationApplied {
+            let configured = "Configured: \(authority.label) / \(challenge)"
+            guard let runtimeAuthority, let runtimeChallenge else {
+                return "\(configured). This configuration has not been applied to the Gateway runtime."
+            }
+            return "\(configured). Runtime: \(runtimeAuthority.label) / \(runtimeChallenge). The saved configuration has not been applied yet."
+        }
         if let activeAuthority, activeAuthority != authority {
             return "Switching to \(authority.label) with \(challenge). The active certificate is from \(activeAuthority.label)."
         }

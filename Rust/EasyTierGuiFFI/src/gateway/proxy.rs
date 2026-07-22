@@ -491,21 +491,6 @@ impl ProxyHttp for GatewayProxy {
         }
 
         if !self.certificates.has_certificate_for_domain(&host) {
-            if self.certificates.is_http_only_for_domain(&host) {
-                let Some(address) = route.address_for_request().await else {
-                    respond_with_headers(
-                        session,
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "Target is unavailable".to_string(),
-                        &[("Retry-After", "5")],
-                    )
-                    .await?;
-                    return Ok(true);
-                };
-                context.upstream_address = Some(address);
-                context.route = Some(route);
-                return Ok(false);
-            }
             respond_with_headers(
                 session,
                 StatusCode::SERVICE_UNAVAILABLE,

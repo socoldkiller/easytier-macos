@@ -13,8 +13,6 @@ struct PublishServiceSheet: View {
     @State private var serviceLabel = ""
     @State private var targetPort = "3000"
     @State private var selectedTargetPeerID: String
-    @State private var draftID: String?
-    @State private var draftTarget: PublishedServiceTargetOption?
     @State private var certificateAuthority = GatewayCertificateAuthority.letsEncrypt
     @State private var challengeMode = PublishedServiceChallengeMode.http01
     @State private var dnsCredentialID: String?
@@ -41,17 +39,13 @@ struct PublishServiceSheet: View {
         targetOptions.first { $0.peerID == selectedTargetPeerID }
     }
 
-    private var effectiveTarget: PublishedServiceTargetOption? {
-        draftTarget ?? selectedTarget
-    }
-
     private var targetDomain: String {
-        guard let effectiveTarget else { return "member" }
+        guard let selectedTarget else { return "member" }
         return MagicDNSDisplay.memberDomain(
-            hostname: effectiveTarget.hostname,
+            hostname: selectedTarget.hostname,
             config: store.selectedConfig,
             settings: store.magicDNSSettings
-        ) ?? "\(effectiveTarget.hostname).\(trimmedDNSSuffix)"
+        ) ?? "\(selectedTarget.hostname).\(trimmedDNSSuffix)"
     }
 
     private var publicHostname: String {
@@ -83,7 +77,7 @@ struct PublishServiceSheet: View {
             && gateway.isTLSConfigured
             && store.selectedConfig != nil
             && gateway.magicDNSState == .ready
-            && effectiveTarget != nil
+            && selectedTarget != nil
     }
 
     init(preferredTargetPeerID: String? = nil) {
@@ -116,7 +110,7 @@ struct PublishServiceSheet: View {
                             }
                         }
                         .labelsHidden()
-                        .disabled(draftID != nil || isWorking)
+                        .disabled(isWorking)
                     }
                 }
                 GridRow {
@@ -125,7 +119,7 @@ struct PublishServiceSheet: View {
                     TextField("abc", text: $serviceLabel)
                         .textFieldStyle(.glassField)
                         .focused($focusedField, equals: .serviceLabel)
-                        .disabled(draftID != nil || isWorking)
+                        .disabled(isWorking)
                 }
                 GridRow {
                     Text("Certificate Authority")
@@ -166,12 +160,12 @@ struct PublishServiceSheet: View {
                     TextField("3000", text: $targetPort)
                         .textFieldStyle(.glassField)
                         .focused($focusedField, equals: .targetPort)
-                        .disabled(draftID != nil || isWorking)
+                        .disabled(isWorking)
                 }
             }
             .gridColumnAlignment(.leading)
 
-            if effectiveTarget != nil {
+            if selectedTarget != nil {
                 PublishedServicePreview(
                     publicURL: publicURL,
                     target: targetSummary,
@@ -195,11 +189,6 @@ struct PublishServiceSheet: View {
             }
 
             HStack {
-                if draftID != nil, errorMessage != nil {
-                    Label("Service draft saved", systemImage: "checkmark.circle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
                 Spacer(minLength: 0)
                 Button("Cancel", role: .cancel, action: dismiss.callAsFunction)
                     .disabled(isWorking)
@@ -224,7 +213,6 @@ struct PublishServiceSheet: View {
     }
 
     private func reconcileTargetSelection() {
-        guard draftID == nil else { return }
         selectedTargetPeerID = PublishedServiceTargetOption.initialPeerID(
             in: targetOptions,
             preferredPeerID: selectedTargetPeerID.nilIfEmpty ?? preferredTargetPeerID
@@ -249,43 +237,31 @@ struct PublishServiceSheet: View {
                 }
                 guard let config = store.selectedConfig,
                       let port = Int(targetPort),
-                      let effectiveTarget
+                      let selectedTarget
                 else {
                     throw GatewayConfigurationValidationError.invalid(
                         "Select a running EasyTier network and enter a valid target port."
                     )
                 }
-                let serviceID: String
                 guard let challenge = challengeMode.challenge(credentialID: dnsCredentialID) else {
                     throw GatewayConfigurationValidationError.invalid(
                         "Choose a DNS credential for DNS-01."
                     )
                 }
-                if let draftID {
-                    serviceID = draftID
-                } else {
-                    let draft = try await gateway.createDraft(
-                        networkConfigID: config.instance_id,
-                        targetPeerID: effectiveTarget.peerID,
-                        targetInstanceID: effectiveTarget.instanceID,
-                        targetHostname: effectiveTarget.hostname,
-                        magicDNSSuffix: gateway.appliedMagicDNSSuffix
-                            ?? store.magicDNSSettings.dnsSuffix,
-                        serviceLabel: serviceLabel,
-                        targetPort: port
-                    )
-                    draftID = draft.id
-                    draftTarget = effectiveTarget
-                    serviceID = draft.id
-                }
-                try await gateway.updateCertificatePolicy(
-                    serviceID: serviceID,
-                    policy: GatewayCertificatePolicy(
+                _ = try await gateway.createService(
+                    networkConfigID: config.instance_id,
+                    targetPeerID: selectedTarget.peerID,
+                    targetInstanceID: selectedTarget.instanceID,
+                    targetHostname: selectedTarget.hostname,
+                    magicDNSSuffix: gateway.appliedMagicDNSSuffix
+                        ?? store.magicDNSSettings.dnsSuffix,
+                    serviceLabel: serviceLabel,
+                    targetPort: port,
+                    certificatePolicy: GatewayCertificatePolicy(
                         authority: certificateAuthority,
                         challenge: challenge
                     )
                 )
-                try await gateway.setServiceEnabled(true, serviceID: serviceID)
                 dismiss()
             } catch {
                 errorMessage = error.localizedDescription

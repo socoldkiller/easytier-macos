@@ -32,8 +32,11 @@ struct StaticGatewayFFITests {
         #expect(running.listeners.http?.hasPrefix("127.0.0.1:") == true)
         #expect(running.listeners.https?.hasPrefix("127.0.0.1:") == true)
         #expect(running.listeners.dns?.hasPrefix("127.0.0.1:") == true)
+        #expect(running.appliedDeployment == configuration.deployment)
 
         configuration.acme.contactEmail = "renewals@example.com"
+        configuration.deployment.revision = 2
+        configuration.deployment.fingerprint = "contact-update"
         runtime = GatewayFFIConfiguration(
             configuration: configuration,
             storageDirectory: root.path,
@@ -42,7 +45,7 @@ struct StaticGatewayFFITests {
             dnsListener: "127.0.0.1:0"
         )
         try ffi.applySync(configuration: runtime)
-        #expect(try ffi.statusSync().configGeneration >= running.configGeneration)
+        #expect(try ffi.statusSync().appliedDeployment == configuration.deployment)
 
         try ffi.requestRenewalSync(certificateID: nil)
         try ffi.stopSync()
@@ -600,6 +603,11 @@ private final class ManualGatewayLeaseCancellation: GatewayLeaseCancellation, Se
 
 private func gatewayRuntimeTestConfiguration() -> GatewayConfiguration {
     GatewayConfiguration(
+        deployment: GatewayDeploymentIdentity(
+            configurationID: "00000000-0000-0000-0000-000000000000",
+            revision: 1,
+            fingerprint: "initial"
+        ),
         acme: GatewayACMEConfiguration(
             contactEmail: "ops@example.com",
             termsOfServiceAgreed: false

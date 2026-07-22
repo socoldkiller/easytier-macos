@@ -46,7 +46,10 @@ struct PublishedServiceGridRowView: View {
                     provider: row.sslProvider,
                     authority: row.certificateAuthority,
                     activeAuthority: row.certificatePresentation.activeAuthority,
-                    challenge: row.certificateChallengeLabel
+                    challenge: row.certificateChallengeLabel,
+                    runtimeAuthority: row.runtimeCertificateAuthority,
+                    runtimeChallenge: row.runtimeCertificateChallenge,
+                    configurationApplied: row.configurationApplied
                 )
             }
 

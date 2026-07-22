@@ -1,15 +1,18 @@
 import Darwin
+import CryptoKit
 import Foundation
 
 package enum GatewayPublishedServicesValidator {
-    package static func makeDraft(
+    package static func makeService(
         networkConfigID: String,
         targetPeerID: String,
         targetInstanceID: String? = nil,
         targetHostname: String,
         magicDNSSuffix: String,
         serviceLabel: String,
-        targetPort: Int
+        targetPort: Int,
+        desiredEnabled: Bool,
+        certificatePolicy: GatewayCertificatePolicy
     ) throws -> GatewayPublishedService {
         let serviceLabel = try normalizeLabel(serviceLabel, field: "Service name")
         let nodeLabel = try normalizeLabel(targetHostname, field: "Target hostname")
@@ -29,13 +32,19 @@ package enum GatewayPublishedServicesValidator {
                 nodeLabel: nodeLabel,
                 suffix: suffix
             ),
-            targetPort: targetPort
+            targetPort: targetPort,
+            desiredEnabled: desiredEnabled,
+            certificatePolicy: certificatePolicy
         )
     }
 
     package static func validate(_ state: GatewayPersistedState) throws -> GatewayPersistedState {
         guard state.schemaVersion == GatewaySchema.persistedVersion else {
             throw invalid("Unsupported Gateway schema version \(state.schemaVersion).")
+        }
+
+        guard UUID(uuidString: state.configurationID) != nil else {
+            throw invalid("Gateway configuration ID is invalid.")
         }
 
         var normalized = state
@@ -248,8 +257,13 @@ package enum GatewayConfigurationFactory {
             termsOfServiceAgreed: false
         )
 
-        return try GatewayConfigurationValidator.validate(
+        var configuration = try GatewayConfigurationValidator.validate(
             GatewayConfiguration(
+                deployment: GatewayDeploymentIdentity(
+                    configurationID: state.configurationID,
+                    revision: state.revision,
+                    fingerprint: "pending"
+                ),
                 acme: acme,
                 certificates: enabledServices.map { service in
                     GatewayCertificateConfiguration(
@@ -284,6 +298,22 @@ package enum GatewayConfigurationFactory {
                 localDomains: enabledServices.map(\.publicHostname)
             )
         )
+        configuration.deployment.fingerprint = try deploymentFingerprint(
+            configuration: configuration
+        )
+        return configuration
+    }
+
+    private static func deploymentFingerprint(
+        configuration: GatewayConfiguration
+    ) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(configuration)
+        let digits = Array("0123456789abcdef")
+        return SHA256.hash(data: data).map { byte in
+            String([digits[Int(byte >> 4)], digits[Int(byte & 0x0f)]])
+        }.joined()
     }
 
     private static func runtimeChallenge(
@@ -298,7 +328,8 @@ package enum GatewayConfigurationFactory {
             return .dns01(
                 GatewayDNS01Configuration(
                     provider: credential.provider,
-                    credentialID: credential.id
+                    credentialID: credential.id,
+                    credentialRevision: credential.revision
                 )
             )
         }

@@ -1,14 +1,24 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{Arc, Mutex as StdMutex},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use base64::{
     Engine as _,
     engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD},
 };
-#[cfg(test)]
-use instant_acme::HttpClient;
-use instant_acme::{Account, AccountBuilder, ExternalAccountKey, NewAccount};
+use bytes::Bytes;
+use http::{Request, Response, header::RETRY_AFTER};
+use http_body_util::{BodyExt as _, Full};
+use instant_acme::{
+    Account, AccountBuilder, BodyWrapper, BytesResponse, Error as AcmeError, ExternalAccountKey,
+    HttpClient, NewAccount,
+};
 use serde::Deserialize;
+use time::{OffsetDateTime, format_description::well_known::Rfc2822};
 #[cfg(test)]
 use tokio::sync::Mutex;
 use tokio::sync::OnceCell;
@@ -42,6 +52,10 @@ trait CertificateAuthorityProvider: Send + Sync {
     ) -> Result<Account, String>;
 
     async fn update_contacts(&self, contacts: &[&str]) -> Result<(), String>;
+
+    fn rate_limit_until(&self) -> Option<OffsetDateTime> {
+        None
+    }
 }
 
 pub struct AuthorityPool {
@@ -81,13 +95,122 @@ impl AuthorityPool {
 
     pub async fn update_contacts(&self, contacts: &[&str]) -> Result<(), String> {
         for provider in &self.providers {
-            provider
-                .update_contacts(contacts)
-                .await
-                .map_err(|_| "failed to update certificate account contact".to_string())?;
+            provider.update_contacts(contacts).await.map_err(|error| {
+                format!(
+                    "failed to update {} account contact: {error}",
+                    provider.kind().display_name()
+                )
+            })?;
         }
         Ok(())
     }
+
+    pub fn rate_limit_until(&self, kind: CertificateAuthorityKind) -> Option<OffsetDateTime> {
+        self.providers
+            .iter()
+            .find(|provider| provider.kind() == kind)
+            .and_then(|provider| provider.rate_limit_until())
+    }
+}
+
+#[derive(Clone)]
+struct AcmeRateLimitObserver {
+    until: Arc<StdMutex<Option<OffsetDateTime>>>,
+}
+
+impl AcmeRateLimitObserver {
+    fn new() -> Self {
+        Self {
+            until: Arc::new(StdMutex::new(None)),
+        }
+    }
+
+    fn record(&self, value: Option<&str>) {
+        let until = value
+            .and_then(parse_retry_after)
+            .unwrap_or_else(|| OffsetDateTime::now_utc() + time::Duration::hours(1));
+        if let Ok(mut current) = self.until.lock()
+            && current.is_none_or(|existing| existing < until)
+        {
+            *current = Some(until);
+        }
+    }
+
+    fn current(&self) -> Option<OffsetDateTime> {
+        self.until.lock().ok().and_then(|value| *value)
+    }
+}
+
+#[derive(Clone)]
+struct ObservedAcmeHttpClient {
+    client: reqwest::Client,
+    rate_limit: AcmeRateLimitObserver,
+}
+
+impl ObservedAcmeHttpClient {
+    fn new(rate_limit: AcmeRateLimitObserver) -> Result<Self, String> {
+        Ok(Self {
+            client: reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(30))
+                .build()
+                .map_err(|error| format!("failed to create ACME HTTP client: {error}"))?,
+            rate_limit,
+        })
+    }
+}
+
+impl HttpClient for ObservedAcmeHttpClient {
+    fn request(
+        &self,
+        request: Request<BodyWrapper<Bytes>>,
+    ) -> Pin<Box<dyn Future<Output = Result<BytesResponse, AcmeError>> + Send>> {
+        let client = self.client.clone();
+        let rate_limit = self.rate_limit.clone();
+        Box::pin(async move {
+            let (parts, body) = request.into_parts();
+            let body = body
+                .collect()
+                .await
+                .map_err(|error| AcmeError::Other(Box::new(error)))?
+                .to_bytes();
+            let mut outgoing = client.request(parts.method, parts.uri.to_string());
+            for (name, value) in &parts.headers {
+                outgoing = outgoing.header(name.as_str(), value.as_bytes());
+            }
+            let response = outgoing
+                .body(body)
+                .send()
+                .await
+                .map_err(|error| AcmeError::Other(Box::new(error)))?;
+            let status = response.status();
+            if status.as_u16() == 429 {
+                rate_limit.record(
+                    response
+                        .headers()
+                        .get(RETRY_AFTER)
+                        .and_then(|value| value.to_str().ok()),
+                );
+            }
+            let mut builder = Response::builder().status(status.as_u16());
+            for (name, value) in response.headers() {
+                builder = builder.header(name.as_str(), value.as_bytes());
+            }
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|error| AcmeError::Other(Box::new(error)))?;
+            let response = builder.body(Full::new(bytes)).map_err(AcmeError::Http)?;
+            Ok(BytesResponse::from(response))
+        })
+    }
+}
+
+fn parse_retry_after(value: &str) -> Option<OffsetDateTime> {
+    if let Ok(seconds) = value.trim().parse::<i64>() {
+        return Some(OffsetDateTime::now_utc() + time::Duration::seconds(seconds.max(0)));
+    }
+    OffsetDateTime::parse(value.trim(), &Rfc2822).ok()
 }
 
 #[cfg(test)]
@@ -177,17 +300,24 @@ impl CertificateAuthorityProvider for TestAuthorityProvider {
 
 struct LetsEncryptProvider {
     account: OnceCell<Account>,
+    http: Result<ObservedAcmeHttpClient, String>,
+    rate_limit: AcmeRateLimitObserver,
 }
 
 impl LetsEncryptProvider {
     fn new() -> Self {
+        let rate_limit = AcmeRateLimitObserver::new();
         Self {
             account: OnceCell::new(),
+            http: ObservedAcmeHttpClient::new(rate_limit.clone()),
+            rate_limit,
         }
     }
 
     async fn builder(&self) -> Result<AccountBuilder, String> {
-        Account::builder().map_err(|error| format!("failed to create ACME HTTP client: {error}"))
+        Ok(Account::builder_with_http(Box::new(
+            self.http.as_ref().map_err(Clone::clone)?.clone(),
+        )))
     }
 }
 
@@ -245,15 +375,22 @@ impl CertificateAuthorityProvider for LetsEncryptProvider {
             .await
             .map_err(|error| format!("failed to update ACME account contact: {error}"))
     }
+
+    fn rate_limit_until(&self) -> Option<OffsetDateTime> {
+        self.rate_limit.current()
+    }
 }
 
 struct ZeroSslProvider {
     account: OnceCell<Account>,
     http: Result<reqwest::Client, String>,
+    acme_http: Result<ObservedAcmeHttpClient, String>,
+    rate_limit: AcmeRateLimitObserver,
 }
 
 impl ZeroSslProvider {
     fn new() -> Self {
+        let rate_limit = AcmeRateLimitObserver::new();
         Self {
             account: OnceCell::new(),
             http: reqwest::Client::builder()
@@ -261,6 +398,8 @@ impl ZeroSslProvider {
                 .timeout(Duration::from_secs(30))
                 .build()
                 .map_err(|error| format!("failed to create EAB HTTP client: {error}")),
+            acme_http: ObservedAcmeHttpClient::new(rate_limit.clone()),
+            rate_limit,
         }
     }
 
@@ -276,6 +415,14 @@ impl ZeroSslProvider {
             .send()
             .await
             .map_err(|error| format!("ZeroSSL EAB request failed: {error}"))?;
+        if response.status().as_u16() == 429 {
+            self.rate_limit.record(
+                response
+                    .headers()
+                    .get(RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok()),
+            );
+        }
         if !response.status().is_success() {
             return Err(format!(
                 "ZeroSSL EAB request returned HTTP {}",
@@ -303,8 +450,9 @@ impl CertificateAuthorityProvider for ZeroSslProvider {
     ) -> Result<Account, String> {
         self.account
             .get_or_try_init(|| async {
-                let builder = Account::builder()
-                    .map_err(|error| format!("failed to create ZeroSSL ACME client: {error}"))?;
+                let builder = Account::builder_with_http(Box::new(
+                    self.acme_http.as_ref().map_err(Clone::clone)?.clone(),
+                ));
                 if let Some(credentials) = storage.load_account(ZEROSSL_DIRECTORY_URL)? {
                     return builder
                         .from_credentials(credentials)
@@ -349,6 +497,10 @@ impl CertificateAuthorityProvider for ZeroSslProvider {
             .update_contacts(contacts)
             .await
             .map_err(|error| format!("failed to update ZeroSSL account contact: {error}"))
+    }
+
+    fn rate_limit_until(&self) -> Option<OffsetDateTime> {
+        self.rate_limit.current()
     }
 }
 

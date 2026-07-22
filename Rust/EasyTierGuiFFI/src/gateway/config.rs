@@ -8,12 +8,13 @@ use http::HeaderValue;
 use serde::{Deserialize, Serialize};
 use url::{Host, Url};
 
-pub const GATEWAY_SCHEMA_VERSION: u32 = 5;
+pub const GATEWAY_SCHEMA_VERSION: u32 = 6;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GatewayConfig {
     pub schema_version: u32,
+    pub deployment: DeploymentIdentity,
     pub storage_dir: PathBuf,
     pub listeners: ListenerConfig,
     pub local_dns: LocalDnsConfig,
@@ -22,6 +23,14 @@ pub struct GatewayConfig {
     pub certificates: Vec<CertificateConfig>,
     #[serde(default)]
     pub routes: Vec<RouteConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DeploymentIdentity {
+    pub configuration_id: String,
+    pub revision: u64,
+    pub fingerprint: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -48,7 +57,7 @@ pub struct AcmeConfig {
     pub terms_of_service_agreed: bool,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum CertificateAuthorityKind {
     Letsencrypt,
@@ -71,6 +80,7 @@ pub enum ChallengeConfig {
     Dns01 {
         provider: DnsProviderKind,
         credential_id: String,
+        credential_revision: u64,
     },
 }
 
@@ -87,13 +97,14 @@ impl ChallengeConfig {
             Self::Dns01 {
                 provider,
                 credential_id,
+                ..
             } => Some((*provider, credential_id.as_str())),
             Self::Http01 => None,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum DnsProviderKind {
     Cloudflare,
@@ -162,7 +173,7 @@ pub struct ValidatedGatewayConfig {
     pub routes: BTreeMap<String, ValidatedRoute>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct ValidatedCertificate {
     pub id: String,
     pub domains: Vec<String>,
@@ -228,6 +239,11 @@ impl GatewayConfig {
         if !self.storage_dir.is_absolute() {
             return Err("storage_dir must be an absolute path".to_string());
         }
+        uuid::Uuid::parse_str(&self.deployment.configuration_id)
+            .map_err(|_| "deployment.configuration_id must be a UUID".to_string())?;
+        if self.deployment.fingerprint.trim().is_empty() {
+            return Err("deployment.fingerprint must not be empty".to_string());
+        }
         if !self.certificates.is_empty() {
             if !self.acme.terms_of_service_agreed {
                 return Err("acme.terms_of_service_agreed must be true".to_string());
@@ -290,8 +306,15 @@ impl GatewayConfig {
                         certificate.id
                     ));
                 }
-                ChallengeConfig::Dns01 { credential_id, .. } => {
+                ChallengeConfig::Dns01 {
+                    credential_id,
+                    credential_revision,
+                    ..
+                } => {
                     validate_identifier(credential_id, "credential id")?;
+                    if *credential_revision == 0 {
+                        return Err("DNS credential revision must be greater than zero".to_string());
+                    }
                 }
                 ChallengeConfig::Http01 => {}
             }
@@ -395,7 +418,7 @@ impl GatewaySecrets {
 
     pub fn validate_references(&self, config: &ValidatedGatewayConfig) -> Result<(), String> {
         // Keychain items can be unavailable at launch. ACME treats a missing DNS
-        // credential as an attempt failure and keeps the Gateway in HTTP-only mode.
+        // credential as a suspended certificate attempt without blocking other routes.
         let _ = config;
         Ok(())
     }
@@ -607,6 +630,11 @@ mod tests {
     fn base_config() -> GatewayConfig {
         GatewayConfig {
             schema_version: GATEWAY_SCHEMA_VERSION,
+            deployment: DeploymentIdentity {
+                configuration_id: "00000000-0000-0000-0000-000000000000".to_string(),
+                revision: 0,
+                fingerprint: "manual".to_string(),
+            },
             storage_dir: PathBuf::from("/tmp/easytier-gateway-test"),
             listeners: ListenerConfig {
                 http: "127.0.0.1:5002".to_string(),

@@ -1,7 +1,7 @@
 import EasyTierShared
 
 enum PublishedServiceSSLProvider: Equatable, Sendable {
-    case httpOnly
+    case unavailable
     case managedHTTPS
     case requesting
 
@@ -10,22 +10,20 @@ enum PublishedServiceSSLProvider: Equatable, Sendable {
         certificate: GatewayCertificateStatus? = nil
     ) {
         guard let acmeConfiguration, acmeConfiguration.termsOfServiceAgreed else {
-            self = .httpOnly
+            self = .unavailable
             return
         }
-        switch certificate?.servingMode {
-        case .httpOnly:
-            self = .httpOnly
-        case .https:
+        switch certificate?.availability {
+        case .valid:
             self = .managedHTTPS
-        case .pendingHTTPS, nil:
+        case .expired, .unavailable, nil:
             self = .requesting
         }
     }
 
     var label: String {
         switch self {
-        case .httpOnly: "HTTP Only"
+        case .unavailable: "HTTPS Setup Required"
         case .managedHTTPS: "Managed HTTPS"
         case .requesting: "Requesting Certificate"
         }
@@ -33,14 +31,13 @@ enum PublishedServiceSSLProvider: Equatable, Sendable {
 
     var urlScheme: String {
         switch self {
-        case .httpOnly: "http"
-        case .managedHTTPS, .requesting: "https"
+        case .unavailable, .managedHTTPS, .requesting: "https"
         }
     }
 
     var connectionLabel: String {
         switch self {
-        case .httpOnly: "Unencrypted HTTP"
+        case .unavailable: "Managed HTTPS Unavailable"
         case .managedHTTPS: "Certificate Managed"
         case .requesting: "HTTPS Pending"
         }
@@ -48,7 +45,7 @@ enum PublishedServiceSSLProvider: Equatable, Sendable {
 
     var helpText: String {
         switch self {
-        case .httpOnly: "Certificate services are unavailable. HTTP remains available while HTTPS is retried."
+        case .unavailable: "Configure managed certificates before enabling this service."
         case .managedHTTPS: "The service uses a managed certificate from its selected authority."
         case .requesting: "A managed certificate is being requested."
         }

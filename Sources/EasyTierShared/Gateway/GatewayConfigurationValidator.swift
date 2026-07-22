@@ -16,6 +16,13 @@ package enum GatewayConfigurationValidator {
         guard configuration.schemaVersion == GatewaySchema.runtimeVersion else {
             throw invalid("Unsupported Gateway schema version \(configuration.schemaVersion).")
         }
+        guard UUID(uuidString: configuration.deployment.configurationID) != nil,
+              !configuration.deployment.fingerprint
+                  .trimmingCharacters(in: .whitespacesAndNewlines)
+                  .isEmpty
+        else {
+            throw invalid("Gateway deployment identity is invalid.")
+        }
         guard configuration.certificates.isEmpty || configuration.acme.termsOfServiceAgreed else {
             throw invalid("ACME terms of service must be accepted.")
         }
@@ -32,16 +39,22 @@ package enum GatewayConfigurationValidator {
         var certificatesByID: [String: Set<String>] = [:]
         normalized.certificates = try configuration.certificates.map { certificate in
             try validateIdentifier(certificate.id, label: "Certificate ID")
+            if case let .dns01(configuration) = certificate.challenge {
+                try validateIdentifier(configuration.credentialID, label: "DNS credential ID")
+                guard configuration.credentialRevision > 0 else {
+                    throw invalid("DNS credential revision must be greater than zero.")
+                }
+            }
             guard !certificate.domains.isEmpty else {
                 throw invalid("Certificate \(certificate.id) must contain at least one domain.")
             }
 
             var seen = Set<String>()
             let domains = try certificate.domains.map { rawDomain in
-                let domain = try normalizeDomain(rawDomain, label: "Certificate domain")
-                guard !rawDomain.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("*.") else {
-                    throw invalid("HTTP-01 certificates cannot contain wildcard domains.")
-                }
+                let domain = try normalizeCertificateDomain(
+                    rawDomain,
+                    challenge: certificate.challenge
+                )
                 guard seen.insert(domain).inserted else {
                     throw invalid("Certificate \(certificate.id) contains duplicate domain \(domain).")
                 }
@@ -54,7 +67,8 @@ package enum GatewayConfigurationValidator {
             return GatewayCertificateConfiguration(
                 id: certificate.id,
                 domains: domains,
-                challenge: .http01
+                authority: certificate.authority,
+                challenge: certificate.challenge
             )
         }
 
@@ -67,7 +81,9 @@ package enum GatewayConfigurationValidator {
             guard let certificateDomains = certificatesByID[route.certificateID] else {
                 throw invalid("Route \(domain) references unknown certificate \(route.certificateID).")
             }
-            guard certificateDomains.contains(domain) else {
+            guard certificateDomains.contains(where: { certificateDomain in
+                certificateDomain == domain || wildcard(certificateDomain, covers: domain)
+            }) else {
                 throw invalid("Certificate \(route.certificateID) does not cover route domain \(domain).")
             }
 
@@ -262,6 +278,32 @@ package enum GatewayConfigurationValidator {
             throw invalid("\(label) is not a valid DNS name.")
         }
         return domain
+    }
+
+    private static func normalizeCertificateDomain(
+        _ value: String,
+        challenge: GatewayChallengeConfiguration
+    ) throws -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard trimmed.hasPrefix("*.") else {
+            return try normalizeDomain(trimmed, label: "Certificate domain")
+        }
+        guard case .dns01 = challenge else {
+            throw invalid("HTTP-01 certificates cannot contain wildcard domains.")
+        }
+        let baseDomain = try normalizeDomain(
+            String(trimmed.dropFirst(2)),
+            label: "Wildcard certificate domain"
+        )
+        return "*.\(baseDomain)"
+    }
+
+    private static func wildcard(_ certificateDomain: String, covers routeDomain: String) -> Bool {
+        guard certificateDomain.hasPrefix("*.") else { return false }
+        let suffix = String(certificateDomain.dropFirst(2))
+        guard routeDomain.hasSuffix(".\(suffix)") else { return false }
+        let prefix = routeDomain.dropLast(suffix.count + 1)
+        return !prefix.isEmpty && !prefix.contains(".")
     }
 
     private static func isIPAddress(_ value: String) -> Bool {

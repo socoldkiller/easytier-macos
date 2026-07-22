@@ -7,6 +7,9 @@ struct PublishedServiceTableRow: Identifiable, Equatable, Sendable {
     let proxyIPv4: String
     let sslProvider: PublishedServiceSSLProvider
     let certificatePresentation: PublishedServiceCertificatePresentation
+    let runtimeCertificateAuthority: GatewayCertificateAuthority?
+    let runtimeCertificateChallenge: String?
+    let configurationApplied: Bool
     let lastOnlineAt: Date?
 
     var id: String { service.id }

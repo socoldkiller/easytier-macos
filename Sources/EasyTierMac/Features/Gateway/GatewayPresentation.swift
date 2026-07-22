@@ -24,18 +24,32 @@ struct GatewayRuntimePresentation: Equatable, Sendable {
         status: GatewayStatus,
         desiredEnabled: Bool,
         services: [GatewayPublishedService],
-        magicDNSState: MagicDNSOperationalState = .ready
+        magicDNSState: MagicDNSOperationalState = .ready,
+        convergence: GatewayConvergenceSnapshot = .disabled
     ) {
         let routesAreConverging = status.routes.contains { route in
             route.resolutionState == .waiting || route.resolutionState == .resolving
         }
         let certificatesAreConverging = status.certificates.contains { certificate in
-            certificate.state == .pending
-                || certificate.state == .issuing
-                || certificate.state == .renewing
+            certificate.operation == .queued
+                || certificate.operation == .issuing
+                || certificate.operation == .renewing
+                || certificate.operation == .replacing
         }
 
-        if desiredEnabled, magicDNSState == .disabled {
+        if desiredEnabled, convergence.phase == .applying {
+            statusLabel = convergence.isServingPreviousConfiguration ? "Updating" : "Starting"
+            tone = .neutral
+            isInProgress = true
+        } else if desiredEnabled, convergence.phase == .retryScheduled {
+            statusLabel = convergence.isServingPreviousConfiguration ? "Update Delayed" : "Not Applied"
+            tone = .warning
+            isInProgress = false
+        } else if desiredEnabled, convergence.phase == .blocked {
+            statusLabel = "Apply Blocked"
+            tone = .warning
+            isInProgress = false
+        } else if desiredEnabled, magicDNSState == .disabled {
             statusLabel = "Paused"
             tone = .neutral
             isInProgress = false
@@ -105,10 +119,12 @@ struct PublishedServicePresentation: Equatable, Sendable {
         gatewayEnabled: Bool,
         tlsConfigured: Bool,
         gatewayState: GatewayState = .running,
-        magicDNSState: MagicDNSOperationalState = .ready
+        magicDNSState: MagicDNSOperationalState = .ready,
+        configurationApplied: Bool = true,
+        convergenceMessage: String? = nil
     ) {
         let isRunning = gatewayEnabled && service.desiredEnabled && gatewayState == .running
-        let runtimeError = isRunning ? certificate?.lastError ?? route?.lastError : nil
+        let runtimeError = isRunning ? certificate?.failure?.message ?? route?.lastError : nil
         let presentation: (
             status: String,
             detail: String,
@@ -136,21 +152,21 @@ struct PublishedServicePresentation: Equatable, Sendable {
             presentation = ("Stopping", "Stopping gateway", .neutral, true)
         } else if gatewayState == .stopped {
             presentation = ("Waiting", "Waiting for gateway", .neutral, false)
-        } else if certificate?.servingMode == .httpOnly, route?.resolutionState == .ready {
+        } else if !configurationApplied {
             presentation = (
-                "HTTP Only",
-                "Retrying managed HTTPS",
+                "Not Applied",
+                convergenceMessage ?? "Runtime is using a different configuration",
                 .warning,
                 false
             )
-        } else if certificate?.state == .failed {
+        } else if certificate?.operation == .suspended {
             presentation = (
                 "SSL Error",
                 runtimeError ?? "Certificate request failed",
                 .warning,
                 false
             )
-        } else if certificate?.state == .degraded {
+        } else if certificate?.operation == .waitingRetry {
             presentation = (
                 "SSL Warning",
                 runtimeError ?? "Certificate renewal delayed",
@@ -171,15 +187,18 @@ struct PublishedServicePresentation: Equatable, Sendable {
                 .warning,
                 false
             )
-        } else if certificate?.state == .active, route?.resolutionState == .ready {
+        } else if certificate?.availability == .valid,
+                  certificate?.operation == .idle,
+                  route?.resolutionState == .ready
+        {
             presentation = ("Live", "Enabled", .positive, false)
         } else if route?.resolutionState == .waiting {
             presentation = ("Starting", "Waiting for Magic DNS", .neutral, true)
         } else if route?.resolutionState == .resolving {
             presentation = ("Starting", "Resolving target", .neutral, true)
-        } else if certificate?.state == .pending || certificate?.state == .issuing {
+        } else if certificate?.operation == .queued || certificate?.operation == .issuing {
             presentation = ("Starting", "Issuing certificate", .neutral, true)
-        } else if certificate?.state == .renewing {
+        } else if certificate?.operation == .renewing || certificate?.operation == .replacing {
             presentation = ("Starting", "Renewing certificate", .neutral, true)
         } else {
             presentation = ("Starting", "Applying configuration", .neutral, true)
@@ -194,10 +213,11 @@ struct PublishedServicePresentation: Equatable, Sendable {
             || (tlsConfigured && magicDNSState != .disabled)
         canOpen = isRunning
             && magicDNSState == .ready
-            && (certificate?.servingMode == .https || certificate?.servingMode == .httpOnly)
+            && certificate?.availability == .valid
             && route?.resolutionState == .ready
         canRetryCertificate = isRunning && tlsConfigured && magicDNSState == .ready
-        certificateActionTitle = certificate?.state == .failed || certificate?.state == .degraded
+        certificateActionTitle = certificate?.operation == .suspended
+            || certificate?.operation == .waitingRetry
             ? "Retry Certificate"
             : "Renew Certificate"
     }

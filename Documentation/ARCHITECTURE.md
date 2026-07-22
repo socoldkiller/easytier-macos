@@ -51,6 +51,44 @@ The two Rust archives are compiled from mutually exclusive Cargo features. The
 EasyTier helper does not contain Gateway entry points, the Gateway helper does
 not contain EasyTier Core entry points, and the GUI contains neither set.
 
+## Gateway ownership
+
+Gateway is split across three deep modules with narrow interfaces:
+
+```text
+GatewayRuntimeController (Swift)
+  owns Desired Configuration and convergence retries
+                |
+                | XPC apply/status using exact Deployment Identity
+                v
+GatewayPrivilegedHelper
+  owns the local apply transaction, helper lifecycle, and resolver rollback
+                |
+                | schema-checked runtime configuration and secrets
+                v
+Rust certificate coordinator
+  owns issuance, renewal, replacement, cooldowns, cleanup, serving material,
+  and the persistent coordinator journal
+```
+
+The Swift controller never infers runtime success from a request acknowledgement.
+It compares Desired and Applied Deployment Identities. The helper never performs
+remote ACME contact synchronization as a prerequisite for local apply. The Rust
+coordinator never changes the selected authority or challenge method.
+
+Internal seams isolate behavior that varies:
+
+- ACME authority and HTTP transport adapters implement Let's Encrypt, ZeroSSL,
+  EAB acquisition, `Retry-After`, and account contact operations.
+- DNS provider adapters implement Cloudflare and Aliyun presentation/cleanup.
+- Storage adapters own account credentials, atomic certificate generations,
+  coordinator journals, and DNS cleanup obligations.
+- Scheduling functions isolate renewal windows, exponential retry delays, and
+  jitter calculations so their policy can be tested without listener behavior.
+
+See `Documentation/GATEWAY_STATE_MACHINE.md` for the canonical state model,
+failure classification, restart behavior, and serving invariants.
+
 `AppContext` is concrete intentionally. SwiftUI can observe concrete `@Observable`
 models reached through it without existential type erasure. Replaceable capabilities
 sit behind consumer-owned protocols instead of turning `AppContext` into a dynamic

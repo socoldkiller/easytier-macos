@@ -30,7 +30,10 @@ use instant_acme::{
 use rustls_pki_types::CertificateDer;
 use serde::{Deserialize, de::DeserializeOwned};
 use sha1::Sha1;
-use time::OffsetDateTime;
+use time::{
+    OffsetDateTime,
+    format_description::well_known::{Rfc2822, Rfc3339},
+};
 use tokio::{
     sync::{RwLock, watch},
     time::sleep,
@@ -40,13 +43,16 @@ use zeroize::Zeroizing;
 use super::{
     authority::AuthorityPool,
     config::{
-        AcmeConfig, CertificateAuthorityKind, ChallengeConfig, DnsProviderKind,
-        ValidatedCertificate, normalize_domain,
+        AcmeConfig, ChallengeConfig, DnsProviderKind, ValidatedCertificate, normalize_domain,
     },
     proxy::Http01ChallengeStore,
+    status::{CertificateFailure, CertificateStage, FailureKind, FailureSource},
     storage::{GatewayStorage, PendingDnsCleanup},
     tls::CertifiedMaterial,
 };
+
+#[cfg(test)]
+use super::config::CertificateAuthorityKind;
 
 const DNS_PROPAGATION_TIMEOUT: Duration = Duration::from_secs(120);
 const DNS_PROPAGATION_INTERVAL: Duration = Duration::from_secs(2);
@@ -63,7 +69,7 @@ pub struct AcmeContext {
 pub struct AcmeJobOutput {
     pub certificate_id: String,
     pub attempted_certificate: ValidatedCertificate,
-    pub result: Result<Arc<CertifiedMaterial>, String>,
+    pub result: Result<IssuedCertificate, CertificateFailure>,
     pub cleanup_failures: Vec<PendingDnsCleanup>,
     pub cleanup_journal_error: Option<String>,
 }
@@ -71,6 +77,37 @@ pub struct AcmeJobOutput {
 impl AcmeJobOutput {
     pub fn matches(&self, certificate: &ValidatedCertificate) -> bool {
         self.attempted_certificate == *certificate
+    }
+}
+
+pub struct IssuedCertificate {
+    pub material: Arc<CertifiedMaterial>,
+    certificate_chain_pem: String,
+    private_key_pem: Zeroizing<String>,
+}
+
+impl std::fmt::Debug for IssuedCertificate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("IssuedCertificate")
+            .field("material", &self.material)
+            .finish_non_exhaustive()
+    }
+}
+
+impl IssuedCertificate {
+    pub fn commit(
+        self,
+        storage: &GatewayStorage,
+        certificate: &ValidatedCertificate,
+    ) -> Result<Arc<CertifiedMaterial>, String> {
+        storage.commit_validated_certificate(
+            certificate,
+            &self.certificate_chain_pem,
+            &self.private_key_pem,
+            &self.material,
+        )?;
+        Ok(self.material)
     }
 }
 
@@ -148,8 +185,72 @@ impl DnsProviderRegistry {
 }
 
 struct Dns01PresentError {
-    message: String,
+    failure: DnsProviderFailure,
     cleanup: Option<PendingDnsCleanup>,
+}
+
+#[derive(Debug)]
+struct DnsProviderFailure {
+    source: FailureSource,
+    kind: FailureKind,
+    code: String,
+    message: String,
+    retry_at: Option<OffsetDateTime>,
+    http_status: Option<u16>,
+}
+
+impl DnsProviderFailure {
+    fn configuration(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            source: FailureSource::Configuration,
+            kind: FailureKind::UserActionRequired,
+            code: code.to_string(),
+            message: message.into(),
+            retry_at: None,
+            http_status: None,
+        }
+    }
+
+    fn provider(
+        kind: FailureKind,
+        code: &str,
+        message: impl Into<String>,
+        retry_at: Option<OffsetDateTime>,
+        http_status: Option<u16>,
+    ) -> Self {
+        Self {
+            source: FailureSource::DnsProvider,
+            kind,
+            code: code.to_string(),
+            message: message.into(),
+            retry_at,
+            http_status,
+        }
+    }
+
+    fn propagation(message: impl Into<String>) -> Self {
+        Self {
+            source: FailureSource::DnsPropagation,
+            kind: FailureKind::Transient,
+            code: "dns_propagation_timeout".to_string(),
+            message: message.into(),
+            retry_at: None,
+            http_status: None,
+        }
+    }
+
+    fn into_certificate_failure(self, certificate: &ValidatedCertificate) -> CertificateFailure {
+        let mut failure = attempt_failure(
+            certificate,
+            self.source,
+            self.kind,
+            &self.code,
+            self.message,
+        );
+        failure.retry_at = self.retry_at.map(format_timestamp);
+        failure.http_status = self.http_status;
+        failure
+    }
 }
 
 struct CloudflareDnsProvider;
@@ -165,22 +266,25 @@ impl Dns01Provider for CloudflareDnsProvider {
     ) -> Result<PendingDnsCleanup, Dns01PresentError> {
         let DnsCredential::Cloudflare { api_token } = credential else {
             return Err(Dns01PresentError {
-                message: "Cloudflare DNS credential has the wrong provider type".to_string(),
+                failure: DnsProviderFailure::configuration(
+                    "dns_credential_provider_mismatch",
+                    "Cloudflare DNS credential has the wrong provider type",
+                ),
                 cleanup: None,
             });
         };
         let (cleanup, name_servers) =
             create_cloudflare_dns01(api_token, credential_id, domain, value)
                 .await
-                .map_err(|message| Dns01PresentError {
-                    message,
+                .map_err(|failure| Dns01PresentError {
+                    failure,
                     cleanup: None,
                 })?;
         if let Err(message) =
             wait_for_authoritative_txt(&name_servers, &cleanup.record_name, value).await
         {
             return Err(Dns01PresentError {
-                message,
+                failure: DnsProviderFailure::propagation(message),
                 cleanup: Some(cleanup),
             });
         }
@@ -195,7 +299,9 @@ impl Dns01Provider for CloudflareDnsProvider {
         let DnsCredential::Cloudflare { api_token } = credential else {
             return Err("Cloudflare DNS credential has the wrong provider type".to_string());
         };
-        delete_cloudflare_record(api_token, &cleanup.zone_id, &cleanup.record_id).await
+        delete_cloudflare_record(api_token, &cleanup.zone_id, &cleanup.record_id)
+            .await
+            .map_err(|failure| failure.message)
     }
 }
 
@@ -216,7 +322,10 @@ impl Dns01Provider for AliyunDnsProvider {
         } = credential
         else {
             return Err(Dns01PresentError {
-                message: "Aliyun DNS credential has the wrong provider type".to_string(),
+                failure: DnsProviderFailure::configuration(
+                    "dns_credential_provider_mismatch",
+                    "Aliyun DNS credential has the wrong provider type",
+                ),
                 cleanup: None,
             });
         };
@@ -228,15 +337,15 @@ impl Dns01Provider for AliyunDnsProvider {
             value,
         )
         .await
-        .map_err(|message| Dns01PresentError {
-            message,
+        .map_err(|failure| Dns01PresentError {
+            failure,
             cleanup: None,
         })?;
         if let Err(message) =
             wait_for_authoritative_txt(&name_servers, &cleanup.record_name, value).await
         {
             return Err(Dns01PresentError {
-                message,
+                failure: DnsProviderFailure::propagation(message),
                 cleanup: Some(cleanup),
             });
         }
@@ -255,7 +364,9 @@ impl Dns01Provider for AliyunDnsProvider {
         else {
             return Err("Aliyun DNS credential has the wrong provider type".to_string());
         };
-        delete_aliyun_record(access_key_id, access_key_secret, &cleanup.record_id).await
+        delete_aliyun_record(access_key_id, access_key_secret, &cleanup.record_id)
+            .await
+            .map_err(|failure| failure.message)
     }
 }
 
@@ -324,6 +435,7 @@ impl AcmeContext {
         dns_credential: Option<DnsCredential>,
         current_leaf_der: Option<Vec<u8>>,
         mut cancellation: watch::Receiver<bool>,
+        progress: impl Fn(CertificateStage) + Send + Sync,
     ) -> AcmeJobOutput {
         let certificate_id = certificate.id.clone();
         let dns_credential_ref = dns_credential.as_ref();
@@ -332,6 +444,7 @@ impl AcmeContext {
         let mut cleanup_journal_error = None;
         let authority = certificate.authority;
         let challenge_name = challenge_name(&certificate.challenge);
+        progress(CertificateStage::Account);
         let result = match self
             .authorities
             .account(authority, &config, &self.storage)
@@ -345,28 +458,62 @@ impl AcmeContext {
                     dns_credential_ref,
                     current_leaf_der.as_deref(),
                     &mut provisioned,
+                    &progress,
                 );
                 let attempt = tokio::select! {
                     result = issue => result,
                     changed = cancellation.changed() => {
                         match changed {
-                            Ok(()) if *cancellation.borrow() => Err("ACME operation was cancelled".to_string()),
-                            Ok(()) | Err(_) => Err("ACME cancellation channel closed".to_string()),
+                            Ok(()) if *cancellation.borrow() => Err(attempt_failure(
+                                &certificate,
+                                FailureSource::Runtime,
+                                FailureKind::Interrupted,
+                                "attempt_cancelled",
+                                "ACME operation was cancelled".to_string(),
+                            )),
+                            Ok(()) | Err(_) => Err(attempt_failure(
+                                &certificate,
+                                FailureSource::Runtime,
+                                FailureKind::Interrupted,
+                                "cancellation_channel_closed",
+                                "ACME cancellation channel closed".to_string(),
+                            )),
                         }
                     }
                 };
-                cleanup_failures.extend(
-                    self.cleanup_challenges(provisioned, dns_credential_ref).await,
-                );
+                if !provisioned.is_empty() {
+                    progress(CertificateStage::Cleanup);
+                    cleanup_failures.extend(
+                        self.cleanup_challenges(provisioned, dns_credential_ref)
+                            .await,
+                    );
+                }
                 attempt
             }
-            Err(error) => Err(format!("account: {error}")),
+            Err(error) => Err(attempt_failure(
+                &certificate,
+                FailureSource::AcmeAccount,
+                classify_message(&error),
+                "account_unavailable",
+                error,
+            )),
         }
-        .map_err(|error| {
-            format!(
-                "{} / {challenge_name}: {error}",
-                authority.display_name()
-            )
+        .map_err(|mut failure| {
+            failure.message = format!(
+                "{} / {challenge_name}: {}",
+                authority.display_name(),
+                failure.message
+            );
+            if failure.kind == FailureKind::RateLimited
+                && let Some(until) = self.authorities.rate_limit_until(authority)
+            {
+                failure.retry_at = Some(
+                    until
+                        .format(&Rfc3339)
+                        .unwrap_or_else(|_| "unknown".to_string()),
+                );
+            }
+            failure
         });
         if !cleanup_failures.is_empty() {
             cleanup_journal_error = self.storage.merge_cleanup_journal(&cleanup_failures).err();
@@ -414,13 +561,18 @@ impl AcmeContext {
     }
 
     pub async fn update_config(&self, config: AcmeConfig) -> Result<(), String> {
+        *self.config.write().await = config;
+        Ok(())
+    }
+
+    pub async fn sync_contacts(&self) -> Result<(), String> {
+        let config = self.config.read().await.clone();
         let contact = config
             .contact_email
             .as_deref()
             .map(|email| format!("mailto:{email}"));
         let contacts = contact.as_deref().into_iter().collect::<Vec<_>>();
         self.authorities.update_contacts(&contacts).await?;
-        *self.config.write().await = config;
         Ok(())
     }
 
@@ -442,7 +594,8 @@ impl AcmeContext {
         dns_credential: Option<&DnsCredential>,
         current_leaf_der: Option<&[u8]>,
         provisioned: &mut Vec<ProvisionedChallenge>,
-    ) -> Result<Arc<CertifiedMaterial>, String> {
+        progress: &(impl Fn(CertificateStage) + Send + Sync),
+    ) -> Result<IssuedCertificate, CertificateFailure> {
         let identifiers = certificate
             .domains
             .iter()
@@ -459,21 +612,38 @@ impl AcmeContext {
             }
         }
 
-        let mut order = account
-            .new_order(&new_order)
-            .await
-            .map_err(|error| format!("failed to create ACME order: {error}"))?;
+        progress(CertificateStage::Ordering);
+        let mut order = account.new_order(&new_order).await.map_err(|error| {
+            acme_failure(
+                certificate,
+                FailureSource::AcmeOrder,
+                "order_creation_failed",
+                "Failed to create ACME order",
+                error,
+            )
+        })?;
         {
             let mut authorizations = order.authorizations();
             while let Some(authorization) = authorizations.next().await {
-                let mut authorization = authorization
-                    .map_err(|error| format!("failed to load ACME authorization: {error}"))?;
+                let mut authorization = authorization.map_err(|error| {
+                    acme_failure(
+                        certificate,
+                        FailureSource::AcmeAuthorization,
+                        "authorization_load_failed",
+                        "Failed to load ACME authorization",
+                        error,
+                    )
+                })?;
                 match authorization.status {
                     AuthorizationStatus::Valid => continue,
                     AuthorizationStatus::Pending => {}
                     other => {
-                        return Err(format!(
-                            "ACME authorization entered unexpected state {other:?}"
+                        return Err(attempt_failure(
+                            certificate,
+                            FailureSource::AcmeAuthorization,
+                            FailureKind::UserActionRequired,
+                            "authorization_invalid",
+                            format!("ACME authorization entered unexpected state {other:?}"),
                         ));
                     }
                 }
@@ -482,14 +652,32 @@ impl AcmeContext {
                     ChallengeConfig::Http01 => ChallengeType::Http01,
                     ChallengeConfig::Dns01 { .. } => ChallengeType::Dns01,
                 };
-                let mut challenge = authorization
-                    .challenge(challenge_type.clone())
-                    .ok_or_else(|| format!("ACME server did not offer {challenge_type:?}"))?;
+                let mut challenge =
+                    authorization
+                        .challenge(challenge_type.clone())
+                        .ok_or_else(|| {
+                            attempt_failure(
+                                certificate,
+                                FailureSource::AcmeAuthorization,
+                                FailureKind::Permanent,
+                                "challenge_not_offered",
+                                format!("ACME server did not offer {challenge_type:?}"),
+                            )
+                        })?;
                 let identifier = challenge.identifier().to_string();
                 let key_authorization = challenge.key_authorization();
+                progress(CertificateStage::ProvisioningChallenge);
                 match &certificate.challenge {
                     ChallengeConfig::Http01 => {
-                        let domain = normalize_domain(&identifier)?;
+                        let domain = normalize_domain(&identifier).map_err(|error| {
+                            attempt_failure(
+                                certificate,
+                                FailureSource::Configuration,
+                                FailureKind::Permanent,
+                                "invalid_challenge_identifier",
+                                error,
+                            )
+                        })?;
                         let token = challenge.token.clone();
                         self.challenges.insert(
                             domain.clone(),
@@ -501,11 +689,18 @@ impl AcmeContext {
                     ChallengeConfig::Dns01 {
                         provider,
                         credential_id,
+                        ..
                     } => {
                         let credential = dns_credential.ok_or_else(|| {
-                            format!(
-                                "DNS credential {credential_id} is unavailable for certificate {}",
-                                certificate.id
+                            attempt_failure(
+                                certificate,
+                                FailureSource::Configuration,
+                                FailureKind::UserActionRequired,
+                                "dns_credential_unavailable",
+                                format!(
+                                    "DNS credential {credential_id} is unavailable for certificate {}",
+                                    certificate.id
+                                ),
                             )
                         })?;
                         let domain = identifier.trim_start_matches("*.");
@@ -521,7 +716,7 @@ impl AcmeContext {
                                 if let Some(cleanup) = error.cleanup {
                                     provisioned.push(ProvisionedChallenge::Dns01 { cleanup });
                                 }
-                                return Err(error.message);
+                                return Err(error.failure.into_certificate_failure(certificate));
                             }
                         };
                         provisioned.push(ProvisionedChallenge::Dns01 {
@@ -529,32 +724,83 @@ impl AcmeContext {
                         });
                     }
                 }
-                challenge
-                    .set_ready()
-                    .await
-                    .map_err(|error| format!("failed to mark ACME challenge ready: {error}"))?;
+                progress(CertificateStage::Validating);
+                challenge.set_ready().await.map_err(|error| {
+                    acme_failure(
+                        certificate,
+                        FailureSource::AcmeAuthorization,
+                        "challenge_ready_failed",
+                        "Failed to mark ACME challenge ready",
+                        error,
+                    )
+                })?;
             }
         }
 
         let retry = RetryPolicy::new().timeout(ACME_POLL_TIMEOUT);
-        let status = order
-            .poll_ready(&retry)
-            .await
-            .map_err(|error| format!("failed while waiting for ACME authorization: {error}"))?;
+        progress(CertificateStage::Validating);
+        let status = order.poll_ready(&retry).await.map_err(|error| {
+            acme_failure(
+                certificate,
+                FailureSource::AcmeAuthorization,
+                "authorization_poll_failed",
+                "Failed while waiting for ACME authorization",
+                error,
+            )
+        })?;
         if status != OrderStatus::Ready {
-            return Err(format!("ACME order did not become ready: {status:?}"));
+            return Err(attempt_failure(
+                certificate,
+                FailureSource::AcmeAuthorization,
+                FailureKind::UserActionRequired,
+                "order_not_ready",
+                format!("ACME order did not become ready: {status:?}"),
+            ));
         }
 
-        let private_key_pem = order
-            .finalize()
-            .await
-            .map_err(|error| format!("failed to finalize ACME order: {error}"))?;
-        let certificate_chain_pem = order
-            .poll_certificate(&retry)
-            .await
-            .map_err(|error| format!("failed to retrieve ACME certificate: {error}"))?;
-        self.storage
-            .store_certificate(certificate, &certificate_chain_pem, &private_key_pem)
+        progress(CertificateStage::Finalizing);
+        let private_key_pem = Zeroizing::new(order.finalize().await.map_err(|error| {
+            acme_failure(
+                certificate,
+                FailureSource::AcmeFinalize,
+                "finalize_failed",
+                "Failed to finalize ACME order",
+                error,
+            )
+        })?);
+        progress(CertificateStage::Downloading);
+        let certificate_chain_pem = order.poll_certificate(&retry).await.map_err(|error| {
+            acme_failure(
+                certificate,
+                FailureSource::CertificateDownload,
+                "certificate_download_failed",
+                "Failed to retrieve ACME certificate",
+                error,
+            )
+        })?;
+        let material = Arc::new(
+            CertifiedMaterial::from_pem_with_policy(
+                &certificate_chain_pem,
+                &private_key_pem,
+                &certificate.domains,
+                certificate.authority,
+                certificate.challenge.clone(),
+            )
+            .map_err(|error| {
+                attempt_failure(
+                    certificate,
+                    FailureSource::CertificateValidation,
+                    FailureKind::Permanent,
+                    "issued_certificate_invalid",
+                    error,
+                )
+            })?,
+        );
+        Ok(IssuedCertificate {
+            material,
+            certificate_chain_pem,
+            private_key_pem,
+        })
     }
 
     async fn cleanup_challenges(
@@ -594,6 +840,127 @@ fn challenge_name(challenge: &ChallengeConfig) -> &'static str {
     }
 }
 
+fn format_timestamp(value: OffsetDateTime) -> String {
+    value
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+fn attempt_failure(
+    certificate: &ValidatedCertificate,
+    source: FailureSource,
+    kind: FailureKind,
+    code: &str,
+    message: String,
+) -> CertificateFailure {
+    CertificateFailure {
+        source,
+        kind,
+        code: code.to_string(),
+        message,
+        occurred_at: OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_else(|_| "unknown".to_string()),
+        retry_at: None,
+        authority: Some(certificate.authority),
+        challenge: Some(challenge_name(&certificate.challenge).to_string()),
+        dns_provider: certificate.challenge.dns01().map(|(provider, _)| provider),
+        acme_problem_type: None,
+        http_status: None,
+    }
+}
+
+fn acme_failure(
+    certificate: &ValidatedCertificate,
+    stage_source: FailureSource,
+    code: &str,
+    context: &str,
+    error: instant_acme::Error,
+) -> CertificateFailure {
+    let (source, kind, problem_type, http_status) = match &error {
+        instant_acme::Error::Api(problem) => {
+            let problem_name = problem
+                .r#type
+                .as_deref()
+                .and_then(|value| value.rsplit(':').next());
+            let kind = if problem.status == Some(429) || problem_name == Some("rateLimited") {
+                FailureKind::RateLimited
+            } else if matches!(
+                problem_name,
+                Some(
+                    "unauthorized"
+                        | "rejectedIdentifier"
+                        | "userActionRequired"
+                        | "accountDoesNotExist"
+                        | "externalAccountRequired"
+                        | "malformed"
+                )
+            ) || problem
+                .status
+                .is_some_and(|status| (400..500).contains(&status))
+            {
+                FailureKind::UserActionRequired
+            } else {
+                FailureKind::Transient
+            };
+            (stage_source, kind, problem.r#type.clone(), problem.status)
+        }
+        instant_acme::Error::Timeout(_) => (stage_source, FailureKind::Transient, None, None),
+        instant_acme::Error::Http(_)
+        | instant_acme::Error::Hyper(_)
+        | instant_acme::Error::Other(_) => {
+            (FailureSource::Network, FailureKind::Transient, None, None)
+        }
+        instant_acme::Error::Unsupported(_) => (stage_source, FailureKind::Permanent, None, None),
+        instant_acme::Error::Crypto
+        | instant_acme::Error::KeyRejected
+        | instant_acme::Error::InvalidUri(_)
+        | instant_acme::Error::Json(_)
+        | instant_acme::Error::Str(_) => (stage_source, FailureKind::Permanent, None, None),
+        _ => (stage_source, FailureKind::Transient, None, None),
+    };
+    let mut failure = attempt_failure(
+        certificate,
+        source,
+        kind,
+        code,
+        format!("{context}: {error}"),
+    );
+    failure.acme_problem_type = problem_type;
+    failure.http_status = http_status;
+    failure
+}
+
+fn classify_message(message: &str) -> FailureKind {
+    let normalized = message.to_ascii_lowercase();
+    if normalized.contains("http 429") || normalized.contains("rate limit") {
+        FailureKind::RateLimited
+    } else if normalized.contains("failed to read acme account credentials")
+        || normalized.contains("failed to decode acme account credentials")
+        || normalized.contains("failed to store acme account credentials")
+        || normalized.contains("failed to create acme http client")
+        || normalized.contains("failed to create eab http client")
+        || normalized.contains("hmac key was not valid")
+        || normalized.contains("certificate authority") && normalized.contains("unavailable")
+    {
+        FailureKind::Permanent
+    } else if normalized.contains("credential")
+        || normalized.contains("unauthorized")
+        || normalized.contains("forbidden")
+        || normalized.contains("contact email is required")
+        || normalized.contains("terms of service")
+        || normalized.contains("http 401")
+        || normalized.contains("http 403")
+        || normalized.contains("no active cloudflare zone")
+        || normalized.contains("no aliyun dns zone")
+        || (400..500).any(|status| normalized.contains(&format!("http {status}")))
+    {
+        FailureKind::UserActionRequired
+    } else {
+        FailureKind::Transient
+    }
+}
+
 #[derive(Deserialize)]
 struct AliyunDomainInfo {
     #[serde(rename = "DnsServers")]
@@ -618,7 +985,7 @@ async fn create_aliyun_dns01(
     credential_id: &str,
     domain: &str,
     value: &str,
-) -> Result<(PendingDnsCleanup, Vec<String>), String> {
+) -> Result<(PendingDnsCleanup, Vec<String>), DnsProviderFailure> {
     let (zone, name_servers) =
         discover_aliyun_zone(access_key_id, access_key_secret, domain).await?;
     let record_name = format!("_acme-challenge.{domain}");
@@ -644,6 +1011,9 @@ async fn create_aliyun_dns01(
             zone_id: zone,
             record_id: response.record_id,
             record_name,
+            attempt_count: 0,
+            next_attempt_at: None,
+            last_error: None,
         },
         name_servers,
     ))
@@ -653,38 +1023,54 @@ async fn discover_aliyun_zone(
     access_key_id: &str,
     access_key_secret: &str,
     domain: &str,
-) -> Result<(String, Vec<String>), String> {
+) -> Result<(String, Vec<String>), DnsProviderFailure> {
     let labels = domain.split('.').collect::<Vec<_>>();
     for index in 0..labels.len().saturating_sub(1) {
         let candidate = labels[index..].join(".");
-        let result: Result<AliyunDomainInfo, String> = aliyun_request(
+        let result: Result<AliyunDomainInfo, DnsProviderFailure> = aliyun_request(
             access_key_id,
             access_key_secret,
             "DescribeDomainInfo",
             &[("DomainName", candidate.as_str())],
         )
         .await;
-        if let Ok(info) = result {
-            let name_servers = info
-                .dns_servers
-                .map(|servers| servers.values)
-                .unwrap_or_default();
-            if name_servers.is_empty() {
-                return Err(format!(
-                    "Aliyun DNS zone {candidate} did not provide authoritative nameservers"
-                ));
+        match result {
+            Ok(info) => {
+                let name_servers = info
+                    .dns_servers
+                    .map(|servers| servers.values)
+                    .unwrap_or_default();
+                if name_servers.is_empty() {
+                    return Err(DnsProviderFailure::provider(
+                        FailureKind::UserActionRequired,
+                        "dns_zone_has_no_nameservers",
+                        format!(
+                            "Aliyun DNS zone {candidate} did not provide authoritative nameservers"
+                        ),
+                        None,
+                        None,
+                    ));
+                }
+                return Ok((candidate, name_servers));
             }
-            return Ok((candidate, name_servers));
+            Err(error) if aliyun_zone_missing(&error.code) => continue,
+            Err(error) => return Err(error),
         }
     }
-    Err(format!("no Aliyun DNS zone covers {domain}"))
+    Err(DnsProviderFailure::provider(
+        FailureKind::UserActionRequired,
+        "dns_zone_not_found",
+        format!("no Aliyun DNS zone covers {domain}"),
+        None,
+        None,
+    ))
 }
 
 async fn delete_aliyun_record(
     access_key_id: &str,
     access_key_secret: &str,
     record_id: &str,
-) -> Result<(), String> {
+) -> Result<(), DnsProviderFailure> {
     let _: serde_json::Value = aliyun_request(
         access_key_id,
         access_key_secret,
@@ -700,12 +1086,28 @@ async fn aliyun_request<T: DeserializeOwned>(
     access_key_secret: &str,
     action: &str,
     action_parameters: &[(&str, &str)],
-) -> Result<T, String> {
+) -> Result<T, DnsProviderFailure> {
     let timestamp = OffsetDateTime::now_utc()
         .replace_nanosecond(0)
-        .map_err(|error| format!("failed to construct Aliyun request time: {error}"))?
+        .map_err(|error| {
+            DnsProviderFailure::provider(
+                FailureKind::Permanent,
+                "aliyun_request_time_failed",
+                format!("failed to construct Aliyun request time: {error}"),
+                None,
+                None,
+            )
+        })?
         .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|error| format!("failed to format Aliyun request time: {error}"))?;
+        .map_err(|error| {
+            DnsProviderFailure::provider(
+                FailureKind::Permanent,
+                "aliyun_request_time_failed",
+                format!("failed to format Aliyun request time: {error}"),
+                None,
+                None,
+            )
+        })?;
     let nonce = uuid::Uuid::new_v4().to_string();
     let mut parameters = std::collections::BTreeMap::from([
         ("AccessKeyId".to_string(), access_key_id.to_string()),
@@ -720,7 +1122,15 @@ async fn aliyun_request<T: DeserializeOwned>(
     for (key, value) in action_parameters {
         parameters.insert((*key).to_string(), (*value).to_string());
     }
-    let signature = aliyun_signature(&parameters, access_key_secret)?;
+    let signature = aliyun_signature(&parameters, access_key_secret).map_err(|error| {
+        DnsProviderFailure::provider(
+            FailureKind::Permanent,
+            "aliyun_request_signing_failed",
+            error,
+            None,
+            None,
+        )
+    })?;
     parameters.insert("Signature".to_string(), signature);
 
     let response = reqwest::Client::new()
@@ -728,31 +1138,107 @@ async fn aliyun_request<T: DeserializeOwned>(
         .form(&parameters)
         .send()
         .await
-        .map_err(|error| format!("Aliyun DNS request failed: {error}"))?;
+        .map_err(|error| {
+            DnsProviderFailure::provider(
+                FailureKind::Transient,
+                "aliyun_request_failed",
+                format!("Aliyun DNS request failed: {error}"),
+                None,
+                None,
+            )
+        })?;
     let status = response.status();
-    let body = response
-        .bytes()
-        .await
-        .map_err(|error| format!("failed to read Aliyun DNS response: {error}"))?;
-    if !status.is_success() {
-        return Err(format!("Aliyun DNS returned HTTP {status}"));
+    let retry_at = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_provider_retry_after);
+    let body = response.bytes().await.map_err(|error| {
+        DnsProviderFailure::provider(
+            FailureKind::Transient,
+            "aliyun_response_read_failed",
+            format!("failed to read Aliyun DNS response: {error}"),
+            None,
+            Some(status.as_u16()),
+        )
+    })?;
+    let api_error = serde_json::from_slice::<AliyunErrorResponse>(&body).ok();
+    if !status.is_success() || api_error.as_ref().is_some_and(|error| error.code.is_some()) {
+        return Err(aliyun_api_failure(status, api_error.as_ref(), retry_at));
     }
-    if let Ok(error) = serde_json::from_slice::<AliyunErrorResponse>(&body)
-        && error.code.is_some()
-    {
-        return Err(format!(
-            "Aliyun DNS request was rejected: {}",
-            error.code.as_deref().unwrap_or("unknown error")
-        ));
-    }
-    serde_json::from_slice(&body)
-        .map_err(|error| format!("Aliyun DNS response was invalid: {error}"))
+    serde_json::from_slice(&body).map_err(|error| {
+        DnsProviderFailure::provider(
+            FailureKind::Transient,
+            "aliyun_response_invalid",
+            format!("Aliyun DNS response was invalid: {error}"),
+            None,
+            Some(status.as_u16()),
+        )
+    })
 }
 
 #[derive(Deserialize)]
 struct AliyunErrorResponse {
     #[serde(rename = "Code")]
     code: Option<String>,
+    #[serde(rename = "Message")]
+    message: Option<String>,
+}
+
+fn aliyun_api_failure(
+    status: reqwest::StatusCode,
+    error: Option<&AliyunErrorResponse>,
+    retry_at: Option<OffsetDateTime>,
+) -> DnsProviderFailure {
+    let provider_code = error
+        .and_then(|error| error.code.as_deref())
+        .unwrap_or("aliyun_request_rejected");
+    let normalized_code = provider_code.to_ascii_lowercase();
+    let kind = if status.as_u16() == 429
+        || normalized_code.contains("throttl")
+        || normalized_code.contains("flowcontrol")
+        || normalized_code.contains("rate")
+    {
+        FailureKind::RateLimited
+    } else if status.as_u16() == 401
+        || status.as_u16() == 403
+        || (400..500).contains(&status.as_u16())
+        || normalized_code.contains("accesskey")
+        || normalized_code.contains("signature")
+        || normalized_code.contains("forbidden")
+        || normalized_code.contains("unauthorized")
+    {
+        FailureKind::UserActionRequired
+    } else {
+        FailureKind::Transient
+    };
+    let retry_at = (kind == FailureKind::RateLimited)
+        .then(|| retry_at.unwrap_or_else(|| OffsetDateTime::now_utc() + time::Duration::hours(1)));
+    let provider_message = error
+        .and_then(|error| error.message.as_deref())
+        .unwrap_or("request rejected");
+    DnsProviderFailure::provider(
+        kind,
+        provider_code,
+        format!("Aliyun DNS returned HTTP {status}: {provider_message} ({provider_code})"),
+        retry_at,
+        Some(status.as_u16()),
+    )
+}
+
+fn aliyun_zone_missing(code: &str) -> bool {
+    let normalized = code.to_ascii_lowercase();
+    normalized.contains("domainname")
+        && (normalized.contains("noexist")
+            || normalized.contains("notexist")
+            || normalized.contains("notfound"))
+}
+
+fn parse_provider_retry_after(value: &str) -> Option<OffsetDateTime> {
+    if let Ok(seconds) = value.trim().parse::<i64>() {
+        return Some(OffsetDateTime::now_utc() + time::Duration::seconds(seconds.max(0)));
+    }
+    OffsetDateTime::parse(value.trim(), &Rfc2822).ok()
 }
 
 fn aliyun_encode(value: &str) -> String {
@@ -784,7 +1270,7 @@ async fn create_cloudflare_dns01(
     credential_id: &str,
     domain: &str,
     value: &str,
-) -> Result<(PendingDnsCleanup, Vec<String>), String> {
+) -> Result<(PendingDnsCleanup, Vec<String>), DnsProviderFailure> {
     let client = cloudflare_client(api_token)?;
     create_cloudflare_dns01_with_client(&client, credential_id, domain, value).await
 }
@@ -794,7 +1280,7 @@ async fn create_cloudflare_dns01_with_client(
     credential_id: &str,
     domain: &str,
     value: &str,
-) -> Result<(PendingDnsCleanup, Vec<String>), String> {
+) -> Result<(PendingDnsCleanup, Vec<String>), DnsProviderFailure> {
     let zone = discover_cloudflare_zone(client, domain).await?;
     let record_name = format!("_acme-challenge.{domain}");
     let response = client
@@ -811,13 +1297,16 @@ async fn create_cloudflare_dns01_with_client(
             },
         })
         .await
-        .map_err(|error| format!("Cloudflare TXT creation failed: {error}"))?;
+        .map_err(|error| cloudflare_failure("Cloudflare TXT creation failed", error))?;
     let cleanup = PendingDnsCleanup {
         provider: "cloudflare".to_string(),
         credential_id: credential_id.to_string(),
         zone_id: zone.id,
         record_id: response.result.id,
         record_name: record_name.clone(),
+        attempt_count: 0,
+        next_attempt_at: None,
+        last_error: None,
     };
 
     Ok((cleanup, zone.name_servers))
@@ -826,7 +1315,7 @@ async fn create_cloudflare_dns01_with_client(
 async fn discover_cloudflare_zone(
     client: &CloudflareClient,
     domain: &str,
-) -> Result<CloudflareZone, String> {
+) -> Result<CloudflareZone, DnsProviderFailure> {
     let labels = domain.split('.').collect::<Vec<_>>();
     for index in 0..labels.len() {
         let candidate = labels[index..].join(".");
@@ -840,12 +1329,18 @@ async fn discover_cloudflare_zone(
                 },
             })
             .await
-            .map_err(|error| format!("Cloudflare zone discovery failed: {error}"))?;
+            .map_err(|error| cloudflare_failure("Cloudflare zone discovery failed", error))?;
         if let Some(zone) = response.result.into_iter().next() {
             if zone.name_servers.is_empty() {
-                return Err(format!(
-                    "Cloudflare zone {} did not provide authoritative nameservers",
-                    zone.name
+                return Err(DnsProviderFailure::provider(
+                    FailureKind::UserActionRequired,
+                    "dns_zone_has_no_nameservers",
+                    format!(
+                        "Cloudflare zone {} did not provide authoritative nameservers",
+                        zone.name
+                    ),
+                    None,
+                    None,
                 ));
             }
             return Ok(CloudflareZone {
@@ -854,14 +1349,20 @@ async fn discover_cloudflare_zone(
             });
         }
     }
-    Err(format!("no active Cloudflare zone covers {domain}"))
+    Err(DnsProviderFailure::provider(
+        FailureKind::UserActionRequired,
+        "dns_zone_not_found",
+        format!("no active Cloudflare zone covers {domain}"),
+        None,
+        None,
+    ))
 }
 
 async fn delete_cloudflare_record(
     api_token: &str,
     zone_id: &str,
     record_id: &str,
-) -> Result<(), String> {
+) -> Result<(), DnsProviderFailure> {
     let client = cloudflare_client(api_token)?;
     delete_cloudflare_record_with_client(&client, zone_id, record_id).await
 }
@@ -870,7 +1371,7 @@ async fn delete_cloudflare_record_with_client(
     client: &CloudflareClient,
     zone_id: &str,
     record_id: &str,
-) -> Result<(), String> {
+) -> Result<(), DnsProviderFailure> {
     client
         .request(&DeleteDnsRecord {
             zone_identifier: zone_id,
@@ -882,17 +1383,17 @@ async fn delete_cloudflare_record_with_client(
             ApiFailure::Error(status, _) if status.as_u16() == 404 => Ok(()),
             _ => Err(error),
         })
-        .map_err(|error| format!("Cloudflare TXT cleanup failed: {error}"))
+        .map_err(|error| cloudflare_failure("Cloudflare TXT cleanup failed", error))
 }
 
-fn cloudflare_client(api_token: &str) -> Result<CloudflareClient, String> {
+fn cloudflare_client(api_token: &str) -> Result<CloudflareClient, DnsProviderFailure> {
     cloudflare_client_with_environment(api_token, Environment::Production)
 }
 
 fn cloudflare_client_with_environment(
     api_token: &str,
     environment: Environment,
-) -> Result<CloudflareClient, String> {
+) -> Result<CloudflareClient, DnsProviderFailure> {
     CloudflareClient::new(
         Credentials::UserAuthToken {
             token: api_token.to_string(),
@@ -903,7 +1404,48 @@ fn cloudflare_client_with_environment(
         },
         environment,
     )
-    .map_err(|error| format!("failed to create Cloudflare API client: {error}"))
+    .map_err(|error| {
+        DnsProviderFailure::provider(
+            FailureKind::Permanent,
+            "cloudflare_client_initialization_failed",
+            format!("failed to create Cloudflare API client: {error}"),
+            None,
+            None,
+        )
+    })
+}
+
+fn cloudflare_failure(context: &str, error: ApiFailure) -> DnsProviderFailure {
+    match &error {
+        ApiFailure::Error(status, _) => {
+            let kind = match status.as_u16() {
+                429 => FailureKind::RateLimited,
+                400..=499 => FailureKind::UserActionRequired,
+                _ => FailureKind::Transient,
+            };
+            let code = match kind {
+                FailureKind::RateLimited => "cloudflare_rate_limited",
+                FailureKind::UserActionRequired => "cloudflare_request_rejected",
+                _ => "cloudflare_provider_unavailable",
+            };
+            let retry_at = (kind == FailureKind::RateLimited)
+                .then(|| OffsetDateTime::now_utc() + time::Duration::hours(1));
+            DnsProviderFailure::provider(
+                kind,
+                code,
+                format!("{context}: {error}"),
+                retry_at,
+                Some(status.as_u16()),
+            )
+        }
+        ApiFailure::Invalid(_) => DnsProviderFailure::provider(
+            FailureKind::Transient,
+            "cloudflare_request_failed",
+            format!("{context}: {error}"),
+            None,
+            None,
+        ),
+    }
 }
 
 async fn wait_for_authoritative_txt(
@@ -928,7 +1470,7 @@ async fn wait_for_authoritative_txt(
         }
         if tokio::time::Instant::now() >= deadline {
             return Err(format!(
-                "DNS-01 TXT record {record_name} did not propagate to all Cloudflare nameservers within {} seconds",
+                "DNS-01 TXT record {record_name} did not propagate to all authoritative nameservers within {} seconds",
                 DNS_PROPAGATION_TIMEOUT.as_secs()
             ));
         }
@@ -1040,6 +1582,54 @@ mod tests {
     }
 
     #[test]
+    fn dns_provider_rate_limits_keep_typed_retry_metadata() {
+        let cloudflare = cloudflare_failure(
+            "Cloudflare request failed",
+            ApiFailure::Error(reqwest::StatusCode::TOO_MANY_REQUESTS, Default::default()),
+        );
+        assert_eq!(cloudflare.source, FailureSource::DnsProvider);
+        assert_eq!(cloudflare.kind, FailureKind::RateLimited);
+        assert_eq!(cloudflare.code, "cloudflare_rate_limited");
+        assert_eq!(cloudflare.http_status, Some(429));
+        assert!(cloudflare.retry_at.is_some());
+
+        let aliyun_error = AliyunErrorResponse {
+            code: Some("Throttling.User".to_string()),
+            message: Some("too many requests".to_string()),
+        };
+        let aliyun = aliyun_api_failure(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            Some(&aliyun_error),
+            Some(OffsetDateTime::now_utc() + time::Duration::minutes(5)),
+        );
+        assert_eq!(aliyun.source, FailureSource::DnsProvider);
+        assert_eq!(aliyun.kind, FailureKind::RateLimited);
+        assert_eq!(aliyun.code, "Throttling.User");
+        assert_eq!(aliyun.http_status, Some(429));
+        assert!(aliyun.retry_at.is_some());
+    }
+
+    #[test]
+    fn zerossl_account_requirements_do_not_enter_network_retry_loops() {
+        assert_eq!(
+            classify_message("certificate contact email is required"),
+            FailureKind::UserActionRequired
+        );
+        assert_eq!(
+            classify_message("ZeroSSL EAB request returned HTTP 400 Bad Request"),
+            FailureKind::UserActionRequired
+        );
+        assert_eq!(
+            classify_message("ZeroSSL EAB HMAC key was not valid URL-safe Base64"),
+            FailureKind::Permanent
+        );
+        assert_eq!(
+            classify_message("failed to decode ACME account credentials"),
+            FailureKind::Permanent
+        );
+    }
+
+    #[test]
     fn dns01_record_name_removes_wildcard_prefix() {
         let domain = "*.example.com".trim_start_matches("*.");
         assert_eq!(
@@ -1145,7 +1735,7 @@ mod tests {
     }
 
     #[test]
-    fn instant_acme_http01_flow_issues_and_persists_certificate() {
+    fn instant_acme_http01_flow_only_persists_after_coordinator_commit() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
             let temp = tempfile::tempdir().unwrap();
@@ -1170,15 +1760,42 @@ mod tests {
                 challenge: ChallengeConfig::Http01,
             };
             let (_shutdown_sender, shutdown) = watch::channel(false);
+            let stages = Arc::new(StdMutex::new(Vec::new()));
+            let reported_stages = stages.clone();
 
             let output = context
-                .issue(certificate.clone(), None, None, shutdown)
+                .issue(certificate.clone(), None, None, shutdown, move |stage| {
+                    reported_stages.lock().unwrap().push(stage);
+                })
                 .await;
-            let material = output.result.unwrap();
-            assert_eq!(material.metadata.domains, ["app.acme.test"]);
+            let issued = output.result.unwrap();
+            assert_eq!(issued.material.metadata.domains, ["app.acme.test"]);
             assert!(output.cleanup_failures.is_empty());
             assert!(output.cleanup_journal_error.is_none());
             assert!(challenges.get("app.acme.test", "http01-token").is_none());
+            let stages = stages.lock().unwrap();
+            for expected in [
+                CertificateStage::Account,
+                CertificateStage::Ordering,
+                CertificateStage::ProvisioningChallenge,
+                CertificateStage::Validating,
+                CertificateStage::Finalizing,
+                CertificateStage::Downloading,
+                CertificateStage::Cleanup,
+            ] {
+                assert!(
+                    stages.contains(&expected),
+                    "missing ACME stage {expected:?}"
+                );
+            }
+            drop(stages);
+            assert!(
+                storage
+                    .load_certificate("http01-cert", &["app.acme.test".to_string()])
+                    .unwrap()
+                    .is_none()
+            );
+            let material = issued.commit(&storage, &certificate).unwrap();
             assert!(
                 storage
                     .load_certificate("http01-cert", &["app.acme.test".to_string()])
@@ -1211,11 +1828,12 @@ mod tests {
                     None,
                     Some(first_leaf.clone()),
                     renewal_shutdown,
+                    |_| {},
                 )
                 .await
                 .result
                 .unwrap();
-            assert_ne!(renewal.metadata.leaf_der, first_leaf);
+            assert_ne!(renewal.material.metadata.leaf_der, first_leaf);
 
             let state = mock_state.lock().unwrap();
             assert!(state.challenge_was_provisioned);
@@ -1285,22 +1903,25 @@ mod tests {
                 challenge: ChallengeConfig::Dns01 {
                     provider: DnsProviderKind::Cloudflare,
                     credential_id: "cf-main".to_string(),
+                    credential_revision: 1,
                 },
             };
             let (_shutdown_sender, shutdown) = watch::channel(false);
 
             let output = context
                 .issue(
-                    certificate,
+                    certificate.clone(),
                     Some(DnsCredential::Cloudflare {
                         api_token: Zeroizing::new("cloudflare-token".to_string()),
                     }),
                     None,
                     shutdown,
+                    |_| {},
                 )
                 .await;
-            assert!(output.result.is_ok());
+            let issued = output.result.unwrap();
             assert!(output.cleanup_failures.is_empty());
+            issued.commit(&storage, &certificate).unwrap();
             assert!(
                 storage
                     .load_certificate("dns01-cert", &["*.acme.test".to_string()])
@@ -1369,6 +1990,7 @@ mod tests {
                         ChallengeConfig::Dns01 {
                             provider: DnsProviderKind::Cloudflare,
                             credential_id: "cf-main".to_string(),
+                            credential_revision: 1,
                         }
                     } else {
                         ChallengeConfig::Http01
@@ -1389,13 +2011,13 @@ mod tests {
                     let (_shutdown_sender, shutdown) = watch::channel(false);
 
                     let material = context
-                        .issue(certificate, dns_credential, None, shutdown)
+                        .issue(certificate, dns_credential, None, shutdown, |_| {})
                         .await
                         .result
                         .unwrap();
 
-                    assert_eq!(material.metadata.authority, authority);
-                    assert_eq!(material.metadata.challenge, challenge);
+                    assert_eq!(material.material.metadata.authority, authority);
+                    assert_eq!(material.material.metadata.challenge, challenge);
                     let state = mock_state.lock().unwrap();
                     assert_eq!(
                         state.challenge_was_provisioned, !uses_dns01,
@@ -1440,6 +2062,7 @@ mod tests {
                 challenge: ChallengeConfig::Dns01 {
                     provider: DnsProviderKind::Cloudflare,
                     credential_id: "cf-main".to_string(),
+                    credential_revision: 1,
                 },
             };
             let (_shutdown_sender, shutdown) = watch::channel(false);
@@ -1452,11 +2075,16 @@ mod tests {
                     }),
                     None,
                     shutdown,
+                    |_| {},
                 )
                 .await;
-            assert_eq!(
-                output.result.unwrap_err(),
-                "Let's Encrypt / DNS-01: DNS-01 TXT record did not propagate"
+            let failure = output.result.unwrap_err();
+            assert_eq!(failure.source, FailureSource::DnsPropagation);
+            assert_eq!(failure.kind, FailureKind::Transient);
+            assert!(
+                failure
+                    .message
+                    .contains("Let's Encrypt / DNS-01: DNS-01 TXT record did not propagate")
             );
             assert_eq!(output.cleanup_failures.len(), 1);
             assert!(*cleanup_attempted.lock().unwrap());
@@ -1729,6 +2357,9 @@ mod tests {
                 zone_id: "mock-zone".to_string(),
                 record_id: "mock-record".to_string(),
                 record_name: format!("_acme-challenge.{domain}"),
+                attempt_count: 0,
+                next_attempt_at: None,
+                last_error: None,
             })
         }
 
@@ -1756,13 +2387,16 @@ mod tests {
             _value: &str,
         ) -> Result<PendingDnsCleanup, Dns01PresentError> {
             Err(Dns01PresentError {
-                message: "DNS-01 TXT record did not propagate".to_string(),
+                failure: DnsProviderFailure::propagation("DNS-01 TXT record did not propagate"),
                 cleanup: Some(PendingDnsCleanup {
                     provider: "cloudflare".to_string(),
                     credential_id: credential_id.to_string(),
                     zone_id: "orphan-zone".to_string(),
                     record_id: "orphan-record".to_string(),
                     record_name: format!("_acme-challenge.{domain}"),
+                    attempt_count: 0,
+                    next_attempt_at: None,
+                    last_error: None,
                 }),
             })
         }

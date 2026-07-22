@@ -1263,7 +1263,12 @@ mod tests {
 
         let temp = tempfile::tempdir().unwrap();
         let mut config = serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
+            "deployment": {
+                "configuration_id": "00000000-0000-0000-0000-000000000000",
+                "revision": 1,
+                "fingerprint": "initial"
+            },
             "storage_dir": temp.path().join("gateway"),
             "listeners": {
                 "http": "127.0.0.1:0",
@@ -1283,7 +1288,7 @@ mod tests {
             "routes": []
         });
         let secrets = serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "cloudflare": {
                 "cf-main": { "api_token": "super-secret-cloudflare-token" }
             }
@@ -1315,9 +1320,12 @@ mod tests {
         assert!(!status.contains("super-secret-cloudflare-token"));
         let status: Value = serde_json::from_str(&status).unwrap();
         assert_eq!(status["state"], "running");
-        assert_eq!(status["config_generation"], 1);
+        assert_eq!(status["applied_deployment"]["revision"], 1);
+        assert_eq!(status["applied_deployment"]["fingerprint"], "initial");
 
         config["acme"]["contact_email"] = serde_json::json!("ops@example.com");
+        config["deployment"]["revision"] = serde_json::json!(2);
+        config["deployment"]["fingerprint"] = serde_json::json!("contact-update");
         let valid_update = CString::new(config.to_string()).unwrap();
         // SAFETY: The config pointer is valid, null secrets retains current secrets, and the
         // error out-parameter points to writable storage.
@@ -1330,9 +1338,15 @@ mod tests {
         // SAFETY: Both out-parameters point to writable storage.
         assert_eq!(unsafe { gateway_status(&mut status_json, &mut error) }, 0);
         let status: Value = serde_json::from_str(&take_ffi_string(status_json)).unwrap();
-        assert_eq!(status["config_generation"], 2);
+        assert_eq!(status["applied_deployment"]["revision"], 2);
+        assert_eq!(
+            status["applied_deployment"]["fingerprint"],
+            "contact-update"
+        );
 
         config["listeners"]["http"] = serde_json::json!("127.0.0.1:50080");
+        config["deployment"]["revision"] = serde_json::json!(3);
+        config["deployment"]["fingerprint"] = serde_json::json!("invalid-listener-update");
         let immutable_update = CString::new(config.to_string()).unwrap();
         // SAFETY: The config pointer is valid, null secrets retains current secrets, and the
         // error out-parameter points to writable storage.
@@ -1348,7 +1362,11 @@ mod tests {
         // SAFETY: Both out-parameters point to writable storage.
         assert_eq!(unsafe { gateway_status(&mut status_json, &mut error) }, 0);
         let status: Value = serde_json::from_str(&take_ffi_string(status_json)).unwrap();
-        assert_eq!(status["config_generation"], 2);
+        assert_eq!(status["applied_deployment"]["revision"], 2);
+        assert_eq!(
+            status["applied_deployment"]["fingerprint"],
+            "contact-update"
+        );
 
         // Null renewal identifier means all configured certificates (an empty set here).
         // SAFETY: Null is explicitly supported for the optional identifier.

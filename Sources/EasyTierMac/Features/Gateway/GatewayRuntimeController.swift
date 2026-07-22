@@ -14,6 +14,7 @@ extension PrivilegedGatewayClient: GatewayConnectionMonitoring {}
 final class GatewayRuntimeController {
     private(set) var persistedState: GatewayPersistedState?
     private(set) var status: GatewayStatus = .stopped
+    private(set) var convergence: GatewayConvergenceSnapshot = .disabled
     private(set) var lastError: String?
     private(set) var isBusy = false
     private(set) var magicDNSState: MagicDNSOperationalState = .disabled
@@ -50,10 +51,13 @@ final class GatewayRuntimeController {
     @ObservationIgnored private var connectionTask: Task<Void, Never>?
     @ObservationIgnored private var statusTask: Task<Void, Never>?
     @ObservationIgnored private var activeStatusPollingInterval: Duration?
+    @ObservationIgnored private var applyRetryTask: Task<Void, Never>?
     @ObservationIgnored private var recoveryEnabled = false
     @ObservationIgnored private var retainsRuntimeAfterDisconnect = false
-    @ObservationIgnored private var lastAppliedConfiguration: GatewayConfiguration?
-    @ObservationIgnored private var lastAppliedCredentialRevisions: [String: UInt64] = [:]
+    @ObservationIgnored private var desiredRuntimeConfiguration: GatewayConfiguration?
+    @ObservationIgnored private var observedIPv4CIDRByNetworkConfigID: [String: String] = [:]
+    @ObservationIgnored private var applyFailureCount: UInt32 = 0
+    @ObservationIgnored private var nextApplyRetryAt: Date?
     @ObservationIgnored private var mutationLocked = false
     @ObservationIgnored private var mutationWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -118,28 +122,31 @@ final class GatewayRuntimeController {
         }
     }
 
-    func createDraft(
+    func createService(
         networkConfigID: String,
         targetPeerID: String,
         targetInstanceID: String? = nil,
         targetHostname: String,
         magicDNSSuffix: String,
         serviceLabel: String,
-        targetPort: Int
+        targetPort: Int,
+        certificatePolicy: GatewayCertificatePolicy
     ) async throws -> GatewayPublishedService {
         guard store == nil || magicDNSState == .ready else {
             throw GatewayConfigurationValidationError.invalid(
                 "Wait for Magic DNS to become ready before publishing a service."
             )
         }
-        let draft = try GatewayPublishedServicesValidator.makeDraft(
+        let service = try GatewayPublishedServicesValidator.makeService(
             networkConfigID: networkConfigID,
             targetPeerID: targetPeerID,
             targetInstanceID: targetInstanceID,
             targetHostname: targetHostname,
             magicDNSSuffix: magicDNSSuffix,
             serviceLabel: serviceLabel,
-            targetPort: targetPort
+            targetPort: targetPort,
+            desiredEnabled: true,
+            certificatePolicy: certificatePolicy
         )
         return try await withMutation {
             var state = persistedState ?? .empty
@@ -148,15 +155,34 @@ final class GatewayRuntimeController {
                     "Published Services already belongs to another EasyTier network."
                 )
             }
-            guard !state.services.contains(where: { $0.publicHostname == draft.publicHostname }) else {
+            guard !state.services.contains(where: { $0.publicHostname == service.publicHostname }) else {
                 throw GatewayConfigurationValidationError.invalid(
-                    "A service already uses \(draft.publicHostname)."
+                    "A service already uses \(service.publicHostname)."
+                )
+            }
+            guard let acme = state.acmeAccount, acme.termsOfServiceAgreed else {
+                throw GatewayConfigurationValidationError.invalid(
+                    "Accept the certificate service terms before publishing a service."
+                )
+            }
+            guard acme.contactEmail != nil else {
+                throw GatewayConfigurationValidationError.invalid(
+                    "Enter a certificate contact email before publishing a service."
+                )
+            }
+            guard let networkIPv4CIDR = state.lastKnownNetworkIPv4CIDR
+                ?? observedIPv4CIDRByNetworkConfigID[networkConfigID]
+            else {
+                throw GatewayConfigurationValidationError.invalid(
+                    "Wait for the publishing EasyTier network to report its IPv4 subnet."
                 )
             }
             state.publishingNetworkConfigID = networkConfigID
-            state.services.append(draft)
+            state.lastKnownNetworkIPv4CIDR = networkIPv4CIDR
+            state.services.append(service)
             try await save(state)
-            return draft
+            await reconcileWithoutLock()
+            return service
         }
     }
 
@@ -170,11 +196,6 @@ final class GatewayRuntimeController {
             try await save(state)
             if state.desiredEnabled {
                 await reconcileWithoutLock()
-                if status.state == .failed {
-                    throw EasyTierCoreError.operationFailed(
-                        lastError ?? "Gateway failed to apply the SSL settings."
-                    )
-                }
             }
         }
     }
@@ -189,11 +210,6 @@ final class GatewayRuntimeController {
             state.gatewayEnabled = enabled
             try await save(state)
             await reconcileWithoutLock()
-            if status.state == .failed {
-                throw EasyTierCoreError.operationFailed(
-                    lastError ?? "Gateway failed to \(enabled ? "start" : "stop")."
-                )
-            }
         }
     }
 
@@ -230,11 +246,6 @@ final class GatewayRuntimeController {
             state.services[index].desiredEnabled = enabled
             try await save(state)
             await reconcileWithoutLock()
-            if state.gatewayEnabled, status.state == .failed {
-                throw EasyTierCoreError.operationFailed(
-                    lastError ?? "Gateway failed to apply the published service."
-                )
-            }
         }
     }
 
@@ -366,20 +377,23 @@ final class GatewayRuntimeController {
         hostnamesByPeerID: [String: String]
     ) async {
         await withMutation {
-            guard var state = persistedState,
-                  state.publishingNetworkConfigID == networkConfigID
-            else { return }
+            guard var state = persistedState else { return }
 
             var changed = false
             if let allowedIPv4CIDR,
                let normalizedCIDR = try? GatewayPublishedServicesValidator.normalizeIPv4CIDR(
                    allowedIPv4CIDR
-               ),
-               state.lastKnownNetworkIPv4CIDR != normalizedCIDR
+               )
             {
-                state.lastKnownNetworkIPv4CIDR = normalizedCIDR
-                changed = true
+                observedIPv4CIDRByNetworkConfigID[networkConfigID] = normalizedCIDR
+                if state.publishingNetworkConfigID == networkConfigID,
+                   state.lastKnownNetworkIPv4CIDR != normalizedCIDR
+                {
+                    state.lastKnownNetworkIPv4CIDR = normalizedCIDR
+                    changed = true
+                }
             }
+            guard state.publishingNetworkConfigID == networkConfigID else { return }
             if let suffix = try? MagicDNSSettings.normalizedDNSSuffix(magicDNSSuffix) {
                 for index in state.services.indices {
                     guard let hostname = hostnamesByPeerID[state.services[index].targetPeerID],
@@ -461,9 +475,14 @@ final class GatewayRuntimeController {
     }
 
     private func save(_ state: GatewayPersistedState) async throws {
-        let state = try GatewayPublishedServicesValidator.validate(state)
+        var state = try GatewayPublishedServicesValidator.validate(state)
+        let currentRevision = persistedState?.configurationID == state.configurationID
+            ? persistedState?.revision ?? state.revision
+            : state.revision
+        state.revision = max(currentRevision, state.revision) &+ 1
         try await configurationStore.save(state)
         persistedState = state
+        resetApplyRetry()
     }
 
     private func reconcileWithoutLock() async {
@@ -471,10 +490,13 @@ final class GatewayRuntimeController {
               state.desiredEnabled,
               (store == nil || magicDNSState != .disabled)
         else {
-            if status.state != .stopped || lastAppliedConfiguration != nil {
+            desiredRuntimeConfiguration = nil
+            resetApplyRetry()
+            if status.state != .stopped {
                 await stopWithoutLock()
             } else {
                 status = .stopped
+                convergence = .disabled
             }
             return
         }
@@ -489,37 +511,64 @@ final class GatewayRuntimeController {
                 routeAvailabilityByServiceID: availabilityByServiceID,
                 expectedIPv4ByServiceID: expectedIPv4ByServiceID
             )
-            let shouldStart = lastAppliedConfiguration == nil || status.state == .stopped
-            let configurationChanged = lastAppliedConfiguration != configuration
-            let credentialRevisions = Dictionary(
-                uniqueKeysWithValues: state.dnsCredentials.map { ($0.id, $0.revision) }
-            )
-            let credentialsChanged = credentialRevisions != lastAppliedCredentialRevisions
-            if !shouldStart, !configurationChanged, !credentialsChanged, status.state == .running {
+            desiredRuntimeConfiguration = configuration
+            if let nextApplyRetryAt, nextApplyRetryAt > .now {
+                convergence = GatewayConvergenceSnapshot(
+                    desired: configuration.deployment,
+                    applied: status.appliedDeployment,
+                    phase: .retryScheduled,
+                    retryAt: nextApplyRetryAt,
+                    message: lastError
+                )
+                scheduleApplyRetry(at: nextApplyRetryAt)
+                startStatusPolling()
+                return
+            }
+
+            let shouldStart = status.state == .stopped
+            let configurationChanged = status.appliedDeployment != configuration.deployment
+            if !shouldStart, !configurationChanged, status.state == .running {
+                markConverged(configuration: configuration)
                 startStatusPolling()
                 return
             }
             let secrets = try await credentialStore.resolve(state.dnsCredentials)
             isBusy = true
-            status.state = .starting
+            convergence = GatewayConvergenceSnapshot(
+                desired: configuration.deployment,
+                applied: status.appliedDeployment,
+                phase: .applying,
+                retryAt: nil,
+                message: nil
+            )
             defer { isBusy = false }
             if let helperRegistration { try await helperRegistration.ensureRegistered() }
             try await connectionMonitor?.probeHelperAvailability()
             try await client.setRetainsRuntimeAfterDisconnect(retainsRuntimeAfterDisconnect)
             if shouldStart {
                 try await client.start(configuration: configuration, secrets: secrets)
-            } else if configurationChanged || credentialsChanged {
+            } else if configurationChanged {
                 try await client.apply(configuration: configuration, secrets: secrets)
             }
-            lastAppliedConfiguration = configuration
-            lastAppliedCredentialRevisions = credentialRevisions
             status = try await client.status()
-            lastError = status.lastError
+            guard status.appliedDeployment == configuration.deployment else {
+                throw EasyTierCoreError.invalidResponse(
+                    "Gateway acknowledged the request without applying the requested configuration."
+                )
+            }
+            markConverged(configuration: configuration)
             startStatusPolling()
         } catch {
-            status.state = .failed
-            status.lastError = error.localizedDescription
-            lastError = error.localizedDescription
+            if let configuration = desiredRuntimeConfiguration,
+               let observedStatus = try? await client.status(),
+               observedStatus.appliedDeployment == configuration.deployment
+            {
+                status = observedStatus
+                markConverged(configuration: configuration)
+                startStatusPolling()
+                return
+            }
+            recordApplyFailure(error)
         }
     }
 
@@ -527,17 +576,24 @@ final class GatewayRuntimeController {
         isBusy = true
         status.state = .stopping
         stopStatusPolling()
+        convergence.phase = .stopping
         defer { isBusy = false }
         do {
             try await client.stop()
             status = .stopped
-            lastAppliedConfiguration = nil
-            lastAppliedCredentialRevisions = [:]
+            desiredRuntimeConfiguration = nil
+            resetApplyRetry()
+            convergence = .disabled
             lastError = nil
         } catch {
-            status.state = .failed
-            status.lastError = error.localizedDescription
             lastError = error.localizedDescription
+            convergence = GatewayConvergenceSnapshot(
+                desired: desiredRuntimeConfiguration?.deployment,
+                applied: status.appliedDeployment,
+                phase: .retryScheduled,
+                retryAt: nil,
+                message: error.localizedDescription
+            )
         }
     }
 
@@ -545,17 +601,23 @@ final class GatewayRuntimeController {
         guard desiredEnabled else { return }
         do {
             status = try await client.status()
-            lastError = status.lastError
+            if let configuration = desiredRuntimeConfiguration,
+               status.appliedDeployment == configuration.deployment,
+               status.state == .running
+            {
+                markConverged(configuration: configuration)
+            }
             if status.state == .stopped, recoveryEnabled {
-                lastAppliedConfiguration = nil
+                await reconcileWithoutLock()
+            } else if let configuration = desiredRuntimeConfiguration,
+                      status.appliedDeployment != configuration.deployment
+            {
                 await reconcileWithoutLock()
             } else {
                 startStatusPolling()
             }
         } catch {
-            status.state = .failed
-            status.lastError = error.localizedDescription
-            lastError = error.localizedDescription
+            recordApplyFailure(error)
         }
     }
 
@@ -586,9 +648,10 @@ final class GatewayRuntimeController {
         if routesAreConverging { return .seconds(1) }
 
         let certificatesAreConverging = status.certificates.contains { certificate in
-            certificate.state == .pending
-                || certificate.state == .issuing
-                || certificate.state == .renewing
+            certificate.operation == .queued
+                || certificate.operation == .issuing
+                || certificate.operation == .renewing
+                || certificate.operation == .replacing
         }
         return certificatesAreConverging ? .seconds(2) : .seconds(10)
     }
@@ -597,6 +660,81 @@ final class GatewayRuntimeController {
         statusTask?.cancel()
         statusTask = nil
         activeStatusPollingInterval = nil
+    }
+
+    private func markConverged(configuration: GatewayConfiguration) {
+        resetApplyRetry()
+        lastError = status.runtimeIssues.last?.message
+        convergence = GatewayConvergenceSnapshot(
+            desired: configuration.deployment,
+            applied: status.appliedDeployment,
+            phase: .converged,
+            retryAt: nil,
+            message: lastError
+        )
+    }
+
+    private func recordApplyFailure(_ error: any Error) {
+        let message = error.localizedDescription
+        lastError = message
+        applyRetryTask?.cancel()
+        applyRetryTask = nil
+
+        if error is GatewayConfigurationValidationError || error is GatewayCredentialStoreError {
+            nextApplyRetryAt = nil
+            convergence = GatewayConvergenceSnapshot(
+                desired: desiredRuntimeConfiguration?.deployment,
+                applied: status.appliedDeployment,
+                phase: .blocked,
+                retryAt: nil,
+                message: message
+            )
+            startStatusPolling()
+            return
+        }
+
+        applyFailureCount = applyFailureCount &+ 1
+        let delay = Self.applyRetryDelay(attempt: applyFailureCount)
+        let retryAt = Date.now.addingTimeInterval(delay)
+        nextApplyRetryAt = retryAt
+        convergence = GatewayConvergenceSnapshot(
+            desired: desiredRuntimeConfiguration?.deployment,
+            applied: status.appliedDeployment,
+            phase: .retryScheduled,
+            retryAt: retryAt,
+            message: message
+        )
+        scheduleApplyRetry(at: retryAt)
+        startStatusPolling()
+    }
+
+    private func scheduleApplyRetry(at retryAt: Date) {
+        guard applyRetryTask == nil else { return }
+        let delay = max(0, retryAt.timeIntervalSinceNow)
+        applyRetryTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(delay))
+            } catch {
+                return
+            }
+            guard let self else { return }
+            self.applyRetryTask = nil
+            self.nextApplyRetryAt = nil
+            await self.reconcile()
+        }
+    }
+
+    private func resetApplyRetry() {
+        applyRetryTask?.cancel()
+        applyRetryTask = nil
+        applyFailureCount = 0
+        nextApplyRetryAt = nil
+    }
+
+    private static func applyRetryDelay(attempt: UInt32) -> TimeInterval {
+        let delays: [TimeInterval] = [1, 5, 15, 30, 60, 300]
+        let index = attempt > 0 ? attempt - 1 : 0
+        return delays[min(Int(index), delays.count - 1)]
     }
 
     private func recoverAfterConnectionEvent() async {
@@ -608,7 +746,6 @@ final class GatewayRuntimeController {
             return
         }
         guard recoveryEnabled else { return }
-        lastAppliedConfiguration = nil
         await withMutation {
             guard recoveryEnabled, !Task.isCancelled, desiredEnabled else { return }
             await reconcileWithoutLock()
@@ -702,6 +839,7 @@ final class GatewayRuntimeController {
         let runtimeHostname = detail?.my_node_info?.hostname?.nilIfEmpty
             ?? config?.hostname?.nilIfEmpty
         let runtimeCIDR = detail?.my_node_info?.virtual_ipv4?.displayString.nilIfEmpty
+            ?? detail?.my_node_info?.ipv4_addr?.nilIfEmpty
         let configuredCIDR = config?.virtual_ipv4.nilIfEmpty.map { address in
             address.contains("/") ? address : "\(address)/\(config?.network_length ?? 24)"
         }
@@ -757,6 +895,13 @@ final class GatewayRuntimeController {
         guard let networkConfigID = probe.networkConfigID,
               probe.desiredMagicDNSEnabled
         else { return }
+        if let allowedIPv4CIDR = probe.allowedIPv4CIDR,
+           let normalizedCIDR = try? GatewayPublishedServicesValidator.normalizeIPv4CIDR(
+               allowedIPv4CIDR
+           )
+        {
+            observedIPv4CIDRByNetworkConfigID[networkConfigID] = normalizedCIDR
+        }
         await withMutation {
             guard var state = persistedState,
                   state.publishingNetworkConfigID == networkConfigID

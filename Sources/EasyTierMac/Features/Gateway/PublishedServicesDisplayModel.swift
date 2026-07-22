@@ -19,16 +19,19 @@ struct PublishedServicesDisplayModel: Equatable, Sendable {
         members: [NetworkMemberStatus],
         searchText: String,
         magicDNSState: MagicDNSOperationalState = .ready,
-        magicDNSStateByServiceID: [String: MagicDNSOperationalState] = [:]
+        magicDNSStateByServiceID: [String: MagicDNSOperationalState] = [:],
+        convergence: GatewayConvergenceSnapshot? = nil
     ) {
         runtimePresentation = GatewayRuntimePresentation(
             status: status,
             desiredEnabled: gatewayEnabled,
             services: services,
-            magicDNSState: magicDNSState
+            magicDNSState: magicDNSState,
+            convergence: convergence ?? .disabled
         )
         self.networkName = networkName
         let tlsConfigured = acmeConfiguration?.termsOfServiceAgreed == true
+        let configurationApplied = convergence?.isConverged ?? true
 
         var certificatesByID: [String: GatewayCertificateStatus] = [:]
         for certificate in status.certificates {
@@ -49,7 +52,9 @@ struct PublishedServicesDisplayModel: Equatable, Sendable {
                 gatewayEnabled: gatewayEnabled,
                 tlsConfigured: tlsConfigured,
                 gatewayState: status.state,
-                magicDNSState: magicDNSStateByServiceID[service.id] ?? magicDNSState
+                magicDNSState: magicDNSStateByServiceID[service.id] ?? magicDNSState,
+                configurationApplied: configurationApplied,
+                convergenceMessage: convergence?.message
             )
             let resolvedIPv4 = PublishedServiceTargetResolver.ipv4(
                 for: service,
@@ -69,12 +74,16 @@ struct PublishedServicesDisplayModel: Equatable, Sendable {
                     provider: sslProvider,
                     certificate: certificate
                 ),
+                runtimeCertificateAuthority: certificate?.authority,
+                runtimeCertificateChallenge: certificate?.challenge,
+                configurationApplied: configurationApplied,
                 lastOnlineAt: Self.date(from: route?.lastOnlineAt)
             )
         }
 
         certificateFailures = rows.compactMap { row in
             guard row.service.desiredEnabled,
+                  configurationApplied,
                   let message = row.certificatePresentation.errorMessage?
                       .trimmingCharacters(in: .whitespacesAndNewlines),
                   !message.isEmpty

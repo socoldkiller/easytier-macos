@@ -259,30 +259,62 @@ private func presentationTestService(id: String = "service-a") -> GatewayPublish
 }
 
 private func presentationCertificate(
-    state: GatewayCertificateState,
+    state: PresentationCertificateState,
     error: String? = nil
 ) throws -> GatewayCertificateStatus {
-    let servingMode: GatewayCertificateServingMode = switch state {
-    case .active, .renewing, .degraded: .https
-    case .failed: .httpOnly
-    case .pending, .issuing: .pendingHTTPS
+    let availability: GatewayCertificateAvailability = switch state {
+    case .active, .renewing, .degraded: .valid
+    case .failed, .pending, .issuing: .unavailable
     }
-    let payload: [String: Any?] = [
-        "id": "service-a",
-        "domains": ["service-a.a.et.net"],
-        "authority": "letsencrypt",
-        "challenge": "http-01",
-        "active_authority": servingMode == .https ? "letsencrypt" : nil,
-        "active_challenge": servingMode == .https ? "http-01" : nil,
-        "state": state.rawValue,
-        "serving_mode": servingMode.rawValue,
-        "not_before": nil,
-        "not_after": nil,
-        "next_renewal_at": nil,
-        "last_attempt_at": nil,
-        "last_error": error,
-    ]
-    return try decodePresentationFixture(payload)
+    let operation: GatewayCertificateOperation = switch state {
+    case .active: .idle
+    case .renewing: .renewing
+    case .degraded: .waitingRetry
+    case .failed: .suspended
+    case .pending: .queued
+    case .issuing: .issuing
+    }
+    let failure = error.map {
+        GatewayFailure(
+            source: .acmeAuthorization,
+            kind: state == .failed ? .userActionRequired : .transient,
+            code: state == .failed ? "unauthorized" : "retry_scheduled",
+            message: $0,
+            occurredAt: "2026-07-20T00:00:00Z",
+            retryAt: state == .degraded ? "2026-07-20T00:05:00Z" : nil,
+            authority: .letsEncrypt,
+            challenge: "HTTP-01",
+            dnsProvider: nil,
+            acmeProblemType: nil,
+            httpStatus: nil
+        )
+    }
+    return GatewayCertificateStatus(
+        id: "service-a",
+        domains: ["service-a.a.et.net"],
+        authority: .letsEncrypt,
+        challenge: "http-01",
+        activeAuthority: availability == .valid ? .letsEncrypt : nil,
+        activeChallenge: availability == .valid ? "http-01" : nil,
+        availability: availability,
+        operation: operation,
+        stage: nil,
+        notBefore: nil,
+        notAfter: nil,
+        nextRenewalAt: nil,
+        nextAttemptAt: state == .degraded ? "2026-07-20T00:05:00Z" : nil,
+        lastAttemptAt: nil,
+        failure: failure
+    )
+}
+
+private enum PresentationCertificateState: Equatable {
+    case active
+    case renewing
+    case degraded
+    case failed
+    case pending
+    case issuing
 }
 
 private func presentationRoute(
