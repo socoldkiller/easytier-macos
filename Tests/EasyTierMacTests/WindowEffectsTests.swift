@@ -202,3 +202,51 @@ import Testing
     #expect(foreign.backgroundColor == .clear)
     #expect(!foreign.hidesOnDeactivate)
 }
+
+@MainActor
+@Test func mainWindowKeepsGlassBackdropBehindAFullWidthToolbarMaterial() throws {
+    let mainWindow = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
+        styleMask: [.titled, .closable],
+        backing: .buffered,
+        defer: false
+    )
+    mainWindow.contentView = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 240))
+
+    EasyTierWindowConfigurator.configure(mainWindow, role: .main, effectiveGlass: true)
+
+    #expect(mainWindow.titlebarAppearsTransparent)
+    let frameView = try #require(mainWindow.contentView?.superview)
+    let toolbarMaterial = try #require(
+        frameView.subviews.compactMap { $0 as? WindowToolbarMaterialView }.first
+    )
+    #expect(toolbarMaterial.superview === frameView)
+    #expect(toolbarMaterial.superview !== mainWindow.contentView)
+    #expect(toolbarMaterial.material == .titlebar)
+    #expect(toolbarMaterial.blendingMode == .withinWindow)
+    #expect(toolbarMaterial.frame.width == frameView.bounds.width)
+    #expect(toolbarMaterial.frame.maxY == frameView.bounds.maxY)
+    #expect(toolbarMaterial.frame.minY == frameView.convert(mainWindow.contentLayoutRect, from: nil).maxY)
+
+    let contentIndex = try #require(frameView.subviews.firstIndex { $0 === mainWindow.contentView })
+    let materialIndex = try #require(frameView.subviews.firstIndex { $0 === toolbarMaterial })
+    #expect(materialIndex > contentIndex)
+
+    EasyTierWindowConfigurator.configure(mainWindow, role: .main, effectiveGlass: false)
+
+    #expect(!mainWindow.titlebarAppearsTransparent)
+    #expect(frameView.subviews.contains { $0 is WindowToolbarMaterialView } == false)
+
+    let settingsWindow = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
+        styleMask: [.titled, .closable],
+        backing: .buffered,
+        defer: false
+    )
+    settingsWindow.titlebarAppearsTransparent = false
+
+    EasyTierWindowConfigurator.configure(settingsWindow, role: .settings, effectiveGlass: true)
+
+    #expect(settingsWindow.titlebarAppearsTransparent)
+    #expect(settingsWindow.contentView?.superview?.subviews.contains { $0 is WindowToolbarMaterialView } == false)
+}

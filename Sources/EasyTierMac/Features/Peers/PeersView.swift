@@ -53,7 +53,7 @@ struct PeersView: View {
         }
         .scrollContentBackground(.hidden)
         .hideScrollViewScrollers()
-        .safeAreaInset(edge: .top, spacing: 0) {
+        .easyTierSafeAreaBar(edge: .top, spacing: 0) {
             peerActionBar
         }
         .overlay(alignment: .top) {

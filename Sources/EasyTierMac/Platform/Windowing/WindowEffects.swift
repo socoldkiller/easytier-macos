@@ -345,31 +345,78 @@ enum EasyTierWindowRole: String, CaseIterable {
     }
 }
 
+@MainActor
+final class WindowToolbarMaterialView: NSVisualEffectView {
+    init() {
+        super.init(frame: .zero)
+        material = .titlebar
+        blendingMode = .withinWindow
+        state = .followsWindowActiveState
+        autoresizingMask = [.width, .minYMargin]
+    }
+
+    @available(*, unavailable)
+    required init?(coder _: NSCoder) {
+        nil
+    }
+
+    override func hitTest(_: NSPoint) -> NSView? {
+        nil
+    }
+
+    func updateFrame(for window: NSWindow) {
+        guard
+            let contentView = window.contentView,
+            let frameView = contentView.superview,
+            superview === frameView
+        else { return }
+
+        let contentLayoutRect = frameView.convert(window.contentLayoutRect, from: nil)
+        let toolbarMinY = min(
+            max(contentLayoutRect.maxY, frameView.bounds.minY),
+            frameView.bounds.maxY
+        )
+        frame = NSRect(
+            x: frameView.bounds.minX,
+            y: toolbarMinY,
+            width: frameView.bounds.width,
+            height: max(0, frameView.bounds.maxY - toolbarMinY)
+        )
+    }
+}
+
 enum EasyTierWindowConfigurator {
     @MainActor
     @discardableResult
     static func configureIfOwned(_ window: NSWindow, effectiveGlass: Bool) -> Bool {
-        guard EasyTierWindowRole(identifier: window.identifier) != nil else { return false }
-        configure(window, effectiveGlass: effectiveGlass)
+        guard let role = EasyTierWindowRole(identifier: window.identifier) else { return false }
+        applyConfiguration(to: window, role: role, effectiveGlass: effectiveGlass)
         return true
     }
 
     @MainActor
     static func configure(_ window: NSWindow, role: EasyTierWindowRole, effectiveGlass: Bool) {
         window.identifier = role.identifier
-        configure(window, effectiveGlass: effectiveGlass)
+        applyConfiguration(to: window, role: role, effectiveGlass: effectiveGlass)
     }
 
     @MainActor
-    private static func configure(_ window: NSWindow, effectiveGlass: Bool) {
+    private static func applyConfiguration(
+        to window: NSWindow,
+        role: EasyTierWindowRole,
+        effectiveGlass: Bool
+    ) {
         let frame = window.frame
         window.hidesOnDeactivate = false
         if !window.styleMask.contains(.fullSizeContentView) {
             window.styleMask.insert(.fullSizeContentView)
         }
-        if !window.titlebarAppearsTransparent {
-            window.titlebarAppearsTransparent = true
+        let toolbarMaterialEnabled = role == .main && effectiveGlass
+        let titlebarAppearsTransparent = role == .settings || toolbarMaterialEnabled
+        if window.titlebarAppearsTransparent != titlebarAppearsTransparent {
+            window.titlebarAppearsTransparent = titlebarAppearsTransparent
         }
+        reconcileToolbarMaterial(in: window, enabled: toolbarMaterialEnabled)
 
         let targetOpacity = !effectiveGlass
         if window.isOpaque != targetOpacity {
@@ -384,6 +431,30 @@ enum EasyTierWindowConfigurator {
         if window.frame != frame {
             window.setFrame(frame, display: true)
         }
+    }
+
+    @MainActor
+    private static func reconcileToolbarMaterial(in window: NSWindow, enabled: Bool) {
+        guard let contentView = window.contentView, let frameView = contentView.superview else { return }
+
+        let misplaced = contentView.subviews.compactMap { $0 as? WindowToolbarMaterialView }
+        misplaced.forEach { $0.removeFromSuperview() }
+
+        let existing = frameView.subviews.compactMap { $0 as? WindowToolbarMaterialView }.first
+
+        guard enabled else {
+            existing?.removeFromSuperview()
+            return
+        }
+
+        let materialView: WindowToolbarMaterialView
+        if let existing {
+            materialView = existing
+        } else {
+            materialView = WindowToolbarMaterialView()
+            frameView.addSubview(materialView, positioned: .above, relativeTo: contentView)
+        }
+        materialView.updateFrame(for: window)
     }
 }
 
@@ -683,6 +754,9 @@ final class WindowAccessorView: NSView {
             NSWindow.didChangeOcclusionStateNotification,
             NSWindow.didMiniaturizeNotification,
             NSWindow.didDeminiaturizeNotification,
+            NSWindow.didResizeNotification,
+            NSWindow.didEnterFullScreenNotification,
+            NSWindow.didExitFullScreenNotification,
         ]
         windowObservers = names.map { name in
             NotificationCenter.default.addObserver(
