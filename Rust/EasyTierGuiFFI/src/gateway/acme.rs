@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, net::SocketAddr, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -14,12 +14,6 @@ use cloudflare::{
         response::ApiFailure,
     },
 };
-use hickory_resolver::{
-    TokioResolver,
-    config::{NameServerConfig, ResolverConfig},
-    name_server::TokioConnectionProvider,
-    proto::xfer::Protocol,
-};
 use hmac::{Hmac, Mac};
 #[cfg(test)]
 use instant_acme::HttpClient;
@@ -34,10 +28,7 @@ use time::{
     OffsetDateTime,
     format_description::well_known::{Rfc2822, Rfc3339},
 };
-use tokio::{
-    sync::{RwLock, watch},
-    time::sleep,
-};
+use tokio::sync::{RwLock, watch};
 use zeroize::Zeroizing;
 
 use super::{
@@ -54,8 +45,6 @@ use super::{
 #[cfg(test)]
 use super::config::CertificateAuthorityKind;
 
-const DNS_PROPAGATION_TIMEOUT: Duration = Duration::from_secs(120);
-const DNS_PROPAGATION_INTERVAL: Duration = Duration::from_secs(2);
 const ACME_POLL_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub struct AcmeContext {
@@ -228,17 +217,6 @@ impl DnsProviderFailure {
         }
     }
 
-    fn propagation(message: impl Into<String>) -> Self {
-        Self {
-            source: FailureSource::DnsPropagation,
-            kind: FailureKind::Transient,
-            code: "dns_propagation_timeout".to_string(),
-            message: message.into(),
-            retry_at: None,
-            http_status: None,
-        }
-    }
-
     fn into_certificate_failure(self, certificate: &ValidatedCertificate) -> CertificateFailure {
         let mut failure = attempt_failure(
             certificate,
@@ -273,22 +251,12 @@ impl Dns01Provider for CloudflareDnsProvider {
                 cleanup: None,
             });
         };
-        let (cleanup, name_servers) =
-            create_cloudflare_dns01(api_token, credential_id, domain, value)
-                .await
-                .map_err(|failure| Dns01PresentError {
-                    failure,
-                    cleanup: None,
-                })?;
-        if let Err(message) =
-            wait_for_authoritative_txt(&name_servers, &cleanup.record_name, value).await
-        {
-            return Err(Dns01PresentError {
-                failure: DnsProviderFailure::propagation(message),
-                cleanup: Some(cleanup),
-            });
-        }
-        Ok(cleanup)
+        create_cloudflare_dns01(api_token, credential_id, domain, value)
+            .await
+            .map_err(|failure| Dns01PresentError {
+                failure,
+                cleanup: None,
+            })
     }
 
     async fn cleanup(
@@ -329,7 +297,7 @@ impl Dns01Provider for AliyunDnsProvider {
                 cleanup: None,
             });
         };
-        let (cleanup, name_servers) = create_aliyun_dns01(
+        create_aliyun_dns01(
             access_key_id,
             access_key_secret,
             credential_id,
@@ -340,16 +308,7 @@ impl Dns01Provider for AliyunDnsProvider {
         .map_err(|failure| Dns01PresentError {
             failure,
             cleanup: None,
-        })?;
-        if let Err(message) =
-            wait_for_authoritative_txt(&name_servers, &cleanup.record_name, value).await
-        {
-            return Err(Dns01PresentError {
-                failure: DnsProviderFailure::propagation(message),
-                cleanup: Some(cleanup),
-            });
-        }
-        Ok(cleanup)
+        })
     }
 
     async fn cleanup(
@@ -373,7 +332,6 @@ impl Dns01Provider for AliyunDnsProvider {
 #[derive(Clone, Debug)]
 struct CloudflareZone {
     id: String,
-    name_servers: Vec<String>,
 }
 
 impl AcmeContext {
@@ -962,18 +920,6 @@ fn classify_message(message: &str) -> FailureKind {
 }
 
 #[derive(Deserialize)]
-struct AliyunDomainInfo {
-    #[serde(rename = "DnsServers")]
-    dns_servers: Option<AliyunDnsServers>,
-}
-
-#[derive(Deserialize)]
-struct AliyunDnsServers {
-    #[serde(rename = "DnsServer", default)]
-    values: Vec<String>,
-}
-
-#[derive(Deserialize)]
 struct AliyunAddRecordResponse {
     #[serde(rename = "RecordId")]
     record_id: String,
@@ -985,9 +931,8 @@ async fn create_aliyun_dns01(
     credential_id: &str,
     domain: &str,
     value: &str,
-) -> Result<(PendingDnsCleanup, Vec<String>), DnsProviderFailure> {
-    let (zone, name_servers) =
-        discover_aliyun_zone(access_key_id, access_key_secret, domain).await?;
+) -> Result<PendingDnsCleanup, DnsProviderFailure> {
+    let zone = discover_aliyun_zone(access_key_id, access_key_secret, domain).await?;
     let record_name = format!("_acme-challenge.{domain}");
     let relative = record_name
         .strip_suffix(&format!(".{zone}"))
@@ -1004,30 +949,27 @@ async fn create_aliyun_dns01(
         ],
     )
     .await?;
-    Ok((
-        PendingDnsCleanup {
-            provider: "aliyun".to_string(),
-            credential_id: credential_id.to_string(),
-            zone_id: zone,
-            record_id: response.record_id,
-            record_name,
-            attempt_count: 0,
-            next_attempt_at: None,
-            last_error: None,
-        },
-        name_servers,
-    ))
+    Ok(PendingDnsCleanup {
+        provider: "aliyun".to_string(),
+        credential_id: credential_id.to_string(),
+        zone_id: zone,
+        record_id: response.record_id,
+        record_name,
+        attempt_count: 0,
+        next_attempt_at: None,
+        last_error: None,
+    })
 }
 
 async fn discover_aliyun_zone(
     access_key_id: &str,
     access_key_secret: &str,
     domain: &str,
-) -> Result<(String, Vec<String>), DnsProviderFailure> {
+) -> Result<String, DnsProviderFailure> {
     let labels = domain.split('.').collect::<Vec<_>>();
     for index in 0..labels.len().saturating_sub(1) {
         let candidate = labels[index..].join(".");
-        let result: Result<AliyunDomainInfo, DnsProviderFailure> = aliyun_request(
+        let result: Result<serde_json::Value, DnsProviderFailure> = aliyun_request(
             access_key_id,
             access_key_secret,
             "DescribeDomainInfo",
@@ -1035,24 +977,7 @@ async fn discover_aliyun_zone(
         )
         .await;
         match result {
-            Ok(info) => {
-                let name_servers = info
-                    .dns_servers
-                    .map(|servers| servers.values)
-                    .unwrap_or_default();
-                if name_servers.is_empty() {
-                    return Err(DnsProviderFailure::provider(
-                        FailureKind::UserActionRequired,
-                        "dns_zone_has_no_nameservers",
-                        format!(
-                            "Aliyun DNS zone {candidate} did not provide authoritative nameservers"
-                        ),
-                        None,
-                        None,
-                    ));
-                }
-                return Ok((candidate, name_servers));
-            }
+            Ok(_) => return Ok(candidate),
             Err(error) if aliyun_zone_missing(&error.code) => continue,
             Err(error) => return Err(error),
         }
@@ -1270,7 +1195,7 @@ async fn create_cloudflare_dns01(
     credential_id: &str,
     domain: &str,
     value: &str,
-) -> Result<(PendingDnsCleanup, Vec<String>), DnsProviderFailure> {
+) -> Result<PendingDnsCleanup, DnsProviderFailure> {
     let client = cloudflare_client(api_token)?;
     create_cloudflare_dns01_with_client(&client, credential_id, domain, value).await
 }
@@ -1280,7 +1205,7 @@ async fn create_cloudflare_dns01_with_client(
     credential_id: &str,
     domain: &str,
     value: &str,
-) -> Result<(PendingDnsCleanup, Vec<String>), DnsProviderFailure> {
+) -> Result<PendingDnsCleanup, DnsProviderFailure> {
     let zone = discover_cloudflare_zone(client, domain).await?;
     let record_name = format!("_acme-challenge.{domain}");
     let response = client
@@ -1309,7 +1234,7 @@ async fn create_cloudflare_dns01_with_client(
         last_error: None,
     };
 
-    Ok((cleanup, zone.name_servers))
+    Ok(cleanup)
 }
 
 async fn discover_cloudflare_zone(
@@ -1331,22 +1256,7 @@ async fn discover_cloudflare_zone(
             .await
             .map_err(|error| cloudflare_failure("Cloudflare zone discovery failed", error))?;
         if let Some(zone) = response.result.into_iter().next() {
-            if zone.name_servers.is_empty() {
-                return Err(DnsProviderFailure::provider(
-                    FailureKind::UserActionRequired,
-                    "dns_zone_has_no_nameservers",
-                    format!(
-                        "Cloudflare zone {} did not provide authoritative nameservers",
-                        zone.name
-                    ),
-                    None,
-                    None,
-                ));
-            }
-            return Ok(CloudflareZone {
-                id: zone.id,
-                name_servers: zone.name_servers,
-            });
+            return Ok(CloudflareZone { id: zone.id });
         }
     }
     Err(DnsProviderFailure::provider(
@@ -1446,93 +1356,6 @@ fn cloudflare_failure(context: &str, error: ApiFailure) -> DnsProviderFailure {
             None,
         ),
     }
-}
-
-async fn wait_for_authoritative_txt(
-    name_servers: &[String],
-    record_name: &str,
-    expected: &str,
-) -> Result<(), String> {
-    let deadline = tokio::time::Instant::now() + DNS_PROPAGATION_TIMEOUT;
-    loop {
-        let mut all_visible = true;
-        for name_server in name_servers {
-            match authoritative_txt_values(name_server, record_name).await {
-                Ok(values) if values.contains(expected) => {}
-                Ok(_) | Err(_) => {
-                    all_visible = false;
-                    break;
-                }
-            }
-        }
-        if all_visible {
-            return Ok(());
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return Err(format!(
-                "DNS-01 TXT record {record_name} did not propagate to all authoritative nameservers within {} seconds",
-                DNS_PROPAGATION_TIMEOUT.as_secs()
-            ));
-        }
-        sleep(DNS_PROPAGATION_INTERVAL).await;
-    }
-}
-
-async fn authoritative_txt_values(
-    name_server: &str,
-    record_name: &str,
-) -> Result<BTreeSet<String>, String> {
-    let addresses = tokio::net::lookup_host(format!("{name_server}:53"))
-        .await
-        .map_err(|error| format!("failed to resolve nameserver {name_server}: {error}"))?
-        .collect::<Vec<SocketAddr>>();
-    if addresses.is_empty() {
-        return Err(format!(
-            "nameserver {name_server} did not resolve to an address"
-        ));
-    }
-
-    let mut last_error = None;
-    for address in addresses {
-        match authoritative_txt_values_at(address, record_name).await {
-            Ok(values) => return Ok(values),
-            Err(error) => last_error = Some(error),
-        }
-    }
-    Err(last_error.unwrap_or_else(|| {
-        format!("TXT lookup via {name_server} did not use any resolved address")
-    }))
-}
-
-async fn authoritative_txt_values_at(
-    address: SocketAddr,
-    record_name: &str,
-) -> Result<BTreeSet<String>, String> {
-    let config = ResolverConfig::from_parts(
-        None,
-        Vec::new(),
-        vec![NameServerConfig::new(address, Protocol::Udp)],
-    );
-    let mut builder =
-        TokioResolver::builder_with_config(config, TokioConnectionProvider::default());
-    builder.options_mut().attempts = 1;
-    builder.options_mut().timeout = Duration::from_secs(2);
-    builder.options_mut().cache_size = 0;
-    let resolver = builder.build();
-    let lookup = resolver
-        .txt_lookup(record_name)
-        .await
-        .map_err(|error| format!("TXT lookup via {address} failed: {error}"))?;
-    Ok(lookup
-        .iter()
-        .map(|txt| {
-            txt.txt_data()
-                .iter()
-                .flat_map(|part| part.iter().copied())
-                .collect::<Vec<_>>()
-        })
-        .filter_map(|value| String::from_utf8(value).ok())
-        .collect())
 }
 
 #[cfg(test)]
@@ -1639,7 +1462,7 @@ mod tests {
     }
 
     #[test]
-    fn cloudflare_dns01_discovers_zone_and_manages_txt_record() {
+    fn cloudflare_dns01_manages_txt_record_without_authoritative_lookup() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1694,7 +1517,7 @@ mod tests {
                 Environment::Custom(format!("http://{address}/client/v4/")),
             )
             .unwrap();
-            let (cleanup, name_servers) = create_cloudflare_dns01_with_client(
+            let cleanup = create_cloudflare_dns01_with_client(
                 &client,
                 "cf-main",
                 "app.example.com",
@@ -1706,7 +1529,6 @@ mod tests {
             assert_eq!(cleanup.zone_id, "zone-id");
             assert_eq!(cleanup.record_id, "record-id");
             assert_eq!(cleanup.record_name, "_acme-challenge.app.example.com");
-            assert_eq!(name_servers, ["ns1.example.test", "ns2.example.test"]);
 
             delete_cloudflare_record_with_client(&client, "zone-id", "record-id")
                 .await
@@ -2034,7 +1856,7 @@ mod tests {
     }
 
     #[test]
-    fn dns01_propagation_failure_persists_failed_cleanup() {
+    fn dns01_partial_presentation_failure_persists_failed_cleanup() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
             let temp = tempfile::tempdir().unwrap();
@@ -2079,12 +1901,12 @@ mod tests {
                 )
                 .await;
             let failure = output.result.unwrap_err();
-            assert_eq!(failure.source, FailureSource::DnsPropagation);
+            assert_eq!(failure.source, FailureSource::DnsProvider);
             assert_eq!(failure.kind, FailureKind::Transient);
             assert!(
                 failure
                     .message
-                    .contains("Let's Encrypt / DNS-01: DNS-01 TXT record did not propagate")
+                    .contains("Let's Encrypt / DNS-01: simulated DNS provider failure")
             );
             assert_eq!(output.cleanup_failures.len(), 1);
             assert!(*cleanup_attempted.lock().unwrap());
@@ -2387,7 +2209,13 @@ mod tests {
             _value: &str,
         ) -> Result<PendingDnsCleanup, Dns01PresentError> {
             Err(Dns01PresentError {
-                failure: DnsProviderFailure::propagation("DNS-01 TXT record did not propagate"),
+                failure: DnsProviderFailure::provider(
+                    FailureKind::Transient,
+                    "dns_provider_partial_failure",
+                    "simulated DNS provider failure",
+                    None,
+                    None,
+                ),
                 cleanup: Some(PendingDnsCleanup {
                     provider: "cloudflare".to_string(),
                     credential_id: credential_id.to_string(),

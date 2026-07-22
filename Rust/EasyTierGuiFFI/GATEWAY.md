@@ -11,8 +11,8 @@ domains to HTTP or HTTPS upstreams.
 - `instant-acme` 0.8.5 provides ACME account persistence, orders, HTTP-01/DNS-01 challenges,
   certificate finalization, ARI renewal information, and replacement-order support.
 - `cloudflare` 0.14.0 with its Rustls transport provides typed zone discovery and DNS record APIs.
-- `hickory-resolver` performs direct authoritative TXT lookups before a DNS-01 challenge is marked
-  ready.
+- DNS-01 providers create and clean up challenge TXT records through their provider APIs; the ACME
+  authority performs the protocol-defined DNS validation.
 
 These crates are compiled into the Rust `staticlib`; BoringSSL is not a runtime dylib dependency.
 

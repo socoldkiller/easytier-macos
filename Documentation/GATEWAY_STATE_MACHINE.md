@@ -112,7 +112,6 @@ One attempt uses exactly one authority and one challenge method. No error may sw
 | Missing or mismatched DNS credential | User Action Required | Suspended or apply blocked before deployment | Credential revision/change |
 | Cloudflare/Aliyun 401, 403, invalid access/signature, missing zone | User Action Required | Suspended | Fix provider access or zone selection |
 | Cloudflare/Aliyun 429 | Rate Limited | Waiting Retry | Per-certificate provider retry deadline; it must not freeze the ACME authority |
-| DNS propagation timeout | Transient | Waiting Retry | Persisted backoff after cleanup attempt |
 | Certificate download/network failure | Transient unless ACME says otherwise | Waiting Retry | Persisted backoff or authority cooldown |
 | Invalid SAN, key mismatch, invalid validity, unsupported local material | Permanent | Suspended | Policy change or manual retry after remediation |
 | Certificate storage/journal commit failure | Permanent | Suspended | Preserve valid Active Certificate; require storage remediation |
