@@ -21,7 +21,6 @@ struct EasyTierApp: App {
     var body: some Scene {
         Window("EasyTier", id: EasyTierWindowID.main) {
             MainWindowView()
-                .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
                 .easyTierScrollEdgeEffect()
                 .easyTierWindowBackground(
                     glassEffectsEnabled: appearanceSettings.glassEffectsEnabled,

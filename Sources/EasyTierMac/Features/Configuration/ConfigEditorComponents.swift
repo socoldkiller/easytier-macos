@@ -50,14 +50,6 @@ extension View {
     }
 }
 
-struct ConfigEditorScrollOffsetKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
 struct FlagGroup<Content: View>: View {
     var title: String
     var systemImage: String
