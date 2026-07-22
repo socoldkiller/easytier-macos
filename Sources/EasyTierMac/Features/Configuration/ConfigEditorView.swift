@@ -16,9 +16,13 @@ struct ConfigEditorView: View {
 
     @State private var displayAdvanced: Bool = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     private var store: EasyTierAppStore { appContext.workspace.store }
     private var isRemote: Bool { remoteSession != nil }
+    private var titlebarScrollEdgeEffectsEnabled: Bool {
+        appContext.settings.appearance.glassEffectsEnabled && !reduceTransparency
+    }
 
     init(
         config: Binding<NetworkConfig>,
@@ -45,20 +49,8 @@ struct ConfigEditorView: View {
         self.onTextEditingCommit = onTextEditingCommit
     }
 
-    private static let scrollSpaceName = "ConfigEditorScroll"
-    private static let toolbarHideThreshold: CGFloat = 18
-
     var body: some View {
         ScrollView {
-            GeometryReader { proxy in
-                Color.clear
-                    .preference(
-                        key: ConfigEditorScrollOffsetKey.self,
-                        value: proxy.frame(in: .named(Self.scrollSpaceName)).minY
-                    )
-            }
-            .frame(height: 0)
-
             LazyVStack(alignment: .leading, spacing: 14) {
                 CardSection("Network") {
                     networkNameRow
@@ -81,7 +73,7 @@ struct ConfigEditorView: View {
             }
             .padding(18)
         }
-        .coordinateSpace(name: Self.scrollSpaceName)
+        .easyTierTitlebarScrollEdgeStyle(isEnabled: titlebarScrollEdgeEffectsEnabled)
         .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
         .hideScrollViewScrollers()
         .textFieldStyle(.glassField)
@@ -98,8 +90,17 @@ struct ConfigEditorView: View {
         .onScrollPhaseChange { _, phase in
             store.isAnyViewScrolling = phase.isScrolling
         }
+        .onScrollGeometryChange(for: Bool.self) { geometry in
+            TitlebarScrollEdgeVisibilityResolver.isVisible(
+                contentOffsetY: geometry.contentOffset.y,
+                topInset: geometry.contentInsets.top
+            )
+        } action: { _, isVisible in
+            onScrolledPastTopChange(isVisible)
+        }
         .onDisappear {
             store.isAnyViewScrolling = false
+            onScrolledPastTopChange(false)
             onTextEditingChange(false)
         }
         .onAppear {
@@ -110,9 +111,6 @@ struct ConfigEditorView: View {
         }
         .onChange(of: config.instance_id) { _, _ in
             syncDisplayMode()
-        }
-        .onPreferenceChange(ConfigEditorScrollOffsetKey.self) { minY in
-            onScrolledPastTopChange(minY < -Self.toolbarHideThreshold)
         }
         .onChange(of: portForwardKeys) { oldKeys, newKeys in
             for (id, key) in oldKeys {

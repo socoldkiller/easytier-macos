@@ -6,6 +6,7 @@ struct MainWindowView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(AppContext.self) private var appContext
     @State private var tomlPresentation: TOMLPresentation?
     @State private var draftConfig = NetworkConfig()
@@ -24,6 +25,7 @@ struct MainWindowView: View {
     @State private var selectedConfigIDLocal: String?
     @State private var showingDeleteRunningNetworkConfirmation = false
     @State private var configEditorScrolledPastTop = false
+    @State private var configEditorTitlebarScrollEdgeVisible = false
     @State private var publishServiceRequest: PublishServiceRequest?
 
     private static let tabTransitionDistance: CGFloat = 14
@@ -56,6 +58,10 @@ struct MainWindowView: View {
             .navigationTitle("")
             .toolbar { toolbar }
         }
+        .easyTierTitlebarScrollEdgeBackground(
+            isVisible: configEditorTitlebarScrollEdgeVisible,
+            glassEffectsEnabled: appearanceSettings.glassEffectsEnabled && !reduceTransparency
+        )
         .overlay(alignment: .top) {
             if let notice = store.networkSecretCleanupNotice {
                 NetworkSecretCleanupBanner(
@@ -75,6 +81,9 @@ struct MainWindowView: View {
         }
         .onChange(of: store.selectedTab) { _, newTab in
             selectedTabLocal = newTab
+            if newTab != .config {
+                configEditorTitlebarScrollEdgeVisible = false
+            }
             if newTab != .config, store.remoteConfigSession != nil {
                 store.clearRemoteConfigSession()
             }
@@ -230,6 +239,7 @@ struct MainWindowView: View {
                     config: config,
                     networkSecretDraft: $draftNetworkSecret,
                     members: store.selectedLiveMemberStatuses,
+                    onScrolledPastTopChange: { configEditorTitlebarScrollEdgeVisible = $0 },
                     onTextEditingChange: { configTextFieldIsEditing = $0 },
                     onTextEditingCommit: scheduleLocalConfigApply
                 )
@@ -314,7 +324,7 @@ struct MainWindowView: View {
             reconcileSearchSelection(with: ids)
         }
         .easyTierSidebarBackground(
-            glassEffectsEnabled: appearanceSettings.glassEffectsEnabled,
+            glassEffectsEnabled: appearanceSettings.glassEffectsEnabled && !reduceTransparency,
             renderCoordinator: appContext.presentation.glassRenderCoordinator
         )
         .background {
@@ -848,7 +858,12 @@ struct MainWindowView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let config = remoteConfigBinding() {
-            ConfigEditorView(config: config, members: store.selectedLiveMemberStatuses, remoteSession: session)
+            ConfigEditorView(
+                config: config,
+                members: store.selectedLiveMemberStatuses,
+                remoteSession: session,
+                onScrolledPastTopChange: { configEditorTitlebarScrollEdgeVisible = $0 }
+            )
                 .disabled(session.applyState.isApplying)
         }
     }
