@@ -16,12 +16,15 @@ struct PublishServiceSheet: View {
     @State private var certificateAuthority = GatewayCertificateAuthority.letsEncrypt
     @State private var challengeMode = PublishedServiceChallengeMode.http01
     @State private var dnsCredentialID: String?
+    @State private var contactEmail = ""
+    @State private var showsHTTPSOptions = false
     @State private var isWorking = false
     @State private var errorMessage: String?
 
     private enum Field: Hashable {
         case serviceLabel
         case targetPort
+        case contactEmail
     }
 
     private var store: EasyTierAppStore { appContext.workspace.store }
@@ -67,6 +70,24 @@ struct PublishServiceSheet: View {
         return suffix.hasSuffix(".") ? String(suffix.dropLast()) : suffix
     }
 
+    private var savedContactEmail: String? {
+        try? GatewayPublishedServicesValidator.normalizeContactEmail(
+            gateway.acmeConfiguration?.contactEmail
+        )
+    }
+
+    private var normalizedContactEmail: String? {
+        try? GatewayPublishedServicesValidator.normalizeContactEmail(contactEmail)
+    }
+
+    private var requiresContactEmail: Bool {
+        savedContactEmail == nil
+    }
+
+    private var contactEmailIsInvalid: Bool {
+        !contactEmail.isEmpty && normalizedContactEmail == nil
+    }
+
     private var canPublish: Bool {
         guard let port = Int(targetPort) else { return false }
         guard challengeMode.challenge(credentialID: dnsCredentialID) != nil else { return false }
@@ -74,7 +95,7 @@ struct PublishServiceSheet: View {
             && !gateway.isBusy
             && !serviceLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && (1 ... 65_535).contains(port)
-            && gateway.isTLSConfigured
+            && (!requiresContactEmail || normalizedContactEmail != nil)
             && store.selectedConfig != nil
             && gateway.magicDNSState == .ready
             && selectedTarget != nil
@@ -122,39 +143,6 @@ struct PublishServiceSheet: View {
                         .disabled(isWorking)
                 }
                 GridRow {
-                    Text("Certificate Authority")
-                        .foregroundStyle(.secondary)
-                    Picker("Certificate Authority", selection: $certificateAuthority) {
-                        ForEach(GatewayCertificateAuthority.allCases, id: \.self) { authority in
-                            Text(authority.label).tag(authority)
-                        }
-                    }
-                    .labelsHidden()
-                }
-                GridRow {
-                    Text("Validation Method")
-                        .foregroundStyle(.secondary)
-                    Picker("Certificate Challenge", selection: $challengeMode) {
-                        ForEach(PublishedServiceChallengeMode.allCases) { mode in
-                            Text(mode.label).tag(mode)
-                        }
-                    }
-                    .labelsHidden()
-                }
-                if challengeMode == .dns01 {
-                    GridRow {
-                        Text("DNS Credential")
-                            .foregroundStyle(.secondary)
-                        Picker("DNS Credential", selection: $dnsCredentialID) {
-                            ForEach(gateway.dnsCredentials) { credential in
-                                Text("\(credential.label) · \(credential.provider.displayName)")
-                                    .tag(Optional(credential.id))
-                            }
-                        }
-                        .labelsHidden()
-                    }
-                }
-                GridRow {
                     Text("Port")
                         .foregroundStyle(.secondary)
                     TextField("3000", text: $targetPort)
@@ -162,8 +150,38 @@ struct PublishServiceSheet: View {
                         .focused($focusedField, equals: .targetPort)
                         .disabled(isWorking)
                 }
+                if requiresContactEmail {
+                    GridRow {
+                        Text("Certificate Email")
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 4) {
+                            TextField("name@example.com", text: $contactEmail)
+                                .textFieldStyle(.glassField)
+                                .focused($focusedField, equals: .contactEmail)
+                                .disabled(isWorking)
+                            if contactEmailIsInvalid {
+                                Label("Enter a valid email address.", systemImage: "exclamationmark.circle.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.red)
+                            } else {
+                                Text("Used by the certificate authority for security and renewal notices.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
             }
             .gridColumnAlignment(.leading)
+
+            PublishedServiceHTTPSOptions(
+                isExpanded: $showsHTTPSOptions,
+                certificateAuthority: $certificateAuthority,
+                challengeMode: $challengeMode,
+                dnsCredentialID: $dnsCredentialID,
+                dnsCredentials: gateway.dnsCredentials,
+                onManageDNSCredentials: openGatewaySettings
+            )
 
             if selectedTarget != nil {
                 PublishedServicePreview(
@@ -173,20 +191,16 @@ struct PublishServiceSheet: View {
                 )
             }
 
-            if !gateway.isTLSConfigured {
-                GatewayTLSRequirementBanner(action: openGatewaySettings)
-            } else if !gateway.desiredEnabled {
-                Label(
-                    "Gateway is off. This service will become available after you turn it on in General.",
-                    systemImage: "power.circle"
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-
             if let errorMessage {
                 ErrorBanner(message: errorMessage)
             }
+
+            HStack(spacing: 4) {
+                Text("By publishing, you agree to \(certificateAuthority.label)'s certificate terms.")
+                Link("View terms", destination: certificateAuthority.termsURL)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
 
             HStack {
                 Spacer(minLength: 0)
@@ -225,11 +239,6 @@ struct PublishServiceSheet: View {
             errorMessage = nil
             defer { isWorking = false }
             do {
-                guard gateway.isTLSConfigured else {
-                    throw GatewayConfigurationValidationError.invalid(
-                        "Configure SSL in Settings > Gateway before publishing a service."
-                    )
-                }
                 guard gateway.magicDNSState == .ready else {
                     throw GatewayConfigurationValidationError.invalid(
                         "Wait for Magic DNS to become ready before publishing a service."
@@ -257,6 +266,7 @@ struct PublishServiceSheet: View {
                         ?? store.magicDNSSettings.dnsSuffix,
                     serviceLabel: serviceLabel,
                     targetPort: port,
+                    contactEmail: requiresContactEmail ? normalizedContactEmail : nil,
                     certificatePolicy: GatewayCertificatePolicy(
                         authority: certificateAuthority,
                         challenge: challenge
@@ -271,7 +281,6 @@ struct PublishServiceSheet: View {
 
     private func openGatewaySettings() {
         appContext.settings.request(.gateway)
-        dismiss()
         openWindow(id: EasyTierWindowID.settings)
     }
 

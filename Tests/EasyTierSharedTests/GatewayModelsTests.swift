@@ -263,6 +263,18 @@ func gatewayValidationRejectsNonExactCertificateDomains(_ domain: String) {
     ))
 }
 
+@Test func certificateContactEmailNormalizationTrimsAndValidatesInput() throws {
+    #expect(
+        try GatewayPublishedServicesValidator.normalizeContactEmail("  ops@example.com  ")
+            == "ops@example.com"
+    )
+    #expect(try GatewayPublishedServicesValidator.normalizeContactEmail("   ") == nil)
+    #expect(try GatewayPublishedServicesValidator.normalizeContactEmail(nil) == nil)
+    #expect(throws: GatewayConfigurationValidationError.self) {
+        try GatewayPublishedServicesValidator.normalizeContactEmail("not-an-email")
+    }
+}
+
 @Test func runtimeCertificateRejectsMissingAuthorityAndAutomaticChallenge() throws {
     let missingAuthority = Data(
         """

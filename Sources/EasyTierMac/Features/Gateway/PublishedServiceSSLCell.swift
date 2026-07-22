@@ -12,10 +12,10 @@ struct PublishedServiceSSLCell: View {
 
     var body: some View {
         Label {
-            Text(authority.label)
+            Text(provider.label)
                 .lineLimit(1)
         } icon: {
-            Image(systemName: provider.isSecure ? "lock.fill" : "lock.open")
+            Image(systemName: iconName)
                 .foregroundStyle(provider.isSecure ? EasyTierColors.statusConnected : .secondary)
         }
         .help(helpText)
@@ -23,6 +23,14 @@ struct PublishedServiceSSLCell: View {
         .accessibilityLabel(
             Text("Certificate: \(authority.label), \(challenge), \(provider.connectionLabel)")
         )
+    }
+
+    private var iconName: String {
+        switch provider {
+        case .unavailable: "exclamationmark.lock"
+        case .managedHTTPS: "lock.fill"
+        case .requesting: "clock.badge"
+        }
     }
 
     private var helpText: String {

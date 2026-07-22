@@ -1,3 +1,4 @@
+import EasyTierShared
 import SwiftUI
 
 struct GatewayTLSSettingsSection: View {
@@ -5,24 +6,23 @@ struct GatewayTLSSettingsSection: View {
 
     @State private var contactEmail = ""
     @State private var savedContactEmail: String?
-    @State private var termsOfServiceAgreed = false
-    @State private var savedTermsOfServiceAgreed = false
     @State private var isSaving = false
     @State private var errorMessage: String?
 
     private var configurationID: String {
-        let configuration = gateway.acmeConfiguration
-        return "\(configuration?.contactEmail ?? "")-\(configuration?.termsOfServiceAgreed == true)"
+        gateway.acmeConfiguration?.contactEmail ?? ""
     }
 
     private var normalizedContactEmail: String? {
-        let email = contactEmail.trimmingCharacters(in: .whitespacesAndNewlines)
-        return email.isEmpty ? nil : email
+        try? GatewayPublishedServicesValidator.normalizeContactEmail(contactEmail)
     }
 
     private var hasUnsavedChanges: Bool {
         normalizedContactEmail != savedContactEmail
-            || termsOfServiceAgreed != savedTermsOfServiceAgreed
+    }
+
+    private var contactEmailIsInvalid: Bool {
+        !contactEmail.isEmpty && normalizedContactEmail == nil
     }
 
     var body: some View {
@@ -32,42 +32,29 @@ struct GatewayTLSSettingsSection: View {
             }
 
             CardSection(
-                "Managed Certificate",
-                systemImage: "lock.shield",
-                footer: "Choose Let's Encrypt or ZeroSSL and a validation method for each Published Service."
+                "Certificate Contact",
+                systemImage: "envelope",
+                footer: "Certificate authorities use this address for account, security, and renewal notices."
             ) {
-                HStack(spacing: 10) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Managed HTTPS")
-                            .bold()
-                        Text("Certificate authority and validation are selected per service")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 12)
-                    StatusPill(
-                        gateway.isTLSConfigured ? "Ready" : "Setup Required",
-                        tone: gateway.isTLSConfigured ? .positive : .warning
-                    )
-                }
-                SettingsRowDivider()
                 SettingsInlineRow("Contact Email") {
-                    TextField("Required for published services", text: $contactEmail)
-                        .textFieldStyle(.glassField)
-                        .frame(maxWidth: 320)
-                        .disabled(isSaving)
+                    VStack(alignment: .trailing, spacing: 4) {
+                        TextField("name@example.com", text: $contactEmail)
+                            .textFieldStyle(.glassField)
+                            .frame(maxWidth: 320)
+                            .disabled(isSaving)
+                        if contactEmailIsInvalid {
+                            Text("Enter a valid email address.")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                    }
                 }
-                SettingsRowDivider()
-                Toggle(isOn: $termsOfServiceAgreed) {
-                    Text("Enable managed certificates and accept the selected authorities' terms")
-                }
-                .disabled(isSaving)
                 SettingsRowDivider()
                 HStack {
                     Spacer(minLength: 0)
                     Button("Save", systemImage: "checkmark", action: save)
                         .buttonStyle(.borderedProminent)
-                        .disabled(isSaving || !hasUnsavedChanges)
+                        .disabled(isSaving || !hasUnsavedChanges || normalizedContactEmail == nil)
                 }
             }
         }
@@ -80,8 +67,6 @@ struct GatewayTLSSettingsSection: View {
         let configuration = gateway.acmeConfiguration
         contactEmail = configuration?.contactEmail ?? ""
         savedContactEmail = configuration?.contactEmail
-        termsOfServiceAgreed = configuration?.termsOfServiceAgreed ?? false
-        savedTermsOfServiceAgreed = configuration?.termsOfServiceAgreed ?? false
     }
 
     private func save() {
@@ -90,12 +75,13 @@ struct GatewayTLSSettingsSection: View {
             errorMessage = nil
             defer { isSaving = false }
             do {
-                try await gateway.configureACME(
-                    contactEmail: normalizedContactEmail,
-                    termsOfServiceAgreed: termsOfServiceAgreed
-                )
+                guard let normalizedContactEmail else {
+                    throw GatewayConfigurationValidationError.invalid(
+                        "Enter a certificate contact email."
+                    )
+                }
+                try await gateway.configureAutomaticHTTPS(contactEmail: normalizedContactEmail)
                 savedContactEmail = normalizedContactEmail
-                savedTermsOfServiceAgreed = termsOfServiceAgreed
             } catch {
                 errorMessage = error.localizedDescription
             }

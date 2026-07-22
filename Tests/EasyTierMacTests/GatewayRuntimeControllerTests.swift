@@ -4,19 +4,12 @@ import Testing
 @testable import EasyTierMac
 
 @MainActor
-@Test func publishingServiceStartsDerivedConfigurationWhenGatewayIsEnabled() async throws {
+@Test func publishingServiceConfiguresAutomaticHTTPSAndStartsGateway() async throws {
     let store = InMemoryGatewayConfigurationStore()
     let client = RecordingGatewayClient()
     let controller = makeController(store: store, client: client)
     await controller.load()
-    #expect(!controller.isTLSConfigured)
-
-    try await controller.configureACME(
-        contactEmail: "ops@example.com",
-        termsOfServiceAgreed: true
-    )
-    #expect(controller.isTLSConfigured)
-    #expect(controller.acmeConfiguration?.contactEmail == "ops@example.com")
+    #expect(!controller.isAutomaticHTTPSReady)
     await controller.reconcileTopology(
         networkConfigID: "network-a",
         allowedIPv4CIDR: "10.0.0.0/24",
@@ -30,21 +23,17 @@ import Testing
         magicDNSSuffix: "et.net.",
         serviceLabel: "abc",
         targetPort: 3_000,
-        certificatePolicy: GatewayCertificatePolicy(
-            authority: .letsEncrypt,
-            challenge: .http01
-        )
+        contactEmail: " ops@example.com "
     )
-    #expect(!controller.desiredEnabled)
-    #expect(await client.callNames().isEmpty)
-
-    try await controller.setGatewayEnabled(true)
 
     let runtime = try #require(await client.lastStartedConfiguration())
     let route = try #require(runtime.routes.first)
     let saved = try #require(await store.currentState())
     #expect(controller.desiredEnabled)
+    #expect(controller.isAutomaticHTTPSReady)
     #expect(controller.status.state == .running)
+    #expect(saved.acmeAccount?.contactEmail == "ops@example.com")
+    #expect(saved.acmeAccount?.termsOfServiceAgreed == true)
     #expect(saved.services.first?.id == service.id)
     #expect(saved.services.first?.desiredEnabled == true)
     #expect(saved.gatewayEnabled)
@@ -57,6 +46,37 @@ import Testing
         "start",
         "status",
     ])
+}
+
+@MainActor
+@Test func publishingWithoutCertificateEmailDoesNotPersistPartialState() async throws {
+    let store = InMemoryGatewayConfigurationStore()
+    let client = RecordingGatewayClient()
+    let controller = makeController(store: store, client: client)
+    await controller.load()
+    await controller.reconcileTopology(
+        networkConfigID: "network-a",
+        allowedIPv4CIDR: "10.0.0.0/24",
+        magicDNSSuffix: "et.net.",
+        hostnamesByPeerID: ["peer-a": "a"]
+    )
+
+    await #expect(throws: GatewayConfigurationValidationError.self) {
+        try await controller.createService(
+            networkConfigID: "network-a",
+            targetPeerID: "peer-a",
+            targetHostname: "a",
+            magicDNSSuffix: "et.net.",
+            serviceLabel: "abc",
+            targetPort: 3_000
+        )
+    }
+
+    #expect(await store.currentState() == nil)
+    #expect(controller.acmeConfiguration == nil)
+    #expect(controller.services.isEmpty)
+    #expect(!controller.desiredEnabled)
+    #expect(await client.callNames().isEmpty)
 }
 
 @MainActor
@@ -90,10 +110,7 @@ import Testing
         helperRegistration: nil
     )
     await controller.load()
-    try await controller.configureACME(
-        contactEmail: "ops@example.com",
-        termsOfServiceAgreed: true
-    )
+    try await controller.configureAutomaticHTTPS(contactEmail: "ops@example.com")
     await controller.reconcileTopology(
         networkConfigID: "network-a",
         allowedIPv4CIDR: "10.0.0.10/24",
@@ -128,7 +145,7 @@ import Testing
     #expect(saved.lastKnownNetworkIPv4CIDR == "10.0.0.10/24")
     #expect(saved.services[0].certificatePolicy.authority == .zeroSSL)
     #expect(saved.services[0].certificatePolicy.challenge == .dns01(credentialID: descriptor.id))
-    #expect(await client.callNames().isEmpty)
+    #expect(saved.gatewayEnabled)
     let expectedRuntime = try GatewayConfigurationFactory.makeRuntimeConfiguration(from: saved)
     #expect(expectedRuntime.certificates.first?.authority == .zeroSSL)
     #expect(
@@ -141,8 +158,6 @@ import Testing
                 )
             )
     )
-
-    try await controller.setGatewayEnabled(true)
 
     let runtime = try #require(await client.lastStartedConfiguration())
     let certificate = try #require(runtime.certificates.first)

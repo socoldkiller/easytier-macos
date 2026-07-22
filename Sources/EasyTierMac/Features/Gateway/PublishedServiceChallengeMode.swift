@@ -13,6 +13,13 @@ enum PublishedServiceChallengeMode: String, CaseIterable, Identifiable, Sendable
         }
     }
 
+    var optionLabel: String {
+        switch self {
+        case .http01: "HTTP-01 · Port 80"
+        case .dns01: "DNS-01 · DNS Provider"
+        }
+    }
+
     init(_ challenge: GatewayPublishedServiceChallenge) {
         switch challenge {
         case .http01: self = .http01

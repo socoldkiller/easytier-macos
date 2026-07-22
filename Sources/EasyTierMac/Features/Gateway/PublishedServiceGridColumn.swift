@@ -4,7 +4,7 @@ enum PublishedServiceGridColumn: String, CaseIterable, WorkspaceDataGridColumn {
     case service = "Service"
     case ipv4 = "IPv4"
     case target = "Target"
-    case ssl = "Certificate"
+    case ssl = "HTTPS"
     case expires = "Expires"
     case lastOnline = "Last Online"
     case enabled = "Enabled"

@@ -8,7 +8,6 @@ struct PublishedServiceMenuCommands: View {
     var onCopyDomain: (GatewayPublishedService) -> Void
     var onCopyProxyIPv4: (PublishedServiceTableRow) -> Void
     var onEditService: (GatewayPublishedService) -> Void
-    var onConfigureSSL: () -> Void
     var onRetryCertificate: (GatewayPublishedService) -> Void
     var onDelete: (GatewayPublishedService) -> Void
 
@@ -33,9 +32,6 @@ struct PublishedServiceMenuCommands: View {
             onEditService(row.service)
         }
         .disabled(actionsDisabled)
-        Button("SSL Settings…", systemImage: "lock.shield") {
-            onConfigureSSL()
-        }
         Button(
             row.presentation.certificateActionTitle,
             systemImage: "arrow.clockwise"

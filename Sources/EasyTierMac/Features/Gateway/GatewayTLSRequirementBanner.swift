@@ -8,14 +8,14 @@ struct GatewayTLSRequirementBanner: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 2) {
-                Text("SSL Setup Required")
+                Text("Certificate Email Required")
                     .bold()
-                Text("Configure Automatic HTTPS before publishing services.")
+                Text("Add a contact email to resume Automatic HTTPS for these published services.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
-            Button("Configure SSL…", systemImage: "gearshape", action: action)
+            Button("Add Email…", systemImage: "envelope", action: action)
                 .controlSize(.small)
         }
         .padding(10)

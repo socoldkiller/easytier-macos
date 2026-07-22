@@ -8,7 +8,7 @@ struct EditPublishedServiceSheet: View {
     let targetOptions: [PublishedServiceTargetOption]
     let dnsCredentials: [GatewayDNSCredentialDescriptor]
     let sslProvider: PublishedServiceSSLProvider
-    let onConfigureSSL: () -> Void
+    let onManageDNSCredentials: () -> Void
     let onSave: (PublishedServiceTargetOption, Int, GatewayCertificatePolicy) -> Void
 
     @State private var portText: String
@@ -16,6 +16,7 @@ struct EditPublishedServiceSheet: View {
     @State private var certificateAuthority: GatewayCertificateAuthority
     @State private var challengeMode: PublishedServiceChallengeMode
     @State private var dnsCredentialID: String?
+    @State private var showsHTTPSOptions: Bool
 
     private var parsedPort: Int? {
         guard let port = Int(portText), (1 ... 65_535).contains(port) else { return nil }
@@ -61,7 +62,7 @@ struct EditPublishedServiceSheet: View {
         targetOptions: [PublishedServiceTargetOption],
         dnsCredentials: [GatewayDNSCredentialDescriptor],
         sslProvider: PublishedServiceSSLProvider,
-        onConfigureSSL: @escaping () -> Void,
+        onManageDNSCredentials: @escaping () -> Void,
         onSave: @escaping (
             PublishedServiceTargetOption,
             Int,
@@ -72,7 +73,7 @@ struct EditPublishedServiceSheet: View {
         self.targetOptions = targetOptions
         self.dnsCredentials = dnsCredentials
         self.sslProvider = sslProvider
-        self.onConfigureSSL = onConfigureSSL
+        self.onManageDNSCredentials = onManageDNSCredentials
         self.onSave = onSave
         _portText = State(initialValue: String(service.targetPort))
         let currentPeerID = targetOptions.first { option in
@@ -87,6 +88,9 @@ struct EditPublishedServiceSheet: View {
             initialValue: PublishedServiceChallengeMode(service.certificatePolicy.challenge)
         )
         _dnsCredentialID = State(initialValue: service.certificatePolicy.challenge.dnsCredentialID)
+        _showsHTTPSOptions = State(
+            initialValue: service.certificatePolicy != GatewayCertificatePolicy()
+        )
     }
 
     var body: some View {
@@ -129,7 +133,7 @@ struct EditPublishedServiceSheet: View {
                     }
                 }
 
-                EditServiceSection("HTTPS", systemImage: "lock.shield") {
+                EditServiceSection("Automatic HTTPS", systemImage: "lock.shield") {
                     EditServiceFormRow("Status") {
                         HStack(spacing: 10) {
                             Image(systemName: sslStatusIcon)
@@ -143,64 +147,20 @@ struct EditPublishedServiceSheet: View {
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
-
-                            Spacer(minLength: 8)
-
-                            Button("Manage…", action: configureSSL)
-                                .controlSize(.small)
                         }
                     }
 
                     EditServiceRowDivider()
 
-                    EditServiceFormRow("Authority") {
-                        Picker("Certificate Authority", selection: $certificateAuthority) {
-                            ForEach(GatewayCertificateAuthority.allCases, id: \.self) { authority in
-                                Text(authority.label).tag(authority)
-                            }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(maxWidth: .infinity)
-                    }
-
-                    EditServiceRowDivider()
-
-                    EditServiceFormRow("Validation") {
-                        Picker("Certificate Challenge", selection: $challengeMode) {
-                            ForEach(PublishedServiceChallengeMode.allCases) { mode in
-                                Text(mode.label).tag(mode)
-                            }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(maxWidth: .infinity)
-                    }
-
-                    if challengeMode == .dns01 {
-                        EditServiceRowDivider()
-
-                        EditServiceFormRow("DNS Credential") {
-                            if dnsCredentials.isEmpty {
-                                HStack {
-                                    Text("No credentials configured")
-                                        .foregroundStyle(.secondary)
-                                    Spacer(minLength: 8)
-                                    Button("Manage…", action: configureSSL)
-                                        .controlSize(.small)
-                                }
-                            } else {
-                                Picker("DNS Credential", selection: $dnsCredentialID) {
-                                    ForEach(dnsCredentials) { credential in
-                                        Text(credential.label).tag(Optional(credential.id))
-                                    }
-                                }
-                                .labelsHidden()
-                                .pickerStyle(.menu)
-                                .frame(maxWidth: .infinity)
-                            }
-                        }
-                    }
+                    PublishedServiceHTTPSOptions(
+                        isExpanded: $showsHTTPSOptions,
+                        certificateAuthority: $certificateAuthority,
+                        challengeMode: $challengeMode,
+                        dnsCredentialID: $dnsCredentialID,
+                        dnsCredentials: dnsCredentials,
+                        onManageDNSCredentials: onManageDNSCredentials
+                    )
+                    .padding(14)
                 }
             }
             .padding(.horizontal, 28)
@@ -228,7 +188,7 @@ struct EditPublishedServiceSheet: View {
     private var header: some View {
         HStack(alignment: .top, spacing: 14) {
             Image(systemName: "network")
-                .font(.system(size: 20, weight: .semibold))
+                .font(.title3)
                 .foregroundStyle(.tint)
                 .frame(width: 42, height: 42)
                 .background(
@@ -238,7 +198,8 @@ struct EditPublishedServiceSheet: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Edit Service")
-                    .font(.title2.weight(.semibold))
+                    .font(.title2)
+                    .bold()
 
                 HStack(spacing: 5) {
                     Image(systemName: "globe")
@@ -268,11 +229,6 @@ struct EditPublishedServiceSheet: View {
         )
         dismiss()
     }
-
-    private func configureSSL() {
-        dismiss()
-        onConfigureSSL()
-    }
 }
 
 private struct EditServiceSection<Content: View>: View {
@@ -293,7 +249,8 @@ private struct EditServiceSection<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label(title, systemImage: systemImage)
-                .font(.subheadline.weight(.semibold))
+                .font(.subheadline)
+                .bold()
                 .foregroundStyle(.secondary)
 
             VStack(spacing: 0) {

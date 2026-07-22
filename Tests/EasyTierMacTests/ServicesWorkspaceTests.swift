@@ -5,22 +5,29 @@ import Testing
 
 @Test func publishedServiceSSLProviderUsesCertificateServingMode() {
     let notAccepted = GatewayACMEConfiguration(
+        contactEmail: "ops@example.com",
         termsOfServiceAgreed: false
     )
+    let missingContactEmail = GatewayACMEConfiguration(
+        termsOfServiceAgreed: true
+    )
     let production = GatewayACMEConfiguration(
+        contactEmail: "ops@example.com",
         termsOfServiceAgreed: true
     )
     let staging = GatewayACMEConfiguration(
+        contactEmail: "ops@example.com",
         termsOfServiceAgreed: true
     )
 
     #expect(PublishedServiceSSLProvider(acmeConfiguration: nil) == .unavailable)
     #expect(PublishedServiceSSLProvider(acmeConfiguration: notAccepted) == .unavailable)
+    #expect(PublishedServiceSSLProvider(acmeConfiguration: missingContactEmail) == .unavailable)
     #expect(PublishedServiceSSLProvider(acmeConfiguration: production) == .requesting)
     #expect(PublishedServiceSSLProvider(acmeConfiguration: staging) == .requesting)
-    #expect(PublishedServiceSSLProvider.unavailable.label == "HTTPS Setup Required")
-    #expect(PublishedServiceSSLProvider.managedHTTPS.label == "Managed HTTPS")
-    #expect(PublishedServiceSSLProvider.requesting.label == "Requesting Certificate")
+    #expect(PublishedServiceSSLProvider.unavailable.label == "Email Required")
+    #expect(PublishedServiceSSLProvider.managedHTTPS.label == "Secure")
+    #expect(PublishedServiceSSLProvider.requesting.label == "Issuing Certificate")
     #expect(PublishedServiceSSLProvider.unavailable.urlScheme == "https")
     #expect(PublishedServiceSSLProvider.managedHTTPS.urlScheme == "https")
 }
@@ -230,11 +237,12 @@ import Testing
         status: status,
         gatewayEnabled: true,
         acmeConfiguration: GatewayACMEConfiguration(
+            contactEmail: "ops@example.com",
             termsOfServiceAgreed: true
         ),
         networkName: "Production",
         members: [servicesTestMember(peerID: serviceA.targetPeerID, ipv4: "10.0.0.10/24")],
-        searchText: "SERVICE-A 10.0.0.10 MANAGED LIVE"
+        searchText: "SERVICE-A 10.0.0.10 HTTPS LIVE"
     )
 
     #expect(display.networkName == "Production")
@@ -285,6 +293,7 @@ import Testing
         ),
         gatewayEnabled: true,
         acmeConfiguration: GatewayACMEConfiguration(
+            contactEmail: "ops@example.com",
             termsOfServiceAgreed: true
         ),
         networkName: "Production",
@@ -400,7 +409,7 @@ func publishedServiceSummary(liveCount: Int, serviceCount: Int, expected: String
     #expect(WorkspaceTab.services.systemImage == "network.badge.shield.half.filled")
     #expect(
         PublishedServiceGridColumn.allCases.map(\.title)
-            == ["Service", "IPv4", "Target", "Certificate", "Expires", "Last Online", "Enabled", ""]
+            == ["Service", "IPv4", "Target", "HTTPS", "Expires", "Last Online", "Enabled", ""]
     )
     #expect(PublishedServiceGridColumn.service.minimumWidth == 324)
     #expect(PublishedServiceGridColumn.service.idealWidth == 398)

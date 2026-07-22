@@ -5,7 +5,13 @@ struct GatewayAdvancedSettingsSection: View {
 
     var body: some View {
         ExpandableSettingsGroup("Advanced") {
-            SettingsCard {
+            GatewayTLSSettingsSection(gateway: gateway)
+            GatewayDNSCredentialsSettingsSection(gateway: gateway)
+
+            CardSection(
+                "Listeners",
+                systemImage: "point.3.connected.trianglepath.dotted"
+            ) {
                 SettingsInlineRow("HTTP-01") {
                     ListenerStatusText(
                         address: gateway.status.listeners.http,
