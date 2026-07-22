@@ -6,7 +6,6 @@ struct PublishServiceSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
     @Environment(AppContext.self) private var appContext
-    @FocusState private var focusedField: Field?
 
     let preferredTargetPeerID: String?
 
@@ -18,11 +17,15 @@ struct PublishServiceSheet: View {
     @State private var dnsCredentialID: String?
     @State private var contactEmail = ""
     @State private var showsHTTPSOptions = false
+    @State private var hasEditedPublicName = false
+    @State private var hasEditedPort = false
+    @State private var hasEditedContactEmail = false
     @State private var isWorking = false
     @State private var errorMessage: String?
+    @FocusState private var focusedField: Field?
 
     private enum Field: Hashable {
-        case serviceLabel
+        case publicName
         case targetPort
         case contactEmail
     }
@@ -42,6 +45,11 @@ struct PublishServiceSheet: View {
         targetOptions.first { $0.peerID == selectedTargetPeerID }
     }
 
+    private var trimmedDNSSuffix: String {
+        let suffix = gateway.appliedMagicDNSSuffix ?? store.magicDNSSettings.dnsSuffix
+        return suffix.hasSuffix(".") ? String(suffix.dropLast()) : suffix
+    }
+
     private var targetDomain: String {
         guard let selectedTarget else { return "member" }
         return MagicDNSDisplay.memberDomain(
@@ -51,23 +59,28 @@ struct PublishServiceSheet: View {
         ) ?? "\(selectedTarget.hostname).\(trimmedDNSSuffix)"
     }
 
-    private var publicHostname: String {
-        let label = serviceLabel.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return "\(label.isEmpty ? "service" : label).\(targetDomain)"
+    private var existingPublicHostnames: Set<String> {
+        Set(gateway.services.map(\.publicHostname))
     }
 
-    private var publicURL: String {
-        "https://\(publicHostname)"
+    private var normalizedPublicName: String? {
+        PublishedServiceFormValidation.normalizedPublicName(serviceLabel)
     }
 
-    private var targetSummary: String {
-        let port = targetPort.trimmingCharacters(in: .whitespacesAndNewlines)
-        return "\(targetDomain):\(port.isEmpty ? "—" : port)"
+    private var publicNameError: String? {
+        PublishedServiceFormValidation.publicNameError(
+            serviceLabel,
+            targetDomain: targetDomain,
+            existingPublicHostnames: existingPublicHostnames
+        )
     }
 
-    private var trimmedDNSSuffix: String {
-        let suffix = gateway.appliedMagicDNSSuffix ?? store.magicDNSSettings.dnsSuffix
-        return suffix.hasSuffix(".") ? String(suffix.dropLast()) : suffix
+    private var parsedPort: Int? {
+        PublishedServiceFormValidation.parsedPort(targetPort)
+    }
+
+    private var portError: String? {
+        PublishedServiceFormValidation.portError(targetPort)
     }
 
     private var savedContactEmail: String? {
@@ -77,28 +90,40 @@ struct PublishServiceSheet: View {
     }
 
     private var normalizedContactEmail: String? {
-        try? GatewayPublishedServicesValidator.normalizeContactEmail(contactEmail)
+        PublishedServiceFormValidation.normalizedContactEmail(contactEmail)
     }
 
     private var requiresContactEmail: Bool {
         savedContactEmail == nil
     }
 
-    private var contactEmailIsInvalid: Bool {
-        !contactEmail.isEmpty && normalizedContactEmail == nil
+    private var contactEmailError: String? {
+        PublishedServiceFormValidation.contactEmailError(contactEmail)
+    }
+
+    private var publicAddressIsValid: Bool {
+        normalizedPublicName != nil && publicNameError == nil && selectedTarget != nil
+    }
+
+    private var certificatePolicy: GatewayCertificatePolicy? {
+        guard let challenge = challengeMode.challenge(credentialID: dnsCredentialID) else {
+            return nil
+        }
+        return GatewayCertificatePolicy(
+            authority: certificateAuthority,
+            challenge: challenge
+        )
     }
 
     private var canPublish: Bool {
-        guard let port = Int(targetPort) else { return false }
-        guard challengeMode.challenge(credentialID: dnsCredentialID) != nil else { return false }
-        return !isWorking
+        !isWorking
             && !gateway.isBusy
-            && !serviceLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && (1 ... 65_535).contains(port)
+            && publicAddressIsValid
+            && parsedPort != nil
             && (!requiresContactEmail || normalizedContactEmail != nil)
+            && certificatePolicy != nil
             && store.selectedConfig != nil
             && gateway.magicDNSState == .ready
-            && selectedTarget != nil
     }
 
     init(preferredTargetPeerID: String? = nil) {
@@ -107,123 +132,185 @@ struct PublishServiceSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Publish Service")
-                    .font(.title3)
-                    .bold()
-                Text("Expose an HTTP port from \(targetDomain) through HTTPS.")
-                    .foregroundStyle(.secondary)
-            }
-
-            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 12) {
-                GridRow {
-                    Text("Target Member")
-                        .foregroundStyle(.secondary)
-                    if targetOptions.isEmpty {
-                        Text("No online members available")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Picker("Target Member", selection: $selectedTargetPeerID) {
-                            ForEach(targetOptions) { target in
-                                Text(target.label)
-                                    .tag(target.peerID)
-                            }
-                        }
-                        .labelsHidden()
-                        .disabled(isWorking)
-                    }
-                }
-                GridRow {
-                    Text("Service Name")
-                        .foregroundStyle(.secondary)
-                    TextField("abc", text: $serviceLabel)
-                        .textFieldStyle(.glassField)
-                        .focused($focusedField, equals: .serviceLabel)
-                        .disabled(isWorking)
-                }
-                GridRow {
-                    Text("Port")
-                        .foregroundStyle(.secondary)
-                    TextField("3000", text: $targetPort)
-                        .textFieldStyle(.glassField)
-                        .focused($focusedField, equals: .targetPort)
-                        .disabled(isWorking)
-                }
-                if requiresContactEmail {
-                    GridRow {
-                        Text("Certificate Email")
-                            .foregroundStyle(.secondary)
-                        VStack(alignment: .leading, spacing: 4) {
-                            TextField("name@example.com", text: $contactEmail)
-                                .textFieldStyle(.glassField)
-                                .focused($focusedField, equals: .contactEmail)
-                                .disabled(isWorking)
-                            if contactEmailIsInvalid {
-                                Label("Enter a valid email address.", systemImage: "exclamationmark.circle.fill")
-                                    .font(.caption)
-                                    .foregroundStyle(.red)
-                            } else {
-                                Text("Used by the certificate authority for security and renewal notices.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-            }
-            .gridColumnAlignment(.leading)
-
-            PublishedServiceHTTPSOptions(
-                isExpanded: $showsHTTPSOptions,
-                certificateAuthority: $certificateAuthority,
-                challengeMode: $challengeMode,
-                dnsCredentialID: $dnsCredentialID,
-                dnsCredentials: gateway.dnsCredentials,
-                onManageDNSCredentials: openGatewaySettings
-            )
-
-            if selectedTarget != nil {
-                PublishedServicePreview(
-                    publicURL: publicURL,
-                    target: targetSummary,
-                    copyAction: copyPublicURL
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 16) {
+                PublishedServiceSheetHeader(
+                    title: "Publish Service",
+                    subtitle: "Make an HTTP service available over HTTPS."
                 )
-            }
 
-            if let errorMessage {
-                ErrorBanner(message: errorMessage)
-            }
+                VStack(alignment: .leading, spacing: 14) {
+                    PublishedServiceFormRow("Public URL", systemImage: "globe") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 4) {
+                                Text("https://")
+                                    .foregroundStyle(.secondary)
 
-            HStack(spacing: 4) {
-                Text("By publishing, you agree to \(certificateAuthority.label)'s certificate terms.")
-                Link("View terms", destination: certificateAuthority.termsURL)
+                                TextField("service", text: $serviceLabel)
+                                    .labelsHidden()
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 104)
+                                    .focused($focusedField, equals: .publicName)
+                                    .disabled(isWorking)
+                                    .onSubmit(focusPort)
+
+                                Text(".\(targetDomain)")
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+
+                                Button("Copy URL", systemImage: "doc.on.doc", action: copyPublicURL)
+                                    .labelStyle(.iconOnly)
+                                    .buttonStyle(.borderless)
+                                    .disabled(!publicAddressIsValid)
+                                    .help("Copy public URL")
+                            }
+
+                            if hasEditedPublicName, let publicNameError {
+                                PublishedServiceFieldMessage(
+                                    message: publicNameError,
+                                    showsError: true
+                                )
+                            }
+                        }
+                    }
+
+                    PublishedServiceFormRow("Destination", systemImage: "arrow.right") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                if targetOptions.isEmpty {
+                                    Text("No online members available")
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    Picker("Target Member", selection: $selectedTargetPeerID) {
+                                        ForEach(targetOptions) { target in
+                                            Text(target.label)
+                                                .tag(target.peerID)
+                                        }
+                                    }
+                                    .labelsHidden()
+                                    .pickerStyle(.menu)
+                                    .frame(width: 204)
+                                    .disabled(isWorking)
+                                }
+
+                                Text(":")
+                                    .foregroundStyle(.tertiary)
+
+                                TextField("Port", text: $targetPort)
+                                    .labelsHidden()
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(.body.monospacedDigit())
+                                    .frame(width: 72)
+                                    .focused($focusedField, equals: .targetPort)
+                                    .disabled(isWorking)
+                                    .onSubmit(submitPort)
+                            }
+
+                            if hasEditedPort, let portError {
+                                PublishedServiceFieldMessage(
+                                    message: portError,
+                                    showsError: true
+                                )
+                            }
+                        }
+                    }
+
+                    if requiresContactEmail {
+                        PublishedServiceFormRow("Email", systemImage: "envelope") {
+                            VStack(alignment: .leading, spacing: 4) {
+                                TextField("name@example.com", text: $contactEmail)
+                                    .labelsHidden()
+                                    .textFieldStyle(.roundedBorder)
+                                    .focused($focusedField, equals: .contactEmail)
+                                    .disabled(isWorking)
+                                    .onSubmit(publish)
+
+                                if hasEditedContactEmail, let contactEmailError {
+                                    PublishedServiceFieldMessage(
+                                        message: contactEmailError,
+                                        showsError: true
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    PublishedServiceHTTPSOptions(
+                        isExpanded: $showsHTTPSOptions,
+                        certificateAuthority: $certificateAuthority,
+                        challengeMode: $challengeMode,
+                        dnsCredentialID: $dnsCredentialID,
+                        dnsCredentials: gateway.dnsCredentials,
+                        status: PublishedServiceSSLProvider(
+                            acmeConfiguration: gateway.acmeConfiguration
+                        ),
+                        isDisabled: isWorking,
+                        onManageDNSCredentials: openGatewaySettings
+                    )
+                }
+
+                if let errorMessage {
+                    ErrorBanner(message: errorMessage)
+                }
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            .padding(20)
+
+            Divider()
 
             HStack {
                 Spacer(minLength: 0)
                 Button("Cancel", role: .cancel, action: dismiss.callAsFunction)
                     .disabled(isWorking)
                     .keyboardShortcut(.cancelAction)
-                Button("Publish", systemImage: "checkmark.shield", action: publish)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!canPublish)
-                    .keyboardShortcut(.defaultAction)
+                Button(action: publish) {
+                    HStack {
+                        if isWorking {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text(isWorking ? "Publishing…" : "Publish")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!canPublish)
+                .keyboardShortcut(.defaultAction)
             }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            .background(.bar)
         }
-        .padding(22)
-        .frame(width: 520)
+        .frame(width: 500)
+        .controlSize(.regular)
         .task(prepare)
         .onChange(of: targetOptionIDs) { _, _ in
             reconcileTargetSelection()
+        }
+        .onChange(of: serviceLabel) { oldValue, newValue in
+            if oldValue != newValue {
+                hasEditedPublicName = true
+            }
+        }
+        .onChange(of: targetPort) { oldValue, newValue in
+            if oldValue != newValue {
+                hasEditedPort = true
+            }
+        }
+        .onChange(of: contactEmail) { oldValue, newValue in
+            if oldValue != newValue {
+                hasEditedContactEmail = true
+            }
+        }
+        .onChange(of: focusedField) { oldValue, newValue in
+            if oldValue == .publicName, newValue != .publicName {
+                normalizePublicName()
+            }
         }
     }
 
     private func prepare() async {
         reconcileTargetSelection()
-        focusedField = .serviceLabel
+        focusedField = .publicName
     }
 
     private func reconcileTargetSelection() {
@@ -233,30 +320,46 @@ struct PublishServiceSheet: View {
         ) ?? ""
     }
 
+    private func focusPort() {
+        normalizePublicName()
+        focusedField = .targetPort
+    }
+
+    private func submitPort() {
+        if requiresContactEmail {
+            focusedField = .contactEmail
+        } else {
+            publish()
+        }
+    }
+
+    private func normalizePublicName() {
+        if let normalizedPublicName {
+            serviceLabel = normalizedPublicName
+        }
+    }
+
     private func publish() {
+        guard canPublish,
+              let config = store.selectedConfig,
+              let port = parsedPort,
+              let selectedTarget,
+              let certificatePolicy
+        else {
+            hasEditedPublicName = true
+            hasEditedPort = true
+            if requiresContactEmail {
+                hasEditedContactEmail = true
+            }
+            return
+        }
+
+        normalizePublicName()
         Task {
             isWorking = true
             errorMessage = nil
             defer { isWorking = false }
             do {
-                guard gateway.magicDNSState == .ready else {
-                    throw GatewayConfigurationValidationError.invalid(
-                        "Wait for Magic DNS to become ready before publishing a service."
-                    )
-                }
-                guard let config = store.selectedConfig,
-                      let port = Int(targetPort),
-                      let selectedTarget
-                else {
-                    throw GatewayConfigurationValidationError.invalid(
-                        "Select a running EasyTier network and enter a valid target port."
-                    )
-                }
-                guard let challenge = challengeMode.challenge(credentialID: dnsCredentialID) else {
-                    throw GatewayConfigurationValidationError.invalid(
-                        "Choose a DNS credential for DNS-01."
-                    )
-                }
                 _ = try await gateway.createService(
                     networkConfigID: config.instance_id,
                     targetPeerID: selectedTarget.peerID,
@@ -267,10 +370,7 @@ struct PublishServiceSheet: View {
                     serviceLabel: serviceLabel,
                     targetPort: port,
                     contactEmail: requiresContactEmail ? normalizedContactEmail : nil,
-                    certificatePolicy: GatewayCertificatePolicy(
-                        authority: certificateAuthority,
-                        challenge: challenge
-                    )
+                    certificatePolicy: certificatePolicy
                 )
                 dismiss()
             } catch {
@@ -285,7 +385,12 @@ struct PublishServiceSheet: View {
     }
 
     private func copyPublicURL() {
+        guard publicAddressIsValid else { return }
+        let publicHostname = PublishedServiceFormValidation.publicHostname(
+            publicName: serviceLabel,
+            targetDomain: targetDomain
+        )
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(publicURL, forType: .string)
+        NSPasteboard.general.setString("https://\(publicHostname)", forType: .string)
     }
 }

@@ -521,18 +521,19 @@ struct MainWindowView: View {
         PublishedServiceTargetOption.creationOptions(members: gateway.topologyMembers)
     }
 
+    private var serviceCreationAvailability: PublishedServiceCreationAvailability {
+        PublishedServiceCreationAvailability(
+            magicDNSState: gateway.magicDNSState,
+            targets: serviceCreationTargets
+        )
+    }
+
     private var canBeginPublishingService: Bool {
-        gateway.magicDNSState == .ready && !serviceCreationTargets.isEmpty
+        serviceCreationAvailability.isAvailable
     }
 
     private var publishServiceHelp: String {
-        if gateway.magicDNSState != .ready {
-            return "Wait for Magic DNS to become ready"
-        }
-        if serviceCreationTargets.isEmpty {
-            return "Run a network with at least one online member first"
-        }
-        return "Publish a service from an online network member"
+        serviceCreationAvailability.helpText
     }
 
     private func beginPublishingService(preferredTargetPeerID: String? = nil) {

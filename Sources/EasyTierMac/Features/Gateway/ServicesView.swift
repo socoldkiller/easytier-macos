@@ -24,18 +24,15 @@ struct ServicesView: View {
         PublishedServiceTargetOption.creationOptions(members: gateway.topologyMembers)
     }
 
-    private var canBeginPublishingService: Bool {
-        gateway.magicDNSState == .ready && !serviceCreationTargets.isEmpty
+    private var serviceCreationAvailability: PublishedServiceCreationAvailability {
+        PublishedServiceCreationAvailability(
+            magicDNSState: gateway.magicDNSState,
+            targets: serviceCreationTargets
+        )
     }
 
     private var publishingEmptyStateDescription: String {
-        if gateway.magicDNSState != .ready {
-            return "Wait for Magic DNS to become ready before publishing a service."
-        }
-        if serviceCreationTargets.isEmpty {
-            return "Run a network with at least one online member before publishing a service."
-        }
-        return "Publish an HTTP service from an online network member."
+        serviceCreationAvailability.emptyStateDescription
     }
 
     private var displayedError: String? {
@@ -120,7 +117,7 @@ struct ServicesView: View {
                     ?? PublishedServiceSSLProvider(acmeConfiguration: gateway.acmeConfiguration),
                 onManageDNSCredentials: openGatewaySettings
             ) { target, port, certificatePolicy in
-                updateService(
+                try await updateService(
                     target: target,
                     port: port,
                     certificatePolicy: certificatePolicy,
@@ -168,7 +165,7 @@ struct ServicesView: View {
             } actions: {
                 Button("Publish Service…", systemImage: "plus", action: onPublishService)
                     .buttonStyle(.borderedProminent)
-                    .disabled(!canBeginPublishingService)
+                    .disabled(!serviceCreationAvailability.isAvailable)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if display.searchIsActive, display.filteredRows.isEmpty {
@@ -233,19 +230,19 @@ struct ServicesView: View {
         port: Int,
         certificatePolicy: GatewayCertificatePolicy,
         service: GatewayPublishedService
-    ) {
-        perform(service) {
-            try await gateway.updateService(
-                serviceID: service.id,
-                targetPeerID: target.peerID,
-                targetInstanceID: target.instanceID,
-                targetHostname: target.hostname,
-                magicDNSSuffix: gateway.appliedMagicDNSSuffix
-                    ?? store.magicDNSSettings.dnsSuffix,
-                port: port,
-                certificatePolicy: certificatePolicy
-            )
-        }
+    ) async throws {
+        workingServiceID = service.id
+        defer { workingServiceID = nil }
+        try await gateway.updateService(
+            serviceID: service.id,
+            targetPeerID: target.peerID,
+            targetInstanceID: target.instanceID,
+            targetHostname: target.hostname,
+            magicDNSSuffix: gateway.appliedMagicDNSSuffix
+                ?? store.magicDNSSettings.dnsSuffix,
+            port: port,
+            certificatePolicy: certificatePolicy
+        )
     }
 
     private func retryCertificate(_ service: GatewayPublishedService) {

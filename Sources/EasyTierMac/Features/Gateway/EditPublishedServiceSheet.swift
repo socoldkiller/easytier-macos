@@ -9,52 +9,59 @@ struct EditPublishedServiceSheet: View {
     let dnsCredentials: [GatewayDNSCredentialDescriptor]
     let sslProvider: PublishedServiceSSLProvider
     let onManageDNSCredentials: () -> Void
-    let onSave: (PublishedServiceTargetOption, Int, GatewayCertificatePolicy) -> Void
+    let onSave: @MainActor (
+        PublishedServiceTargetOption,
+        Int,
+        GatewayCertificatePolicy
+    ) async throws -> Void
 
     @State private var portText: String
     @State private var selectedTargetPeerID: String
     @State private var certificateAuthority: GatewayCertificateAuthority
     @State private var challengeMode: PublishedServiceChallengeMode
     @State private var dnsCredentialID: String?
-    @State private var showsHTTPSOptions: Bool
+    @State private var showsHTTPSOptions = false
+    @State private var hasEditedPort = false
+    @State private var isWorking = false
+    @State private var errorMessage: String?
+    @FocusState private var portIsFocused: Bool
 
     private var parsedPort: Int? {
-        guard let port = Int(portText), (1 ... 65_535).contains(port) else { return nil }
-        return port
+        PublishedServiceFormValidation.parsedPort(portText)
     }
 
-    private var canSave: Bool {
-        guard parsedPort != nil, let selectedTarget else { return false }
-        guard let challenge = challengeMode.challenge(credentialID: dnsCredentialID) else { return false }
-        let policy = GatewayCertificatePolicy(
-            authority: certificateAuthority,
-            challenge: challenge
-        )
-        return parsedPort != service.targetPort
-            || selectedTarget.peerID != service.targetPeerID
-            || selectedTarget.instanceID != service.targetInstanceID
-            || selectedTarget.hostname != service.lastKnownTargetHostname
-            || policy != service.certificatePolicy
+    private var portError: String? {
+        PublishedServiceFormValidation.portError(portText)
     }
 
     private var selectedTarget: PublishedServiceTargetOption? {
         targetOptions.first { $0.peerID == selectedTargetPeerID }
     }
 
-    private var sslStatusIcon: String {
-        switch sslProvider {
-        case .unavailable: "exclamationmark.triangle.fill"
-        case .managedHTTPS: "checkmark.circle.fill"
-        case .requesting: "clock.arrow.circlepath"
+    private var certificatePolicy: GatewayCertificatePolicy? {
+        guard let challenge = challengeMode.challenge(credentialID: dnsCredentialID) else {
+            return nil
         }
+        return GatewayCertificatePolicy(
+            authority: certificateAuthority,
+            challenge: challenge
+        )
     }
 
-    private var sslStatusColor: Color {
-        switch sslProvider {
-        case .unavailable: .orange
-        case .managedHTTPS: .green
-        case .requesting: .blue
+    private var canSave: Bool {
+        guard !isWorking,
+              let parsedPort,
+              let selectedTarget,
+              let certificatePolicy
+        else {
+            return false
         }
+        return PublishedServiceFormValidation.editHasChanges(
+            service: service,
+            selectedTarget: selectedTarget,
+            port: parsedPort,
+            certificatePolicy: certificatePolicy
+        )
     }
 
     init(
@@ -63,11 +70,11 @@ struct EditPublishedServiceSheet: View {
         dnsCredentials: [GatewayDNSCredentialDescriptor],
         sslProvider: PublishedServiceSSLProvider,
         onManageDNSCredentials: @escaping () -> Void,
-        onSave: @escaping (
+        onSave: @escaping @MainActor (
             PublishedServiceTargetOption,
             Int,
             GatewayCertificatePolicy
-        ) -> Void
+        ) async throws -> Void
     ) {
         self.service = service
         self.targetOptions = targetOptions
@@ -88,69 +95,53 @@ struct EditPublishedServiceSheet: View {
             initialValue: PublishedServiceChallengeMode(service.certificatePolicy.challenge)
         )
         _dnsCredentialID = State(initialValue: service.certificatePolicy.challenge.dnsCredentialID)
-        _showsHTTPSOptions = State(
-            initialValue: service.certificatePolicy != GatewayCertificatePolicy()
-        )
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 20) {
-                header
+            VStack(alignment: .leading, spacing: 16) {
+                PublishedServiceSheetHeader(
+                    title: "Edit Service",
+                    subtitle: service.publicHostname
+                )
 
-                EditServiceSection("Destination", systemImage: "arrow.left.arrow.right") {
-                    EditServiceFormRow("Target Member") {
-                        Picker("Target Member", selection: $selectedTargetPeerID) {
-                            ForEach(targetOptions) { target in
-                                Text(target.label)
-                                    .tag(target.peerID)
+                VStack(alignment: .leading, spacing: 14) {
+                    PublishedServiceFormRow("Destination", systemImage: "arrow.right") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Picker("Target Member", selection: $selectedTargetPeerID) {
+                                    ForEach(targetOptions) { target in
+                                        Text(target.label)
+                                            .tag(target.peerID)
+                                    }
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                                .frame(width: 204)
+                                .disabled(isWorking)
+                                .help("Choose the member that receives this service's proxy traffic.")
+
+                                Text(":")
+                                    .foregroundStyle(.tertiary)
+
+                                TextField("Port", text: $portText)
+                                    .labelsHidden()
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(.body.monospacedDigit())
+                                    .frame(width: 72)
+                                    .focused($portIsFocused)
+                                    .disabled(isWorking)
+                                    .onSubmit(save)
                             }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(maxWidth: .infinity)
-                        .help("Choose the EasyTier member that receives this service's proxy traffic.")
-                    }
 
-                    EditServiceRowDivider()
-
-                    EditServiceFormRow("HTTP Port") {
-                        HStack(spacing: 8) {
-                            TextField("Port", text: $portText)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.body.monospacedDigit())
-                                .frame(width: 112)
-                                .onSubmit(save)
-
-                            if !portText.isEmpty, parsedPort == nil {
-                                Image(systemName: "exclamationmark.circle.fill")
-                                    .foregroundStyle(.red)
-                                    .help("Enter a port from 1 to 65535.")
-                            }
-
-                            Spacer(minLength: 0)
-                        }
-                    }
-                }
-
-                EditServiceSection("Automatic HTTPS", systemImage: "lock.shield") {
-                    EditServiceFormRow("Status") {
-                        HStack(spacing: 10) {
-                            Image(systemName: sslStatusIcon)
-                                .foregroundStyle(sslStatusColor)
-                                .frame(width: 16)
-
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(sslProvider.label)
-                                Text(sslProvider.helpText)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
+                            if hasEditedPort, let portError {
+                                PublishedServiceFieldMessage(
+                                    message: portError,
+                                    showsError: true
+                                )
                             }
                         }
                     }
-
-                    EditServiceRowDivider()
 
                     PublishedServiceHTTPSOptions(
                         isExpanded: $showsHTTPSOptions,
@@ -158,141 +149,74 @@ struct EditPublishedServiceSheet: View {
                         challengeMode: $challengeMode,
                         dnsCredentialID: $dnsCredentialID,
                         dnsCredentials: dnsCredentials,
+                        status: sslProvider,
+                        isDisabled: isWorking,
                         onManageDNSCredentials: onManageDNSCredentials
                     )
-                    .padding(14)
+                }
+
+                if let errorMessage {
+                    ErrorBanner(message: errorMessage)
                 }
             }
-            .padding(.horizontal, 28)
-            .padding(.top, 26)
-            .padding(.bottom, 24)
+            .padding(20)
 
             Divider()
 
-            HStack(spacing: 8) {
+            HStack {
                 Spacer(minLength: 0)
-                Button("Cancel", role: .cancel) { dismiss() }
+                Button("Cancel", role: .cancel, action: dismiss.callAsFunction)
+                    .disabled(isWorking)
                     .keyboardShortcut(.cancelAction)
-                Button("Save", action: save)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!canSave)
-                    .keyboardShortcut(.defaultAction)
-            }
-            .padding(.horizontal, 28)
-            .padding(.vertical, 16)
-        }
-        .frame(width: 540)
-        .controlSize(.regular)
-    }
-
-    private var header: some View {
-        HStack(alignment: .top, spacing: 14) {
-            Image(systemName: "network")
-                .font(.title3)
-                .foregroundStyle(.tint)
-                .frame(width: 42, height: 42)
-                .background(
-                    Color.accentColor.opacity(0.12),
-                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-                )
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Edit Service")
-                    .font(.title2)
-                    .bold()
-
-                HStack(spacing: 5) {
-                    Image(systemName: "globe")
-                        .font(.caption)
-                    Text(service.publicHostname)
-                        .font(.callout.monospaced())
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                Button(action: save) {
+                    HStack {
+                        if isWorking {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text(isWorking ? "Saving…" : "Save")
+                    }
                 }
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-                .help(service.publicHostname)
+                .buttonStyle(.borderedProminent)
+                .disabled(!canSave)
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            .background(.bar)
+        }
+        .frame(width: 500)
+        .controlSize(.regular)
+        .task {
+            portIsFocused = true
+        }
+        .onChange(of: portText) { oldValue, newValue in
+            if oldValue != newValue {
+                hasEditedPort = true
             }
         }
     }
 
     private func save() {
-        guard let parsedPort,
+        guard canSave,
+              let parsedPort,
               let selectedTarget,
-              let challenge = challengeMode.challenge(credentialID: dnsCredentialID),
-              canSave
-        else { return }
-        onSave(
-            selectedTarget,
-            parsedPort,
-            GatewayCertificatePolicy(authority: certificateAuthority, challenge: challenge)
-        )
-        dismiss()
-    }
-}
+              let certificatePolicy
+        else {
+            hasEditedPort = true
+            return
+        }
 
-private struct EditServiceSection<Content: View>: View {
-    let title: String
-    let systemImage: String
-    @ViewBuilder let content: Content
-
-    init(
-        _ title: String,
-        systemImage: String,
-        @ViewBuilder content: () -> Content
-    ) {
-        self.title = title
-        self.systemImage = systemImage
-        self.content = content()
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label(title, systemImage: systemImage)
-                .font(.subheadline)
-                .bold()
-                .foregroundStyle(.secondary)
-
-            VStack(spacing: 0) {
-                content
-            }
-            .background(
-                Color.primary.opacity(0.045),
-                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(.primary.opacity(0.08), lineWidth: 0.5)
+        Task {
+            isWorking = true
+            errorMessage = nil
+            defer { isWorking = false }
+            do {
+                try await onSave(selectedTarget, parsedPort, certificatePolicy)
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
             }
         }
-    }
-}
-
-private struct EditServiceFormRow<Content: View>: View {
-    let label: String
-    @ViewBuilder let content: Content
-
-    init(_ label: String, @ViewBuilder content: () -> Content) {
-        self.label = label
-        self.content = content()
-    }
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 16) {
-            Text(label)
-                .frame(width: 126, alignment: .leading)
-
-            content
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-    }
-}
-
-private struct EditServiceRowDivider: View {
-    var body: some View {
-        Divider()
-            .padding(.leading, 156)
     }
 }
