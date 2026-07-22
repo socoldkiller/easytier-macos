@@ -30,7 +30,11 @@ struct PublishedServicesDisplayModel: Equatable, Sendable {
             convergence: convergence ?? .disabled
         )
         self.networkName = networkName
+        let contactEmail = try? GatewayPublishedServicesValidator.normalizeContactEmail(
+            acmeConfiguration?.contactEmail
+        )
         let tlsConfigured = acmeConfiguration?.termsOfServiceAgreed == true
+            && contactEmail != nil
         let configurationApplied = convergence?.isConverged ?? true
 
         var certificatesByID: [String: GatewayCertificateStatus] = [:]

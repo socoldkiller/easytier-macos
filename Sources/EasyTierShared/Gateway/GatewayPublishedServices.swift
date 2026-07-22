@@ -49,13 +49,7 @@ package enum GatewayPublishedServicesValidator {
 
         var normalized = state
         if var acme = state.acmeAccount {
-            if let email = acme.contactEmail {
-                let email = email.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard isValidEmail(email) else {
-                    throw invalid("ACME contact email is invalid.")
-                }
-                acme.contactEmail = email
-            }
+            acme.contactEmail = try normalizeContactEmail(acme.contactEmail)
             normalized.acmeAccount = acme
         }
 
@@ -178,6 +172,16 @@ package enum GatewayPublishedServicesValidator {
         }
         let ip = try normalizeIPv4(String(parts[0]), field: "EasyTier network address")
         return "\(ip)/\(prefix)"
+    }
+
+    package static func normalizeContactEmail(_ value: String?) throws -> String? {
+        guard let value else { return nil }
+        let email = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !email.isEmpty else { return nil }
+        guard isValidEmail(email) else {
+            throw invalid("Certificate contact email is invalid.")
+        }
+        return email
     }
 
     private static func makePublicHostname(

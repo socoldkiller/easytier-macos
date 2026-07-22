@@ -12,7 +12,6 @@ struct PublishedServicesGrid: View {
     let onCopyDomain: (GatewayPublishedService) -> Void
     let onCopyProxyIPv4: (PublishedServiceTableRow) -> Void
     let onEditService: (GatewayPublishedService) -> Void
-    let onConfigureSSL: () -> Void
     let onRetryCertificate: (GatewayPublishedService) -> Void
     let onDelete: (GatewayPublishedService) -> Void
 
@@ -34,7 +33,6 @@ struct PublishedServicesGrid: View {
                 onCopyDomain: onCopyDomain,
                 onCopyProxyIPv4: onCopyProxyIPv4,
                 onEditService: onEditService,
-                onConfigureSSL: onConfigureSSL,
                 onRetryCertificate: onRetryCertificate,
                 onDelete: onDelete
             )

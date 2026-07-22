@@ -38,6 +38,7 @@ struct PublishedServiceTableRow: Identifiable, Equatable, Sendable {
             certificateAuthority.label,
             certificateChallengeLabel,
             certificatePresentation.label,
+            "HTTPS",
             "SSL",
             presentation.statusLabel,
             presentation.detailLabel,

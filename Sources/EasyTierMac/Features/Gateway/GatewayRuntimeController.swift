@@ -30,9 +30,11 @@ final class GatewayRuntimeController {
     var publishingNetworkConfigID: String? { persistedState?.publishingNetworkConfigID }
     var acmeConfiguration: GatewayACMEConfiguration? { persistedState?.acmeAccount }
     var dnsCredentials: [GatewayDNSCredentialDescriptor] { persistedState?.dnsCredentials ?? [] }
-    var isTLSConfigured: Bool {
-        acmeConfiguration?.termsOfServiceAgreed == true
-            && acmeConfiguration?.contactEmail?.isEmpty == false
+    var isAutomaticHTTPSReady: Bool {
+        guard acmeConfiguration?.termsOfServiceAgreed == true else { return false }
+        return (try? GatewayPublishedServicesValidator.normalizeContactEmail(
+            acmeConfiguration?.contactEmail
+        )) != nil
     }
 
     func magicDNSState(for serviceID: String) -> MagicDNSOperationalState {
@@ -130,7 +132,8 @@ final class GatewayRuntimeController {
         magicDNSSuffix: String,
         serviceLabel: String,
         targetPort: Int,
-        certificatePolicy: GatewayCertificatePolicy
+        contactEmail: String? = nil,
+        certificatePolicy: GatewayCertificatePolicy = GatewayCertificatePolicy()
     ) async throws -> GatewayPublishedService {
         guard store == nil || magicDNSState == .ready else {
             throw GatewayConfigurationValidationError.invalid(
@@ -160,16 +163,23 @@ final class GatewayRuntimeController {
                     "A service already uses \(service.publicHostname)."
                 )
             }
-            guard let acme = state.acmeAccount, acme.termsOfServiceAgreed else {
-                throw GatewayConfigurationValidationError.invalid(
-                    "Accept the certificate service terms before publishing a service."
-                )
-            }
-            guard acme.contactEmail != nil else {
+
+            let savedEmail = try GatewayPublishedServicesValidator.normalizeContactEmail(
+                state.acmeAccount?.contactEmail
+            )
+            let resolvedEmail: String
+            if let savedEmail {
+                resolvedEmail = savedEmail
+            } else if let providedEmail = try GatewayPublishedServicesValidator.normalizeContactEmail(
+                contactEmail
+            ) {
+                resolvedEmail = providedEmail
+            } else {
                 throw GatewayConfigurationValidationError.invalid(
                     "Enter a certificate contact email before publishing a service."
                 )
             }
+
             guard let networkIPv4CIDR = state.lastKnownNetworkIPv4CIDR
                 ?? observedIPv4CIDRByNetworkConfigID[networkConfigID]
             else {
@@ -177,6 +187,11 @@ final class GatewayRuntimeController {
                     "Wait for the publishing EasyTier network to report its IPv4 subnet."
                 )
             }
+            state.acmeAccount = GatewayACMEConfiguration(
+                contactEmail: resolvedEmail,
+                termsOfServiceAgreed: true
+            )
+            state.gatewayEnabled = true
             state.publishingNetworkConfigID = networkConfigID
             state.lastKnownNetworkIPv4CIDR = networkIPv4CIDR
             state.services.append(service)
@@ -186,12 +201,19 @@ final class GatewayRuntimeController {
         }
     }
 
-    func configureACME(contactEmail: String?, termsOfServiceAgreed: Bool) async throws {
+    func configureAutomaticHTTPS(contactEmail: String) async throws {
+        guard let contactEmail = try GatewayPublishedServicesValidator.normalizeContactEmail(
+            contactEmail
+        ) else {
+            throw GatewayConfigurationValidationError.invalid(
+                "Enter a certificate contact email."
+            )
+        }
         try await withMutation {
             var state = persistedState ?? .empty
             state.acmeAccount = GatewayACMEConfiguration(
                 contactEmail: contactEmail,
-                termsOfServiceAgreed: termsOfServiceAgreed
+                termsOfServiceAgreed: true
             )
             try await save(state)
             if state.desiredEnabled {

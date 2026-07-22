@@ -9,7 +9,10 @@ enum PublishedServiceSSLProvider: Equatable, Sendable {
         acmeConfiguration: GatewayACMEConfiguration?,
         certificate: GatewayCertificateStatus? = nil
     ) {
-        guard let acmeConfiguration, acmeConfiguration.termsOfServiceAgreed else {
+        let contactEmail = try? GatewayPublishedServicesValidator.normalizeContactEmail(
+            acmeConfiguration?.contactEmail
+        )
+        guard acmeConfiguration?.termsOfServiceAgreed == true, contactEmail != nil else {
             self = .unavailable
             return
         }
@@ -23,9 +26,9 @@ enum PublishedServiceSSLProvider: Equatable, Sendable {
 
     var label: String {
         switch self {
-        case .unavailable: "HTTPS Setup Required"
-        case .managedHTTPS: "Managed HTTPS"
-        case .requesting: "Requesting Certificate"
+        case .unavailable: "Email Required"
+        case .managedHTTPS: "Secure"
+        case .requesting: "Issuing Certificate"
         }
     }
 
@@ -37,17 +40,17 @@ enum PublishedServiceSSLProvider: Equatable, Sendable {
 
     var connectionLabel: String {
         switch self {
-        case .unavailable: "Managed HTTPS Unavailable"
-        case .managedHTTPS: "Certificate Managed"
-        case .requesting: "HTTPS Pending"
+        case .unavailable: "Automatic HTTPS Needs Setup"
+        case .managedHTTPS: "Secure with Automatic HTTPS"
+        case .requesting: "Certificate Issuance in Progress"
         }
     }
 
     var helpText: String {
         switch self {
-        case .unavailable: "Configure managed certificates before enabling this service."
-        case .managedHTTPS: "The service uses a managed certificate from its selected authority."
-        case .requesting: "A managed certificate is being requested."
+        case .unavailable: "Add a certificate contact email to enable Automatic HTTPS."
+        case .managedHTTPS: "Automatic HTTPS is active with a certificate from the selected authority."
+        case .requesting: "Automatic HTTPS is issuing a certificate."
         }
     }
 

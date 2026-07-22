@@ -91,7 +91,7 @@ struct PublishedServiceCertificatePresentation: Equatable, Sendable {
     var helpText: String {
         switch state {
         case .unavailable:
-            "Managed HTTPS is not configured for this service."
+            "Automatic HTTPS needs a certificate contact email."
         case .notIssued:
             "A certificate has not been issued for this service."
         case .issuing:

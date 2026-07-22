@@ -107,7 +107,8 @@ import Testing
         gatewayEnabled: true,
         tlsConfigured: false
     )
-    #expect(presentation.statusLabel == "SSL Required")
+    #expect(presentation.statusLabel == "HTTPS Setup")
+    #expect(presentation.detailLabel == "Add certificate email")
     #expect(presentation.tone == .warning)
 
     presentation = PublishedServicePresentation(
@@ -129,7 +130,7 @@ import Testing
         gatewayEnabled: true,
         tlsConfigured: true
     )
-    #expect(presentation.statusLabel == "SSL Warning")
+    #expect(presentation.statusLabel == "HTTPS Warning")
     #expect(presentation.errorMessage == "Renewal delayed")
 
     presentation = PublishedServicePresentation(
@@ -139,7 +140,7 @@ import Testing
         gatewayEnabled: true,
         tlsConfigured: true
     )
-    #expect(presentation.statusLabel == "SSL Error")
+    #expect(presentation.statusLabel == "HTTPS Error")
     #expect(presentation.errorMessage == "ACME failed")
     #expect(presentation.certificateActionTitle == "Retry Certificate")
     #expect(!presentation.canOpen)

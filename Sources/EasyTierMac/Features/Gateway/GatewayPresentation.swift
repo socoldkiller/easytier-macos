@@ -135,7 +135,7 @@ struct PublishedServicePresentation: Equatable, Sendable {
         if !service.desiredEnabled {
             presentation = ("Off", "Disabled", .neutral, false)
         } else if !tlsConfigured {
-            presentation = ("SSL Required", "Configure SSL", .warning, false)
+            presentation = ("HTTPS Setup", "Add certificate email", .warning, false)
         } else if !gatewayEnabled {
             presentation = ("Waiting", "Gateway is off", .neutral, false)
         } else if magicDNSState == .disabled {
@@ -161,14 +161,14 @@ struct PublishedServicePresentation: Equatable, Sendable {
             )
         } else if certificate?.operation == .suspended {
             presentation = (
-                "SSL Error",
+                "HTTPS Error",
                 runtimeError ?? "Certificate request failed",
                 .warning,
                 false
             )
         } else if certificate?.operation == .waitingRetry {
             presentation = (
-                "SSL Warning",
+                "HTTPS Warning",
                 runtimeError ?? "Certificate renewal delayed",
                 .warning,
                 false

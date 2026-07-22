@@ -1,4 +1,5 @@
 import EasyTierShared
+import Foundation
 
 extension GatewayCertificateAuthority {
     var label: String {
@@ -6,5 +7,13 @@ extension GatewayCertificateAuthority {
         case .letsEncrypt: "Let's Encrypt"
         case .zeroSSL: "ZeroSSL"
         }
+    }
+
+    var termsURL: URL {
+        let value = switch self {
+        case .letsEncrypt: "https://letsencrypt.org/repository/"
+        case .zeroSSL: "https://zerossl.com/terms/"
+        }
+        return URL(string: value) ?? URL(fileURLWithPath: "/")
     }
 }

@@ -73,7 +73,7 @@ struct ServicesView: View {
                 )
             }
 
-            if !gateway.isTLSConfigured {
+            if !gateway.services.isEmpty, !gateway.isAutomaticHTTPSReady {
                 GatewayTLSRequirementBanner(action: openGatewaySettings)
                     .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 8))
             }
@@ -118,7 +118,7 @@ struct ServicesView: View {
                 dnsCredentials: gateway.dnsCredentials,
                 sslProvider: row?.sslProvider
                     ?? PublishedServiceSSLProvider(acmeConfiguration: gateway.acmeConfiguration),
-                onConfigureSSL: openGatewaySettings
+                onManageDNSCredentials: openGatewaySettings
             ) { target, port, certificatePolicy in
                 updateService(
                     target: target,
@@ -176,7 +176,7 @@ struct ServicesView: View {
                 "No Search Results",
                 systemImage: "magnifyingglass",
                 description: Text(
-                    "Try a domain, target, address, protocol, SSL provider, or status."
+                    "Try a domain, target, address, protocol, HTTPS state, or status."
                 )
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -192,7 +192,6 @@ struct ServicesView: View {
                 onCopyDomain: copyDomain,
                 onCopyProxyIPv4: copyProxyIPv4,
                 onEditService: editService,
-                onConfigureSSL: openGatewaySettings,
                 onRetryCertificate: retryCertificate,
                 onDelete: requestDeletion
             )
