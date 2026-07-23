@@ -46,6 +46,7 @@ use super::{
 use super::config::CertificateAuthorityKind;
 
 const ACME_POLL_TIMEOUT: Duration = Duration::from_secs(120);
+const ALIYUN_API_URL: &str = "https://alidns.aliyuncs.com/";
 
 pub struct AcmeContext {
     config: RwLock<AcmeConfig>,
@@ -925,6 +926,32 @@ struct AliyunAddRecordResponse {
     record_id: String,
 }
 
+#[derive(Deserialize)]
+struct AliyunDescribeRecordsResponse {
+    #[serde(rename = "DomainRecords")]
+    domain_records: AliyunDomainRecords,
+}
+
+#[derive(Deserialize)]
+struct AliyunDomainRecords {
+    #[serde(rename = "Record", default)]
+    records: Vec<AliyunDomainRecord>,
+}
+
+#[derive(Deserialize)]
+struct AliyunDomainRecord {
+    #[serde(rename = "RecordId")]
+    record_id: String,
+    #[serde(rename = "RR")]
+    relative_name: String,
+    #[serde(rename = "Type")]
+    record_type: String,
+    #[serde(rename = "Value")]
+    value: String,
+    #[serde(rename = "Status")]
+    status: Option<String>,
+}
+
 async fn create_aliyun_dns01(
     access_key_id: &str,
     access_key_secret: &str,
@@ -932,12 +959,31 @@ async fn create_aliyun_dns01(
     domain: &str,
     value: &str,
 ) -> Result<PendingDnsCleanup, DnsProviderFailure> {
-    let zone = discover_aliyun_zone(access_key_id, access_key_secret, domain).await?;
+    create_aliyun_dns01_at(
+        access_key_id,
+        access_key_secret,
+        credential_id,
+        domain,
+        value,
+        ALIYUN_API_URL,
+    )
+    .await
+}
+
+async fn create_aliyun_dns01_at(
+    access_key_id: &str,
+    access_key_secret: &str,
+    credential_id: &str,
+    domain: &str,
+    value: &str,
+    endpoint: &str,
+) -> Result<PendingDnsCleanup, DnsProviderFailure> {
+    let zone = discover_aliyun_zone_at(access_key_id, access_key_secret, domain, endpoint).await?;
     let record_name = format!("_acme-challenge.{domain}");
     let relative = record_name
         .strip_suffix(&format!(".{zone}"))
         .unwrap_or(&record_name);
-    let response: AliyunAddRecordResponse = aliyun_request(
+    let add_result: Result<AliyunAddRecordResponse, DnsProviderFailure> = aliyun_request_at(
         access_key_id,
         access_key_secret,
         "AddDomainRecord",
@@ -947,13 +993,29 @@ async fn create_aliyun_dns01(
             ("Type", "TXT"),
             ("Value", value),
         ],
+        endpoint,
     )
-    .await?;
+    .await;
+    let record_id = match add_result {
+        Ok(response) => response.record_id,
+        Err(error) if aliyun_record_duplicate(&error.code) => {
+            recover_aliyun_duplicate_record(
+                access_key_id,
+                access_key_secret,
+                &zone,
+                relative,
+                value,
+                endpoint,
+            )
+            .await?
+        }
+        Err(error) => return Err(error),
+    };
     Ok(PendingDnsCleanup {
         provider: "aliyun".to_string(),
         credential_id: credential_id.to_string(),
         zone_id: zone,
-        record_id: response.record_id,
+        record_id,
         record_name,
         attempt_count: 0,
         next_attempt_at: None,
@@ -961,19 +1023,21 @@ async fn create_aliyun_dns01(
     })
 }
 
-async fn discover_aliyun_zone(
+async fn discover_aliyun_zone_at(
     access_key_id: &str,
     access_key_secret: &str,
     domain: &str,
+    endpoint: &str,
 ) -> Result<String, DnsProviderFailure> {
     let labels = domain.split('.').collect::<Vec<_>>();
     for index in 0..labels.len().saturating_sub(1) {
         let candidate = labels[index..].join(".");
-        let result: Result<serde_json::Value, DnsProviderFailure> = aliyun_request(
+        let result: Result<serde_json::Value, DnsProviderFailure> = aliyun_request_at(
             access_key_id,
             access_key_secret,
             "DescribeDomainInfo",
             &[("DomainName", candidate.as_str())],
+            endpoint,
         )
         .await;
         match result {
@@ -991,26 +1055,96 @@ async fn discover_aliyun_zone(
     ))
 }
 
+async fn recover_aliyun_duplicate_record(
+    access_key_id: &str,
+    access_key_secret: &str,
+    zone: &str,
+    relative: &str,
+    value: &str,
+    endpoint: &str,
+) -> Result<String, DnsProviderFailure> {
+    let response: AliyunDescribeRecordsResponse = aliyun_request_at(
+        access_key_id,
+        access_key_secret,
+        "DescribeDomainRecords",
+        &[
+            ("DomainName", zone),
+            ("RRKeyWord", relative),
+            ("TypeKeyWord", "TXT"),
+            ("SearchMode", "EXACT"),
+            ("PageSize", "500"),
+        ],
+        endpoint,
+    )
+    .await?;
+    let Some(record) = response.domain_records.records.into_iter().find(|record| {
+        record.relative_name == relative
+            && record.record_type.eq_ignore_ascii_case("TXT")
+            && record.value == value
+    }) else {
+        return Err(DnsProviderFailure::provider(
+            FailureKind::UserActionRequired,
+            "dns_record_conflict",
+            format!("Aliyun DNS already contains a conflicting TXT record for {relative}.{zone}"),
+            None,
+            Some(400),
+        ));
+    };
+    if record
+        .status
+        .as_deref()
+        .is_some_and(|status| status.eq_ignore_ascii_case("DISABLE"))
+    {
+        let _: serde_json::Value = aliyun_request_at(
+            access_key_id,
+            access_key_secret,
+            "SetDomainRecordStatus",
+            &[
+                ("RecordId", record.record_id.as_str()),
+                ("Status", "ENABLE"),
+            ],
+            endpoint,
+        )
+        .await?;
+    }
+    Ok(record.record_id)
+}
+
 async fn delete_aliyun_record(
     access_key_id: &str,
     access_key_secret: &str,
     record_id: &str,
 ) -> Result<(), DnsProviderFailure> {
-    let _: serde_json::Value = aliyun_request(
+    delete_aliyun_record_at(access_key_id, access_key_secret, record_id, ALIYUN_API_URL).await
+}
+
+async fn delete_aliyun_record_at(
+    access_key_id: &str,
+    access_key_secret: &str,
+    record_id: &str,
+    endpoint: &str,
+) -> Result<(), DnsProviderFailure> {
+    let result: Result<serde_json::Value, DnsProviderFailure> = aliyun_request_at(
         access_key_id,
         access_key_secret,
         "DeleteDomainRecord",
         &[("RecordId", record_id)],
+        endpoint,
     )
-    .await?;
-    Ok(())
+    .await;
+    match result {
+        Ok(_) => Ok(()),
+        Err(error) if aliyun_record_missing(&error.code) => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
-async fn aliyun_request<T: DeserializeOwned>(
+async fn aliyun_request_at<T: DeserializeOwned>(
     access_key_id: &str,
     access_key_secret: &str,
     action: &str,
     action_parameters: &[(&str, &str)],
+    endpoint: &str,
 ) -> Result<T, DnsProviderFailure> {
     let timestamp = OffsetDateTime::now_utc()
         .replace_nanosecond(0)
@@ -1059,7 +1193,7 @@ async fn aliyun_request<T: DeserializeOwned>(
     parameters.insert("Signature".to_string(), signature);
 
     let response = reqwest::Client::new()
-        .post("https://alidns.aliyuncs.com/")
+        .post(endpoint)
         .form(&parameters)
         .send()
         .await
@@ -1154,6 +1288,18 @@ fn aliyun_api_failure(
 fn aliyun_zone_missing(code: &str) -> bool {
     let normalized = code.to_ascii_lowercase();
     normalized.contains("domainname")
+        && (normalized.contains("noexist")
+            || normalized.contains("notexist")
+            || normalized.contains("notfound"))
+}
+
+fn aliyun_record_duplicate(code: &str) -> bool {
+    code.eq_ignore_ascii_case("DomainRecordDuplicate")
+}
+
+fn aliyun_record_missing(code: &str) -> bool {
+    let normalized = code.to_ascii_lowercase();
+    normalized.contains("recordid")
         && (normalized.contains("noexist")
             || normalized.contains("notexist")
             || normalized.contains("notfound"))
@@ -1402,6 +1548,127 @@ mod tests {
             aliyun_signature(&parameters, "testsecret").unwrap(),
             "OGQcOUWTZczjcr/IKcdpEByndvs="
         );
+    }
+
+    #[test]
+    fn aliyun_dns01_reuses_duplicate_txt_and_cleanup_is_idempotent() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+            let requests = Arc::new(TokioMutex::new(Vec::new()));
+            let server_requests = requests.clone();
+            let (finished_sender, finished_receiver) = oneshot::channel();
+            tokio::spawn(async move {
+                for _ in 0..5 {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let request = read_http_request(&mut stream).await;
+                    let parameters = aliyun_request_parameters(&request);
+                    let response = match parameters.get("Action").map(String::as_str) {
+                        Some("DescribeDomainInfo") => aliyun_response(json!({}), 200),
+                        Some("AddDomainRecord") => aliyun_response(
+                            json!({
+                                "Code": "DomainRecordDuplicate",
+                                "Message": "The DNS record already exists."
+                            }),
+                            400,
+                        ),
+                        Some("DescribeDomainRecords") => aliyun_response(
+                            json!({
+                                "DomainRecords": {
+                                    "Record": [
+                                        {
+                                            "RecordId": "other-challenge",
+                                            "RR": "_acme-challenge",
+                                            "Type": "TXT",
+                                            "Value": "different-proof",
+                                            "Status": "ENABLE"
+                                        },
+                                        {
+                                            "RecordId": "existing-record",
+                                            "RR": "_acme-challenge",
+                                            "Type": "TXT",
+                                            "Value": "dns-proof",
+                                            "Status": "DISABLE"
+                                        }
+                                    ]
+                                }
+                            }),
+                            200,
+                        ),
+                        Some("SetDomainRecordStatus") => aliyun_response(
+                            json!({
+                                "RecordId": "existing-record",
+                                "Status": "ENABLE"
+                            }),
+                            200,
+                        ),
+                        Some("DeleteDomainRecord") => aliyun_response(
+                            json!({
+                                "Code": "InvalidRecordId.NotFound",
+                                "Message": "The DNS record does not exist."
+                            }),
+                            400,
+                        ),
+                        action => panic!("unexpected Aliyun action: {action:?}"),
+                    };
+                    server_requests.lock().await.push(parameters);
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+                let _ = finished_sender.send(());
+            });
+
+            let cleanup = create_aliyun_dns01_at(
+                "access-key",
+                "access-secret",
+                "aliyun-main",
+                "example.com",
+                "dns-proof",
+                &endpoint,
+            )
+            .await
+            .unwrap();
+            assert_eq!(cleanup.zone_id, "example.com");
+            assert_eq!(cleanup.record_id, "existing-record");
+            assert_eq!(cleanup.record_name, "_acme-challenge.example.com");
+
+            delete_aliyun_record_at("access-key", "access-secret", &cleanup.record_id, &endpoint)
+                .await
+                .unwrap();
+            finished_receiver.await.unwrap();
+
+            let requests = requests.lock().await;
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter_map(|request| request.get("Action"))
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                [
+                    "DescribeDomainInfo",
+                    "AddDomainRecord",
+                    "DescribeDomainRecords",
+                    "SetDomainRecordStatus",
+                    "DeleteDomainRecord",
+                ]
+            );
+            let describe = &requests[2];
+            assert_eq!(
+                describe.get("RRKeyWord").map(String::as_str),
+                Some("_acme-challenge")
+            );
+            assert_eq!(describe.get("TypeKeyWord").map(String::as_str), Some("TXT"));
+            assert_eq!(
+                describe.get("SearchMode").map(String::as_str),
+                Some("EXACT")
+            );
+            let enable = &requests[3];
+            assert_eq!(
+                enable.get("RecordId").map(String::as_str),
+                Some("existing-record")
+            );
+            assert_eq!(enable.get("Status").map(String::as_str), Some("ENABLE"));
+        });
     }
 
     #[test]
@@ -2340,6 +2607,22 @@ mod tests {
             "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         )
+    }
+
+    fn aliyun_response(body: Value, status: u16) -> String {
+        let body = body.to_string();
+        let reason = if status == 200 { "OK" } else { "Bad Request" };
+        format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn aliyun_request_parameters(request: &str) -> std::collections::BTreeMap<String, String> {
+        let body = request.split("\r\n\r\n").nth(1).unwrap_or_default();
+        url::form_urlencoded::parse(body.as_bytes())
+            .into_owned()
+            .collect()
     }
 
     async fn read_http_request(stream: &mut tokio::net::TcpStream) -> String {

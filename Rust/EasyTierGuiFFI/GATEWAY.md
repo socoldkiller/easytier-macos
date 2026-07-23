@@ -13,6 +13,8 @@ domains to HTTP or HTTPS upstreams.
 - `cloudflare` 0.14.0 with its Rustls transport provides typed zone discovery and DNS record APIs.
 - DNS-01 providers create and clean up challenge TXT records through their provider APIs; the ACME
   authority performs the protocol-defined DNS validation.
+- Aliyun DNS-01 presentation is idempotent: an exact existing challenge TXT is reused and enabled,
+  while cleanup treats an already-removed record as success.
 
 These crates are compiled into the Rust `staticlib`; BoringSSL is not a runtime dylib dependency.
 
