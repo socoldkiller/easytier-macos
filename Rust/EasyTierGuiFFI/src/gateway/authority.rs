@@ -272,7 +272,7 @@ impl CertificateAuthorityProvider for TestAuthorityProvider {
                     .create(
                         &NewAccount {
                             contact: &contacts,
-                            terms_of_service_agreed: config.terms_of_service_agreed,
+                            terms_of_service_agreed: config.accepts(self.kind),
                             only_return_existing: false,
                         },
                         directory_url.to_string(),
@@ -351,7 +351,7 @@ impl CertificateAuthorityProvider for LetsEncryptProvider {
                     .create(
                         &NewAccount {
                             contact: &contacts,
-                            terms_of_service_agreed: config.terms_of_service_agreed,
+                            terms_of_service_agreed: config.accepts(self.kind()),
                             only_return_existing: false,
                         },
                         LETSENCRYPT_DIRECTORY_URL.to_string(),
@@ -474,7 +474,7 @@ impl CertificateAuthorityProvider for ZeroSslProvider {
                     .create(
                         &NewAccount {
                             contact: &contacts,
-                            terms_of_service_agreed: config.terms_of_service_agreed,
+                            terms_of_service_agreed: config.accepts(self.kind()),
                             only_return_existing: false,
                         },
                         ZEROSSL_DIRECTORY_URL.to_string(),
@@ -614,6 +614,7 @@ mod tests {
                         selected,
                         &AcmeConfig {
                             contact_email: Some("ops@example.com".to_string()),
+                            accepted_authorities: Vec::new(),
                             terms_of_service_agreed: true,
                         },
                         &storage,

@@ -27,14 +27,33 @@ final class GatewayRuntimeController {
 
     var desiredEnabled: Bool { persistedState?.desiredEnabled == true }
     var services: [GatewayPublishedService] { persistedState?.services ?? [] }
+    var certificates: [GatewayManagedCertificate] { persistedState?.certificates ?? [] }
     var publishingNetworkConfigID: String? { persistedState?.publishingNetworkConfigID }
     var acmeConfiguration: GatewayACMEConfiguration? { persistedState?.acmeAccount }
     var dnsCredentials: [GatewayDNSCredentialDescriptor] { persistedState?.dnsCredentials ?? [] }
+    var defaultDNSCredentialID: String? { persistedState?.defaultDNSCredentialID }
     var isAutomaticHTTPSReady: Bool {
-        guard acmeConfiguration?.termsOfServiceAgreed == true else { return false }
+        guard defaultDNSCredentialID != nil,
+              Set(acmeConfiguration?.acceptedAuthorities ?? [])
+                .isSuperset(of: GatewayCertificateAuthority.allCases)
+        else { return false }
         return (try? GatewayPublishedServicesValidator.normalizeContactEmail(
             acmeConfiguration?.contactEmail
         )) != nil
+    }
+
+    func certificate(for service: GatewayPublishedService) -> GatewayManagedCertificate? {
+        certificates.first { $0.id == service.certificateID }
+    }
+
+    func certificateSelection(for service: GatewayPublishedService) -> GatewayServiceCertificateSelection? {
+        guard let certificate = certificate(for: service) else { return nil }
+        switch certificate.strategy {
+        case .automaticWildcard:
+            return .automatic
+        case let .custom(authority, challenge):
+            return .custom(authority: authority, challenge: challenge)
+        }
     }
 
     func magicDNSState(for serviceID: String) -> MagicDNSOperationalState {
@@ -133,14 +152,14 @@ final class GatewayRuntimeController {
         serviceLabel: String,
         targetPort: Int,
         contactEmail: String? = nil,
-        certificatePolicy: GatewayCertificatePolicy = GatewayCertificatePolicy()
+        certificateSelection: GatewayServiceCertificateSelection = .automatic
     ) async throws -> GatewayPublishedService {
         guard store == nil || magicDNSState == .ready else {
             throw GatewayConfigurationValidationError.invalid(
                 "Wait for Magic DNS to become ready before publishing a service."
             )
         }
-        let service = try GatewayPublishedServicesValidator.makeService(
+        var service = try GatewayPublishedServicesValidator.makeService(
             networkConfigID: networkConfigID,
             targetPeerID: targetPeerID,
             targetInstanceID: targetInstanceID,
@@ -149,7 +168,7 @@ final class GatewayRuntimeController {
             serviceLabel: serviceLabel,
             targetPort: targetPort,
             desiredEnabled: true,
-            certificatePolicy: certificatePolicy
+            certificateID: UUID().uuidString.lowercased()
         )
         return try await withMutation {
             var state = persistedState ?? .empty
@@ -187,10 +206,14 @@ final class GatewayRuntimeController {
                     "Wait for the publishing EasyTier network to report its IPv4 subnet."
                 )
             }
-            state.acmeAccount = GatewayACMEConfiguration(
-                contactEmail: resolvedEmail,
-                termsOfServiceAgreed: true
+            let certificate = try managedCertificate(
+                for: service,
+                selection: certificateSelection,
+                state: &state
             )
+            service.certificateID = certificate.id
+            acceptRequiredAuthorities(for: certificate.strategy, state: &state)
+            state.acmeAccount?.contactEmail = resolvedEmail
             state.gatewayEnabled = true
             state.publishingNetworkConfigID = networkConfigID
             state.lastKnownNetworkIPv4CIDR = networkIPv4CIDR
@@ -213,7 +236,7 @@ final class GatewayRuntimeController {
             var state = persistedState ?? .empty
             state.acmeAccount = GatewayACMEConfiguration(
                 contactEmail: contactEmail,
-                termsOfServiceAgreed: true
+                acceptedAuthorities: GatewayCertificateAuthority.allCases
             )
             try await save(state)
             if state.desiredEnabled {
@@ -249,7 +272,17 @@ final class GatewayRuntimeController {
                         "Turn on Magic DNS before enabling this service."
                     )
                 }
-                guard let acme = state.acmeAccount, acme.termsOfServiceAgreed else {
+                guard let certificate = state.certificates.first(where: {
+                    $0.id == state.services[index].certificateID
+                }) else {
+                    throw GatewayConfigurationValidationError.invalid(
+                        "The service certificate was not found."
+                    )
+                }
+                let requiredAuthorities = Self.requiredAuthorities(for: certificate.strategy)
+                guard let acme = state.acmeAccount,
+                      Set(acme.acceptedAuthorities).isSuperset(of: requiredAuthorities)
+                else {
                     throw GatewayConfigurationValidationError.invalid(
                         "Accept the certificate service terms before enabling this service."
                     )
@@ -286,9 +319,9 @@ final class GatewayRuntimeController {
         }
     }
 
-    func updateCertificatePolicy(
+    func updateCertificateSelection(
         serviceID: String,
-        policy: GatewayCertificatePolicy
+        selection: GatewayServiceCertificateSelection
     ) async throws {
         try await withMutation {
             guard var state = persistedState,
@@ -296,7 +329,19 @@ final class GatewayRuntimeController {
             else {
                 throw GatewayConfigurationValidationError.invalid("Published service was not found.")
             }
-            state.services[index].certificatePolicy = policy
+            let previousID = state.services[index].certificateID
+            let certificate = try managedCertificate(
+                for: state.services[index],
+                selection: selection,
+                state: &state
+            )
+            guard previousID != certificate.id else { return }
+            state.services[index].certificateID = certificate.id
+            state.services[index].fallbackCertificateID = certificateIsValid(previousID)
+                ? previousID
+                : nil
+            acceptRequiredAuthorities(for: certificate.strategy, state: &state)
+            removeUnusedCustomCertificates(from: &state)
             try await save(state)
             await reconcileWithoutLock()
         }
@@ -314,6 +359,9 @@ final class GatewayRuntimeController {
                 state.dnsCredentials[index] = descriptor
             } else {
                 state.dnsCredentials.append(descriptor)
+                if state.defaultDNSCredentialID == nil {
+                    state.defaultDNSCredentialID = descriptor.id
+                }
             }
             try await credentialStore.save(secret, id: descriptor.id)
             try await save(state)
@@ -328,10 +376,12 @@ final class GatewayRuntimeController {
     func deleteDNSCredential(id: String) async throws {
         try await withMutation {
             guard var state = persistedState else { return }
-            let isReferenced = state.services.contains { service in
-                switch service.certificatePolicy.challenge {
-                case .http01: false
-                case let .dns01(credentialID): credentialID == id
+            let isReferenced = state.certificates.contains { certificate in
+                switch certificate.strategy {
+                case let .automaticWildcard(credentialID):
+                    credentialID == id
+                case let .custom(_, challenge):
+                    challenge.dnsCredentialID == id
                 }
             }
             guard !isReferenced else {
@@ -340,9 +390,23 @@ final class GatewayRuntimeController {
                 )
             }
             state.dnsCredentials.removeAll { $0.id == id }
+            if state.defaultDNSCredentialID == id {
+                state.defaultDNSCredentialID = state.dnsCredentials.first?.id
+            }
             try await credentialStore.remove(id: id)
             try await save(state)
             await reconcileWithoutLock()
+        }
+    }
+
+    func setDefaultDNSCredential(id: String?) async throws {
+        try await withMutation {
+            var state = persistedState ?? .empty
+            if let id, !state.dnsCredentials.contains(where: { $0.id == id }) {
+                throw GatewayConfigurationValidationError.invalid("DNS credential was not found.")
+            }
+            state.defaultDNSCredentialID = id
+            try await save(state)
         }
     }
 
@@ -353,7 +417,7 @@ final class GatewayRuntimeController {
         targetHostname: String,
         magicDNSSuffix: String,
         port: Int,
-        certificatePolicy: GatewayCertificatePolicy? = nil
+        certificateSelection: GatewayServiceCertificateSelection? = nil
     ) async throws {
         try await withMutation {
             guard var state = persistedState,
@@ -368,12 +432,23 @@ final class GatewayRuntimeController {
             updated.lastKnownTargetHostname = targetHostname
             updated.lastKnownMagicDNSSuffix = magicDNSSuffix
             updated.targetPort = port
-            if let certificatePolicy {
-                updated.certificatePolicy = certificatePolicy
+            if let certificateSelection {
+                let previousID = updated.certificateID
+                let certificate = try managedCertificate(
+                    for: updated,
+                    selection: certificateSelection,
+                    state: &state
+                )
+                updated.certificateID = certificate.id
+                updated.fallbackCertificateID = certificate.id == previousID
+                    ? updated.fallbackCertificateID
+                    : (certificateIsValid(previousID) ? previousID : nil)
+                acceptRequiredAuthorities(for: certificate.strategy, state: &state)
             }
             guard updated != state.services[index] else { return }
 
             state.services[index] = updated
+            removeUnusedCustomCertificates(from: &state)
             try await save(state)
             await reconcileWithoutLock()
         }
@@ -383,6 +458,7 @@ final class GatewayRuntimeController {
         try await withMutation {
             guard var state = persistedState else { return }
             state.services.removeAll { $0.id == serviceID }
+            removeUnusedCustomCertificates(from: &state)
             if state.services.isEmpty {
                 state.publishingNetworkConfigID = nil
                 state.lastKnownNetworkIPv4CIDR = nil
@@ -623,6 +699,21 @@ final class GatewayRuntimeController {
         guard desiredEnabled else { return }
         do {
             status = try await client.status()
+            if var state = persistedState {
+                let validIDs = Set(status.certificates.filter { $0.availability == .valid }.map(\.id))
+                var changed = false
+                for index in state.services.indices where
+                    validIDs.contains(state.services[index].certificateID)
+                        && state.services[index].fallbackCertificateID != nil
+                {
+                    state.services[index].fallbackCertificateID = nil
+                    changed = true
+                }
+                if changed {
+                    removeUnusedCustomCertificates(from: &state)
+                    try await save(state)
+                }
+            }
             if let configuration = desiredRuntimeConfiguration,
                status.appliedDeployment == configuration.deployment,
                status.state == .running
@@ -640,6 +731,84 @@ final class GatewayRuntimeController {
             }
         } catch {
             recordApplyFailure(error)
+        }
+    }
+
+    private func managedCertificate(
+        for service: GatewayPublishedService,
+        selection: GatewayServiceCertificateSelection,
+        state: inout GatewayPersistedState
+    ) throws -> GatewayManagedCertificate {
+        switch selection {
+        case .automatic:
+            guard let credentialID = state.defaultDNSCredentialID else {
+                throw GatewayConfigurationValidationError.invalid(
+                    "Choose a default DNS credential before using Automatic HTTPS."
+                )
+            }
+            let suffix = service.publicDNSSuffix.hasSuffix(".")
+                ? String(service.publicDNSSuffix.dropLast())
+                : service.publicDNSSuffix
+            let wildcard = "*.\(service.publicNodeLabel).\(suffix)"
+            if let existing = state.certificates.first(where: { certificate in
+                guard certificate.domains == [wildcard] else { return false }
+                if case .automaticWildcard = certificate.strategy { return true }
+                return false
+            }) {
+                return existing
+            }
+            let certificate = GatewayManagedCertificate(
+                domains: [wildcard],
+                strategy: .automaticWildcard(credentialID: credentialID)
+            )
+            state.certificates.append(certificate)
+            return certificate
+        case let .custom(authority, challenge):
+            let certificate = GatewayManagedCertificate(
+                domains: [service.publicHostname],
+                strategy: .custom(authority: authority, challenge: challenge)
+            )
+            state.certificates.append(certificate)
+            return certificate
+        }
+    }
+
+    private func acceptRequiredAuthorities(
+        for strategy: GatewayManagedCertificateStrategy,
+        state: inout GatewayPersistedState
+    ) {
+        var acme = state.acmeAccount ?? GatewayACMEConfiguration()
+        let accepted = Set(acme.acceptedAuthorities)
+            .union(Self.requiredAuthorities(for: strategy))
+        acme.acceptedAuthorities = GatewayCertificateAuthority.allCases.filter(accepted.contains)
+        state.acmeAccount = acme
+    }
+
+    private static func requiredAuthorities(
+        for strategy: GatewayManagedCertificateStrategy
+    ) -> Set<GatewayCertificateAuthority> {
+        switch strategy {
+        case .automaticWildcard:
+            Set(GatewayCertificateAuthority.allCases)
+        case let .custom(authority, _):
+            [authority]
+        }
+    }
+
+    private func certificateIsValid(_ certificateID: String) -> Bool {
+        status.certificates.contains {
+            $0.id == certificateID && $0.availability == .valid
+        }
+    }
+
+    private func removeUnusedCustomCertificates(from state: inout GatewayPersistedState) {
+        let referencedIDs = Set(state.services.flatMap { service in
+            [service.certificateID, service.fallbackCertificateID].compactMap { $0 }
+        })
+        state.certificates.removeAll { certificate in
+            guard !referencedIDs.contains(certificate.id) else { return false }
+            if case .custom = certificate.strategy { return true }
+            return !certificateIsValid(certificate.id)
         }
     }
 

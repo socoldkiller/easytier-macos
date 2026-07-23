@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     net::SocketAddr,
     str::FromStr,
     sync::{
@@ -33,7 +33,7 @@ use super::{
         ParsedUpstream, UpstreamAvailability, UpstreamScheme, ValidatedGatewayConfig,
         normalize_domain, socket_host_port,
     },
-    status::{RouteResolutionState, RouteStatus},
+    status::{RouteResolutionState, RouteServingMode, RouteStatus},
     tls::{DynamicCertificateStore, SniConnectionInfo},
 };
 
@@ -139,6 +139,8 @@ impl RuntimeRoute {
                 .expected_ipv4
                 .map(|address| address.to_string()),
             certificate_id: self.certificate_id.clone(),
+            serving_certificate_id: None,
+            serving_mode: RouteServingMode::Unavailable,
             resolution_state: resolution.state,
             last_resolved_at: resolution.last_resolved_at.clone(),
             last_online_at: resolution.last_online_at.clone(),
@@ -349,6 +351,7 @@ pub struct GatewayProxy {
     routes: Arc<SharedRouteTable>,
     certificates: Arc<DynamicCertificateStore>,
     challenges: Arc<Http01ChallengeStore>,
+    http_only_domains: Arc<ArcSwap<BTreeSet<String>>>,
 }
 
 pub struct SharedRouteTable {
@@ -391,11 +394,13 @@ impl GatewayProxy {
         routes: Arc<SharedRouteTable>,
         certificates: Arc<DynamicCertificateStore>,
         challenges: Arc<Http01ChallengeStore>,
+        http_only_domains: Arc<ArcSwap<BTreeSet<String>>>,
     ) -> Self {
         Self {
             routes,
             certificates,
             challenges,
+            http_only_domains,
         }
     }
 }
@@ -491,6 +496,21 @@ impl ProxyHttp for GatewayProxy {
         }
 
         if !self.certificates.has_certificate_for_domain(&host) {
+            if self.http_only_domains.load().contains(&host) {
+                let Some(address) = route.address_for_request().await else {
+                    respond_with_headers(
+                        session,
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "Target is unavailable".to_string(),
+                        &[("Retry-After", "5")],
+                    )
+                    .await?;
+                    return Ok(true);
+                };
+                context.upstream_address = Some(address);
+                context.route = Some(route);
+                return Ok(false);
+            }
             respond_with_headers(
                 session,
                 StatusCode::SERVICE_UNAVAILABLE,

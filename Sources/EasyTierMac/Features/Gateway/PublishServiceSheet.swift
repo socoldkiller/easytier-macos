@@ -12,14 +12,13 @@ struct PublishServiceSheet: View {
     @State private var serviceLabel = ""
     @State private var targetPort = "3000"
     @State private var selectedTargetPeerID: String
+    @State private var certificateMode = PublishedServiceCertificateMode.automatic
     @State private var certificateAuthority = GatewayCertificateAuthority.letsEncrypt
     @State private var challengeMode = PublishedServiceChallengeMode.http01
     @State private var dnsCredentialID: String?
-    @State private var contactEmail = ""
     @State private var showsHTTPSOptions = false
     @State private var hasEditedPublicName = false
     @State private var hasEditedPort = false
-    @State private var hasEditedContactEmail = false
     @State private var isWorking = false
     @State private var errorMessage: String?
     @FocusState private var focusedField: Field?
@@ -27,7 +26,6 @@ struct PublishServiceSheet: View {
     private enum Field: Hashable {
         case publicName
         case targetPort
-        case contactEmail
     }
 
     private var store: EasyTierAppStore { appContext.workspace.store }
@@ -89,30 +87,18 @@ struct PublishServiceSheet: View {
         )
     }
 
-    private var normalizedContactEmail: String? {
-        PublishedServiceFormValidation.normalizedContactEmail(contactEmail)
-    }
-
-    private var requiresContactEmail: Bool {
-        savedContactEmail == nil
-    }
-
-    private var contactEmailError: String? {
-        PublishedServiceFormValidation.contactEmailError(contactEmail)
-    }
-
     private var publicAddressIsValid: Bool {
         normalizedPublicName != nil && publicNameError == nil && selectedTarget != nil
     }
 
-    private var certificatePolicy: GatewayCertificatePolicy? {
+    private var certificateSelection: GatewayServiceCertificateSelection? {
+        if certificateMode == .automatic {
+            return gateway.defaultDNSCredentialID == nil ? nil : .automatic
+        }
         guard let challenge = challengeMode.challenge(credentialID: dnsCredentialID) else {
             return nil
         }
-        return GatewayCertificatePolicy(
-            authority: certificateAuthority,
-            challenge: challenge
-        )
+        return .custom(authority: certificateAuthority, challenge: challenge)
     }
 
     private var canPublish: Bool {
@@ -120,8 +106,8 @@ struct PublishServiceSheet: View {
             && !gateway.isBusy
             && publicAddressIsValid
             && parsedPort != nil
-            && (!requiresContactEmail || normalizedContactEmail != nil)
-            && certificatePolicy != nil
+            && savedContactEmail != nil
+            && certificateSelection != nil
             && store.selectedConfig != nil
             && gateway.magicDNSState == .ready
     }
@@ -216,32 +202,30 @@ struct PublishServiceSheet: View {
                         }
                     }
 
-                    if requiresContactEmail {
-                        PublishedServiceFormRow("Email", systemImage: "envelope") {
-                            VStack(alignment: .leading, spacing: 4) {
-                                TextField("name@example.com", text: $contactEmail)
-                                    .labelsHidden()
-                                    .textFieldStyle(.roundedBorder)
-                                    .focused($focusedField, equals: .contactEmail)
-                                    .disabled(isWorking)
-                                    .onSubmit(publish)
-
-                                if hasEditedContactEmail, let contactEmailError {
-                                    PublishedServiceFieldMessage(
-                                        message: contactEmailError,
-                                        showsError: true
-                                    )
-                                }
+                    if savedContactEmail == nil {
+                        PublishedServiceFormRow("Certificate Account", systemImage: "envelope") {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Add a global contact email before requesting certificates.")
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Button(
+                                    "Open Gateway Settings",
+                                    systemImage: "gear",
+                                    action: openGatewaySettings
+                                )
                             }
                         }
                     }
 
                     PublishedServiceHTTPSOptions(
                         isExpanded: $showsHTTPSOptions,
+                        certificateMode: $certificateMode,
                         certificateAuthority: $certificateAuthority,
                         challengeMode: $challengeMode,
                         dnsCredentialID: $dnsCredentialID,
                         dnsCredentials: gateway.dnsCredentials,
+                        automaticDomain: "*.\(targetDomain)",
+                        defaultDNSCredentialID: gateway.defaultDNSCredentialID,
                         status: PublishedServiceSSLProvider(
                             acmeConfiguration: gateway.acmeConfiguration
                         ),
@@ -296,11 +280,6 @@ struct PublishServiceSheet: View {
                 hasEditedPort = true
             }
         }
-        .onChange(of: contactEmail) { oldValue, newValue in
-            if oldValue != newValue {
-                hasEditedContactEmail = true
-            }
-        }
         .onChange(of: focusedField) { oldValue, newValue in
             if oldValue == .publicName, newValue != .publicName {
                 normalizePublicName()
@@ -326,11 +305,7 @@ struct PublishServiceSheet: View {
     }
 
     private func submitPort() {
-        if requiresContactEmail {
-            focusedField = .contactEmail
-        } else {
-            publish()
-        }
+        publish()
     }
 
     private func normalizePublicName() {
@@ -344,13 +319,10 @@ struct PublishServiceSheet: View {
               let config = store.selectedConfig,
               let port = parsedPort,
               let selectedTarget,
-              let certificatePolicy
+              let certificateSelection
         else {
             hasEditedPublicName = true
             hasEditedPort = true
-            if requiresContactEmail {
-                hasEditedContactEmail = true
-            }
             return
         }
 
@@ -369,8 +341,8 @@ struct PublishServiceSheet: View {
                         ?? store.magicDNSSettings.dnsSuffix,
                     serviceLabel: serviceLabel,
                     targetPort: port,
-                    contactEmail: requiresContactEmail ? normalizedContactEmail : nil,
-                    certificatePolicy: certificatePolicy
+                    contactEmail: nil,
+                    certificateSelection: certificateSelection
                 )
                 dismiss()
             } catch {

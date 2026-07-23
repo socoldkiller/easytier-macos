@@ -43,6 +43,7 @@ struct ServicesView: View {
     private var display: PublishedServicesDisplayModel {
         PublishedServicesDisplayModel(
             services: gateway.services,
+            certificates: gateway.certificates,
             status: gateway.status,
             gatewayEnabled: gateway.desiredEnabled,
             acmeConfiguration: gateway.acmeConfiguration,
@@ -105,7 +106,8 @@ struct ServicesView: View {
         .task(prepare)
         .sheet(item: $editingService) { service in
             let row = display.rows.first { $0.id == service.id }
-            EditPublishedServiceSheet(
+            if let certificate = gateway.certificate(for: service) {
+                EditPublishedServiceSheet(
                 service: service,
                 targetOptions: PublishedServiceTargetOption.options(
                     for: service,
@@ -113,16 +115,19 @@ struct ServicesView: View {
                     members: gateway.topologyMembers
                 ),
                 dnsCredentials: gateway.dnsCredentials,
+                certificate: certificate,
+                defaultDNSCredentialID: gateway.defaultDNSCredentialID,
                 sslProvider: row?.sslProvider
                     ?? PublishedServiceSSLProvider(acmeConfiguration: gateway.acmeConfiguration),
                 onManageDNSCredentials: openGatewaySettings
-            ) { target, port, certificatePolicy in
+                ) { target, port, certificateSelection in
                 try await updateService(
                     target: target,
                     port: port,
-                    certificatePolicy: certificatePolicy,
+                    certificateSelection: certificateSelection,
                     service: service
                 )
+                }
             }
         }
         .alert(
@@ -228,7 +233,7 @@ struct ServicesView: View {
     private func updateService(
         target: PublishedServiceTargetOption,
         port: Int,
-        certificatePolicy: GatewayCertificatePolicy,
+        certificateSelection: GatewayServiceCertificateSelection,
         service: GatewayPublishedService
     ) async throws {
         workingServiceID = service.id
@@ -241,7 +246,7 @@ struct ServicesView: View {
             magicDNSSuffix: gateway.appliedMagicDNSSuffix
                 ?? store.magicDNSSettings.dnsSuffix,
             port: port,
-            certificatePolicy: certificatePolicy
+            certificateSelection: certificateSelection
         )
     }
 
@@ -249,7 +254,7 @@ struct ServicesView: View {
         Task {
             workingServiceID = service.id
             errorMessage = nil
-            await gateway.requestRenewal(certificateID: service.id)
+            await gateway.requestRenewal(certificateID: service.certificateID)
             errorMessage = gateway.lastError
             workingServiceID = nil
         }

@@ -71,10 +71,21 @@ pub struct RouteStatus {
     pub resolved_ipv4s: Vec<String>,
     pub expected_ipv4: Option<String>,
     pub certificate_id: String,
+    pub serving_certificate_id: Option<String>,
+    pub serving_mode: RouteServingMode,
     pub resolution_state: RouteResolutionState,
     pub last_resolved_at: Option<String>,
     pub last_online_at: Option<String>,
     pub last_error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteServingMode {
+    Https,
+    HttpOnly,
+    #[default]
+    Unavailable,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]

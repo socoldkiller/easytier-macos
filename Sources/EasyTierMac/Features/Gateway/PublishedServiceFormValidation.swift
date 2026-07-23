@@ -59,12 +59,13 @@ enum PublishedServiceFormValidation {
         service: GatewayPublishedService,
         selectedTarget: PublishedServiceTargetOption,
         port: Int,
-        certificatePolicy: GatewayCertificatePolicy
+        certificateSelection: GatewayServiceCertificateSelection,
+        currentSelection: GatewayServiceCertificateSelection
     ) -> Bool {
         port != service.targetPort
             || selectedTarget.peerID != service.targetPeerID
             || selectedTarget.instanceID != service.targetInstanceID
             || selectedTarget.hostname != service.lastKnownTargetHostname
-            || certificatePolicy != service.certificatePolicy
+            || certificateSelection != currentSelection
     }
 }

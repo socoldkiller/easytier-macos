@@ -3,6 +3,7 @@ import Foundation
 
 struct PublishedServiceTableRow: Identifiable, Equatable, Sendable {
     let service: GatewayPublishedService
+    let certificate: GatewayManagedCertificate?
     let presentation: PublishedServicePresentation
     let proxyIPv4: String
     let sslProvider: PublishedServiceSSLProvider
@@ -16,9 +17,18 @@ struct PublishedServiceTableRow: Identifiable, Equatable, Sendable {
     var publicHostname: String { service.publicHostname }
     var targetDomain: String { service.targetDomain }
     var targetPort: Int { service.targetPort }
-    var certificateAuthority: GatewayCertificateAuthority { service.certificatePolicy.authority }
+    var certificateAuthority: GatewayCertificateAuthority {
+        switch certificate?.strategy {
+        case .automaticWildcard, nil: .letsEncrypt
+        case let .custom(authority, _): authority
+        }
+    }
     var certificateChallengeLabel: String {
-        PublishedServiceChallengeMode(service.certificatePolicy.challenge).label
+        switch certificate?.strategy {
+        case .automaticWildcard: "DNS-01"
+        case let .custom(_, challenge): PublishedServiceChallengeMode(challenge).label
+        case nil: "Unknown"
+        }
     }
     var protocolLabel: String { service.upstreamProtocol.rawValue.uppercased() }
     var targetEndpointLabel: String { "\(targetDomain):\(targetPort)" }

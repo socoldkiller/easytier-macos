@@ -12,6 +12,7 @@ struct PublishedServicesDisplayModel: Equatable, Sendable {
 
     init(
         services: [GatewayPublishedService],
+        certificates: [GatewayManagedCertificate] = [],
         status: GatewayStatus,
         gatewayEnabled: Bool,
         acmeConfiguration: GatewayACMEConfiguration?,
@@ -33,7 +34,7 @@ struct PublishedServicesDisplayModel: Equatable, Sendable {
         let contactEmail = try? GatewayPublishedServicesValidator.normalizeContactEmail(
             acmeConfiguration?.contactEmail
         )
-        let tlsConfigured = acmeConfiguration?.termsOfServiceAgreed == true
+        let tlsConfigured = !(acmeConfiguration?.acceptedAuthorities.isEmpty ?? true)
             && contactEmail != nil
         let configurationApplied = convergence?.isConverged ?? true
 
@@ -41,13 +42,17 @@ struct PublishedServicesDisplayModel: Equatable, Sendable {
         for certificate in status.certificates {
             certificatesByID[certificate.id] = certificate
         }
+        let managedCertificatesByID = Dictionary(uniqueKeysWithValues: certificates.map {
+            ($0.id, $0)
+        })
         var routesByDomain: [String: GatewayRouteStatus] = [:]
         for route in status.routes {
             routesByDomain[route.domain] = route
         }
 
         rows = services.map { service in
-            let certificate = certificatesByID[service.id]
+            let certificate = certificatesByID[service.certificateID]
+            let managedCertificate = managedCertificatesByID[service.certificateID]
             let route = routesByDomain[service.publicHostname]
             let presentation = PublishedServicePresentation(
                 service: service,
@@ -67,10 +72,12 @@ struct PublishedServicesDisplayModel: Equatable, Sendable {
             )
             let sslProvider = PublishedServiceSSLProvider(
                 acmeConfiguration: acmeConfiguration,
-                certificate: certificate
+                certificate: certificate,
+                servingMode: route?.servingMode
             )
             return PublishedServiceTableRow(
                 service: service,
+                certificate: managedCertificate,
                 presentation: presentation,
                 proxyIPv4: resolvedIPv4 ?? "—",
                 sslProvider: sslProvider,

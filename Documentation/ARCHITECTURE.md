@@ -67,14 +67,19 @@ GatewayPrivilegedHelper
                 | schema-checked runtime configuration and secrets
                 v
 Rust certificate coordinator
-  owns issuance, renewal, replacement, cooldowns, cleanup, serving material,
-  and the persistent coordinator journal
+  owns Automatic CA fallback, issuance, renewal, replacement, cooldowns,
+  cleanup, serving material, HTTP-only eligibility, and the persistent journal
 ```
 
-The Swift controller never infers runtime success from a request acknowledgement.
+The Swift controller owns managed-certificate intent: shared Automatic wildcard
+certificates, exact-host Custom certificates, DNS credential selection, and
+primary/fallback references during strategy transitions. It never infers runtime success from a request acknowledgement.
 It compares Desired and Applied Deployment Identities. The helper never performs
 remote ACME contact synchronization as a prerequisite for local apply. The Rust
-coordinator never changes the selected authority or challenge method.
+coordinator keeps every attempt immutable. For Automatic only, it persists the
+preferred authority and may schedule ZeroSSL after a classified Let's Encrypt
+CA-side failure. It never changes the selected challenge method, and Custom never
+changes authority.
 
 Internal seams isolate behavior that varies:
 
@@ -85,6 +90,9 @@ Internal seams isolate behavior that varies:
   coordinator journals, and DNS cleanup obligations.
 - Scheduling functions isolate renewal windows, exponential retry delays, and
   jitter calculations so their policy can be tested without listener behavior.
+- Serving derivation selects valid primary then fallback material, and permits
+  HTTP-only only for an Automatic certificate that exhausted both authorities
+  before ever activating HTTPS.
 
 See `Documentation/GATEWAY_STATE_MACHINE.md` for the canonical state model,
 failure classification, restart behavior, and serving invariants.

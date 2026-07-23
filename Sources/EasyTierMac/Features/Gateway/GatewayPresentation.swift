@@ -197,7 +197,12 @@ struct PublishedServicePresentation: Equatable, Sendable {
         } else if route?.resolutionState == .resolving {
             presentation = ("Starting", "Resolving target", .neutral, true)
         } else if certificate?.operation == .queued || certificate?.operation == .issuing {
-            presentation = ("Starting", "Issuing certificate", .neutral, true)
+            presentation = (
+                "Starting",
+                Self.certificateIssuanceDetail(stage: certificate?.stage),
+                .neutral,
+                true
+            )
         } else if certificate?.operation == .renewing || certificate?.operation == .replacing {
             presentation = ("Starting", "Renewing certificate", .neutral, true)
         } else {
@@ -220,5 +225,19 @@ struct PublishedServicePresentation: Equatable, Sendable {
             || certificate?.operation == .waitingRetry
             ? "Retry Certificate"
             : "Renew Certificate"
+    }
+
+    private static func certificateIssuanceDetail(stage: GatewayCertificateStage?) -> String {
+        switch stage {
+        case .account: "Preparing certificate account"
+        case .ordering: "Requesting certificate"
+        case .provisioningChallenge: "Creating DNS validation record"
+        case .validating: "Waiting for DNS validation"
+        case .finalizing: "Finalizing certificate"
+        case .downloading: "Downloading certificate"
+        case .installing: "Installing certificate"
+        case .cleanup: "Finishing DNS validation"
+        case nil: "Issuing certificate"
+        }
     }
 }

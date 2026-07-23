@@ -65,6 +65,10 @@ pub struct CoordinatorJournal {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct CertificateScheduleJournal {
     pub policy_key: String,
+    #[serde(default)]
+    pub preferred_authority: Option<CertificateAuthorityKind>,
+    #[serde(default)]
+    pub ever_activated_https: bool,
     pub attempt_count: u32,
     #[serde(default)]
     pub next_renewal_at: Option<String>,
@@ -576,6 +580,8 @@ mod tests {
                     "renewing".to_string(),
                     CertificateScheduleJournal {
                         policy_key: "renew-policy".to_string(),
+                        preferred_authority: Some(CertificateAuthorityKind::Zerossl),
+                        ever_activated_https: true,
                         attempt_count: 0,
                         next_renewal_at: Some("2026-08-22T00:00:00Z".to_string()),
                         next_attempt_at: None,
@@ -587,6 +593,8 @@ mod tests {
                     "retrying".to_string(),
                     CertificateScheduleJournal {
                         policy_key: "retry-policy".to_string(),
+                        preferred_authority: Some(CertificateAuthorityKind::Letsencrypt),
+                        ever_activated_https: false,
                         attempt_count: 2,
                         next_renewal_at: None,
                         next_attempt_at: Some("2026-07-22T00:05:00Z".to_string()),
@@ -601,6 +609,28 @@ mod tests {
         storage.store_coordinator_journal(&journal).unwrap();
 
         assert_eq!(storage.load_coordinator_journal().unwrap(), journal);
+    }
+
+    #[test]
+    fn older_coordinator_journal_defaults_certificate_history_safely() {
+        let journal: CoordinatorJournal = serde_json::from_value(serde_json::json!({
+            "certificates": {
+                "automatic": {
+                    "policy_key": "policy",
+                    "attempt_count": 0,
+                    "next_renewal_at": null,
+                    "next_attempt_at": null,
+                    "in_flight": false,
+                    "failure": null
+                }
+            },
+            "provider_cooldowns": {}
+        }))
+        .unwrap();
+
+        let schedule = &journal.certificates["automatic"];
+        assert_eq!(schedule.preferred_authority, None);
+        assert!(!schedule.ever_activated_https);
     }
 
     #[test]

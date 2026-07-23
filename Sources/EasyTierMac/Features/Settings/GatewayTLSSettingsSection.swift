@@ -34,7 +34,7 @@ struct GatewayTLSSettingsSection: View {
             CardSection(
                 "Certificate Contact",
                 systemImage: "envelope",
-                footer: "Certificate authorities use this address for account, security, and renewal notices."
+                footer: "This global address is shared by all certificates. Certificate authorities use it for account, security, and renewal notices."
             ) {
                 SettingsInlineRow("Contact Email") {
                     VStack(alignment: .trailing, spacing: 4) {

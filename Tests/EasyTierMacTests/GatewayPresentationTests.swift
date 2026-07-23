@@ -193,6 +193,104 @@ import Testing
     #expect(presentation.statusLabel == "Starting")
     #expect(presentation.detailLabel == "Resolving target")
     #expect(presentation.isInProgress)
+
+    var issuingCertificate = try presentationCertificate(state: .issuing)
+    issuingCertificate.stage = .validating
+    presentation = PublishedServicePresentation(
+        service: service,
+        certificate: issuingCertificate,
+        route: nil,
+        gatewayEnabled: true,
+        tlsConfigured: true
+    )
+    #expect(presentation.statusLabel == "Starting")
+    #expect(presentation.detailLabel == "Waiting for DNS validation")
+    #expect(presentation.isInProgress)
+}
+
+@Test func publishedServiceStatusFeedbackOnlyPlaysForInteractiveTransitions() {
+    let inactiveStarting = PublishedServiceStatusFeedbackObservation(
+        feedback: .none,
+        isWindowInteractive: false
+    )
+    let inactiveSuccess = PublishedServiceStatusFeedbackObservation(
+        feedback: .success,
+        isWindowInteractive: false
+    )
+    let interactiveSuccess = PublishedServiceStatusFeedbackObservation(
+        feedback: .success,
+        isWindowInteractive: true
+    )
+    let interactiveStarting = PublishedServiceStatusFeedbackObservation(
+        feedback: .none,
+        isWindowInteractive: true
+    )
+    let interactiveFailure = PublishedServiceStatusFeedbackObservation(
+        feedback: .failure,
+        isWindowInteractive: true
+    )
+
+    #expect(inactiveSuccess.transition(from: inactiveStarting) == nil)
+    #expect(interactiveSuccess.transition(from: inactiveSuccess) == nil)
+    #expect(interactiveSuccess.transition(from: interactiveStarting) == .success)
+    #expect(interactiveFailure.transition(from: interactiveSuccess) == .failure)
+}
+
+@Test func publishServiceProgressUsesCertificateStagesAndServingOutcomes() throws {
+    var certificate = try presentationCertificate(state: .issuing)
+    certificate.stage = .validating
+
+    var presentation = PublishServiceProgressPresentation(
+        certificate: certificate,
+        route: nil,
+        convergence: .init(
+            desired: nil,
+            applied: nil,
+            phase: .converged,
+            retryAt: nil,
+            message: nil
+        )
+    )
+    #expect(presentation.phase == .requesting)
+    #expect(presentation.title == "Waiting for DNS Validation")
+    #expect(presentation.showsProgress)
+
+    presentation = PublishServiceProgressPresentation(
+        certificate: try presentationCertificate(state: .active),
+        route: try presentationRoute(state: .ready, servingMode: .https),
+        convergence: .disabled
+    )
+    #expect(presentation.phase == .https)
+    #expect(presentation.title == "Service Published")
+    #expect(!presentation.showsProgress)
+
+    presentation = PublishServiceProgressPresentation(
+        certificate: try presentationCertificate(state: .failed, error: "Authorities exhausted"),
+        route: try presentationRoute(state: .ready, servingMode: .httpOnly),
+        convergence: .disabled
+    )
+    #expect(presentation.phase == .httpOnly)
+    #expect(presentation.canRetry)
+}
+
+@Test func publishServiceProgressDoesNotSpinDuringScheduledApplyRetry() {
+    let presentation = PublishServiceProgressPresentation(
+        certificate: nil,
+        route: nil,
+        convergence: .init(
+            desired: nil,
+            applied: nil,
+            phase: .retryScheduled,
+            retryAt: nil,
+            message: "Helper unavailable"
+        )
+    )
+
+    #expect(presentation.phase == .waitingRetry)
+    #expect(presentation.title == "Publishing Delayed")
+    #expect(presentation.detail == "Helper unavailable")
+    #expect(!presentation.showsProgress)
+    #expect(!presentation.canRetry)
 }
 
 @Test func publishedServicePresentationHidesStaleErrorsWhileWaiting() throws {
@@ -255,7 +353,8 @@ private func presentationTestService(id: String = "service-a") -> GatewayPublish
         serviceLabel: id,
         publicHostname: "\(id).a.et.net",
         targetPort: 3_000,
-        desiredEnabled: true
+        desiredEnabled: true,
+        certificateID: id
     )
 }
 
@@ -320,6 +419,7 @@ private enum PresentationCertificateState: Equatable {
 
 private func presentationRoute(
     state: GatewayRouteResolutionState,
+    servingMode: GatewayRouteServingMode = .unavailable,
     error: String? = nil
 ) throws -> GatewayRouteStatus {
     let payload: [String: Any?] = [
@@ -327,6 +427,7 @@ private func presentationRoute(
         "upstream": "http://a.et.net:3000",
         "resolved_addresses": ["10.0.0.1"],
         "certificate_id": "service-a",
+        "serving_mode": servingMode.rawValue,
         "resolution_state": state.rawValue,
         "last_resolved_at": nil,
         "last_online_at": nil,

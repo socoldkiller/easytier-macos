@@ -7,16 +7,19 @@ struct EditPublishedServiceSheet: View {
     let service: GatewayPublishedService
     let targetOptions: [PublishedServiceTargetOption]
     let dnsCredentials: [GatewayDNSCredentialDescriptor]
+    let certificate: GatewayManagedCertificate
+    let defaultDNSCredentialID: String?
     let sslProvider: PublishedServiceSSLProvider
     let onManageDNSCredentials: () -> Void
     let onSave: @MainActor (
         PublishedServiceTargetOption,
         Int,
-        GatewayCertificatePolicy
+        GatewayServiceCertificateSelection
     ) async throws -> Void
 
     @State private var portText: String
     @State private var selectedTargetPeerID: String
+    @State private var certificateMode: PublishedServiceCertificateMode
     @State private var certificateAuthority: GatewayCertificateAuthority
     @State private var challengeMode: PublishedServiceChallengeMode
     @State private var dnsCredentialID: String?
@@ -38,21 +41,21 @@ struct EditPublishedServiceSheet: View {
         targetOptions.first { $0.peerID == selectedTargetPeerID }
     }
 
-    private var certificatePolicy: GatewayCertificatePolicy? {
+    private var certificateSelection: GatewayServiceCertificateSelection? {
+        if certificateMode == .automatic {
+            return defaultDNSCredentialID == nil ? nil : .automatic
+        }
         guard let challenge = challengeMode.challenge(credentialID: dnsCredentialID) else {
             return nil
         }
-        return GatewayCertificatePolicy(
-            authority: certificateAuthority,
-            challenge: challenge
-        )
+        return .custom(authority: certificateAuthority, challenge: challenge)
     }
 
     private var canSave: Bool {
         guard !isWorking,
               let parsedPort,
               let selectedTarget,
-              let certificatePolicy
+              let certificateSelection
         else {
             return false
         }
@@ -60,7 +63,8 @@ struct EditPublishedServiceSheet: View {
             service: service,
             selectedTarget: selectedTarget,
             port: parsedPort,
-            certificatePolicy: certificatePolicy
+            certificateSelection: certificateSelection,
+            currentSelection: Self.selection(for: certificate)
         )
     }
 
@@ -68,17 +72,21 @@ struct EditPublishedServiceSheet: View {
         service: GatewayPublishedService,
         targetOptions: [PublishedServiceTargetOption],
         dnsCredentials: [GatewayDNSCredentialDescriptor],
+        certificate: GatewayManagedCertificate,
+        defaultDNSCredentialID: String?,
         sslProvider: PublishedServiceSSLProvider,
         onManageDNSCredentials: @escaping () -> Void,
         onSave: @escaping @MainActor (
             PublishedServiceTargetOption,
             Int,
-            GatewayCertificatePolicy
+            GatewayServiceCertificateSelection
         ) async throws -> Void
     ) {
         self.service = service
         self.targetOptions = targetOptions
         self.dnsCredentials = dnsCredentials
+        self.certificate = certificate
+        self.defaultDNSCredentialID = defaultDNSCredentialID
         self.sslProvider = sslProvider
         self.onManageDNSCredentials = onManageDNSCredentials
         self.onSave = onSave
@@ -90,11 +98,18 @@ struct EditPublishedServiceSheet: View {
             return option.instanceID == targetInstanceID
         }?.peerID ?? service.targetPeerID
         _selectedTargetPeerID = State(initialValue: currentPeerID)
-        _certificateAuthority = State(initialValue: service.certificatePolicy.authority)
-        _challengeMode = State(
-            initialValue: PublishedServiceChallengeMode(service.certificatePolicy.challenge)
-        )
-        _dnsCredentialID = State(initialValue: service.certificatePolicy.challenge.dnsCredentialID)
+        switch certificate.strategy {
+        case .automaticWildcard:
+            _certificateMode = State(initialValue: .automatic)
+            _certificateAuthority = State(initialValue: .letsEncrypt)
+            _challengeMode = State(initialValue: .http01)
+            _dnsCredentialID = State(initialValue: nil)
+        case let .custom(authority, challenge):
+            _certificateMode = State(initialValue: .custom)
+            _certificateAuthority = State(initialValue: authority)
+            _challengeMode = State(initialValue: PublishedServiceChallengeMode(challenge))
+            _dnsCredentialID = State(initialValue: challenge.dnsCredentialID)
+        }
     }
 
     var body: some View {
@@ -145,10 +160,13 @@ struct EditPublishedServiceSheet: View {
 
                     PublishedServiceHTTPSOptions(
                         isExpanded: $showsHTTPSOptions,
+                        certificateMode: $certificateMode,
                         certificateAuthority: $certificateAuthority,
                         challengeMode: $challengeMode,
                         dnsCredentialID: $dnsCredentialID,
                         dnsCredentials: dnsCredentials,
+                        automaticDomain: automaticDomain,
+                        defaultDNSCredentialID: defaultDNSCredentialID,
                         status: sslProvider,
                         isDisabled: isWorking,
                         onManageDNSCredentials: onManageDNSCredentials
@@ -201,7 +219,7 @@ struct EditPublishedServiceSheet: View {
         guard canSave,
               let parsedPort,
               let selectedTarget,
-              let certificatePolicy
+              let certificateSelection
         else {
             hasEditedPort = true
             return
@@ -212,11 +230,29 @@ struct EditPublishedServiceSheet: View {
             errorMessage = nil
             defer { isWorking = false }
             do {
-                try await onSave(selectedTarget, parsedPort, certificatePolicy)
+                try await onSave(selectedTarget, parsedPort, certificateSelection)
                 dismiss()
             } catch {
                 errorMessage = error.localizedDescription
             }
+        }
+    }
+
+    private var automaticDomain: String {
+        let suffix = service.publicDNSSuffix.hasSuffix(".")
+            ? String(service.publicDNSSuffix.dropLast())
+            : service.publicDNSSuffix
+        return "*.\(service.publicNodeLabel).\(suffix)"
+    }
+
+    private static func selection(
+        for certificate: GatewayManagedCertificate
+    ) -> GatewayServiceCertificateSelection {
+        switch certificate.strategy {
+        case .automaticWildcard:
+            .automatic
+        case let .custom(authority, challenge):
+            .custom(authority: authority, challenge: challenge)
         }
     }
 }

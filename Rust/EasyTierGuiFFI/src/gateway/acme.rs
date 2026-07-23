@@ -67,6 +67,11 @@ pub struct AcmeJobOutput {
 impl AcmeJobOutput {
     pub fn matches(&self, certificate: &ValidatedCertificate) -> bool {
         self.attempted_certificate == *certificate
+            || certificate.automatic
+                && self.attempted_certificate.id == certificate.id
+                && self.attempted_certificate.domains == certificate.domains
+                && self.attempted_certificate.challenge == certificate.challenge
+                && self.attempted_certificate.renewal_enabled == certificate.renewal_enabled
     }
 }
 
@@ -1835,6 +1840,7 @@ mod tests {
             let context = AcmeContext::new_with_http(
                 AcmeConfig {
                     contact_email: Some("ops@example.com".to_string()),
+                    accepted_authorities: Vec::new(),
                     terms_of_service_agreed: true,
                 },
                 storage.clone(),
@@ -1847,6 +1853,8 @@ mod tests {
                 domains: vec!["app.acme.test".to_string()],
                 authority: CertificateAuthorityKind::Letsencrypt,
                 challenge: ChallengeConfig::Http01,
+                automatic: false,
+                renewal_enabled: true,
             };
             let (_shutdown_sender, shutdown) = watch::channel(false);
             let stages = Arc::new(StdMutex::new(Vec::new()));
@@ -1977,6 +1985,7 @@ mod tests {
             let context = AcmeContext::new_with_http_and_dns_provider(
                 AcmeConfig {
                     contact_email: None,
+                    accepted_authorities: Vec::new(),
                     terms_of_service_agreed: true,
                 },
                 storage.clone(),
@@ -1994,6 +2003,8 @@ mod tests {
                     credential_id: "cf-main".to_string(),
                     credential_revision: 1,
                 },
+                automatic: false,
+                renewal_enabled: true,
             };
             let (_shutdown_sender, shutdown) = watch::channel(false);
 
@@ -2067,6 +2078,7 @@ mod tests {
                     let context = AcmeContext::new_with_http_and_dns_provider(
                         AcmeConfig {
                             contact_email: Some("ops@example.com".to_string()),
+                            accepted_authorities: Vec::new(),
                             terms_of_service_agreed: true,
                         },
                         storage,
@@ -2093,6 +2105,8 @@ mod tests {
                         }],
                         authority,
                         challenge: challenge.clone(),
+                        automatic: false,
+                        renewal_enabled: true,
                     };
                     let dns_credential = uses_dns01.then(|| DnsCredential::Cloudflare {
                         api_token: Zeroizing::new("cloudflare-token".to_string()),
@@ -2134,6 +2148,7 @@ mod tests {
             let context = AcmeContext::new_with_http_and_dns_provider(
                 AcmeConfig {
                     contact_email: None,
+                    accepted_authorities: Vec::new(),
                     terms_of_service_agreed: true,
                 },
                 storage.clone(),
@@ -2153,6 +2168,8 @@ mod tests {
                     credential_id: "cf-main".to_string(),
                     credential_revision: 1,
                 },
+                automatic: false,
+                renewal_enabled: true,
             };
             let (_shutdown_sender, shutdown) = watch::channel(false);
 

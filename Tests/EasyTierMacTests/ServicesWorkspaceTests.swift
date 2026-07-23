@@ -6,18 +6,18 @@ import Testing
 @Test func publishedServiceSSLProviderUsesCertificateServingMode() {
     let notAccepted = GatewayACMEConfiguration(
         contactEmail: "ops@example.com",
-        termsOfServiceAgreed: false
+        acceptedAuthorities: []
     )
     let missingContactEmail = GatewayACMEConfiguration(
-        termsOfServiceAgreed: true
+        acceptedAuthorities: GatewayCertificateAuthority.allCases
     )
     let production = GatewayACMEConfiguration(
         contactEmail: "ops@example.com",
-        termsOfServiceAgreed: true
+        acceptedAuthorities: GatewayCertificateAuthority.allCases
     )
     let staging = GatewayACMEConfiguration(
         contactEmail: "ops@example.com",
-        termsOfServiceAgreed: true
+        acceptedAuthorities: GatewayCertificateAuthority.allCases
     )
 
     #expect(PublishedServiceSSLProvider(acmeConfiguration: nil) == .unavailable)
@@ -238,7 +238,7 @@ import Testing
         gatewayEnabled: true,
         acmeConfiguration: GatewayACMEConfiguration(
             contactEmail: "ops@example.com",
-            termsOfServiceAgreed: true
+            acceptedAuthorities: GatewayCertificateAuthority.allCases
         ),
         networkName: "Production",
         members: [servicesTestMember(peerID: serviceA.targetPeerID, ipv4: "10.0.0.10/24")],
@@ -294,7 +294,7 @@ import Testing
         gatewayEnabled: true,
         acmeConfiguration: GatewayACMEConfiguration(
             contactEmail: "ops@example.com",
-            termsOfServiceAgreed: true
+            acceptedAuthorities: GatewayCertificateAuthority.allCases
         ),
         networkName: "Production",
         members: [],
@@ -435,7 +435,8 @@ private func servicesTestService(
         serviceLabel: id,
         publicHostname: hostname,
         targetPort: port,
-        desiredEnabled: true
+        desiredEnabled: true,
+        certificateID: id
     )
 }
 

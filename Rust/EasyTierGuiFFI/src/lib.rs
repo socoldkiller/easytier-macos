@@ -1263,7 +1263,7 @@ mod tests {
 
         let temp = tempfile::tempdir().unwrap();
         let mut config = serde_json::json!({
-            "schema_version": 6,
+            "schema_version": 7,
             "deployment": {
                 "configuration_id": "00000000-0000-0000-0000-000000000000",
                 "revision": 1,
@@ -1288,7 +1288,7 @@ mod tests {
             "routes": []
         });
         let secrets = serde_json::json!({
-            "schema_version": 6,
+            "schema_version": 7,
             "cloudflare": {
                 "cf-main": { "api_token": "super-secret-cloudflare-token" }
             }

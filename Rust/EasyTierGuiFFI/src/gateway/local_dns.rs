@@ -364,7 +364,7 @@ mod tests {
     fn test_config(domain: &str) -> super::ValidatedGatewayConfig {
         GatewayConfig::parse(
             &serde_json::json!({
-                "schema_version": 6,
+                "schema_version": 7,
                 "deployment": {
                     "configuration_id": "00000000-0000-0000-0000-000000000000",
                     "revision": 0,
@@ -383,13 +383,16 @@ mod tests {
                 },
                 "acme": {
                     "contact_email": "gateway@example.com",
-                    "terms_of_service_agreed": true
+                    "accepted_authorities": ["letsencrypt"]
                 },
                 "certificates": [{
                     "id": "app-cert",
                     "domains": [domain],
-                    "authority": "letsencrypt",
-                    "challenge": { "type": "http01" }
+                    "strategy": {
+                        "type": "custom",
+                        "authority": "letsencrypt",
+                        "challenge": { "type": "http01" }
+                    }
                 }],
                 "routes": [{
                     "domain": domain,

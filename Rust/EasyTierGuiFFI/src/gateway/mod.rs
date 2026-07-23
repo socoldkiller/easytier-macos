@@ -45,7 +45,7 @@ use proxy::{
 };
 use status::{
     CertificateAvailability, CertificateFailure, CertificateOperation, CertificateStatus,
-    FailureKind, FailureSource, GatewayState, ListenerStatus, RuntimeIssue,
+    FailureKind, FailureSource, GatewayState, ListenerStatus, RouteServingMode, RuntimeIssue,
 };
 use storage::{
     CertificateScheduleJournal, CoordinatorJournal, GatewayStorage, PendingDnsCleanup,
@@ -65,6 +65,8 @@ pub struct GatewayHandle {
     commands: mpsc::Sender<GatewayCommand>,
     status: Arc<ArcSwap<GatewayStatusSnapshot>>,
     routes: Arc<SharedRouteTable>,
+    certificates: Arc<DynamicCertificateStore>,
+    http_only_domains: Arc<ArcSwap<BTreeSet<String>>>,
     #[cfg(test)]
     challenges: Arc<Http01ChallengeStore>,
 }
@@ -115,6 +117,17 @@ impl GatewayHandle {
     pub fn status_json(&self) -> Result<String, String> {
         let mut status = self.status.load_full().as_ref().clone();
         status.routes = self.routes.statuses();
+        let http_only_domains = self.http_only_domains.load();
+        for route in &mut status.routes {
+            route.serving_certificate_id = self.certificates.serving_certificate_id(&route.domain);
+            route.serving_mode = if route.serving_certificate_id.is_some() {
+                RouteServingMode::Https
+            } else if http_only_domains.contains(&route.domain) {
+                RouteServingMode::HttpOnly
+            } else {
+                RouteServingMode::Unavailable
+            };
+        }
         serde_json::to_string(&status)
             .map_err(|error| format!("failed to serialize gateway status: {error}"))
     }
@@ -262,6 +275,7 @@ struct GatewayInstance {
     acme_events: mpsc::UnboundedReceiver<AcmeEvent>,
     acme_event_sender: mpsc::UnboundedSender<AcmeEvent>,
     certificates: Arc<DynamicCertificateStore>,
+    http_only_domains: Arc<ArcSwap<BTreeSet<String>>>,
     routes: Arc<SharedRouteTable>,
     local_dns: Arc<SharedLocalDnsTable>,
     proxy: Arc<HttpProxy<GatewayProxy>>,
@@ -296,8 +310,9 @@ impl GatewayInstance {
     ) -> Result<GatewayHandle, String> {
         let storage = GatewayStorage::initialize(config.source.storage_dir.clone())?;
         let pending_cleanups = storage.load_cleanup_journal()?;
-        let coordinator_journal = storage.load_coordinator_journal()?;
+        let mut coordinator_journal = storage.load_coordinator_journal()?;
         let certificates = DynamicCertificateStore::new();
+        let http_only_domains = Arc::new(ArcSwap::from_pointee(BTreeSet::new()));
         certificates.update_routes(&config);
         let challenges = Http01ChallengeStore::new();
         let acme = AcmeContext::new(
@@ -312,6 +327,11 @@ impl GatewayInstance {
 
         let mut certificate_status = BTreeMap::new();
         for certificate in config.certificates.values() {
+            let stored_schedule = coordinator_journal
+                .certificates
+                .get(&certificate.id)
+                .filter(|stored| stored.policy_key == certificate_policy_key(certificate))
+                .cloned();
             let mut status = CertificateStatus::pending(
                 certificate.id.clone(),
                 certificate.domains.clone(),
@@ -332,11 +352,28 @@ impl GatewayInstance {
                     status.not_after = Some(material.metadata.not_after_rfc3339.clone());
                     status.active_authority = Some(material.metadata.authority);
                     status.active_challenge = Some(material.metadata.challenge.kind().to_string());
+                    if certificate.automatic {
+                        status.authority = material.metadata.authority;
+                    }
                     if status.availability == CertificateAvailability::Valid {
+                        let schedule = coordinator_journal
+                            .certificates
+                            .entry(certificate.id.clone())
+                            .or_insert_with(|| empty_certificate_schedule(certificate));
+                        schedule.preferred_authority = Some(material.metadata.authority);
+                        schedule.ever_activated_https = true;
                         certificates.install(certificate.id.clone(), material);
                     }
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    if certificate.automatic
+                        && let Some(authority) = stored_schedule
+                            .as_ref()
+                            .and_then(|stored| stored.preferred_authority)
+                    {
+                        status.authority = authority;
+                    }
+                }
                 Err(error) => {
                     status.operation = CertificateOperation::Suspended;
                     status.failure = Some(simple_failure(
@@ -357,8 +394,12 @@ impl GatewayInstance {
             ..ServerConf::default()
         };
         let server_conf = Arc::new(server_conf);
-        let gateway_proxy =
-            GatewayProxy::new(routes.clone(), certificates.clone(), challenges.clone());
+        let gateway_proxy = GatewayProxy::new(
+            routes.clone(),
+            certificates.clone(),
+            challenges.clone(),
+            http_only_domains.clone(),
+        );
         let proxy = Arc::new(http_proxy(&server_conf, gateway_proxy));
         let (tls_acceptor, tls_callbacks) = build_tls_acceptor(certificates.clone())?;
 
@@ -437,7 +478,8 @@ impl GatewayInstance {
             acme,
             acme_events,
             acme_event_sender,
-            certificates,
+            certificates: certificates.clone(),
+            http_only_domains: http_only_domains.clone(),
             routes: routes.clone(),
             local_dns,
             proxy,
@@ -476,6 +518,8 @@ impl GatewayInstance {
             commands,
             status,
             routes,
+            certificates: certificates.clone(),
+            http_only_domains: http_only_domains.clone(),
             #[cfg(test)]
             challenges,
         })
@@ -584,7 +628,11 @@ impl GatewayInstance {
                         CertificateStatus {
                             id: certificate.id.clone(),
                             domains: certificate.domains.clone(),
-                            authority: certificate.authority,
+                            authority: if certificate.automatic {
+                                material.metadata.authority
+                            } else {
+                                certificate.authority
+                            },
                             challenge: certificate.challenge.kind().to_string(),
                             active_authority: Some(material.metadata.authority),
                             active_challenge: Some(material.metadata.challenge.kind().to_string()),
@@ -742,6 +790,8 @@ impl GatewayInstance {
                         certificate_id.clone(),
                         CertificateScheduleJournal {
                             policy_key,
+                            preferred_authority: stored.preferred_authority,
+                            ever_activated_https: stored.ever_activated_https,
                             attempt_count,
                             next_renewal_at: None,
                             next_attempt_at: Some(format_timestamp(retry_at)),
@@ -834,8 +884,14 @@ impl GatewayInstance {
                         && !self.in_flight_certificates.contains(*certificate_id)
                         && self.config.certificates.get(*certificate_id).is_some_and(
                             |certificate| {
+                                let authority = self
+                                    .coordinator_journal
+                                    .certificates
+                                    .get(*certificate_id)
+                                    .and_then(|stored| stored.preferred_authority)
+                                    .unwrap_or(certificate.authority);
                                 self.provider_cooldowns
-                                    .get(&certificate.authority)
+                                    .get(&authority)
                                     .is_none_or(|(until, _)| *until <= now)
                             },
                         )
@@ -857,6 +913,29 @@ impl GatewayInstance {
             let Some(certificate) = self.config.certificates.get(&certificate_id).cloned() else {
                 continue;
             };
+            if !certificate.renewal_enabled {
+                continue;
+            }
+            let desired_policy_key = certificate_policy_key(&certificate);
+            let existing_schedule = self
+                .coordinator_journal
+                .certificates
+                .get(&certificate_id)
+                .cloned();
+            let mut certificate = certificate;
+            if certificate.automatic {
+                let preferred_authority = existing_schedule
+                    .as_ref()
+                    .and_then(|stored| stored.preferred_authority)
+                    .or_else(|| {
+                        self.certificate_status
+                            .get(&certificate_id)
+                            .map(|status| status.authority)
+                    });
+                if preferred_authority == Some(config::CertificateAuthorityKind::Zerossl) {
+                    certificate.authority = config::CertificateAuthorityKind::Zerossl;
+                }
+            }
             let dns_credential =
                 certificate
                     .challenge
@@ -872,7 +951,11 @@ impl GatewayInstance {
             self.coordinator_journal.certificates.insert(
                 certificate_id.clone(),
                 CertificateScheduleJournal {
-                    policy_key: certificate_policy_key(&certificate),
+                    policy_key: desired_policy_key,
+                    preferred_authority: Some(certificate.authority),
+                    ever_activated_https: existing_schedule
+                        .as_ref()
+                        .is_some_and(|stored| stored.ever_activated_https),
                     attempt_count: self
                         .retry_attempts
                         .get(&certificate_id)
@@ -1146,18 +1229,25 @@ impl GatewayInstance {
                             status.stage = Some(status::CertificateStage::Installing);
                         }
                         self.publish_status(self.operational_state(), status_error.clone());
-                        match issued.commit(&self.storage, &certificate) {
+                        match issued.commit(&self.storage, &output.attempted_certificate) {
                             Ok(material) => {
                                 self.certificates
                                     .install(output.certificate_id.clone(), material.clone());
                                 self.retry_attempts.remove(&output.certificate_id);
-                                self.coordinator_journal
+                                let schedule = self
+                                    .coordinator_journal
                                     .certificates
-                                    .remove(&output.certificate_id);
+                                    .entry(output.certificate_id.clone())
+                                    .or_insert_with(|| empty_certificate_schedule(&certificate));
+                                schedule.preferred_authority = Some(material.metadata.authority);
+                                schedule.ever_activated_https = true;
                                 if let Some(status) =
                                     self.certificate_status.get_mut(&output.certificate_id)
                                 {
                                     CertificateStateMachine::install(status, &material);
+                                    if certificate.automatic {
+                                        status.authority = material.metadata.authority;
+                                    }
                                 }
                                 let renewal_at = fallback_renewal_time(
                                     material.metadata.not_before,
@@ -1180,7 +1270,39 @@ impl GatewayInstance {
                         }
                     }
                     Err(failure) => {
-                        self.record_issuance_failure(&output.certificate_id, failure);
+                        if certificate.automatic
+                            && output.attempted_certificate.authority
+                                == config::CertificateAuthorityKind::Letsencrypt
+                            && automatic_fallback_eligible(&failure)
+                        {
+                            if let Some(status) =
+                                self.certificate_status.get_mut(&output.certificate_id)
+                            {
+                                status.authority = config::CertificateAuthorityKind::Zerossl;
+                                status.challenge = certificate.challenge.kind().to_string();
+                                status.failure = Some(failure.clone());
+                                status.operation = CertificateOperation::Queued;
+                                status.next_attempt_at =
+                                    Some(format_timestamp(OffsetDateTime::now_utc()));
+                            }
+                            self.retry_attempts.remove(&output.certificate_id);
+                            let schedule = self
+                                .coordinator_journal
+                                .certificates
+                                .entry(output.certificate_id.clone())
+                                .or_insert_with(|| empty_certificate_schedule(&certificate));
+                            schedule.preferred_authority =
+                                Some(config::CertificateAuthorityKind::Zerossl);
+                            schedule.in_flight = false;
+                            schedule.failure = None;
+                            let retry_at = OffsetDateTime::now_utc();
+                            schedule.next_attempt_at = Some(format_timestamp(retry_at));
+                            self.set_retry_time(&output.certificate_id, retry_at);
+                            self.queued_certificates
+                                .insert(output.certificate_id.clone());
+                        } else {
+                            self.record_issuance_failure(&output.certificate_id, failure);
+                        }
                     }
                 }
                 self.contact_sync_retry_at = Some(OffsetDateTime::now_utc());
@@ -1339,10 +1461,22 @@ impl GatewayInstance {
             }
         }
         if let Some(certificate) = self.config.certificates.get(certificate_id) {
+            let existing_schedule = self
+                .coordinator_journal
+                .certificates
+                .get(certificate_id)
+                .cloned();
             self.coordinator_journal.certificates.insert(
                 certificate_id.to_string(),
                 CertificateScheduleJournal {
                     policy_key: certificate_policy_key(certificate),
+                    preferred_authority: existing_schedule
+                        .as_ref()
+                        .and_then(|stored| stored.preferred_authority)
+                        .or(Some(certificate.authority)),
+                    ever_activated_https: existing_schedule
+                        .as_ref()
+                        .is_some_and(|stored| stored.ever_activated_https),
                     attempt_count: self
                         .retry_attempts
                         .get(certificate_id)
@@ -1372,6 +1506,8 @@ impl GatewayInstance {
                 .entry(certificate_id.to_string())
                 .or_insert_with(|| CertificateScheduleJournal {
                     policy_key: certificate_policy_key(certificate),
+                    preferred_authority: Some(certificate.authority),
+                    ever_activated_https: self.certificates.get(certificate_id).is_some(),
                     attempt_count: 0,
                     next_renewal_at: None,
                     next_attempt_at: None,
@@ -1563,6 +1699,34 @@ impl GatewayInstance {
     }
 
     fn publish_status(&mut self, state: GatewayState, last_error: Option<String>) {
+        let http_only_domains = self
+            .config
+            .routes
+            .values()
+            .filter_map(|route| {
+                let certificate = self.config.certificates.get(&route.certificate_id)?;
+                let status = self.certificate_status.get(&route.certificate_id)?;
+                let fallback_available = route
+                    .fallback_certificate_id
+                    .as_deref()
+                    .is_some_and(|id| self.certificates.get(id).is_some());
+                let ever_activated_https = self
+                    .coordinator_journal
+                    .certificates
+                    .get(&certificate.id)
+                    .is_some_and(|stored| stored.ever_activated_https);
+                automatic_http_only_eligible(
+                    certificate,
+                    status,
+                    self.certificates.get(&route.certificate_id).is_some(),
+                    fallback_available,
+                    ever_activated_https,
+                )
+                .then(|| route.domain.clone())
+            })
+            .collect();
+        self.http_only_domains.store(Arc::new(http_only_domains));
+
         let mut certificates = self
             .certificate_status
             .values()
@@ -1658,11 +1822,38 @@ fn certificate_policy_matches(
     certificate: &ValidatedCertificate,
     material: &CertifiedMaterial,
 ) -> bool {
-    material.metadata.authority == certificate.authority
+    (certificate.automatic || material.metadata.authority == certificate.authority)
         && certificate_material_challenge_matches(
             &material.metadata.challenge,
             &certificate.challenge,
         )
+}
+
+fn automatic_fallback_eligible(failure: &CertificateFailure) -> bool {
+    is_authority_cooldown_failure(failure)
+        && matches!(
+            failure.kind,
+            FailureKind::RateLimited | FailureKind::UserActionRequired | FailureKind::Permanent
+        )
+}
+
+fn automatic_http_only_eligible(
+    certificate: &ValidatedCertificate,
+    status: &CertificateStatus,
+    primary_available: bool,
+    fallback_available: bool,
+    ever_activated_https: bool,
+) -> bool {
+    certificate.automatic
+        && !ever_activated_https
+        && status.active_authority.is_none()
+        && !primary_available
+        && !fallback_available
+        && status.authority == config::CertificateAuthorityKind::Zerossl
+        && status
+            .failure
+            .as_ref()
+            .is_some_and(automatic_fallback_eligible)
 }
 
 fn certificate_material_challenge_matches(
@@ -1694,6 +1885,19 @@ fn certificate_policy_key(certificate: &ValidatedCertificate) -> String {
             certificate.id, certificate.authority, certificate.challenge
         )
     })
+}
+
+fn empty_certificate_schedule(certificate: &ValidatedCertificate) -> CertificateScheduleJournal {
+    CertificateScheduleJournal {
+        policy_key: certificate_policy_key(certificate),
+        preferred_authority: Some(certificate.authority),
+        ever_activated_https: false,
+        attempt_count: 0,
+        next_renewal_at: None,
+        next_attempt_at: None,
+        in_flight: false,
+        failure: None,
+    }
 }
 
 fn parse_timestamp(value: &str) -> Option<OffsetDateTime> {
@@ -1941,6 +2145,109 @@ mod tests {
     }
 
     #[test]
+    fn automatic_fallback_only_accepts_classified_authority_failures() {
+        let mut failure = simple_failure(
+            FailureSource::AcmeOrder,
+            FailureKind::Permanent,
+            "order_failed",
+            "order failed".to_string(),
+        );
+        assert!(automatic_fallback_eligible(&failure));
+
+        failure.kind = FailureKind::Transient;
+        assert!(!automatic_fallback_eligible(&failure));
+
+        failure.kind = FailureKind::Permanent;
+        failure.source = FailureSource::DnsPropagation;
+        assert!(!automatic_fallback_eligible(&failure));
+    }
+
+    #[test]
+    fn http_only_requires_initial_automatic_ca_exhaustion() {
+        let certificate = ValidatedCertificate {
+            id: "automatic".to_string(),
+            domains: vec!["*.node.example.com".to_string()],
+            authority: config::CertificateAuthorityKind::Letsencrypt,
+            challenge: config::ChallengeConfig::Dns01 {
+                provider: config::DnsProviderKind::Cloudflare,
+                credential_id: "dns".to_string(),
+                credential_revision: 1,
+            },
+            automatic: true,
+            renewal_enabled: true,
+        };
+        let mut status = CertificateStatus::pending(
+            certificate.id.clone(),
+            certificate.domains.clone(),
+            config::CertificateAuthorityKind::Zerossl,
+            "DNS-01".to_string(),
+        );
+        status.failure = Some(simple_failure(
+            FailureSource::AcmeOrder,
+            FailureKind::Permanent,
+            "order_failed",
+            "ZeroSSL rejected the order".to_string(),
+        ));
+
+        assert!(automatic_http_only_eligible(
+            &certificate,
+            &status,
+            false,
+            false,
+            false
+        ));
+        assert!(!automatic_http_only_eligible(
+            &certificate,
+            &status,
+            false,
+            false,
+            true
+        ));
+        assert!(!automatic_http_only_eligible(
+            &certificate,
+            &status,
+            true,
+            false,
+            false
+        ));
+        assert!(!automatic_http_only_eligible(
+            &certificate,
+            &status,
+            false,
+            true,
+            false
+        ));
+
+        status.failure = Some(simple_failure(
+            FailureSource::DnsProvider,
+            FailureKind::Permanent,
+            "dns_failed",
+            "DNS validation failed".to_string(),
+        ));
+        assert!(!automatic_http_only_eligible(
+            &certificate,
+            &status,
+            false,
+            false,
+            false
+        ));
+
+        status.failure = Some(simple_failure(
+            FailureSource::AcmeOrder,
+            FailureKind::Transient,
+            "network_failed",
+            "The ACME request timed out".to_string(),
+        ));
+        assert!(!automatic_http_only_eligible(
+            &certificate,
+            &status,
+            false,
+            false,
+            false
+        ));
+    }
+
+    #[test]
     fn changing_certificate_policy_resets_the_acme_attempt() {
         let certificate_id = "gateway-cert".to_string();
         let current = BTreeMap::from([(
@@ -1950,6 +2257,8 @@ mod tests {
                 domains: vec!["gateway.test".to_string()],
                 authority: config::CertificateAuthorityKind::Letsencrypt,
                 challenge: config::ChallengeConfig::Http01,
+                automatic: false,
+                renewal_enabled: true,
             },
         )]);
         let next_certificate = ValidatedCertificate {
@@ -1961,6 +2270,8 @@ mod tests {
                 credential_id: "aliyun-main".to_string(),
                 credential_revision: 1,
             },
+            automatic: false,
+            renewal_enabled: true,
         };
         let next = BTreeMap::from([(certificate_id.clone(), next_certificate.clone())]);
 
@@ -2018,6 +2329,8 @@ mod tests {
                 credential_id: "cloudflare-main".to_string(),
                 credential_revision: 1,
             },
+            automatic: false,
+            renewal_enabled: true,
         };
         let now = OffsetDateTime::now_utc();
 
@@ -2038,6 +2351,8 @@ mod tests {
                 credential_id: "cloudflare-main".to_string(),
                 credential_revision: 1,
             },
+            automatic: false,
+            renewal_enabled: true,
         };
         let material = CertifiedMaterial::from_pem_with_policy(
             &certificate_pem,
@@ -2072,7 +2387,7 @@ mod tests {
         runtime.block_on(async {
             let temp = tempfile::tempdir().unwrap();
             let config = json!({
-                "schema_version": 6,
+                "schema_version": 7,
                 "deployment": {
                     "configuration_id": "00000000-0000-0000-0000-000000000000",
                     "revision": 0,
@@ -2128,6 +2443,8 @@ mod tests {
                 domains: domains.iter().map(|domain| domain.to_string()).collect(),
                 authority: config::CertificateAuthorityKind::Letsencrypt,
                 challenge: config::ChallengeConfig::Http01,
+                automatic: false,
+                renewal_enabled: true,
             };
             GatewayStorage::initialize(storage_dir.clone())
                 .unwrap()
@@ -2305,6 +2622,8 @@ mod tests {
                 domains: vec![domain.to_string()],
                 authority: config::CertificateAuthorityKind::Letsencrypt,
                 challenge: config::ChallengeConfig::Http01,
+                automatic: false,
+                renewal_enabled: true,
             };
             GatewayStorage::initialize(storage_dir.clone())
                 .unwrap()
@@ -2366,7 +2685,7 @@ mod tests {
         https_listener: &str,
     ) -> Value {
         json!({
-            "schema_version": 6,
+            "schema_version": 7,
             "deployment": {
                 "configuration_id": "00000000-0000-0000-0000-000000000000",
                 "revision": 0,
@@ -2385,13 +2704,16 @@ mod tests {
             },
             "acme": {
                 "contact_email": "gateway@example.com",
-                "terms_of_service_agreed": true
+                "accepted_authorities": ["letsencrypt"]
             },
             "certificates": [{
                 "id": "gateway-cert",
                 "domains": domains,
-                "authority": "letsencrypt",
-                "challenge": { "type": "http01" }
+                "strategy": {
+                    "type": "custom",
+                    "authority": "letsencrypt",
+                    "challenge": { "type": "http01" }
+                }
             }],
             "routes": domains.iter().map(|domain| json!({
                 "domain": domain,
@@ -2409,7 +2731,7 @@ mod tests {
     }
 
     fn empty_secrets() -> Value {
-        json!({ "schema_version": 6, "cloudflare": {}, "aliyun": {} })
+        json!({ "schema_version": 7, "cloudflare": {}, "aliyun": {} })
     }
 
     fn test_certificate(domains: &[&str]) -> (String, String, CertificateDer<'static>) {

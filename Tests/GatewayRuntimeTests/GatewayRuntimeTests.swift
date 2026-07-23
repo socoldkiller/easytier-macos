@@ -610,7 +610,7 @@ private func gatewayRuntimeTestConfiguration() -> GatewayConfiguration {
         ),
         acme: GatewayACMEConfiguration(
             contactEmail: "ops@example.com",
-            termsOfServiceAgreed: false
+            acceptedAuthorities: []
         ),
         certificates: [],
         routes: []
@@ -621,10 +621,14 @@ private func gatewayRuntimePublishedConfiguration(domain: String) -> GatewayConf
     GatewayConfiguration(
         acme: GatewayACMEConfiguration(
             contactEmail: "ops@example.com",
-            termsOfServiceAgreed: true
+            acceptedAuthorities: [.letsEncrypt]
         ),
         certificates: [
-            GatewayCertificateConfiguration(id: "service-cert", domains: [domain]),
+            GatewayCertificateConfiguration(
+                id: "service-cert",
+                domains: [domain],
+                strategy: .custom(authority: .letsEncrypt, challenge: .http01)
+            ),
         ],
         routes: [
             GatewayRouteConfiguration(

@@ -2,11 +2,13 @@ import SwiftUI
 
 struct PublishedServiceDomainCell: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.windowPresentationActivity) private var presentationActivity
 
     var row: PublishedServiceTableRow
     var isWorking: Bool
     var onOpen: (PublishedServiceTableRow) -> Void
     @State private var isHovered = false
+    @State private var transientFeedback: PublishedServiceStatusFeedback?
 
     var body: some View {
         Button {
@@ -14,18 +16,7 @@ struct PublishedServiceDomainCell: View {
         } label: {
             HStack(spacing: 8) {
                 ZStack {
-                    if showsProgress, !reduceMotion {
-                        ProgressView()
-                            .controlSize(.mini)
-                    } else if showsProgress {
-                        Image(systemName: "hourglass")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Circle()
-                            .fill(statusColor)
-                            .frame(width: 7, height: 7)
-                    }
+                    statusGlyph
                 }
                 .frame(width: 12, height: 12)
                 .accessibilityHidden(true)
@@ -52,6 +43,53 @@ struct PublishedServiceDomainCell: View {
         .help(helpText)
         .accessibilityLabel(Text("\(row.publicHostname), \(statusSummary)"))
         .accessibilityHint(Text("Opens the public service in the default browser"))
+        .onChange(of: feedbackObservation) { oldValue, newValue in
+            guard let feedback = newValue.transition(from: oldValue) else { return }
+            setTransientFeedback(feedback)
+        }
+        .task(id: transientFeedback) {
+            guard transientFeedback != nil else { return }
+            try? await Task.sleep(for: .milliseconds(1_400))
+            guard !Task.isCancelled else { return }
+            setTransientFeedback(nil)
+        }
+    }
+
+    @ViewBuilder
+    private var statusGlyph: some View {
+        if let transientFeedback {
+            feedbackIcon(transientFeedback)
+                .transition(reduceMotion ? .opacity : .scale(scale: 0.7).combined(with: .opacity))
+        } else if showsProgress, presentationActivity.allowsAnimations, !reduceMotion {
+            ProgressView()
+                .controlSize(.mini)
+        } else if showsProgress {
+            Image(systemName: "hourglass")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            Circle()
+                .fill(statusColor)
+                .frame(width: 7, height: 7)
+        }
+    }
+
+    @ViewBuilder
+    private func feedbackIcon(_ feedback: PublishedServiceStatusFeedback) -> some View {
+        switch feedback {
+        case .success:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(EasyTierColors.statusConnected)
+                .symbolEffect(.bounce, value: transientFeedback)
+        case .failure:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .symbolEffect(.wiggle, value: transientFeedback)
+        case .none:
+            EmptyView()
+        }
     }
 
     private var statusLabel: String {
@@ -71,6 +109,13 @@ struct PublishedServiceDomainCell: View {
         isWorking || row.presentation.isInProgress
     }
 
+    private var feedbackObservation: PublishedServiceStatusFeedbackObservation {
+        PublishedServiceStatusFeedbackObservation(
+            feedback: PublishedServiceStatusFeedback(presentation: row.presentation),
+            isWindowInteractive: presentationActivity.allowsAnimations
+        )
+    }
+
     private var helpText: String {
         "Open \(row.publicURL?.absoluteString ?? row.publicHostname)\nStatus: \(statusSummary)"
     }
@@ -80,6 +125,16 @@ struct PublishedServiceDomainCell: View {
         case .neutral: .secondary
         case .positive: EasyTierColors.statusConnected
         case .warning: .orange
+        }
+    }
+
+    private func setTransientFeedback(_ feedback: PublishedServiceStatusFeedback?) {
+        if reduceMotion {
+            transientFeedback = feedback
+        } else {
+            withAnimation(EasyTierMotion.selection(reduceMotion: false)) {
+                transientFeedback = feedback
+            }
         }
     }
 }

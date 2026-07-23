@@ -108,13 +108,15 @@ func publishedServiceContactEmailRejectsInvalidValues(_ input: String) {
 @Test func publishedServiceEditChangeDetectionCoversEveryEditableValue() {
     let service = publishedServiceFormTestService()
     let unchangedTarget = publishedServiceFormTestTarget()
+    let currentSelection = GatewayServiceCertificateSelection.automatic
 
     #expect(
         !PublishedServiceFormValidation.editHasChanges(
             service: service,
             selectedTarget: unchangedTarget,
             port: service.targetPort,
-            certificatePolicy: service.certificatePolicy
+            certificateSelection: currentSelection,
+            currentSelection: currentSelection
         )
     )
     #expect(
@@ -122,7 +124,8 @@ func publishedServiceContactEmailRejectsInvalidValues(_ input: String) {
             service: service,
             selectedTarget: unchangedTarget,
             port: 8_080,
-            certificatePolicy: service.certificatePolicy
+            certificateSelection: currentSelection,
+            currentSelection: currentSelection
         )
     )
     #expect(
@@ -130,7 +133,8 @@ func publishedServiceContactEmailRejectsInvalidValues(_ input: String) {
             service: service,
             selectedTarget: publishedServiceFormTestTarget(peerID: "peer-b"),
             port: service.targetPort,
-            certificatePolicy: service.certificatePolicy
+            certificateSelection: currentSelection,
+            currentSelection: currentSelection
         )
     )
     #expect(
@@ -138,7 +142,8 @@ func publishedServiceContactEmailRejectsInvalidValues(_ input: String) {
             service: service,
             selectedTarget: publishedServiceFormTestTarget(instanceID: "instance-b"),
             port: service.targetPort,
-            certificatePolicy: service.certificatePolicy
+            certificateSelection: currentSelection,
+            currentSelection: currentSelection
         )
     )
     #expect(
@@ -146,7 +151,8 @@ func publishedServiceContactEmailRejectsInvalidValues(_ input: String) {
             service: service,
             selectedTarget: publishedServiceFormTestTarget(hostname: "other"),
             port: service.targetPort,
-            certificatePolicy: service.certificatePolicy
+            certificateSelection: currentSelection,
+            currentSelection: currentSelection
         )
     )
     #expect(
@@ -154,7 +160,8 @@ func publishedServiceContactEmailRejectsInvalidValues(_ input: String) {
             service: service,
             selectedTarget: unchangedTarget,
             port: service.targetPort,
-            certificatePolicy: GatewayCertificatePolicy(authority: .zeroSSL)
+            certificateSelection: .custom(authority: .zeroSSL, challenge: .http01),
+            currentSelection: currentSelection
         )
     )
 }

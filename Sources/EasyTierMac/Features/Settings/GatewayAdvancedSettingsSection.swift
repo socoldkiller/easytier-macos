@@ -5,9 +5,6 @@ struct GatewayAdvancedSettingsSection: View {
 
     var body: some View {
         ExpandableSettingsGroup("Advanced") {
-            GatewayTLSSettingsSection(gateway: gateway)
-            GatewayDNSCredentialsSettingsSection(gateway: gateway)
-
             CardSection(
                 "Listeners",
                 systemImage: "point.3.connected.trianglepath.dotted"

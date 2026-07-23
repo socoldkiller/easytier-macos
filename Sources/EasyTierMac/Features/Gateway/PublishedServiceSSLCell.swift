@@ -30,6 +30,7 @@ struct PublishedServiceSSLCell: View {
         case .unavailable: "exclamationmark.lock"
         case .managedHTTPS: "lock.fill"
         case .requesting: "clock.badge"
+        case .httpOnly: "lock.open"
         }
     }
 

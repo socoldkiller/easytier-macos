@@ -166,7 +166,7 @@ impl CertifiedMaterial {
 
 pub struct DynamicCertificateStore {
     certificates: ArcSwap<BTreeMap<String, Arc<CertifiedMaterial>>>,
-    sni_to_certificate: ArcSwap<BTreeMap<String, String>>,
+    sni_to_certificate: ArcSwap<BTreeMap<String, Vec<String>>>,
     callback_error: Mutex<Option<String>>,
 }
 
@@ -183,7 +183,13 @@ impl DynamicCertificateStore {
         let routes = config
             .routes
             .values()
-            .map(|route| (route.domain.clone(), route.certificate_id.clone()))
+            .map(|route| {
+                let mut certificate_ids = vec![route.certificate_id.clone()];
+                if let Some(fallback_id) = &route.fallback_certificate_id {
+                    certificate_ids.push(fallback_id.clone());
+                }
+                (route.domain.clone(), certificate_ids)
+            })
             .collect();
         self.sni_to_certificate.store(Arc::new(routes));
     }
@@ -218,12 +224,18 @@ impl DynamicCertificateStore {
     }
 
     pub fn has_certificate_for_domain(&self, domain: &str) -> bool {
+        self.serving_certificate_id(domain).is_some()
+    }
+
+    pub fn serving_certificate_id(&self, domain: &str) -> Option<String> {
         let routes = self.sni_to_certificate.load();
         let certificates = self.certificates.load();
-        routes
-            .get(domain)
-            .and_then(|certificate_id| certificates.get(certificate_id))
-            .is_some()
+        routes.get(domain).and_then(|certificate_ids| {
+            certificate_ids
+                .iter()
+                .find(|certificate_id| certificates.contains_key(*certificate_id))
+                .cloned()
+        })
     }
 
     pub fn callback_error(&self) -> Option<String> {
@@ -272,15 +284,18 @@ impl TlsAccept for DynamicTlsCallback {
         };
 
         let routes = self.store.sni_to_certificate.load();
-        let Some(certificate_id) = routes.get(&sni) else {
+        let Some(certificate_ids) = routes.get(&sni) else {
             self.store
                 .set_callback_error(format!("no gateway route for TLS SNI {sni}"));
             return;
         };
         let certificates = self.store.certificates.load();
-        let Some(certificate) = certificates.get(certificate_id) else {
+        let Some(certificate) = certificate_ids
+            .iter()
+            .find_map(|certificate_id| certificates.get(certificate_id))
+        else {
             self.store.set_callback_error(format!(
-                "certificate {certificate_id} is not available for TLS SNI {sni}"
+                "no valid primary or fallback certificate is available for TLS SNI {sni}"
             ));
             return;
         };
@@ -365,12 +380,27 @@ mod tests {
     }
 
     #[test]
+    fn serving_certificate_uses_valid_fallback_when_primary_is_unavailable() {
+        let store = DynamicCertificateStore::new();
+        store.sni_to_certificate.store(Arc::new(BTreeMap::from([(
+            "app.example.com".to_string(),
+            vec!["primary".to_string(), "fallback".to_string()],
+        )])));
+        store.install("fallback".to_string(), test_material("app.example.com"));
+
+        assert_eq!(
+            store.serving_certificate_id("app.example.com").as_deref(),
+            Some("fallback")
+        );
+    }
+
+    #[test]
     fn reconciliation_removes_material_for_changed_domains() {
         let store = DynamicCertificateStore::new();
         store.install("app-cert".to_string(), test_material("old.example.com"));
         let config = GatewayConfig::parse(
             &json!({
-                "schema_version": 6,
+                "schema_version": 7,
                 "deployment": {
                     "configuration_id": "00000000-0000-0000-0000-000000000000",
                     "revision": 0,
@@ -389,13 +419,16 @@ mod tests {
                 },
                 "acme": {
                     "contact_email": "gateway@example.com",
-                    "terms_of_service_agreed": true
+                    "accepted_authorities": ["letsencrypt"]
                 },
                 "certificates": [{
                     "id": "app-cert",
                     "domains": ["new.example.com"],
-                    "authority": "letsencrypt",
-                    "challenge": { "type": "http01" }
+                    "strategy": {
+                        "type": "custom",
+                        "authority": "letsencrypt",
+                        "challenge": { "type": "http01" }
+                    }
                 }],
                 "routes": []
             })
