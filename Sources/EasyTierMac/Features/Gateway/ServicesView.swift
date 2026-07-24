@@ -115,9 +115,10 @@ struct ServicesView: View {
                     currentIPv4: row?.proxyIPv4 ?? "—",
                     members: gateway.topologyMembers
                 ),
+                dnsZoneBindings: gateway.dnsZoneBindings,
                 dnsCredentials: gateway.dnsCredentials,
                 certificate: certificate,
-                defaultDNSCredentialID: gateway.defaultDNSCredentialID,
+                defaultDNSZoneBindingID: gateway.defaultDNSZoneBindingID,
                 sslProvider: row?.sslProvider
                     ?? PublishedServiceSSLProvider(acmeConfiguration: gateway.acmeConfiguration),
                 onManageDNSCredentials: openGatewaySettings

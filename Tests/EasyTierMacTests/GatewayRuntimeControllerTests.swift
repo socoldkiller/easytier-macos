@@ -4,12 +4,134 @@ import Testing
 @testable import EasyTierMac
 
 @MainActor
+@Test func dnsDomainsChooseOneDefaultAndDriveMagicDNS() async throws {
+    let configurationStore = InMemoryGatewayConfigurationStore()
+    let client = RecordingGatewayClient()
+    let controller = makeController(store: configurationStore, client: client)
+    let appStore = EasyTierAppStore(
+        client: PreviewEasyTierCoreClient(),
+        storage: .isolatedForTesting()
+    )
+    controller.bind(to: appStore)
+    await controller.load()
+
+    try await controller.saveDNSDomain(
+        binding: GatewayDNSZoneBinding(
+            id: "example-com",
+            dnsSuffix: "Example.COM",
+            credentialID: "cloudflare-main"
+        ),
+        descriptor: GatewayDNSCredentialDescriptor(
+            id: "cloudflare-main",
+            provider: .cloudflare,
+            label: "example.com"
+        ),
+        secret: .cloudflare(apiToken: "first-token")
+    )
+
+    #expect(controller.defaultDNSZoneBindingID == "example-com")
+    #expect(controller.dnsZoneBindings.first?.dnsSuffix == "example.com.")
+    #expect(appStore.magicDNSSettings.dnsSuffix == "example.com.")
+
+    try await controller.saveDNSDomain(
+        binding: GatewayDNSZoneBinding(
+            id: "example-net",
+            dnsSuffix: "example.net",
+            credentialID: "aliyun-main"
+        ),
+        descriptor: GatewayDNSCredentialDescriptor(
+            id: "aliyun-main",
+            provider: .aliyun,
+            label: "example.net"
+        ),
+        secret: .aliyun(accessKeyID: "key", accessKeySecret: "secret")
+    )
+
+    #expect(controller.defaultDNSZoneBindingID == "example-com")
+    #expect(appStore.magicDNSSettings.dnsSuffix == "example.com.")
+
+    try await controller.setDefaultDNSDomain(id: "example-net")
+
+    #expect(controller.defaultDNSZoneBindingID == "example-net")
+    #expect(appStore.magicDNSSettings.dnsSuffix == "example.net.")
+    await #expect(throws: GatewayConfigurationValidationError.self) {
+        try await controller.deleteDNSDomain(id: "example-net")
+    }
+
+    try await controller.deleteDNSDomain(id: "example-com")
+    #expect(controller.dnsZoneBindings.map(\.id) == ["example-net"])
+}
+
+@MainActor
+@Test func updatingDomainCredentialIncrementsRevisionWithoutChangingDomain() async throws {
+    let configurationStore = InMemoryGatewayConfigurationStore()
+    let controller = makeController(
+        store: configurationStore,
+        client: RecordingGatewayClient()
+    )
+    await controller.load()
+    let binding = GatewayDNSZoneBinding(
+        id: "example-com",
+        dnsSuffix: "example.com.",
+        credentialID: "cloudflare-main"
+    )
+    let descriptor = GatewayDNSCredentialDescriptor(
+        id: "cloudflare-main",
+        provider: .cloudflare,
+        label: "example.com"
+    )
+
+    try await controller.saveDNSDomain(
+        binding: binding,
+        descriptor: descriptor,
+        secret: .cloudflare(apiToken: "first-token")
+    )
+    try await controller.saveDNSDomain(
+        binding: binding,
+        descriptor: descriptor,
+        secret: .cloudflare(apiToken: "second-token")
+    )
+
+    let saved = try #require(await configurationStore.currentState())
+    #expect(saved.dnsZoneBindings == [binding])
+    #expect(saved.dnsCredentials.first?.revision == 2)
+
+    await #expect(throws: GatewayConfigurationValidationError.self) {
+        try await controller.saveDNSDomain(
+            binding: GatewayDNSZoneBinding(
+                id: binding.id,
+                dnsSuffix: "changed.example.",
+                credentialID: binding.credentialID
+            ),
+            descriptor: descriptor,
+            secret: .cloudflare(apiToken: "third-token")
+        )
+    }
+    await #expect(throws: GatewayConfigurationValidationError.self) {
+        try await controller.saveDNSDomain(
+            binding: binding,
+            descriptor: GatewayDNSCredentialDescriptor(
+                id: descriptor.id,
+                provider: .aliyun,
+                label: descriptor.label
+            ),
+            secret: .aliyun(accessKeyID: "key", accessKeySecret: "secret")
+        )
+    }
+}
+
+@MainActor
 @Test func publishingServiceConfiguresAutomaticHTTPSAndStartsGateway() async throws {
     let store = InMemoryGatewayConfigurationStore()
     let client = RecordingGatewayClient()
     let controller = makeController(store: store, client: client)
     await controller.load()
-    try await controller.saveDNSCredential(
+    try await controller.saveDNSDomain(
+        binding: GatewayDNSZoneBinding(
+            id: "cloudflare-main",
+            dnsSuffix: "et.net.",
+            credentialID: "cloudflare-main"
+        ),
         descriptor: GatewayDNSCredentialDescriptor(
             id: "cloudflare-main",
             provider: .cloudflare,
@@ -62,6 +184,32 @@ import Testing
         "start",
         "status",
     ])
+
+    try await controller.saveDNSDomain(
+        binding: GatewayDNSZoneBinding(
+            id: "aliyun-public",
+            dnsSuffix: "example.com.",
+            credentialID: "aliyun-public"
+        ),
+        descriptor: GatewayDNSCredentialDescriptor(
+            id: "aliyun-public",
+            provider: .aliyun,
+            label: "example.com"
+        ),
+        secret: .aliyun(accessKeyID: "key", accessKeySecret: "secret")
+    )
+    try await controller.setDefaultDNSDomain(id: "aliyun-public")
+
+    let switched = try #require(await store.currentState())
+    #expect(switched.services.first?.publicHostname == "abc.a.et.net")
+    #expect(switched.certificates.first?.domains == ["*.a.et.net"])
+    #expect(
+        switched.certificates.first?.strategy
+            == .automaticWildcard(zoneBindingID: "cloudflare-main")
+    )
+    await #expect(throws: GatewayConfigurationValidationError.self) {
+        try await controller.deleteDNSDomain(id: "cloudflare-main")
+    }
 }
 
 @MainActor
@@ -101,7 +249,12 @@ import Testing
     let client = RecordingGatewayClient()
     let controller = makeController(store: store, client: client)
     await controller.load()
-    try await controller.saveDNSCredential(
+    try await controller.saveDNSDomain(
+        binding: GatewayDNSZoneBinding(
+            id: "cloudflare-main",
+            dnsSuffix: "et.net.",
+            credentialID: "cloudflare-main"
+        ),
         descriptor: GatewayDNSCredentialDescriptor(
             id: "cloudflare-main",
             provider: .cloudflare,
@@ -140,7 +293,7 @@ import Testing
     #expect(saved.certificates[0].domains == ["*.a.et.net"])
     #expect(
         saved.certificates[0].strategy
-            == .automaticWildcard(credentialID: "cloudflare-main")
+            == .automaticWildcard(zoneBindingID: "cloudflare-main")
     )
 }
 
@@ -150,7 +303,12 @@ import Testing
     let client = RecordingGatewayClient()
     let controller = makeController(store: store, client: client)
     await controller.load()
-    try await controller.saveDNSCredential(
+    try await controller.saveDNSDomain(
+        binding: GatewayDNSZoneBinding(
+            id: "cloudflare-main",
+            dnsSuffix: "et.net.",
+            credentialID: "cloudflare-main"
+        ),
         descriptor: GatewayDNSCredentialDescriptor(
             id: "cloudflare-main",
             provider: .cloudflare,
@@ -182,7 +340,7 @@ import Testing
     #expect(saved.certificates[0].domains == ["a.et.net"])
     #expect(
         saved.certificates[0].strategy
-            == .automaticWildcard(credentialID: "cloudflare-main")
+            == .automaticWildcard(zoneBindingID: "cloudflare-main")
     )
     #expect(runtime.localDomains == ["a.et.net"])
     #expect(runtime.routes.first?.domain == "a.et.net")
@@ -232,7 +390,12 @@ import Testing
         provider: .cloudflare,
         label: "Cloudflare Main"
     )
-    try await controller.saveDNSCredential(
+    try await controller.saveDNSDomain(
+        binding: GatewayDNSZoneBinding(
+            id: descriptor.id,
+            dnsSuffix: "et.net.",
+            credentialID: descriptor.id
+        ),
         descriptor: descriptor,
         secret: .cloudflare(apiToken: "test-token")
     )
@@ -246,7 +409,7 @@ import Testing
         targetPort: 3_000,
         certificateSelection: .custom(
             authority: .zeroSSL,
-            challenge: .dns01(credentialID: descriptor.id)
+            challenge: .dns01(zoneBindingID: descriptor.id)
         )
     )
 
@@ -257,7 +420,7 @@ import Testing
         saved.certificates[0].strategy
             == .custom(
                 authority: .zeroSSL,
-                challenge: .dns01(credentialID: descriptor.id)
+                challenge: .dns01(zoneBindingID: descriptor.id)
             )
     )
     #expect(saved.gatewayEnabled)
@@ -404,16 +567,21 @@ import Testing
         label: "Missing Cloudflare"
     )
     state.dnsCredentials = [descriptor]
+    state.dnsZoneBindings = [GatewayDNSZoneBinding(
+        id: descriptor.id,
+        dnsSuffix: "et.net.",
+        credentialID: descriptor.id
+    )]
     state.certificates = [GatewayManagedCertificate(
         id: "service-a-certificate",
         domains: ["abc.a.et.net"],
         strategy: .custom(
             authority: .zeroSSL,
-            challenge: .dns01(credentialID: descriptor.id)
+            challenge: .dns01(zoneBindingID: descriptor.id)
         )
     )]
     state.services[0].certificateID = "service-a-certificate"
-    state.defaultDNSCredentialID = descriptor.id
+    state.defaultDNSZoneBindingID = descriptor.id
     let configurationStore = InMemoryGatewayConfigurationStore(state: state)
     let client = RecordingGatewayClient()
     let controller = GatewayRuntimeController(
@@ -1544,7 +1712,7 @@ private actor InMemoryGatewayConfigurationStore: GatewayConfigurationStoring {
         self.state = state
     }
 
-    func load() -> GatewayPersistedState? {
+    func load(magicDNSSuffix _: String) -> GatewayPersistedState? {
         state
     }
 

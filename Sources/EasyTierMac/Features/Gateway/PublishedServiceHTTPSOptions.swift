@@ -6,17 +6,18 @@ struct PublishedServiceHTTPSOptions: View {
     @Binding var certificateMode: PublishedServiceCertificateMode
     @Binding var certificateAuthority: GatewayCertificateAuthority
     @Binding var challengeMode: PublishedServiceChallengeMode
-    @Binding var dnsCredentialID: String?
+    @Binding var dnsZoneBindingID: String?
 
+    let dnsZoneBindings: [GatewayDNSZoneBinding]
     let dnsCredentials: [GatewayDNSCredentialDescriptor]
     let automaticDomain: String
-    let defaultDNSCredentialID: String?
+    let defaultDNSZoneBindingID: String?
     let status: PublishedServiceSSLProvider?
     let isDisabled: Bool
     let onManageDNSCredentials: () -> Void
 
-    private var credentialIDs: [String] {
-        dnsCredentials.map(\.id)
+    private var zoneBindingIDs: [String] {
+        dnsZoneBindings.map(\.id)
     }
 
     private var statusSystemImage: String {
@@ -44,10 +45,11 @@ struct PublishedServiceHTTPSOptions: View {
         certificateMode: Binding<PublishedServiceCertificateMode>,
         certificateAuthority: Binding<GatewayCertificateAuthority>,
         challengeMode: Binding<PublishedServiceChallengeMode>,
-        dnsCredentialID: Binding<String?>,
+        dnsZoneBindingID: Binding<String?>,
+        dnsZoneBindings: [GatewayDNSZoneBinding],
         dnsCredentials: [GatewayDNSCredentialDescriptor],
         automaticDomain: String,
-        defaultDNSCredentialID: String?,
+        defaultDNSZoneBindingID: String?,
         status: PublishedServiceSSLProvider? = nil,
         isDisabled: Bool = false,
         onManageDNSCredentials: @escaping () -> Void
@@ -56,10 +58,11 @@ struct PublishedServiceHTTPSOptions: View {
         _certificateMode = certificateMode
         _certificateAuthority = certificateAuthority
         _challengeMode = challengeMode
-        _dnsCredentialID = dnsCredentialID
+        _dnsZoneBindingID = dnsZoneBindingID
+        self.dnsZoneBindings = dnsZoneBindings
         self.dnsCredentials = dnsCredentials
         self.automaticDomain = automaticDomain
-        self.defaultDNSCredentialID = defaultDNSCredentialID
+        self.defaultDNSZoneBindingID = defaultDNSZoneBindingID
         self.status = status
         self.isDisabled = isDisabled
         self.onManageDNSCredentials = onManageDNSCredentials
@@ -99,11 +102,11 @@ struct PublishedServiceHTTPSOptions: View {
                     PublishedServiceFormRow("Certificate", systemImage: "checkmark.shield") {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(automaticDomain)
-                            Text(defaultDNSCredentialID == nil
-                                ? "Choose a default DNS credential in Settings."
+                            Text(defaultDNSZoneBindingID == nil
+                                ? "Choose a default domain in Settings."
                                 : "Let's Encrypt, with ZeroSSL fallback")
                                 .font(.caption)
-                                .foregroundStyle(defaultDNSCredentialID == nil ? .orange : .secondary)
+                                .foregroundStyle(defaultDNSZoneBindingID == nil ? .orange : .secondary)
                         }
                     }
                 } else {
@@ -131,17 +134,17 @@ struct PublishedServiceHTTPSOptions: View {
 
                     if challengeMode == .dns01 {
                         PublishedServiceFormRow("Credential", systemImage: "key") {
-                            if dnsCredentials.isEmpty {
+                            if dnsZoneBindings.isEmpty {
                                 Button(
-                                    "Manage DNS Credentials…",
-                                    systemImage: "key",
+                                    "Manage Domains…",
+                                    systemImage: "globe",
                                     action: onManageDNSCredentials
                                 )
                             } else {
-                                Picker("DNS Credential", selection: $dnsCredentialID) {
-                                    ForEach(dnsCredentials) { credential in
-                                        Text("\(credential.label) · \(credential.provider.displayName)")
-                                            .tag(Optional(credential.id))
+                                Picker("Domain", selection: $dnsZoneBindingID) {
+                                    ForEach(dnsZoneBindings) { binding in
+                                        Text(domainOptionLabel(binding))
+                                            .tag(Optional(binding.id))
                                     }
                                 }
                                 .labelsHidden()
@@ -172,7 +175,7 @@ struct PublishedServiceHTTPSOptions: View {
         .onChange(of: challengeMode) { _, _ in
             reconcileDNSCredentialSelection()
         }
-        .onChange(of: credentialIDs) { _, _ in
+        .onChange(of: zoneBindingIDs) { _, _ in
             reconcileDNSCredentialSelection()
         }
     }
@@ -188,9 +191,17 @@ struct PublishedServiceHTTPSOptions: View {
 
     private func reconcileDNSCredentialSelection() {
         guard challengeMode == .dns01 else { return }
-        if let dnsCredentialID, credentialIDs.contains(dnsCredentialID) {
+        if let dnsZoneBindingID, zoneBindingIDs.contains(dnsZoneBindingID) {
             return
         }
-        dnsCredentialID = dnsCredentials.first?.id
+        dnsZoneBindingID = dnsZoneBindings.first?.id
+    }
+
+    private func domainOptionLabel(_ binding: GatewayDNSZoneBinding) -> String {
+        let domain = binding.dnsSuffix.hasSuffix(".")
+            ? String(binding.dnsSuffix.dropLast())
+            : binding.dnsSuffix
+        let provider = dnsCredentials.first { $0.id == binding.credentialID }?.provider.displayName
+        return provider.map { "\(domain) · \($0)" } ?? domain
     }
 }

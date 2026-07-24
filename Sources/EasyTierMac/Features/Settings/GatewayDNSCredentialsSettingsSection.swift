@@ -2,12 +2,15 @@ import EasyTierShared
 import SwiftUI
 
 struct GatewayDNSCredentialsSettingsSection: View {
+    @Environment(AppContext.self) private var appContext
+
     let gateway: GatewayRuntimeController
 
-    @State private var editingCredential: GatewayDNSCredentialDescriptor?
-    @State private var credentialPendingDeletion: GatewayDNSCredentialDescriptor?
-    @State private var credentialPendingDefaultID: String?
-    @State private var isAddingCredential = false
+    @State private var editingBinding: GatewayDNSZoneBinding?
+    @State private var bindingPendingDeletion: GatewayDNSZoneBinding?
+    @State private var bindingPendingDefaultConfirmation: GatewayDNSZoneBinding?
+    @State private var bindingPendingDefaultID: String?
+    @State private var isAddingDomain = false
     @State private var errorMessage: String?
 
     var body: some View {
@@ -17,81 +20,125 @@ struct GatewayDNSCredentialsSettingsSection: View {
                     .foregroundStyle(.red)
             }
 
-            if gateway.dnsCredentials.isEmpty {
+            if gateway.dnsZoneBindings.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("No credentials configured")
-                    Text("Add a DNS provider to issue wildcard certificates.")
+                    Text("No domains configured")
+                    Text("Add a domain to enable automatic HTTPS certificates.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             } else {
-                ForEach(gateway.dnsCredentials) { credential in
-                    GatewayDNSCredentialSettingsRow(
-                        credential: credential,
-                        isDefault: credential.id == gateway.defaultDNSCredentialID,
-                        isChangingDefault: credential.id == credentialPendingDefaultID,
-                        setDefaultAction: {
-                            updateDefaultCredential(
-                                credential.id,
-                                sourceCredentialID: credential.id
-                            )
-                        },
-                        clearDefaultAction: {
-                            updateDefaultCredential(
-                                nil,
-                                sourceCredentialID: credential.id
-                            )
-                        },
-                        editAction: { editingCredential = credential },
-                        deleteAction: { credentialPendingDeletion = credential }
-                    )
+                ForEach(gateway.dnsZoneBindings) { binding in
+                    if let credential = credential(for: binding) {
+                        GatewayDNSCredentialSettingsRow(
+                            binding: binding,
+                            provider: credential.provider,
+                            isDefault: binding.id == gateway.defaultDNSZoneBindingID,
+                            isChangingDefault: binding.id == bindingPendingDefaultID,
+                            deletionDisabledReason: deletionDisabledReason(for: binding),
+                            setDefaultAction: { requestDefault(binding) },
+                            editAction: { editingBinding = binding },
+                            deleteAction: { bindingPendingDeletion = binding }
+                        )
+                    }
                 }
             }
 
-            Button("Add Credential…", systemImage: "plus.circle", action: beginAddingCredential)
-                .buttonStyle(.plain)
-                .font(.body)
+            Button("Add Domain…", systemImage: "plus.circle") {
+                isAddingDomain = true
+            }
+            .buttonStyle(.plain)
+            .font(.body)
         } header: {
-            Text("DNS Credentials")
+            Text("Domains")
         } footer: {
-            Text("Credentials are stored in Keychain and used only for DNS-01 certificate validation.")
+            Text("The default domain is used for Magic DNS and automatic HTTPS certificates.")
         }
-        .sheet(isPresented: $isAddingCredential) {
-            GatewayDNSCredentialEditor(gateway: gateway, credential: nil)
+        .sheet(isPresented: $isAddingDomain) {
+            GatewayDNSCredentialEditor(gateway: gateway, binding: nil)
         }
-        .sheet(item: $editingCredential) { credential in
-            GatewayDNSCredentialEditor(gateway: gateway, credential: credential)
+        .sheet(item: $editingBinding) { binding in
+            GatewayDNSCredentialEditor(gateway: gateway, binding: binding)
         }
         .alert(
-            "Delete DNS Credential?",
+            "Delete Domain?",
             isPresented: deletionAlertPresented,
-            presenting: credentialPendingDeletion
-        ) { credential in
+            presenting: bindingPendingDeletion
+        ) { binding in
             Button("Cancel", role: .cancel) {}
-            Button("Delete", role: .destructive) {
-                delete(credential)
-            }
-        } message: { credential in
-            Text(deletionMessage(for: credential))
+            Button("Delete", role: .destructive) { delete(binding) }
+        } message: { binding in
+            Text("“\(displayDomain(binding))” and its unused Keychain credential will be removed.")
+        }
+        .alert(
+            "Change Default Domain?",
+            isPresented: defaultConfirmationPresented,
+            presenting: bindingPendingDefaultConfirmation
+        ) { binding in
+            Button("Cancel", role: .cancel) {}
+            Button("Change Domain") { updateDefault(binding.id) }
+        } message: { binding in
+            Text(defaultChangeMessage(for: binding))
         }
     }
 
     private var deletionAlertPresented: Binding<Bool> {
         Binding(
-            get: { credentialPendingDeletion != nil },
+            get: { bindingPendingDeletion != nil },
             set: { isPresented in
-                if !isPresented {
-                    credentialPendingDeletion = nil
-                }
+                if !isPresented { bindingPendingDeletion = nil }
             }
         )
     }
 
-    private func delete(_ credential: GatewayDNSCredentialDescriptor) {
+    private var defaultConfirmationPresented: Binding<Bool> {
+        Binding(
+            get: { bindingPendingDefaultConfirmation != nil },
+            set: { isPresented in
+                if !isPresented { bindingPendingDefaultConfirmation = nil }
+            }
+        )
+    }
+
+    private func credential(
+        for binding: GatewayDNSZoneBinding
+    ) -> GatewayDNSCredentialDescriptor? {
+        gateway.dnsCredentials.first { $0.id == binding.credentialID }
+    }
+
+    private func deletionDisabledReason(for binding: GatewayDNSZoneBinding) -> String? {
+        if binding.id == gateway.defaultDNSZoneBindingID {
+            return "Choose another default domain before deleting this one."
+        }
+        let isReferenced = gateway.certificates.contains { certificate in
+            switch certificate.strategy {
+            case let .automaticWildcard(zoneBindingID):
+                zoneBindingID == binding.id
+            case let .custom(_, challenge):
+                challenge.dnsZoneBindingID == binding.id
+            }
+        }
+        return isReferenced ? "This domain is used by published services." : nil
+    }
+
+    private func requestDefault(_ binding: GatewayDNSZoneBinding) {
+        guard binding.id != gateway.defaultDNSZoneBindingID,
+              bindingPendingDefaultID == nil
+        else { return }
+        if appContext.workspace.store.hasRunningMagicDNSNetworks {
+            bindingPendingDefaultConfirmation = binding
+        } else {
+            updateDefault(binding.id)
+        }
+    }
+
+    private func updateDefault(_ id: String) {
+        bindingPendingDefaultConfirmation = nil
         Task {
+            bindingPendingDefaultID = id
+            defer { bindingPendingDefaultID = nil }
             do {
-                try await gateway.deleteDNSCredential(id: credential.id)
-                credentialPendingDeletion = nil
+                try await gateway.setDefaultDNSDomain(id: id)
                 errorMessage = nil
             } catch {
                 errorMessage = error.localizedDescription
@@ -99,31 +146,27 @@ struct GatewayDNSCredentialsSettingsSection: View {
         }
     }
 
-    private func deletionMessage(for credential: GatewayDNSCredentialDescriptor) -> String {
-        let defaultWarning = credential.id == gateway.defaultDNSCredentialID
-            ? " It is currently the default credential."
-            : ""
-        return "“\(credential.label)” will be removed from EasyTier and Keychain.\(defaultWarning) Automatic certificate issuance may stop until another credential is selected."
-    }
-
-    private func beginAddingCredential() {
-        isAddingCredential = true
-    }
-
-    private func updateDefaultCredential(_ id: String?, sourceCredentialID: String) {
-        guard id != gateway.defaultDNSCredentialID, credentialPendingDefaultID == nil else {
-            return
-        }
+    private func delete(_ binding: GatewayDNSZoneBinding) {
         Task {
-            credentialPendingDefaultID = sourceCredentialID
-            defer { credentialPendingDefaultID = nil }
             do {
-                try await gateway.setDefaultDNSCredential(id: id)
+                try await gateway.deleteDNSDomain(id: binding.id)
+                bindingPendingDeletion = nil
                 errorMessage = nil
             } catch {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    private func defaultChangeMessage(for binding: GatewayDNSZoneBinding) -> String {
+        let current = gateway.defaultDNSZoneBinding.map(displayDomain) ?? "the current suffix"
+        return "Magic DNS will change from \(current) to \(displayDomain(binding)). Running networks must restart to apply the change."
+    }
+
+    private func displayDomain(_ binding: GatewayDNSZoneBinding) -> String {
+        binding.dnsSuffix.hasSuffix(".")
+            ? String(binding.dnsSuffix.dropLast())
+            : binding.dnsSuffix
     }
 }
 

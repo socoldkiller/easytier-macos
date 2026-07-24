@@ -15,7 +15,7 @@ struct PublishServiceSheet: View {
     @State private var certificateMode = PublishedServiceCertificateMode.automatic
     @State private var certificateAuthority = GatewayCertificateAuthority.letsEncrypt
     @State private var challengeMode = PublishedServiceChallengeMode.http01
-    @State private var dnsCredentialID: String?
+    @State private var dnsZoneBindingID: String?
     @State private var showsHTTPSOptions = false
     @State private var hasEditedPublicName = false
     @State private var hasEditedPort = false
@@ -43,18 +43,14 @@ struct PublishServiceSheet: View {
         targetOptions.first { $0.peerID == selectedTargetPeerID }
     }
 
-    private var trimmedDNSSuffix: String {
-        let suffix = gateway.appliedMagicDNSSuffix ?? store.magicDNSSettings.dnsSuffix
+    private var trimmedPublicDNSSuffix: String {
+        let suffix = gateway.defaultDNSZoneBinding?.dnsSuffix ?? "domain"
         return suffix.hasSuffix(".") ? String(suffix.dropLast()) : suffix
     }
 
     private var targetDomain: String {
         guard let selectedTarget else { return "member" }
-        return MagicDNSDisplay.memberDomain(
-            hostname: selectedTarget.hostname,
-            config: store.selectedConfig,
-            settings: store.magicDNSSettings
-        ) ?? "\(selectedTarget.hostname).\(trimmedDNSSuffix)"
+        return "\(selectedTarget.hostname).\(trimmedPublicDNSSuffix)"
     }
 
     private var existingPublicHostnames: Set<String> {
@@ -103,9 +99,9 @@ struct PublishServiceSheet: View {
 
     private var certificateSelection: GatewayServiceCertificateSelection? {
         if certificateMode == .automatic {
-            return gateway.defaultDNSCredentialID == nil ? nil : .automatic
+            return gateway.defaultDNSZoneBindingID == nil ? nil : .automatic
         }
-        guard let challenge = challengeMode.challenge(credentialID: dnsCredentialID) else {
+        guard let challenge = challengeMode.challenge(zoneBindingID: dnsZoneBindingID) else {
             return nil
         }
         return .custom(authority: certificateAuthority, challenge: challenge)
@@ -118,6 +114,7 @@ struct PublishServiceSheet: View {
             && parsedPort != nil
             && savedContactEmail != nil
             && certificateSelection != nil
+            && gateway.defaultDNSZoneBindingID != nil
             && store.selectedConfig != nil
             && gateway.magicDNSState == .ready
     }
@@ -231,10 +228,11 @@ struct PublishServiceSheet: View {
                         certificateMode: $certificateMode,
                         certificateAuthority: $certificateAuthority,
                         challengeMode: $challengeMode,
-                        dnsCredentialID: $dnsCredentialID,
+                        dnsZoneBindingID: $dnsZoneBindingID,
+                        dnsZoneBindings: gateway.dnsZoneBindings,
                         dnsCredentials: gateway.dnsCredentials,
                         automaticDomain: automaticCertificateDomain,
-                        defaultDNSCredentialID: gateway.defaultDNSCredentialID,
+                        defaultDNSZoneBindingID: gateway.defaultDNSZoneBindingID,
                         status: PublishedServiceSSLProvider(
                             acmeConfiguration: gateway.acmeConfiguration
                         ),

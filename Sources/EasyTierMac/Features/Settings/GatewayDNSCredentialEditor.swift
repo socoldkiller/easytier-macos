@@ -3,7 +3,7 @@ import SwiftUI
 
 struct GatewayDNSCredentialEditor: View {
     private enum FocusedField: Hashable {
-        case name
+        case domain
         case apiToken
         case accessKeyID
         case accessKeySecret
@@ -12,9 +12,9 @@ struct GatewayDNSCredentialEditor: View {
     @Environment(\.dismiss) private var dismiss
 
     let gateway: GatewayRuntimeController
-    let credential: GatewayDNSCredentialDescriptor?
+    let binding: GatewayDNSZoneBinding?
 
-    @State private var label: String
+    @State private var domain: String
     @State private var provider: GatewayDNSProvider
     @State private var apiToken = ""
     @State private var accessKeyID = ""
@@ -23,30 +23,45 @@ struct GatewayDNSCredentialEditor: View {
     @State private var errorMessage: String?
     @FocusState private var focusedField: FocusedField?
 
+    private var credential: GatewayDNSCredentialDescriptor? {
+        guard let binding else { return nil }
+        return gateway.dnsCredentials.first { $0.id == binding.credentialID }
+    }
+
     private var title: String {
-        credential == nil ? "Add DNS Credential" : "Edit DNS Credential"
+        binding == nil ? "Add Domain" : "Update Credential"
     }
 
     private var primaryActionTitle: String {
-        credential == nil ? "Add" : "Save"
+        binding == nil ? "Add" : "Save"
     }
 
-    init(
-        gateway: GatewayRuntimeController,
-        credential: GatewayDNSCredentialDescriptor?
-    ) {
-        self.gateway = gateway
-        self.credential = credential
-        _label = State(initialValue: credential?.label ?? "")
-        _provider = State(initialValue: credential?.provider ?? .cloudflare)
+    private var normalizedSuffix: String? {
+        try? MagicDNSSettings.normalizedDNSSuffix(domain)
+    }
+
+    private var displayDomain: String {
+        let suffix = normalizedSuffix ?? domain
+        return suffix.hasSuffix(".") ? String(suffix.dropLast()) : suffix
     }
 
     private var canSave: Bool {
-        guard !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        guard normalizedSuffix != nil else { return false }
         return switch provider {
         case .cloudflare: !apiToken.isEmpty
         case .aliyun: !accessKeyID.isEmpty && !accessKeySecret.isEmpty
         }
+    }
+
+    init(gateway: GatewayRuntimeController, binding: GatewayDNSZoneBinding?) {
+        self.gateway = gateway
+        self.binding = binding
+        let credential = binding.flatMap { binding in
+            gateway.dnsCredentials.first { $0.id == binding.credentialID }
+        }
+        let suffix = binding?.dnsSuffix ?? ""
+        _domain = State(initialValue: suffix.hasSuffix(".") ? String(suffix.dropLast()) : suffix)
+        _provider = State(initialValue: credential?.provider ?? .cloudflare)
     }
 
     var body: some View {
@@ -54,21 +69,27 @@ struct GatewayDNSCredentialEditor: View {
             VStack(alignment: .leading, spacing: 16) {
                 PublishedServiceSheetHeader(
                     title: title,
-                    subtitle: "Stored securely in Keychain"
+                    subtitle: "Credentials are stored securely in Keychain"
                 )
 
                 VStack(alignment: .leading, spacing: 14) {
-                    PublishedServiceFormRow("Name", systemImage: "tag") {
-                        TextField("Credential name", text: $label)
-                            .labelsHidden()
-                            .textFieldStyle(.glassField)
-                            .frame(width: 280)
-                            .focused($focusedField, equals: .name)
-                            .onSubmit(advanceFromName)
+                    PublishedServiceFormRow("Domain", systemImage: "globe") {
+                        if binding == nil {
+                            TextField("example.com", text: $domain)
+                                .labelsHidden()
+                                .textFieldStyle(.glassField)
+                                .frame(width: 280)
+                                .focused($focusedField, equals: .domain)
+                                .onSubmit(advanceFromDomain)
+                        } else {
+                            Text(displayDomain)
+                                .foregroundStyle(.secondary)
+                                .frame(width: 280, alignment: .leading)
+                        }
                     }
 
                     PublishedServiceFormRow("Provider", systemImage: "building.2") {
-                        if credential == nil {
+                        if binding == nil {
                             Picker("DNS Provider", selection: $provider) {
                                 ForEach(
                                     [GatewayDNSProvider.cloudflare, .aliyun],
@@ -80,10 +101,10 @@ struct GatewayDNSCredentialEditor: View {
                             .labelsHidden()
                             .pickerStyle(.menu)
                             .frame(width: 280, alignment: .leading)
-                            .help("Choose the DNS provider for certificate validation.")
                         } else {
                             Text(provider.displayName)
                                 .foregroundStyle(.secondary)
+                                .frame(width: 280, alignment: .leading)
                         }
                     }
 
@@ -98,18 +119,13 @@ struct GatewayDNSCredentialEditor: View {
                                 .onSubmit(submitIfPossible)
                         }
                     case .aliyun:
-                        PublishedServiceFormRow(
-                            "AccessKey ID",
-                            systemImage: "person.text.rectangle"
-                        ) {
+                        PublishedServiceFormRow("AccessKey ID", systemImage: "person.text.rectangle") {
                             TextField("Required", text: $accessKeyID)
                                 .labelsHidden()
                                 .textFieldStyle(.glassField)
                                 .frame(width: 280)
                                 .focused($focusedField, equals: .accessKeyID)
-                                .onSubmit {
-                                    focusedField = .accessKeySecret
-                                }
+                                .onSubmit { focusedField = .accessKeySecret }
                         }
                         PublishedServiceFormRow("Secret", systemImage: "key.fill") {
                             SecureField("Required", text: $accessKeySecret)
@@ -157,15 +173,19 @@ struct GatewayDNSCredentialEditor: View {
         .task {
             await loadSecret()
             await Task.yield()
-            focusedField = .name
+            focusedField = binding == nil ? .domain : firstSecretField
         }
     }
 
-    private func advanceFromName() {
-        focusedField = switch provider {
+    private var firstSecretField: FocusedField {
+        switch provider {
         case .cloudflare: .apiToken
         case .aliyun: .accessKeyID
         }
+    }
+
+    private func advanceFromDomain() {
+        focusedField = firstSecretField
     }
 
     private func submitIfPossible() {
@@ -194,11 +214,18 @@ struct GatewayDNSCredentialEditor: View {
         Task {
             isWorking = true
             defer { isWorking = false }
+            guard let suffix = normalizedSuffix else { return }
+            let credentialID = credential?.id ?? UUID().uuidString.lowercased()
             let descriptor = GatewayDNSCredentialDescriptor(
-                id: credential?.id ?? UUID().uuidString.lowercased(),
+                id: credentialID,
                 provider: provider,
-                label: label.trimmingCharacters(in: .whitespacesAndNewlines),
+                label: String(suffix.dropLast()),
                 revision: credential?.revision ?? 1
+            )
+            let zoneBinding = GatewayDNSZoneBinding(
+                id: binding?.id ?? UUID().uuidString.lowercased(),
+                dnsSuffix: suffix,
+                credentialID: credentialID
             )
             let secret: GatewayCredentialSecret = switch provider {
             case .cloudflare:
@@ -207,7 +234,11 @@ struct GatewayDNSCredentialEditor: View {
                 .aliyun(accessKeyID: accessKeyID, accessKeySecret: accessKeySecret)
             }
             do {
-                try await gateway.saveDNSCredential(descriptor: descriptor, secret: secret)
+                try await gateway.saveDNSDomain(
+                    binding: zoneBinding,
+                    descriptor: descriptor,
+                    secret: secret
+                )
                 dismiss()
             } catch {
                 errorMessage = error.localizedDescription

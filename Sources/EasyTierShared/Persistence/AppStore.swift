@@ -1213,6 +1213,10 @@ public final class EasyTierAppStore {
         await applyMode(mode)
     }
 
+    public var hasRunningMagicDNSNetworks: Bool {
+        !runningMagicDNSConfigNames().isEmpty
+    }
+
     public func exportSelectedTOML(
         options: TOMLExportOptions = TOMLExportOptions(),
         networkSecretInput: NetworkSecretInput? = nil

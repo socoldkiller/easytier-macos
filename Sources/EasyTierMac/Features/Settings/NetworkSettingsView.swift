@@ -3,6 +3,7 @@ import SwiftUI
 
 struct NetworkSettingsView: View {
     @Binding var dnsSuffix: String
+    let managedDNSSuffix: String?
     let commit: (MagicDNSSettings) -> Void
 
     @FocusState private var isDNSSuffixFocused: Bool
@@ -12,19 +13,25 @@ struct NetworkSettingsView: View {
         SettingsForm {
             Section {
                 LabeledContent("DNS Suffix") {
-                    VStack(alignment: .trailing, spacing: 4) {
-                        TextField("et.net.", text: $dnsSuffix)
-                            .labelsHidden()
+                    if let managedDNSSuffix {
+                        Text(managedDNSSuffix)
                             .font(.body.monospaced())
-                            .frame(width: 180)
-                            .focused($isDNSSuffixFocused)
-                            .onSubmit(commitDNSSuffix)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        VStack(alignment: .trailing, spacing: 4) {
+                            TextField("et.net.", text: $dnsSuffix)
+                                .labelsHidden()
+                                .font(.body.monospaced())
+                                .frame(width: 180)
+                                .focused($isDNSSuffixFocused)
+                                .onSubmit(commitDNSSuffix)
 
-                        if let validationMessage {
-                            Text(validationMessage)
-                                .font(.caption)
-                                .foregroundStyle(.red)
-                                .fixedSize(horizontal: false, vertical: true)
+                            if let validationMessage {
+                                Text(validationMessage)
+                                    .font(.caption)
+                                    .foregroundStyle(.red)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         }
                     }
                 }
@@ -32,7 +39,7 @@ struct NetworkSettingsView: View {
             } header: {
                 Text("Magic DNS")
             } footer: {
-                Text("Only names under this suffix are resolved by EasyTier. Running networks need a restart after the suffix changes.")
+                Text(footerText)
             }
         }
         .onChange(of: isDNSSuffixFocused) { wasFocused, isFocused in
@@ -43,6 +50,7 @@ struct NetworkSettingsView: View {
     }
 
     private func commitDNSSuffix() {
+        guard managedDNSSuffix == nil else { return }
         do {
             let settings = try MagicDNSSettings(dnsSuffix: dnsSuffix)
             validationMessage = nil
@@ -51,5 +59,12 @@ struct NetworkSettingsView: View {
         } catch {
             validationMessage = error.localizedDescription
         }
+    }
+
+    private var footerText: String {
+        if managedDNSSuffix != nil {
+            return "Managed by the default domain in Gateway settings."
+        }
+        return "Only names under this suffix are resolved by EasyTier. Running networks need a restart after the suffix changes."
     }
 }

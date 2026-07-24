@@ -2,81 +2,71 @@ import EasyTierShared
 import SwiftUI
 
 struct GatewayDNSCredentialSettingsRow: View {
-    let credential: GatewayDNSCredentialDescriptor
+    let binding: GatewayDNSZoneBinding
+    let provider: GatewayDNSProvider
     let isDefault: Bool
     let isChangingDefault: Bool
+    let deletionDisabledReason: String?
     let setDefaultAction: () -> Void
-    let clearDefaultAction: () -> Void
     let editAction: () -> Void
     let deleteAction: () -> Void
 
+    private var displayDomain: String {
+        binding.dnsSuffix.hasSuffix(".")
+            ? String(binding.dnsSuffix.dropLast())
+            : binding.dnsSuffix
+    }
+
     var body: some View {
         HStack(spacing: 12) {
-            Button(action: setDefaultAction) {
-                HStack(spacing: 10) {
-                    Image(systemName: "key.fill")
-                        .frame(width: 20)
-                        .foregroundStyle(isDefault ? Color.accentColor : .secondary)
+            Image(systemName: "globe")
+                .frame(width: 20)
+                .foregroundStyle(isDefault ? Color.accentColor : .secondary)
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(credential.label)
-                            .foregroundStyle(.primary)
-                        Text(credential.provider.displayName)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer(minLength: 12)
-
-                    if isChangingDefault {
-                        ProgressView()
-                            .controlSize(.small)
-                            .accessibilityLabel("Changing default credential")
-                    } else if isDefault {
-                        HStack(spacing: 4) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(Color.accentColor)
-                            Text("Default")
-                                .foregroundStyle(.secondary)
-                        }
-                        .font(.callout)
-                    }
-                }
-                .contentShape(.rect)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(displayDomain)
+                Text(provider.displayName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(accessibilityLabel)
-            .accessibilityHint(accessibilityHint)
+
+            Spacer(minLength: 12)
+
+            if isChangingDefault {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("Changing default domain")
+            } else if isDefault {
+                Label("Default", systemImage: "checkmark.circle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.secondary, Color.accentColor)
+            }
 
             Menu {
-                if isDefault {
-                    Button("Clear Default", systemImage: "xmark.circle", action: clearDefaultAction)
-                } else {
-                    Button("Make Default", systemImage: "checkmark.circle", action: setDefaultAction)
-                }
+                Button("Make Default", systemImage: "checkmark.circle", action: setDefaultAction)
+                    .disabled(isDefault)
+                    .help(
+                        isDefault
+                            ? "This is already the default domain."
+                            : "Use \(displayDomain) for Magic DNS and new services."
+                    )
+                Button("Update Credential…", systemImage: "key", action: editAction)
                 Divider()
-                Button("Edit", systemImage: "pencil", action: editAction)
-                Button("Delete", systemImage: "trash", role: .destructive, action: deleteAction)
+                Button("Delete Domain…", systemImage: "trash", role: .destructive, action: deleteAction)
+                    .disabled(deletionDisabledReason != nil)
+                    .help(deletionDisabledReason ?? "Delete \(displayDomain)")
             } label: {
-                Label("Actions for \(credential.label)", systemImage: "ellipsis.circle")
+                Label("Actions for \(displayDomain)", systemImage: "ellipsis.circle")
                     .labelStyle(.iconOnly)
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .help("Actions for \(credential.label)")
+            .help(deletionDisabledReason ?? "Actions for \(displayDomain)")
         }
         .frame(maxWidth: .infinity)
-    }
-
-    private var accessibilityLabel: String {
-        if isDefault {
-            return "\(credential.label), default credential"
-        }
-        return "\(credential.label), \(credential.provider.displayName)"
-    }
-
-    private var accessibilityHint: String {
-        isDefault ? "Current default credential" : "Sets this as the default credential"
+        .accessibilityElement(children: .contain)
     }
 }

@@ -97,6 +97,7 @@ struct EasyTierSettingsSheet: View {
             ) {
                 NetworkSettingsView(
                     dnsSuffix: $magicDNSSuffix,
+                    managedDNSSuffix: appContext.runtime.gateway.defaultDNSZoneBinding?.dnsSuffix,
                     commit: commitMagicDNSSettings
                 )
             }
@@ -139,6 +140,10 @@ struct EasyTierSettingsSheet: View {
         }
         .onChange(of: rpcListenEnabled) { _, _ in
             applyModeSettings()
+        }
+        .onChange(of: appContext.workspace.store.magicDNSSettings) { _, settings in
+            magicDNSSuffix = settings.dnsSuffix
+            committedMagicDNSSettings = settings
         }
         .hideScrollViewScrollers()
         .alert("Disable TCP RPC Listen?", isPresented: $showingDisableRPCListenWarning) {

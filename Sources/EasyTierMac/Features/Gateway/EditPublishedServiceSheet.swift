@@ -6,9 +6,10 @@ struct EditPublishedServiceSheet: View {
 
     let service: GatewayPublishedService
     let targetOptions: [PublishedServiceTargetOption]
+    let dnsZoneBindings: [GatewayDNSZoneBinding]
     let dnsCredentials: [GatewayDNSCredentialDescriptor]
     let certificate: GatewayManagedCertificate
-    let defaultDNSCredentialID: String?
+    let defaultDNSZoneBindingID: String?
     let sslProvider: PublishedServiceSSLProvider
     let onManageDNSCredentials: () -> Void
     let onSave: @MainActor (
@@ -22,7 +23,7 @@ struct EditPublishedServiceSheet: View {
     @State private var certificateMode: PublishedServiceCertificateMode
     @State private var certificateAuthority: GatewayCertificateAuthority
     @State private var challengeMode: PublishedServiceChallengeMode
-    @State private var dnsCredentialID: String?
+    @State private var dnsZoneBindingID: String?
     @State private var showsHTTPSOptions = false
     @State private var hasEditedPort = false
     @State private var isWorking = false
@@ -43,9 +44,9 @@ struct EditPublishedServiceSheet: View {
 
     private var certificateSelection: GatewayServiceCertificateSelection? {
         if certificateMode == .automatic {
-            return defaultDNSCredentialID == nil ? nil : .automatic
+            return defaultDNSZoneBindingID == nil ? nil : .automatic
         }
-        guard let challenge = challengeMode.challenge(credentialID: dnsCredentialID) else {
+        guard let challenge = challengeMode.challenge(zoneBindingID: dnsZoneBindingID) else {
             return nil
         }
         return .custom(authority: certificateAuthority, challenge: challenge)
@@ -71,9 +72,10 @@ struct EditPublishedServiceSheet: View {
     init(
         service: GatewayPublishedService,
         targetOptions: [PublishedServiceTargetOption],
+        dnsZoneBindings: [GatewayDNSZoneBinding],
         dnsCredentials: [GatewayDNSCredentialDescriptor],
         certificate: GatewayManagedCertificate,
-        defaultDNSCredentialID: String?,
+        defaultDNSZoneBindingID: String?,
         sslProvider: PublishedServiceSSLProvider,
         onManageDNSCredentials: @escaping () -> Void,
         onSave: @escaping @MainActor (
@@ -84,9 +86,10 @@ struct EditPublishedServiceSheet: View {
     ) {
         self.service = service
         self.targetOptions = targetOptions
+        self.dnsZoneBindings = dnsZoneBindings
         self.dnsCredentials = dnsCredentials
         self.certificate = certificate
-        self.defaultDNSCredentialID = defaultDNSCredentialID
+        self.defaultDNSZoneBindingID = defaultDNSZoneBindingID
         self.sslProvider = sslProvider
         self.onManageDNSCredentials = onManageDNSCredentials
         self.onSave = onSave
@@ -103,12 +106,12 @@ struct EditPublishedServiceSheet: View {
             _certificateMode = State(initialValue: .automatic)
             _certificateAuthority = State(initialValue: .letsEncrypt)
             _challengeMode = State(initialValue: .http01)
-            _dnsCredentialID = State(initialValue: nil)
+            _dnsZoneBindingID = State(initialValue: nil)
         case let .custom(authority, challenge):
             _certificateMode = State(initialValue: .custom)
             _certificateAuthority = State(initialValue: authority)
             _challengeMode = State(initialValue: PublishedServiceChallengeMode(challenge))
-            _dnsCredentialID = State(initialValue: challenge.dnsCredentialID)
+            _dnsZoneBindingID = State(initialValue: challenge.dnsZoneBindingID)
         }
     }
 
@@ -163,10 +166,11 @@ struct EditPublishedServiceSheet: View {
                         certificateMode: $certificateMode,
                         certificateAuthority: $certificateAuthority,
                         challengeMode: $challengeMode,
-                        dnsCredentialID: $dnsCredentialID,
+                        dnsZoneBindingID: $dnsZoneBindingID,
+                        dnsZoneBindings: dnsZoneBindings,
                         dnsCredentials: dnsCredentials,
                         automaticDomain: automaticDomain,
-                        defaultDNSCredentialID: defaultDNSCredentialID,
+                        defaultDNSZoneBindingID: defaultDNSZoneBindingID,
                         status: sslProvider,
                         isDisabled: isWorking,
                         onManageDNSCredentials: onManageDNSCredentials
