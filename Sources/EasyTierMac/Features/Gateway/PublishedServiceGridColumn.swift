@@ -4,7 +4,8 @@ enum PublishedServiceGridColumn: String, CaseIterable, WorkspaceDataGridColumn {
     case service = "Service"
     case ipv4 = "IPv4"
     case target = "Target"
-    case ssl = "HTTPS"
+    case authority = "Certificate Authority"
+    case challenge = "Challenge"
     case expires = "Expires"
     case lastOnline = "Last Online"
     case enabled = "Enabled"
@@ -18,7 +19,8 @@ enum PublishedServiceGridColumn: String, CaseIterable, WorkspaceDataGridColumn {
         case .service: 324
         case .ipv4: 142
         case .target: 248
-        case .ssl: 130
+        case .authority: 142
+        case .challenge: 98
         case .expires: 162
         case .lastOnline: 128
         case .enabled: 88
@@ -31,7 +33,8 @@ enum PublishedServiceGridColumn: String, CaseIterable, WorkspaceDataGridColumn {
         case .service: 398
         case .ipv4: 156
         case .target: 336
-        case .ssl: 163
+        case .authority: 174
+        case .challenge: 116
         case .expires: 191
         case .lastOnline: 182
         case .enabled: 106

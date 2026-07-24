@@ -189,13 +189,15 @@ struct ServicesView: View {
                 globalScrolling: $store.isAnyViewScrolling,
                 gatewayBusy: gateway.isBusy,
                 workingServiceID: workingServiceID,
+                feedbackOperations: gateway.serviceFeedbackOperations,
                 onSetEnabled: setEnabled,
                 onOpen: open,
                 onCopyDomain: copyDomain,
                 onCopyProxyIPv4: copyProxyIPv4,
                 onEditService: editService,
                 onRetryCertificate: retryCertificate,
-                onDelete: requestDeletion
+                onDelete: requestDeletion,
+                onConsumeFeedbackOperation: gateway.consumeServiceFeedbackOperation
             )
         }
     }
@@ -254,7 +256,10 @@ struct ServicesView: View {
         Task {
             workingServiceID = service.id
             errorMessage = nil
-            await gateway.requestRenewal(certificateID: service.certificateID)
+            await gateway.requestRenewal(
+                certificateID: service.certificateID,
+                serviceID: service.id
+            )
             errorMessage = gateway.lastError
             workingServiceID = nil
         }

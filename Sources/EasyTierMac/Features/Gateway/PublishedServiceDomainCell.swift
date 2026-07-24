@@ -6,7 +6,9 @@ struct PublishedServiceDomainCell: View {
 
     var row: PublishedServiceTableRow
     var isWorking: Bool
+    var feedbackOperation: PublishedServiceFeedbackOperation?
     var onOpen: (PublishedServiceTableRow) -> Void
+    var onConsumeFeedbackOperation: (UUID) -> Void
     @State private var isHovered = false
     @State private var transientFeedback: PublishedServiceStatusFeedback?
 
@@ -44,8 +46,10 @@ struct PublishedServiceDomainCell: View {
         .accessibilityLabel(Text("\(row.publicHostname), \(statusSummary)"))
         .accessibilityHint(Text("Opens the public service in the default browser"))
         .onChange(of: feedbackObservation) { oldValue, newValue in
-            guard let feedback = newValue.transition(from: oldValue) else { return }
-            setTransientFeedback(feedback)
+            handleFeedbackEvent(newValue.transition(from: oldValue))
+        }
+        .onAppear {
+            handleFeedbackEvent(feedbackObservation.initialEvent())
         }
         .task(id: transientFeedback) {
             guard transientFeedback != nil else { return }
@@ -78,15 +82,27 @@ struct PublishedServiceDomainCell: View {
     private func feedbackIcon(_ feedback: PublishedServiceStatusFeedback) -> some View {
         switch feedback {
         case .success:
-            Image(systemName: "checkmark.circle.fill")
-                .font(.caption)
-                .foregroundStyle(EasyTierColors.statusConnected)
-                .symbolEffect(.bounce, value: transientFeedback)
+            if reduceMotion {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(EasyTierColors.statusConnected)
+            } else {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(EasyTierColors.statusConnected)
+                    .symbolEffect(.bounce, value: transientFeedback)
+            }
         case .failure:
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.caption)
-                .foregroundStyle(.orange)
-                .symbolEffect(.wiggle, value: transientFeedback)
+            if reduceMotion {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .symbolEffect(.wiggle, value: transientFeedback)
+            }
         case .none:
             EmptyView()
         }
@@ -111,7 +127,13 @@ struct PublishedServiceDomainCell: View {
 
     private var feedbackObservation: PublishedServiceStatusFeedbackObservation {
         PublishedServiceStatusFeedbackObservation(
-            feedback: PublishedServiceStatusFeedback(presentation: row.presentation),
+            feedback: PublishedServiceStatusFeedback(
+                operation: feedbackOperation,
+                presentation: row.presentation,
+                configurationApplied: row.configurationApplied,
+                serviceEnabled: row.service.desiredEnabled
+            ),
+            operationID: feedbackOperation?.id,
             isWindowInteractive: presentationActivity.allowsAnimations
         )
     }
@@ -135,6 +157,17 @@ struct PublishedServiceDomainCell: View {
             withAnimation(EasyTierMotion.selection(reduceMotion: false)) {
                 transientFeedback = feedback
             }
+        }
+    }
+
+    private func handleFeedbackEvent(_ event: PublishedServiceStatusFeedbackObservation.Event?) {
+        guard let event else { return }
+        switch event {
+        case let .present(feedback, operationID):
+            onConsumeFeedbackOperation(operationID)
+            setTransientFeedback(feedback)
+        case let .discard(operationID):
+            onConsumeFeedbackOperation(operationID)
         }
     }
 }

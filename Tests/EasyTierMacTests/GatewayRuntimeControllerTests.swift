@@ -49,6 +49,14 @@ import Testing
     #expect(route.domain == "abc.a.et.net")
     #expect(route.upstream.url == "http://a.et.net:3000")
     #expect(route.upstream.allowedIPv4CIDR == "10.0.0.0/24")
+    let feedback = try #require(controller.serviceFeedbackOperations[service.id])
+    #expect(feedback.kind == .publish)
+    #expect(feedback.expectsEnabledService)
+    #expect(feedback.targetDeployment == runtime.deployment)
+    controller.consumeServiceFeedbackOperation(serviceID: service.id, operationID: UUID())
+    #expect(controller.serviceFeedbackOperations[service.id]?.id == feedback.id)
+    controller.consumeServiceFeedbackOperation(serviceID: service.id, operationID: feedback.id)
+    #expect(controller.serviceFeedbackOperations[service.id] == nil)
     #expect(await client.callNames() == [
         "retain:false",
         "start",
@@ -257,6 +265,10 @@ import Testing
     #expect(applied.certificates.count == 1)
     #expect(applied.certificates[0].renewalEnabled == false)
     #expect(applied.routes.isEmpty)
+    let feedback = try #require(controller.serviceFeedbackOperations["service-a"])
+    #expect(feedback.kind == .disable)
+    #expect(!feedback.expectsEnabledService)
+    #expect(feedback.targetDeployment == applied.deployment)
     #expect(await client.callNames() == [
         "retain:false",
         "start",
@@ -265,6 +277,27 @@ import Testing
         "apply",
         "status",
     ])
+}
+
+@MainActor
+@Test func certificateRetryTargetsOnlyTheRequestedServiceFeedbackRow() async throws {
+    let state = gatewayControllerTestState(gatewayEnabled: true, serviceEnabled: true)
+    let store = InMemoryGatewayConfigurationStore(state: state)
+    let client = RecordingGatewayClient()
+    let controller = makeController(store: store, client: client)
+    await controller.load()
+    await controller.reconcile()
+
+    await controller.requestRenewal(
+        certificateID: state.services[0].certificateID,
+        serviceID: state.services[0].id
+    )
+
+    let feedback = try #require(controller.serviceFeedbackOperations["service-a"])
+    #expect(feedback.kind == .retryCertificate)
+    #expect(feedback.serviceID == "service-a")
+    #expect(feedback.targetDeployment == controller.status.appliedDeployment)
+    #expect(await client.callNames().suffix(2) == ["renew", "status"])
 }
 
 @MainActor

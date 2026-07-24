@@ -1,4 +1,5 @@
 import EasyTierShared
+import Foundation
 import SwiftUI
 
 struct PublishedServiceGridRowView: View {
@@ -6,6 +7,7 @@ struct PublishedServiceGridRowView: View {
     let layout: WorkspaceDataGridLayout<PublishedServiceGridColumn>
     let gatewayBusy: Bool
     let workingServiceID: String?
+    let feedbackOperation: PublishedServiceFeedbackOperation?
     let onSetEnabled: (Bool, GatewayPublishedService) -> Void
     let onOpen: (PublishedServiceTableRow) -> Void
     let onCopyDomain: (GatewayPublishedService) -> Void
@@ -13,6 +15,7 @@ struct PublishedServiceGridRowView: View {
     let onEditService: (GatewayPublishedService) -> Void
     let onRetryCertificate: (GatewayPublishedService) -> Void
     let onDelete: (GatewayPublishedService) -> Void
+    let onConsumeFeedbackOperation: (String, UUID) -> Void
 
     private var isWorking: Bool {
         workingServiceID == row.id
@@ -28,7 +31,11 @@ struct PublishedServiceGridRowView: View {
                 PublishedServiceDomainCell(
                     row: row,
                     isWorking: isWorking,
-                    onOpen: onOpen
+                    feedbackOperation: feedbackOperation,
+                    onOpen: onOpen,
+                    onConsumeFeedbackOperation: { operationID in
+                        onConsumeFeedbackOperation(row.id, operationID)
+                    }
                 )
             }
 
@@ -40,8 +47,8 @@ struct PublishedServiceGridRowView: View {
                 PublishedServiceTargetCell(row: row)
             }
 
-            WorkspaceDataGridCell(.ssl, layout: layout) {
-                PublishedServiceSSLCell(
+            WorkspaceDataGridCell(.authority, layout: layout) {
+                PublishedServiceCertificateAuthorityCell(
                     provider: row.sslProvider,
                     authority: row.certificateAuthority,
                     activeAuthority: row.certificatePresentation.activeAuthority,
@@ -49,6 +56,12 @@ struct PublishedServiceGridRowView: View {
                     runtimeAuthority: row.runtimeCertificateAuthority,
                     runtimeChallenge: row.runtimeCertificateChallenge,
                     configurationApplied: row.configurationApplied
+                )
+            }
+
+            WorkspaceDataGridCell(.challenge, layout: layout) {
+                PublishedServiceChallengeCell(
+                    challenge: row.certificateChallengeLabel
                 )
             }
 

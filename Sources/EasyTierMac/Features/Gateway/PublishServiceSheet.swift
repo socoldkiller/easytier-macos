@@ -121,8 +121,7 @@ struct PublishServiceSheet: View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 16) {
                 PublishedServiceSheetHeader(
-                    title: "Publish Service",
-                    subtitle: "Make an HTTP service available over HTTPS."
+                    title: "Publish HTTP Service"
                 )
 
                 VStack(alignment: .leading, spacing: 14) {

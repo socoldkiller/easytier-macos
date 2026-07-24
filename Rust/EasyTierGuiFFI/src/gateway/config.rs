@@ -228,7 +228,7 @@ pub enum UpstreamScheme {
     Https,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParsedUpstream {
     pub original_url: String,
     pub scheme: UpstreamScheme,

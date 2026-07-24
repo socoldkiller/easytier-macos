@@ -111,6 +111,7 @@ struct PublishedServicePresentation: Equatable, Sendable {
     let canOpen: Bool
     let canRetryCertificate: Bool
     let certificateActionTitle: String
+    let isTerminalFailure: Bool
 
     init(
         service: GatewayPublishedService,
@@ -225,6 +226,8 @@ struct PublishedServicePresentation: Equatable, Sendable {
             || certificate?.operation == .waitingRetry
             ? "Retry Certificate"
             : "Renew Certificate"
+        isTerminalFailure = presentation.tone == .warning
+            && certificate?.operation != .waitingRetry
     }
 
     private static func certificateIssuanceDetail(stage: GatewayCertificateStage?) -> String {

@@ -1,7 +1,7 @@
 import EasyTierShared
 import SwiftUI
 
-struct PublishedServiceSSLCell: View {
+struct PublishedServiceCertificateAuthorityCell: View {
     var provider: PublishedServiceSSLProvider
     var authority: GatewayCertificateAuthority
     var activeAuthority: GatewayCertificateAuthority?
@@ -12,7 +12,7 @@ struct PublishedServiceSSLCell: View {
 
     var body: some View {
         Label {
-            Text(provider.label)
+            Text(authority.label)
                 .lineLimit(1)
         } icon: {
             Image(systemName: iconName)

@@ -209,31 +209,133 @@ import Testing
 }
 
 @Test func publishedServiceStatusFeedbackOnlyPlaysForInteractiveTransitions() {
+    let operationID = UUID()
     let inactiveStarting = PublishedServiceStatusFeedbackObservation(
         feedback: .none,
+        operationID: operationID,
         isWindowInteractive: false
     )
     let inactiveSuccess = PublishedServiceStatusFeedbackObservation(
         feedback: .success,
+        operationID: operationID,
         isWindowInteractive: false
     )
     let interactiveSuccess = PublishedServiceStatusFeedbackObservation(
         feedback: .success,
+        operationID: operationID,
         isWindowInteractive: true
     )
     let interactiveStarting = PublishedServiceStatusFeedbackObservation(
         feedback: .none,
+        operationID: operationID,
         isWindowInteractive: true
     )
     let interactiveFailure = PublishedServiceStatusFeedbackObservation(
         feedback: .failure,
+        operationID: UUID(),
+        isWindowInteractive: true
+    )
+    let unrelatedSuccess = PublishedServiceStatusFeedbackObservation(
+        feedback: .success,
+        operationID: nil,
         isWindowInteractive: true
     )
 
-    #expect(inactiveSuccess.transition(from: inactiveStarting) == nil)
+    #expect(
+        inactiveSuccess.transition(from: inactiveStarting)
+            == .discard(operationID: operationID)
+    )
     #expect(interactiveSuccess.transition(from: inactiveSuccess) == nil)
-    #expect(interactiveSuccess.transition(from: interactiveStarting) == .success)
-    #expect(interactiveFailure.transition(from: interactiveSuccess) == .failure)
+    #expect(
+        interactiveSuccess.transition(from: interactiveStarting)
+            == .present(.success, operationID: operationID)
+    )
+    #expect(
+        interactiveFailure.transition(from: interactiveSuccess)
+            == .present(.failure, operationID: interactiveFailure.operationID!)
+    )
+    #expect(unrelatedSuccess.initialEvent() == nil)
+}
+
+@Test func publishedServiceStatusFeedbackRequiresTheMatchingOperationOutcome() throws {
+    let service = presentationTestService()
+    var disabledService = service
+    disabledService.desiredEnabled = false
+    let live = PublishedServicePresentation(
+        service: service,
+        certificate: try presentationCertificate(state: .active),
+        route: try presentationRoute(state: .ready, servingMode: .https),
+        gatewayEnabled: true,
+        tlsConfigured: true
+    )
+    let disabled = PublishedServicePresentation(
+        service: disabledService,
+        certificate: nil,
+        route: nil,
+        gatewayEnabled: true,
+        tlsConfigured: true
+    )
+    let waitingRetry = PublishedServicePresentation(
+        service: service,
+        certificate: try presentationCertificate(state: .degraded, error: "Retry later"),
+        route: try presentationRoute(state: .ready, servingMode: .https),
+        gatewayEnabled: true,
+        tlsConfigured: true
+    )
+
+    #expect(
+        PublishedServiceStatusFeedback(
+            operation: nil,
+            presentation: live,
+            configurationApplied: true,
+            serviceEnabled: true
+        ) == .none
+    )
+    #expect(
+        PublishedServiceStatusFeedback(
+            operation: feedbackOperation(kind: .enable, expectsEnabled: true),
+            presentation: live,
+            configurationApplied: false,
+            serviceEnabled: true
+        ) == .none
+    )
+    #expect(
+        PublishedServiceStatusFeedback(
+            operation: feedbackOperation(kind: .enable, expectsEnabled: true),
+            presentation: live,
+            configurationApplied: true,
+            serviceEnabled: true
+        ) == .success
+    )
+    #expect(
+        PublishedServiceStatusFeedback(
+            operation: feedbackOperation(kind: .disable, expectsEnabled: false),
+            presentation: disabled,
+            configurationApplied: true,
+            serviceEnabled: false
+        ) == .success
+    )
+    #expect(
+        PublishedServiceStatusFeedback(
+            operation: feedbackOperation(kind: .retryCertificate, expectsEnabled: true),
+            presentation: waitingRetry,
+            configurationApplied: true,
+            serviceEnabled: true
+        ) == .none
+    )
+    #expect(
+        PublishedServiceStatusFeedback(
+            operation: feedbackOperation(
+                kind: .retryCertificate,
+                expectsEnabled: true,
+                targetDeployment: nil,
+                phase: .failed
+            ),
+            presentation: live,
+            configurationApplied: true,
+            serviceEnabled: true
+        ) == .failure
+    )
 }
 
 @Test func publishServiceProgressUsesCertificateStagesAndServingOutcomes() throws {
@@ -355,6 +457,22 @@ private func presentationTestService(id: String = "service-a") -> GatewayPublish
         targetPort: 3_000,
         desiredEnabled: true,
         certificateID: id
+    )
+}
+
+private func feedbackOperation(
+    kind: PublishedServiceFeedbackOperation.Kind,
+    expectsEnabled: Bool,
+    targetDeployment: GatewayDeploymentIdentity? = .manual,
+    phase: PublishedServiceFeedbackOperation.Phase = .pending
+) -> PublishedServiceFeedbackOperation {
+    PublishedServiceFeedbackOperation(
+        id: UUID(),
+        serviceID: "service-a",
+        kind: kind,
+        expectsEnabledService: expectsEnabled,
+        targetDeployment: targetDeployment,
+        phase: phase
     )
 }
 

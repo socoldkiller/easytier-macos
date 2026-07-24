@@ -24,6 +24,7 @@ final class GatewayRuntimeController {
     private(set) var appliedMagicDNSSuffix: String?
     private(set) var topologyMembers: [NetworkMemberStatus] = []
     private(set) var expectedIPv4ByServiceID: [String: String] = [:]
+    private(set) var serviceFeedbackOperations: [String: PublishedServiceFeedbackOperation] = [:]
 
     var desiredEnabled: Bool { persistedState?.desiredEnabled == true }
     var services: [GatewayPublishedService] { persistedState?.services ?? [] }
@@ -218,9 +219,20 @@ final class GatewayRuntimeController {
             state.publishingNetworkConfigID = networkConfigID
             state.lastKnownNetworkIPv4CIDR = networkIPv4CIDR
             state.services.append(service)
-            try await save(state)
-            await reconcileWithoutLock()
-            return service
+            let operationID = beginServiceFeedbackOperation(
+                serviceID: service.id,
+                kind: .publish,
+                expectsEnabledService: true
+            )
+            do {
+                try await save(state)
+                await reconcileWithoutLock()
+                prepareServiceFeedbackOperation(operationID, serviceID: service.id)
+                return service
+            } catch {
+                serviceFeedbackOperations.removeValue(forKey: service.id)
+                throw error
+            }
         }
     }
 
@@ -299,8 +311,19 @@ final class GatewayRuntimeController {
                 }
             }
             state.services[index].desiredEnabled = enabled
-            try await save(state)
-            await reconcileWithoutLock()
+            let operationID = beginServiceFeedbackOperation(
+                serviceID: serviceID,
+                kind: enabled ? .enable : .disable,
+                expectsEnabledService: enabled
+            )
+            do {
+                try await save(state)
+                await reconcileWithoutLock()
+                prepareServiceFeedbackOperation(operationID, serviceID: serviceID)
+            } catch {
+                failServiceFeedbackOperation(operationID, serviceID: serviceID)
+                throw error
+            }
         }
     }
 
@@ -313,9 +336,21 @@ final class GatewayRuntimeController {
             }
             var updated = state.services[index]
             updated.targetPort = port
+            guard updated != state.services[index] else { return }
             state.services[index] = updated
-            try await save(state)
-            await reconcileWithoutLock()
+            let operationID = beginServiceFeedbackOperation(
+                serviceID: serviceID,
+                kind: .update,
+                expectsEnabledService: updated.desiredEnabled
+            )
+            do {
+                try await save(state)
+                await reconcileWithoutLock()
+                prepareServiceFeedbackOperation(operationID, serviceID: serviceID)
+            } catch {
+                failServiceFeedbackOperation(operationID, serviceID: serviceID)
+                throw error
+            }
         }
     }
 
@@ -342,8 +377,19 @@ final class GatewayRuntimeController {
                 : nil
             acceptRequiredAuthorities(for: certificate.strategy, state: &state)
             removeUnusedCustomCertificates(from: &state)
-            try await save(state)
-            await reconcileWithoutLock()
+            let operationID = beginServiceFeedbackOperation(
+                serviceID: serviceID,
+                kind: .update,
+                expectsEnabledService: state.services[index].desiredEnabled
+            )
+            do {
+                try await save(state)
+                await reconcileWithoutLock()
+                prepareServiceFeedbackOperation(operationID, serviceID: serviceID)
+            } catch {
+                failServiceFeedbackOperation(operationID, serviceID: serviceID)
+                throw error
+            }
         }
     }
 
@@ -449,8 +495,19 @@ final class GatewayRuntimeController {
 
             state.services[index] = updated
             removeUnusedCustomCertificates(from: &state)
-            try await save(state)
-            await reconcileWithoutLock()
+            let operationID = beginServiceFeedbackOperation(
+                serviceID: serviceID,
+                kind: .update,
+                expectsEnabledService: updated.desiredEnabled
+            )
+            do {
+                try await save(state)
+                await reconcileWithoutLock()
+                prepareServiceFeedbackOperation(operationID, serviceID: serviceID)
+            } catch {
+                failServiceFeedbackOperation(operationID, serviceID: serviceID)
+                throw error
+            }
         }
     }
 
@@ -458,6 +515,7 @@ final class GatewayRuntimeController {
         try await withMutation {
             guard var state = persistedState else { return }
             state.services.removeAll { $0.id == serviceID }
+            serviceFeedbackOperations.removeValue(forKey: serviceID)
             removeUnusedCustomCertificates(from: &state)
             if state.services.isEmpty {
                 state.publishingNetworkConfigID = nil
@@ -528,16 +586,29 @@ final class GatewayRuntimeController {
         await withMutation { await refreshStatusWithoutLock() }
     }
 
-    func requestRenewal(certificateID: String?) async {
+    func requestRenewal(certificateID: String?, serviceID: String? = nil) async {
         await withMutation {
             guard desiredEnabled else { return }
+            let operationID = serviceID.map {
+                beginServiceFeedbackOperation(
+                    serviceID: $0,
+                    kind: .retryCertificate,
+                    expectsEnabledService: true
+                )
+            }
             isBusy = true
             defer { isBusy = false }
             do {
                 try await client.requestRenewal(certificateID: certificateID)
                 await refreshStatusWithoutLock()
+                if let operationID, let serviceID {
+                    prepareServiceFeedbackOperation(operationID, serviceID: serviceID)
+                }
                 lastError = nil
             } catch {
+                if let operationID, let serviceID {
+                    failServiceFeedbackOperation(operationID, serviceID: serviceID)
+                }
                 lastError = error.localizedDescription
             }
         }
@@ -1317,6 +1388,47 @@ final class GatewayRuntimeController {
         case .mismatch: .unavailable
         case .loading, .disabled: .waiting
         }
+    }
+
+    func consumeServiceFeedbackOperation(serviceID: String, operationID: UUID) {
+        guard serviceFeedbackOperations[serviceID]?.id == operationID else { return }
+        serviceFeedbackOperations.removeValue(forKey: serviceID)
+    }
+
+    private func beginServiceFeedbackOperation(
+        serviceID: String,
+        kind: PublishedServiceFeedbackOperation.Kind,
+        expectsEnabledService: Bool
+    ) -> UUID {
+        let operation = PublishedServiceFeedbackOperation(
+            id: UUID(),
+            serviceID: serviceID,
+            kind: kind,
+            expectsEnabledService: expectsEnabledService,
+            targetDeployment: nil,
+            phase: .pending
+        )
+        serviceFeedbackOperations[serviceID] = operation
+        return operation.id
+    }
+
+    private func prepareServiceFeedbackOperation(_ operationID: UUID, serviceID: String) {
+        guard var operation = serviceFeedbackOperations[serviceID],
+              operation.id == operationID
+        else { return }
+        operation.targetDeployment = desiredRuntimeConfiguration?.deployment
+            ?? status.appliedDeployment
+        serviceFeedbackOperations[serviceID] = operation
+    }
+
+    private func failServiceFeedbackOperation(_ operationID: UUID, serviceID: String) {
+        guard var operation = serviceFeedbackOperations[serviceID],
+              operation.id == operationID
+        else { return }
+        operation.targetDeployment = desiredRuntimeConfiguration?.deployment
+            ?? status.appliedDeployment
+        operation.phase = .failed
+        serviceFeedbackOperations[serviceID] = operation
     }
 
     private func withMutation<T>(

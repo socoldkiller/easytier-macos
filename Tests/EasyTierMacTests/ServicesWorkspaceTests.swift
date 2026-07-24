@@ -409,13 +409,25 @@ func publishedServiceSummary(liveCount: Int, serviceCount: Int, expected: String
     #expect(WorkspaceTab.services.systemImage == "network.badge.shield.half.filled")
     #expect(
         PublishedServiceGridColumn.allCases.map(\.title)
-            == ["Service", "IPv4", "Target", "HTTPS", "Expires", "Last Online", "Enabled", ""]
+            == [
+                "Service",
+                "IPv4",
+                "Target",
+                "Certificate Authority",
+                "Challenge",
+                "Expires",
+                "Last Online",
+                "Enabled",
+                "",
+            ]
     )
     #expect(PublishedServiceGridColumn.service.minimumWidth == 324)
     #expect(PublishedServiceGridColumn.service.idealWidth == 398)
     #expect(PublishedServiceGridColumn.ipv4.minimumWidth == 142)
     #expect(PublishedServiceGridColumn.ipv4.idealWidth == 156)
     #expect(PublishedServiceGridColumn.target.idealWidth >= 200)
+    #expect(PublishedServiceGridColumn.authority.idealWidth >= 160)
+    #expect(PublishedServiceGridColumn.challenge.minimumWidth >= 90)
 }
 
 private func servicesTestService(

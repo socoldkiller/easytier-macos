@@ -79,8 +79,6 @@ impl Http01ChallengeStore {
 }
 
 pub struct RuntimeRoute {
-    pub domain: String,
-    pub certificate_id: String,
     pub upstream: ParsedUpstream,
     addresses: ArcSwap<Vec<SocketAddr>>,
     resolution: Mutex<RouteResolution>,
@@ -97,6 +95,38 @@ struct RouteResolution {
 }
 
 impl RuntimeRoute {
+    fn new(upstream: ParsedUpstream) -> Arc<Self> {
+        let state = match upstream.availability {
+            UpstreamAvailability::Waiting => RouteResolutionState::Waiting,
+            UpstreamAvailability::Unavailable => RouteResolutionState::Unavailable,
+            UpstreamAvailability::Ready => RouteResolutionState::Resolving,
+        };
+        Arc::new(Self {
+            upstream,
+            addresses: ArcSwap::from_pointee(Vec::new()),
+            resolution: Mutex::new(RouteResolution {
+                state,
+                ..RouteResolution::default()
+            }),
+            resolution_lock: AsyncMutex::new(()),
+            next_address: AtomicUsize::new(0),
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) async fn resolve_for_test(&self) -> Option<SocketAddr> {
+        self.address_for_request().await
+    }
+
+    #[cfg(test)]
+    fn status_for_test(&self) -> RouteStatus {
+        self.status("test.example.com", "test-certificate")
+    }
+
+    fn resolution_state(&self) -> RouteResolutionState {
+        self.resolution.lock().unwrap().state
+    }
+
     fn address(&self) -> Option<SocketAddr> {
         let addresses = self.addresses.load();
         if addresses.is_empty() {
@@ -123,11 +153,11 @@ impl RuntimeRoute {
         self.address()
     }
 
-    pub fn status(&self) -> RouteStatus {
+    pub fn status(&self, domain: &str, certificate_id: &str) -> RouteStatus {
         let addresses = self.addresses.load();
         let resolution = self.resolution.lock().unwrap();
         RouteStatus {
-            domain: self.domain.clone(),
+            domain: domain.to_string(),
             upstream: self.upstream.original_url.clone(),
             resolved_addresses: addresses.iter().map(ToString::to_string).collect(),
             resolved_ipv4s: addresses
@@ -138,7 +168,7 @@ impl RuntimeRoute {
                 .upstream
                 .expected_ipv4
                 .map(|address| address.to_string()),
-            certificate_id: self.certificate_id.clone(),
+            certificate_id: certificate_id.to_string(),
             serving_certificate_id: None,
             serving_mode: RouteServingMode::Unavailable,
             resolution_state: resolution.state,
@@ -267,44 +297,51 @@ fn current_timestamp() -> String {
 
 #[derive(Default)]
 pub struct RouteTable {
-    routes: BTreeMap<String, Arc<RuntimeRoute>>,
+    routes: BTreeMap<String, RouteTableEntry>,
+}
+
+struct RouteTableEntry {
+    certificate_id: String,
+    runtime: Arc<RuntimeRoute>,
 }
 
 impl RouteTable {
     pub fn get(&self, domain: &str) -> Option<Arc<RuntimeRoute>> {
-        self.routes.get(domain).cloned()
+        self.routes.get(domain).map(|entry| entry.runtime.clone())
     }
 
     pub fn statuses(&self) -> Vec<RouteStatus> {
-        self.routes.values().map(|route| route.status()).collect()
+        self.routes
+            .iter()
+            .map(|(domain, entry)| entry.runtime.status(domain, &entry.certificate_id))
+            .collect()
     }
 
-    fn all_routes(&self) -> Vec<Arc<RuntimeRoute>> {
-        self.routes.values().cloned().collect()
+    pub(super) fn all_routes(&self) -> Vec<(String, Arc<RuntimeRoute>)> {
+        self.routes
+            .iter()
+            .map(|(domain, entry)| (domain.clone(), entry.runtime.clone()))
+            .collect()
     }
 }
 
-pub fn build_route_table(config: &ValidatedGatewayConfig) -> Arc<RouteTable> {
+pub fn build_route_table(
+    config: &ValidatedGatewayConfig,
+    previous: Option<&RouteTable>,
+) -> Arc<RouteTable> {
     let mut routes = BTreeMap::new();
     for route in config.routes.values() {
+        let runtime = previous
+            .and_then(|table| table.routes.get(&route.domain))
+            .filter(|entry| entry.runtime.upstream == route.upstream)
+            .map(|entry| entry.runtime.clone())
+            .unwrap_or_else(|| RuntimeRoute::new(route.upstream.clone()));
         routes.insert(
             route.domain.clone(),
-            Arc::new(RuntimeRoute {
-                domain: route.domain.clone(),
+            RouteTableEntry {
                 certificate_id: route.certificate_id.clone(),
-                upstream: route.upstream.clone(),
-                addresses: ArcSwap::from_pointee(Vec::new()),
-                resolution: Mutex::new(RouteResolution {
-                    state: match route.upstream.availability {
-                        UpstreamAvailability::Waiting => RouteResolutionState::Waiting,
-                        UpstreamAvailability::Unavailable => RouteResolutionState::Unavailable,
-                        UpstreamAvailability::Ready => RouteResolutionState::Resolving,
-                    },
-                    ..RouteResolution::default()
-                }),
-                resolution_lock: AsyncMutex::new(()),
-                next_address: AtomicUsize::new(0),
-            }),
+                runtime,
+            },
         );
     }
     Arc::new(RouteTable { routes })
@@ -313,30 +350,37 @@ pub fn build_route_table(config: &ValidatedGatewayConfig) -> Arc<RouteTable> {
 pub fn spawn_route_resolvers(
     route_table: Arc<RouteTable>,
     shutdown: watch::Receiver<bool>,
-) -> Vec<JoinHandle<()>> {
+) -> BTreeMap<String, JoinHandle<()>> {
     route_table
         .all_routes()
         .into_iter()
-        .map(|route| {
-            let mut shutdown = shutdown.clone();
-            tokio::spawn(async move {
-                loop {
-                    let resolved = route.resolve().await;
-                    let delay = if resolved {
-                        Duration::from_secs(30)
-                    } else {
-                        Duration::from_secs(5)
-                    };
-                    tokio::select! {
-                        changed = shutdown.changed() => {
-                            if changed.is_err() || *shutdown.borrow() { return; }
-                        }
-                        _ = sleep(delay) => {}
-                    }
-                }
-            })
+        .map(|(domain, route)| {
+            let task = spawn_route_resolver(route, shutdown.clone());
+            (domain, task)
         })
         .collect()
+}
+
+pub(super) fn spawn_route_resolver(
+    route: Arc<RuntimeRoute>,
+    mut shutdown: watch::Receiver<bool>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let resolved = route.resolve().await;
+            let delay = if resolved {
+                Duration::from_secs(30)
+            } else {
+                Duration::from_secs(5)
+            };
+            tokio::select! {
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() { return; }
+                }
+                _ = sleep(delay) => {}
+            }
+        }
+    })
 }
 
 #[derive(Default)]
@@ -474,7 +518,7 @@ impl ProxyHttp for GatewayProxy {
                 return Ok(true);
             }
             let Some(address) = route.address_for_request().await else {
-                let (message, retry_after) = match route.status().resolution_state {
+                let (message, retry_after) = match route.resolution_state() {
                     RouteResolutionState::Waiting | RouteResolutionState::Resolving => {
                         ("Target is starting", "2")
                     }
@@ -761,8 +805,6 @@ mod tests {
     #[test]
     fn https_upstream_peer_keeps_certificate_and_hostname_verification_enabled() {
         let route = RuntimeRoute {
-            domain: "app.example.com".to_string(),
-            certificate_id: "app-cert".to_string(),
             upstream: ParsedUpstream {
                 original_url: "https://10.0.0.10:8443".to_string(),
                 scheme: UpstreamScheme::Https,
@@ -798,13 +840,16 @@ mod tests {
                 route.address_for_request().await,
                 Some("127.0.0.1:3000".parse().unwrap())
             );
-            assert_eq!(route.status().resolution_state, RouteResolutionState::Ready);
-            assert!(route.status().last_online_at.is_some());
+            assert_eq!(
+                route.status_for_test().resolution_state,
+                RouteResolutionState::Ready
+            );
+            assert!(route.status_for_test().last_online_at.is_some());
 
             route.resolution.lock().unwrap().last_online_at = Some("first-online".to_string());
             assert!(route.resolve().await);
             assert_eq!(
-                route.status().last_online_at.as_deref(),
+                route.status_for_test().last_online_at.as_deref(),
                 Some("first-online")
             );
         });
@@ -818,11 +863,11 @@ mod tests {
             route.resolution.lock().unwrap().last_online_at = Some("first-online".to_string());
             route.mark_unavailable("target network stopped".to_string());
             assert_eq!(
-                route.status().resolution_state,
+                route.status_for_test().resolution_state,
                 RouteResolutionState::Unavailable
             );
             assert_eq!(
-                route.status().last_online_at.as_deref(),
+                route.status_for_test().last_online_at.as_deref(),
                 Some("first-online")
             );
 
@@ -830,9 +875,12 @@ mod tests {
                 route.address_for_request().await,
                 Some("127.0.0.1:3000".parse().unwrap())
             );
-            assert_eq!(route.status().resolution_state, RouteResolutionState::Ready);
+            assert_eq!(
+                route.status_for_test().resolution_state,
+                RouteResolutionState::Ready
+            );
             assert_ne!(
-                route.status().last_online_at.as_deref(),
+                route.status_for_test().last_online_at.as_deref(),
                 Some("first-online")
             );
         });
@@ -862,10 +910,10 @@ mod tests {
 
             assert_eq!(route.address_for_request().await, None);
             assert_eq!(
-                route.status().resolution_state,
+                route.status_for_test().resolution_state,
                 RouteResolutionState::Mismatch
             );
-            assert!(route.status().resolved_addresses.is_empty());
+            assert!(route.status_for_test().resolved_addresses.is_empty());
         });
     }
 
@@ -878,7 +926,7 @@ mod tests {
 
             assert_eq!(route.address_for_request().await, None);
             assert_eq!(
-                route.status().resolution_state,
+                route.status_for_test().resolution_state,
                 RouteResolutionState::Resolving
             );
         });
@@ -886,8 +934,6 @@ mod tests {
 
     fn unresolved_loopback_route() -> RuntimeRoute {
         RuntimeRoute {
-            domain: "app.example.com".to_string(),
-            certificate_id: "app-cert".to_string(),
             upstream: ParsedUpstream {
                 original_url: "http://127.0.0.1:3000".to_string(),
                 scheme: UpstreamScheme::Http,

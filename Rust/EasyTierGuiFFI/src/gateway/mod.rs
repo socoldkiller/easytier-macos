@@ -41,7 +41,8 @@ use config::{
 };
 use local_dns::{LocalDnsTable, SharedLocalDnsTable, bind_local_dns, spawn_local_dns};
 use proxy::{
-    GatewayProxy, Http01ChallengeStore, SharedRouteTable, build_route_table, spawn_route_resolvers,
+    GatewayProxy, Http01ChallengeStore, SharedRouteTable, build_route_table, spawn_route_resolver,
+    spawn_route_resolvers,
 };
 use status::{
     CertificateAvailability, CertificateFailure, CertificateOperation, CertificateStatus,
@@ -281,7 +282,7 @@ struct GatewayInstance {
     proxy: Arc<HttpProxy<GatewayProxy>>,
     shutdown: watch::Sender<bool>,
     listener_tasks: Vec<JoinHandle<()>>,
-    route_tasks: Vec<JoinHandle<()>>,
+    route_tasks: BTreeMap<String, JoinHandle<()>>,
     status: Arc<ArcSwap<GatewayStatusSnapshot>>,
     certificate_status: BTreeMap<String, CertificateStatus>,
     listener_status: ListenerStatus,
@@ -321,7 +322,7 @@ impl GatewayInstance {
             challenges.clone(),
         );
         let (acme_event_sender, acme_events) = mpsc::unbounded_channel();
-        let route_table = build_route_table(&config);
+        let route_table = build_route_table(&config, None);
         let routes = SharedRouteTable::new(route_table);
         let local_dns = SharedLocalDnsTable::new(LocalDnsTable::from_config(&config));
 
@@ -602,7 +603,8 @@ impl GatewayInstance {
             None => self.secrets.validate_references(&config)?,
         }
 
-        let route_table = build_route_table(&config);
+        let previous_route_table = self.routes.snapshot();
+        let route_table = build_route_table(&config, Some(previous_route_table.as_ref()));
         self.acme.update_config(config.source.acme.clone()).await?;
         let contact_changed = self.config.source.acme != config.source.acme;
         let mut next_status = BTreeMap::new();
@@ -686,12 +688,29 @@ impl GatewayInstance {
         self.certificates.reconcile(&config);
         self.certificates.update_routes(&config);
         self.local_dns.replace(LocalDnsTable::from_config(&config));
-        for task in self.route_tasks.drain(..) {
-            task.abort();
-            let _ = task.await;
+        let mut next_route_tasks = BTreeMap::new();
+        for (domain, task) in std::mem::take(&mut self.route_tasks) {
+            let runtime_unchanged = previous_route_table
+                .get(&domain)
+                .zip(route_table.get(&domain))
+                .is_some_and(|(previous, next)| Arc::ptr_eq(&previous, &next));
+            if runtime_unchanged && !task.is_finished() {
+                next_route_tasks.insert(domain, task);
+            } else {
+                task.abort();
+                let _ = task.await;
+            }
+        }
+        for (domain, route) in route_table.all_routes() {
+            if !next_route_tasks.contains_key(&domain) {
+                next_route_tasks.insert(
+                    domain,
+                    spawn_route_resolver(route, self.shutdown.subscribe()),
+                );
+            }
         }
         self.routes.replace(route_table.clone());
-        self.route_tasks = spawn_route_resolvers(route_table, self.shutdown.subscribe());
+        self.route_tasks = next_route_tasks;
         self.certificate_status = next_status;
         self.config = config;
         if contact_changed {
@@ -1679,7 +1698,7 @@ impl GatewayInstance {
     async fn stop_listeners(&mut self) -> Result<(), String> {
         let _ = self.shutdown.send(true);
         self.proxy.cleanup().await;
-        for task in self.route_tasks.drain(..) {
+        for (_, task) in std::mem::take(&mut self.route_tasks) {
             task.abort();
             let _ = task.await;
         }
@@ -2426,6 +2445,154 @@ mod tests {
             )
             .await;
             assert!(response.starts_with("HTTP/1.1 404"), "{response:?}");
+            gateway.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn applying_an_added_route_preserves_existing_route_runtime_state() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let storage_dir = temp.path().join("gateway");
+            let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let upstream_addr = upstream.local_addr().unwrap();
+            let existing_domain = "existing.gateway.test";
+            let added_domain = "added.gateway.test";
+
+            let config = gateway_config(
+                &storage_dir,
+                upstream_addr,
+                &[existing_domain],
+                "127.0.0.1:0",
+                "127.0.0.1:0",
+            );
+            let gateway = GatewayHandle::start(&config.to_string(), &empty_secrets().to_string())
+                .await
+                .unwrap();
+            let existing_route = gateway.routes.snapshot().get(existing_domain).unwrap();
+            assert_eq!(existing_route.resolve_for_test().await, Some(upstream_addr));
+            let status_before = existing_route.status(existing_domain, "gateway-cert");
+            assert_eq!(
+                status_before.resolution_state,
+                status::RouteResolutionState::Ready
+            );
+
+            let mut updated = gateway_config(
+                &storage_dir,
+                upstream_addr,
+                &[existing_domain, added_domain],
+                "127.0.0.1:0",
+                "127.0.0.1:0",
+            );
+            updated["deployment"]["revision"] = json!(1);
+            updated["deployment"]["fingerprint"] = json!("route-added");
+            gateway
+                .apply_config(&updated.to_string(), None)
+                .await
+                .unwrap();
+
+            let route_after = gateway.routes.snapshot().get(existing_domain).unwrap();
+            let status_after = route_after.status(existing_domain, "gateway-cert");
+            assert!(Arc::ptr_eq(&existing_route, &route_after));
+            assert_eq!(
+                status_after.resolution_state,
+                status_before.resolution_state
+            );
+            assert_eq!(
+                status_after.resolved_addresses,
+                status_before.resolved_addresses
+            );
+            assert_eq!(
+                status_after.last_resolved_at,
+                status_before.last_resolved_at
+            );
+            assert_eq!(status_after.last_online_at, status_before.last_online_at);
+
+            let added_route = gateway.routes.snapshot().get(added_domain).unwrap();
+            let mut certificate_updated = updated.clone();
+            let mut alternate_certificate = certificate_updated["certificates"][0].clone();
+            alternate_certificate["id"] = json!("alternate-cert");
+            certificate_updated["certificates"]
+                .as_array_mut()
+                .unwrap()
+                .push(alternate_certificate);
+            certificate_updated["routes"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|route| route["domain"] == existing_domain)
+                .unwrap()["certificate_id"] = json!("alternate-cert");
+            certificate_updated["deployment"]["revision"] = json!(2);
+            certificate_updated["deployment"]["fingerprint"] = json!("certificate-changed");
+            gateway
+                .apply_config(&certificate_updated.to_string(), None)
+                .await
+                .unwrap();
+
+            let existing_after_certificate_change =
+                gateway.routes.snapshot().get(existing_domain).unwrap();
+            assert!(Arc::ptr_eq(
+                &existing_route,
+                &existing_after_certificate_change
+            ));
+            let route_status = gateway
+                .routes
+                .statuses()
+                .into_iter()
+                .find(|route| route.domain == existing_domain)
+                .unwrap();
+            assert_eq!(route_status.certificate_id, "alternate-cert");
+
+            let changed_upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let changed_upstream_addr = changed_upstream.local_addr().unwrap();
+            let mut upstream_updated = certificate_updated.clone();
+            upstream_updated["routes"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|route| route["domain"] == added_domain)
+                .unwrap()["upstream"]["url"] = json!(format!("http://{changed_upstream_addr}"));
+            upstream_updated["deployment"]["revision"] = json!(3);
+            upstream_updated["deployment"]["fingerprint"] = json!("upstream-changed");
+            gateway
+                .apply_config(&upstream_updated.to_string(), None)
+                .await
+                .unwrap();
+
+            let routes_after_upstream_change = gateway.routes.snapshot();
+            assert!(Arc::ptr_eq(
+                &existing_route,
+                &routes_after_upstream_change.get(existing_domain).unwrap()
+            ));
+            let changed_added_route = routes_after_upstream_change.get(added_domain).unwrap();
+            assert!(!Arc::ptr_eq(&added_route, &changed_added_route));
+
+            let mut deleted = gateway_config(
+                &storage_dir,
+                upstream_addr,
+                &[existing_domain],
+                "127.0.0.1:0",
+                "127.0.0.1:0",
+            );
+            deleted["deployment"]["revision"] = json!(4);
+            deleted["deployment"]["fingerprint"] = json!("route-deleted");
+            gateway
+                .apply_config(&deleted.to_string(), None)
+                .await
+                .unwrap();
+
+            let routes_after_delete = gateway.routes.snapshot();
+            assert!(Arc::ptr_eq(
+                &existing_route,
+                &routes_after_delete.get(existing_domain).unwrap()
+            ));
+            assert!(routes_after_delete.get(added_domain).is_none());
+            assert_eq!(
+                changed_added_route.resolve_for_test().await,
+                Some(changed_upstream_addr)
+            );
+
             gateway.stop().await.unwrap();
         });
     }
