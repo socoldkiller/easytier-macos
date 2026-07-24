@@ -145,6 +145,51 @@ import Testing
 }
 
 @MainActor
+@Test func publishingWithoutServiceLabelUsesTargetDomainCertificateAndPort80() async throws {
+    let store = InMemoryGatewayConfigurationStore()
+    let client = RecordingGatewayClient()
+    let controller = makeController(store: store, client: client)
+    await controller.load()
+    try await controller.saveDNSCredential(
+        descriptor: GatewayDNSCredentialDescriptor(
+            id: "cloudflare-main",
+            provider: .cloudflare,
+            label: "Cloudflare Main"
+        ),
+        secret: .cloudflare(apiToken: "test-token")
+    )
+    await controller.reconcileTopology(
+        networkConfigID: "network-a",
+        allowedIPv4CIDR: "10.0.0.0/24",
+        magicDNSSuffix: "et.net.",
+        hostnamesByPeerID: ["peer-a": "a"]
+    )
+
+    let service = try await controller.createService(
+        networkConfigID: "network-a",
+        targetPeerID: "peer-a",
+        targetHostname: "a",
+        magicDNSSuffix: "et.net.",
+        serviceLabel: "",
+        targetPort: 80,
+        contactEmail: "ops@example.com"
+    )
+
+    let runtime = try #require(await client.lastStartedConfiguration())
+    let saved = try #require(await store.currentState())
+    #expect(service.publicHostname == "a.et.net")
+    #expect(saved.certificates.count == 1)
+    #expect(saved.certificates[0].domains == ["a.et.net"])
+    #expect(
+        saved.certificates[0].strategy
+            == .automaticWildcard(credentialID: "cloudflare-main")
+    )
+    #expect(runtime.localDomains == ["a.et.net"])
+    #expect(runtime.routes.first?.domain == "a.et.net")
+    #expect(runtime.routes.first?.upstream.url == "http://a.et.net:80")
+}
+
+@MainActor
 @Test func gatewayCanRunWithoutPublishedServicesOrACMEConfiguration() async throws {
     let store = InMemoryGatewayConfigurationStore()
     let client = RecordingGatewayClient()
@@ -988,6 +1033,143 @@ import Testing
     #expect(routes["service-a-certificate"]?.upstream.expectedIPv4 == "10.0.0.20")
     #expect(routes["service-b-certificate"]?.upstream.availability == .unavailable)
     #expect(routes["service-b-certificate"]?.upstream.expectedIPv4 == nil)
+}
+
+@MainActor
+@Test func baseDomainAndChildServiceUseMagicDNSAddressWithoutResolverLoop() async throws {
+    var state = gatewayControllerTestState(gatewayEnabled: true, serviceEnabled: true)
+    state.services[0].targetPeerID = "20"
+    state.services[0].targetInstanceID = "target-instance"
+    state.services[0].serviceLabel = ""
+    state.services[0].publicHostname = "a.et.net"
+    state.services[0].targetPort = 80
+    state.certificates[0].domains = ["a.et.net"]
+    state.services.append(
+        GatewayPublishedService(
+            id: "service-b",
+            networkConfigID: "network-a",
+            targetPeerID: "20",
+            targetInstanceID: "target-instance",
+            publicNodeLabel: "a",
+            publicDNSSuffix: "et.net.",
+            lastKnownTargetHostname: "a",
+            lastKnownMagicDNSSuffix: "et.net.",
+            serviceLabel: "clash",
+            publicHostname: "clash.a.et.net",
+            targetPort: 9_090,
+            desiredEnabled: true,
+            certificateID: "service-b-certificate"
+        )
+    )
+    state.certificates.append(
+        GatewayManagedCertificate(
+            id: "service-b-certificate",
+            domains: ["clash.a.et.net"],
+            strategy: .custom(authority: .letsEncrypt, challenge: .http01)
+        )
+    )
+    let configurationStore = InMemoryGatewayConfigurationStore(state: state)
+    let client = RecordingGatewayClient()
+    let resolver = MutableMagicDNSResolver()
+    await resolver.setAddresses(["10.0.0.20"], for: "a.et.net")
+    await resolver.setAddresses(["10.0.0.10"], for: "local.et.net")
+    let controller = GatewayRuntimeController(
+        client: client,
+        configurationStore: configurationStore,
+        helperRegistration: nil,
+        magicDNSResolver: resolver
+    )
+    let appStore = EasyTierAppStore(client: PreviewEasyTierCoreClient(), storage: .isolatedForTesting())
+    var config = NetworkConfig(instance_id: "network-a", network_name: "mesh")
+    config.enable_magic_dns = true
+    appStore.configs = [config]
+    appStore.selectedConfigID = config.instance_id
+    let detail = NetworkInstanceRunningInfo(
+        my_node_info: NodeInfo(
+            virtual_ipv4: IPv4InetValue(rawValue: "10.0.0.10/24"),
+            hostname: "local",
+            peer_id: 10
+        ),
+        peer_route_pairs: [
+            gatewayTestPeerRoute(
+                peerID: 20,
+                ipv4: "10.0.0.20/24",
+                hostname: "a",
+                instanceID: "target-instance"
+            ),
+        ],
+        running: true,
+        applied_magic_dns_enabled: true,
+        applied_magic_dns_suffix: "et.net.",
+        instance_id: config.instance_id
+    )
+    appStore.instances = [
+        NetworkInstance(
+            instance_id: config.instance_id,
+            name: config.network_name,
+            running: true,
+            detail: detail
+        ),
+    ]
+    appStore.runtimeDetails = [config.network_name: detail]
+    controller.bind(to: appStore)
+    await controller.load()
+
+    await waitUntil {
+        let applied = await client.lastAppliedConfiguration()
+        let started = await client.lastStartedConfiguration()
+        return controller.magicDNSState(for: "service-a") == .ready
+            && controller.magicDNSState(for: "service-b") == .ready
+            && (applied ?? started)?.routes.count == 2
+    }
+
+    let appliedRuntime = await client.lastAppliedConfiguration()
+    let startedRuntime = await client.lastStartedConfiguration()
+    let runtime = try #require(appliedRuntime ?? startedRuntime)
+    let routes = Dictionary(uniqueKeysWithValues: runtime.routes.map { ($0.domain, $0) })
+    #expect(routes["a.et.net"]?.upstream.url == "http://10.0.0.20:80")
+    #expect(routes["clash.a.et.net"]?.upstream.url == "http://10.0.0.20:9090")
+    #expect(routes.values.allSatisfy { $0.upstream.availability == .ready })
+    #expect(routes.values.allSatisfy { $0.upstream.expectedIPv4 == "10.0.0.20" })
+
+    await resolver.setAddresses(["10.0.0.21"], for: "a.et.net")
+    let movedDetail = NetworkInstanceRunningInfo(
+        my_node_info: detail.my_node_info,
+        peer_route_pairs: [
+            gatewayTestPeerRoute(
+                peerID: 20,
+                ipv4: "10.0.0.21/24",
+                hostname: "a",
+                instanceID: "target-instance"
+            ),
+        ],
+        running: true,
+        applied_magic_dns_enabled: true,
+        applied_magic_dns_suffix: "et.net.",
+        instance_id: config.instance_id
+    )
+    appStore.instances = [
+        NetworkInstance(
+            instance_id: config.instance_id,
+            name: config.network_name,
+            running: true,
+            detail: movedDetail
+        ),
+    ]
+    appStore.runtimeDetails = [config.network_name: movedDetail]
+    controller.environmentDidChange(store: appStore)
+
+    await waitUntil {
+        guard let runtime = await client.lastAppliedConfiguration() else { return false }
+        return runtime.routes.allSatisfy {
+            $0.upstream.url.contains("10.0.0.21")
+                && $0.upstream.expectedIPv4 == "10.0.0.21"
+        }
+    }
+
+    let movedRuntime = try #require(await client.lastAppliedConfiguration())
+    #expect(movedRuntime.routes.count == 2)
+    #expect(movedRuntime.routes.allSatisfy { $0.upstream.url.contains("10.0.0.21") })
 }
 
 @MainActor

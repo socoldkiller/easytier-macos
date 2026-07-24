@@ -349,6 +349,23 @@ func gatewayValidationRejectsNonExactCertificateDomains(_ domain: String) {
     #expect(!service.desiredEnabled)
 }
 
+@Test func publishedServiceWithoutLabelUsesTheTargetDomain() throws {
+    let service = try GatewayPublishedServicesValidator.makeService(
+        networkConfigID: "network-a",
+        targetPeerID: "peer-a",
+        targetHostname: "A",
+        magicDNSSuffix: "ET.NET",
+        serviceLabel: "   ",
+        targetPort: 80,
+        desiredEnabled: false,
+        certificateID: "service-certificate"
+    )
+
+    #expect(service.serviceLabel.isEmpty)
+    #expect(service.publicHostname == "a.et.net")
+    #expect(service.targetDomain == "a.et.net")
+}
+
 @Test func publishedServicesRejectMultipleOwningNetworks() {
     var state = gatewayPersistedTestState()
     var second = state.services[0]

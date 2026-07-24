@@ -30,13 +30,20 @@ func publishedServicePublicNameRejectsInvalidLabels(_ input: String) {
     )
 }
 
-@Test func publishedServicePublicNameExplainsEmptyAndDuplicateValues() {
+@Test func publishedServicePublicNameAllowsEmptyAndExplainsDuplicateValues() {
     #expect(
         PublishedServiceFormValidation.publicNameError(
             "   ",
             targetDomain: "target.et.net",
             existingPublicHostnames: []
-        ) == "Enter a public name."
+        ) == nil
+    )
+    #expect(
+        PublishedServiceFormValidation.publicNameError(
+            "   ",
+            targetDomain: "target.et.net",
+            existingPublicHostnames: ["target.et.net"]
+        ) == "This public address is already in use."
     )
     #expect(
         PublishedServiceFormValidation.publicNameError(
@@ -47,7 +54,7 @@ func publishedServicePublicNameRejectsInvalidLabels(_ input: String) {
     )
 }
 
-@Test func publishedServicePublicHostnameUsesNormalizedNameOrPlaceholder() {
+@Test func publishedServicePublicHostnameUsesNormalizedNameOrTargetDomain() {
     #expect(
         PublishedServiceFormValidation.publicHostname(
             publicName: " API ",
@@ -58,7 +65,7 @@ func publishedServicePublicNameRejectsInvalidLabels(_ input: String) {
         PublishedServiceFormValidation.publicHostname(
             publicName: "",
             targetDomain: "target.et.net"
-        ) == "service.target.et.net"
+        ) == "target.et.net"
     )
 }
 
@@ -77,9 +84,9 @@ func publishedServicePortRejectsInvalidValues(_ input: String) {
     #expect(PublishedServiceFormValidation.portError(input) == "Enter a port from 1 to 65535.")
 }
 
-@Test func publishedServicePortExplainsEmptyValue() {
-    #expect(PublishedServiceFormValidation.parsedPort("  ") == nil)
-    #expect(PublishedServiceFormValidation.portError("  ") == "Enter a port.")
+@Test func publishedServicePortDefaultsEmptyValueToHTTPPort() {
+    #expect(PublishedServiceFormValidation.parsedPort("  ") == 80)
+    #expect(PublishedServiceFormValidation.portError("  ") == nil)
 }
 
 @Test(arguments: ["ops@example.com", "  ops@example.com  "])

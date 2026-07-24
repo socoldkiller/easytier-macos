@@ -2,10 +2,11 @@ import EasyTierShared
 import Foundation
 
 enum PublishedServiceFormValidation {
-    static let publicNameGuidance = "Letters, numbers, and hyphens, up to 63 characters."
+    static let defaultPort = 80
+    static let publicNameGuidance = "Optional; letters, numbers, and hyphens, up to 63 characters."
 
     static func normalizedPublicName(_ value: String) -> String? {
-        try? GatewayPublishedServicesValidator.normalizeLabel(value, field: "Public name")
+        try? GatewayPublishedServicesValidator.normalizeServiceLabel(value)
     }
 
     static func publicNameError(
@@ -14,11 +15,12 @@ enum PublishedServiceFormValidation {
         existingPublicHostnames: Set<String>
     ) -> String? {
         let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedValue.isEmpty else { return "Enter a public name." }
         guard let normalizedName = normalizedPublicName(value) else {
             return "Use 1–63 letters, numbers, or hyphens; don't start or end with a hyphen."
         }
-        let hostname = "\(normalizedName).\(targetDomain)"
+        let hostname = trimmedValue.isEmpty
+            ? targetDomain
+            : "\(normalizedName).\(targetDomain)"
         guard !existingPublicHostnames.contains(hostname) else {
             return "This public address is already in use."
         }
@@ -26,12 +28,16 @@ enum PublishedServiceFormValidation {
     }
 
     static func publicHostname(publicName: String, targetDomain: String) -> String {
-        let name = normalizedPublicName(publicName) ?? "service"
+        guard let name = normalizedPublicName(publicName), !name.isEmpty else {
+            return targetDomain
+        }
         return "\(name).\(targetDomain)"
     }
 
     static func parsedPort(_ value: String) -> Int? {
-        guard let port = Int(value.trimmingCharacters(in: .whitespacesAndNewlines)),
+        let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return defaultPort }
+        guard let port = Int(value),
               (1 ... 65_535).contains(port)
         else {
             return nil
@@ -41,7 +47,7 @@ enum PublishedServiceFormValidation {
 
     static func portError(_ value: String) -> String? {
         let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedValue.isEmpty else { return "Enter a port." }
+        guard !trimmedValue.isEmpty else { return nil }
         return parsedPort(value) == nil ? "Enter a port from 1 to 65535." : nil
     }
 

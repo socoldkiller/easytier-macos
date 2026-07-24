@@ -89,7 +89,7 @@ final class GatewayRuntimeController {
         credentialStore: any GatewayCredentialStoring = SystemGatewayCredentialStore(),
         helperRegistration: HelperRegistrationService?,
         connectionMonitor: (any GatewayConnectionMonitoring)? = nil,
-        magicDNSResolver: any MagicDNSResolving = SystemMagicDNSResolver()
+        magicDNSResolver: any MagicDNSResolving = EasyTierMagicDNSResolver()
     ) {
         self.client = client
         self.configurationStore = configurationStore
@@ -820,16 +820,19 @@ final class GatewayRuntimeController {
             let suffix = service.publicDNSSuffix.hasSuffix(".")
                 ? String(service.publicDNSSuffix.dropLast())
                 : service.publicDNSSuffix
-            let wildcard = "*.\(service.publicNodeLabel).\(suffix)"
+            let targetDomain = "\(service.publicNodeLabel).\(suffix)"
+            let automaticDomain = service.serviceLabel.isEmpty
+                ? targetDomain
+                : "*.\(targetDomain)"
             if let existing = state.certificates.first(where: { certificate in
-                guard certificate.domains == [wildcard] else { return false }
+                guard certificate.domains == [automaticDomain] else { return false }
                 if case .automaticWildcard = certificate.strategy { return true }
                 return false
             }) {
                 return existing
             }
             let certificate = GatewayManagedCertificate(
-                domains: [wildcard],
+                domains: [automaticDomain],
                 strategy: .automaticWildcard(credentialID: credentialID)
             )
             state.certificates.append(certificate)
@@ -1255,11 +1258,6 @@ final class GatewayRuntimeController {
             var expectedIPv4ByServiceID: [String: String] = [:]
             var resolvedTargetsByServiceID: [String: ResolvedGatewayServiceTarget] = [:]
             for service in probe.enabledServices {
-                guard let hostname = probe.serviceHostnamesByID[service.id] else {
-                    byServiceID[service.id] = .loading
-                    continue
-                }
-                let resolved = resolvedByHostname[hostname] ?? []
                 let identityMatchedMember = probe.identityMatchedMembersByServiceID[service.id]
                 let member = identityMatchedMember
                     ?? Self.uniqueLegacyMember(for: service, members: probe.liveMembers)
@@ -1268,6 +1266,11 @@ final class GatewayRuntimeController {
                     continue
                 }
 
+                guard let hostname = probe.serviceHostnamesByID[service.id] else {
+                    byServiceID[service.id] = .loading
+                    continue
+                }
+                let resolved = resolvedByHostname[hostname] ?? []
                 let state = Self.magicDNSState(
                     target: MagicDNSProbeTarget(hostname: hostname, expectedIPv4: expectedIPv4),
                     resolved: resolved
