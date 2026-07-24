@@ -5,7 +5,6 @@ import SwiftUI
 
 enum EasyTierWindowID {
     static let main = EasyTierWindowRole.main.rawValue
-    static let settings = EasyTierWindowRole.settings.rawValue
 }
 
 @main
@@ -66,7 +65,7 @@ struct EasyTierApp: App {
         }
         .windowToolbarStyle(.unified)
 
-        Window("EasyTier", id: EasyTierWindowID.settings) {
+        Settings {
             EasyTierSettingsSheet(
                 initialTab: appContext.settings.requestedTab,
                 mode: store.mode,
@@ -74,7 +73,6 @@ struct EasyTierApp: App {
             ) { mode, magicDNSSettings in
                 Task { await store.applyMode(mode, magicDNSSettings: magicDNSSettings) }
             }
-            .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
             .easyTierScrollEdgeEffect()
             .easyTierWindowBackground(
                 glassEffectsEnabled: appearanceSettings.glassEffectsEnabled,
@@ -90,7 +88,6 @@ struct EasyTierApp: App {
             )
             .environment(appContext)
         }
-        .windowToolbarStyle(.unified)
         .windowResizability(.contentSize)
 
         .commands {
@@ -102,11 +99,6 @@ struct EasyTierApp: App {
             CommandGroup(replacing: .saveItem) {
                 Button("Save") { store.save() }
                     .keyboardShortcut("s")
-            }
-
-            CommandGroup(replacing: .appSettings) {
-                Button("Settings...") { store.isShowingSettings = true }
-                    .keyboardShortcut(",", modifiers: .command)
             }
 
             SoftwareUpdateCommands(appContext: appContext)

@@ -4,13 +4,14 @@ import SwiftUI
 
 struct ServicesView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @Environment(\.windowPresentationActivity) private var presentationActivity
     @Environment(AppContext.self) private var appContext
 
     @State private var searchText = ""
     @State private var serviceGridIsScrolling = false
     @State private var workingServiceID: String?
+    @State private var isChangingGateway = false
     @State private var editingService: GatewayPublishedService?
     @State private var deletionCandidate: GatewayPublishedService?
     @State private var errorMessage: String?
@@ -148,11 +149,20 @@ struct ServicesView: View {
 
     private var header: some View {
         ServicesHeader(
+            gatewayEnabled: gatewayEnabledBinding,
             gatewayStatus: display.runtimePresentation.statusLabel,
             gatewayIsInProgress: display.runtimePresentation.isInProgress,
+            gatewayControlDisabled: isChangingGateway || gateway.isBusy,
             serviceSummary: display.serviceSummary,
             networkName: display.networkName,
             modeLabel: store.mode.label
+        )
+    }
+
+    private var gatewayEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { gateway.desiredEnabled },
+            set: { enabled in setGatewayEnabled(enabled) }
         )
     }
 
@@ -228,6 +238,20 @@ struct ServicesView: View {
         }
     }
 
+    private func setGatewayEnabled(_ enabled: Bool) {
+        guard enabled != gateway.desiredEnabled else { return }
+        Task {
+            isChangingGateway = true
+            errorMessage = nil
+            defer { isChangingGateway = false }
+            do {
+                try await gateway.setGatewayEnabled(enabled)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
     private func editService(_ service: GatewayPublishedService) {
         editingService = service
     }
@@ -294,7 +318,7 @@ struct ServicesView: View {
 
     private func openGatewaySettings() {
         appContext.settings.request(.gateway)
-        openWindow(id: EasyTierWindowID.settings)
+        openSettings()
     }
 
     private func perform(

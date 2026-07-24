@@ -26,34 +26,35 @@ struct GatewayTLSSettingsSection: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        Section {
             if let errorMessage {
-                ErrorBanner(message: errorMessage)
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
             }
 
-            CardSection(
-                "Certificate Contact",
-                systemImage: "envelope",
-                footer: "This global address is shared by all certificates. Certificate authorities use it for account, security, and renewal notices."
-            ) {
-                SettingsInlineRow("Contact Email") {
-                    HStack(alignment: .top, spacing: 8) {
-                        VStack(alignment: .trailing, spacing: 4) {
-                            TextField("name@example.com", text: $contactEmail)
-                                .textFieldStyle(.glassField)
-                                .frame(minWidth: 180, maxWidth: 260)
-                                .disabled(isSaving)
-                            if contactEmailIsInvalid {
-                                Text("Enter a valid email address.")
-                                    .font(.caption)
-                                    .foregroundStyle(.red)
-                            }
+            LabeledContent("Contact Email") {
+                HStack(alignment: .top, spacing: 8) {
+                    VStack(alignment: .trailing, spacing: 4) {
+                        TextField("name@example.com", text: $contactEmail)
+                            .labelsHidden()
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 240)
+                            .disabled(isSaving)
+                        if contactEmailIsInvalid {
+                            Text("Enter a valid email address.")
+                                .font(.caption)
+                                .foregroundStyle(.red)
                         }
-                        Button("Save", systemImage: "checkmark", action: save)
-                            .disabled(isSaving || !hasUnsavedChanges || normalizedContactEmail == nil)
                     }
+                    Button("Save", action: save)
+                        .controlSize(.small)
+                        .disabled(isSaving || !hasUnsavedChanges || normalizedContactEmail == nil)
                 }
             }
+        } header: {
+            Text("Automatic HTTPS")
+        } footer: {
+            Text("Certificate authorities use this address for account, security, and renewal notices.")
         }
         .task(id: configurationID) {
             synchronizeFromGateway()

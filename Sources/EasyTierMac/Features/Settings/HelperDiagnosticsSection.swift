@@ -13,39 +13,34 @@ struct HelperDiagnosticsSection: View {
     }
 
     var body: some View {
-        ExpandableSettingsGroup("Helper Diagnostics") {
-            SettingsCard {
-                SettingsInlineRow("EasyTier Helper") {
+        Section {
+            DisclosureGroup("Show Helper Details") {
+                LabeledContent("EasyTier Helper") {
                     Text(diagnostics.displayedEasyTierHelper.easyTierHelperDisplay)
                         .font(.callout.monospaced())
                         .textSelection(.enabled)
                 }
-                SettingsRowDivider()
-                SettingsInlineRow("Gateway Helper") {
+                LabeledContent("Gateway Helper") {
                     Text(diagnostics.displayedGatewayHelper.componentDisplay)
                         .font(.callout.monospaced())
                         .textSelection(.enabled)
                 }
-                SettingsRowDivider()
-                SettingsInlineRow("EasyTier Binary") {
+                LabeledContent("EasyTier Binary") {
                     Text(diagnostics.displayedEasyTierHelper.binaryDisplay)
                         .font(.callout.monospaced())
                         .textSelection(.enabled)
                 }
-                SettingsRowDivider()
-                SettingsInlineRow("EasyTier Built") {
+                LabeledContent("EasyTier Built") {
                     Text(diagnostics.displayedEasyTierHelper.buildTime)
                         .font(.callout.monospaced())
                         .textSelection(.enabled)
                 }
-                SettingsRowDivider()
-                SettingsInlineRow("Gateway Binary") {
+                LabeledContent("Gateway Binary") {
                     Text(diagnostics.displayedGatewayHelper.binaryDisplay)
                         .font(.callout.monospaced())
                         .textSelection(.enabled)
                 }
-                SettingsRowDivider()
-                SettingsInlineRow("Gateway Built") {
+                LabeledContent("Gateway Built") {
                     Text(diagnostics.displayedGatewayHelper.buildTime)
                         .font(.callout.monospaced())
                         .textSelection(.enabled)
@@ -54,9 +49,12 @@ struct HelperDiagnosticsSection: View {
 
             Text(diagnostics.status)
                 .font(.caption)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(.leading, 2)
+        } header: {
+            Text("Helper Diagnostics")
+        } footer: {
+            Text("Use these details when troubleshooting privileged helper installation or version mismatches.")
         }
         .task(id: refreshID) {
             await diagnostics.refresh(

@@ -3,7 +3,7 @@ import SwiftUI
 
 struct ConfigEditorView: View {
     @Environment(AppContext.self) private var appContext
-    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @Binding var config: NetworkConfig
     @Binding private var networkSecretDraft: NetworkSecretInput?
     var members: [NetworkMemberStatus] = []
@@ -367,8 +367,8 @@ struct ConfigEditorView: View {
                             .truncationMode(.middle)
                         if !isRemote {
                             Button("Change in Settings") {
-                                appContext.settings.request(.easyTier)
-                                openWindow(id: EasyTierWindowID.settings)
+                                appContext.settings.request(.network)
+                                openSettings()
                             }
                             .buttonStyle(.link)
                             .font(.caption)

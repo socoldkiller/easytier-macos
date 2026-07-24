@@ -1,5 +1,4 @@
 import EasyTierShared
-@preconcurrency import AppKit
 import SwiftUI
 
 enum MagicDNSDisplay {
@@ -21,55 +20,33 @@ enum MagicDNSDisplay {
 
 enum EasyTierSettingsTab: String, CaseIterable, Identifiable, Hashable {
     case general = "General"
+    // Keep the legacy raw value so existing installations restore this pane.
+    case network = "EasyTier"
     case gateway = "Gateway"
-    case easyTier = "EasyTier"
+    case advanced = "Advanced"
     case about = "About"
 
     var id: String { rawValue }
 
+    var title: String {
+        switch self {
+        case .general: "General"
+        case .network: "Network"
+        case .gateway: "Gateway"
+        case .advanced: "Advanced"
+        case .about: "About"
+        }
+    }
+
     var systemImage: String {
         switch self {
         case .general: "gearshape"
+        case .network: "globe"
         case .gateway: "network.badge.shield.half.filled"
-        case .easyTier: "network"
+        case .advanced: "slider.horizontal.3"
         case .about: "info.circle"
         }
     }
-}
-
-enum EasyTierSection: String, CaseIterable, Identifiable, Hashable {
-    case magicDNS = "Magic DNS"
-    case rpcServer = "RPC Server"
-
-    var id: String { rawValue }
-
-    var systemImage: String {
-        switch self {
-        case .magicDNS: "globe"
-        case .rpcServer: "server.rack"
-        }
-    }
-
-    var tint: Color {
-        switch self {
-        case .magicDNS: SettingsTint.magicDNS
-        case .rpcServer: SettingsTint.rpcServer
-        }
-    }
-
-    var subtitle: String {
-        switch self {
-        case .magicDNS: "Resolve EasyTier network names through the built-in DNS."
-        case .rpcServer: "Local control plane exposing EasyTier state to the GUI and peers."
-        }
-    }
-}
-
-enum SettingsSelection: Hashable {
-    case general
-    case gateway
-    case easyTier(EasyTierSection)
-    case about
 }
 
 private enum SettingsTextField: Hashable {
@@ -78,10 +55,9 @@ private enum SettingsTextField: Hashable {
 }
 
 struct EasyTierSettingsSheet: View {
-    @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(AppContext.self) private var appContext
-    @State private var selection: SettingsSelection
+    @State private var selection: EasyTierSettingsTab
     @State private var rpcListenEnabled: Bool
     @State private var rpcListenPort: Int
     @State private var rpcPortalWhitelist: [String]
@@ -105,12 +81,7 @@ struct EasyTierSettingsSheet: View {
         onChange: @escaping (AppMode, MagicDNSSettings) -> Void
     ) {
         self.onChange = onChange
-        switch initialTab {
-        case .general: _selection = State(initialValue: .general)
-        case .gateway: _selection = State(initialValue: .gateway)
-        case .easyTier: _selection = State(initialValue: .easyTier(.magicDNS))
-        case .about: _selection = State(initialValue: .about)
-        }
+        _selection = State(initialValue: initialTab)
         _magicDNSSuffix = State(initialValue: magicDNSSettings.dnsSuffix)
 
         _rpcListenEnabled = State(initialValue: mode.rpcListenEnabled)
@@ -119,25 +90,33 @@ struct EasyTierSettingsSheet: View {
     }
 
     var body: some View {
-        NavigationSplitView {
-            SettingsSidebar(selection: effectiveSelectionBinding, visibleEasyTierSections: visibleEasyTierSections)
-                .navigationSplitViewColumnWidth(min: 200, ideal: Self.sidebarWidth, max: 240)
-        } detail: {
-            detailContent
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        TabView(selection: $selection) {
+            generalSettings
+                .tabItem { Label(EasyTierSettingsTab.general.title, systemImage: EasyTierSettingsTab.general.systemImage) }
+                .tag(EasyTierSettingsTab.general)
+
+            networkSettings
+                .tabItem { Label(EasyTierSettingsTab.network.title, systemImage: EasyTierSettingsTab.network.systemImage) }
+                .tag(EasyTierSettingsTab.network)
+
+            GatewaySettingsView()
+                .tabItem { Label(EasyTierSettingsTab.gateway.title, systemImage: EasyTierSettingsTab.gateway.systemImage) }
+                .tag(EasyTierSettingsTab.gateway)
+
+            advancedSettings
+                .tabItem { Label(EasyTierSettingsTab.advanced.title, systemImage: EasyTierSettingsTab.advanced.systemImage) }
+                .tag(EasyTierSettingsTab.advanced)
+
+            SettingsAboutView()
+                .tabItem { Label(EasyTierSettingsTab.about.title, systemImage: EasyTierSettingsTab.about.systemImage) }
+                .tag(EasyTierSettingsTab.about)
         }
+        .frame(width: 680, height: 560)
         .onChange(of: appContext.settings.requestedTab) { _, tab in
             selectSettingsTab(tab)
         }
         .onChange(of: selection) { _, newSelection in
-            let tab: EasyTierSettingsTab
-            switch newSelection {
-            case .general: tab = .general
-            case .gateway: tab = .gateway
-            case .easyTier: tab = .easyTier
-            case .about: tab = .about
-            }
-            appContext.settings.request(tab)
+            appContext.settings.request(newSelection)
         }
         .onChange(of: rpcListenEnabled) { _, _ in
             applySettings()
@@ -147,12 +126,6 @@ struct EasyTierSettingsSheet: View {
             applySettings()
         }
         .hideScrollViewScrollers()
-        .background(
-            SettingsEscapeKeyBridge(isEnabled: settingsEscapeKeyHandlingEnabled) {
-                dismissWindow()
-            }
-            .frame(width: 0, height: 0)
-        )
         .alert("Disable TCP RPC Listen?", isPresented: $showingDisableRPCListenWarning) {
             Button("Keep Enabled", role: .cancel) {}
             Button("Disable", role: .destructive) { rpcListenEnabled = false }
@@ -166,245 +139,152 @@ struct EasyTierSettingsSheet: View {
         }
     }
 
-    // MARK: Detail
-
-    @ViewBuilder
-    private var detailContent: some View {
-        switch effectiveSelection {
-        case .general:
-            generalSettings
-        case .gateway:
-            GatewaySettingsView()
-        case .easyTier(let section):
-            easyTierSectionView(section)
-        case .about:
-            SettingsAboutView()
-        }
-    }
-
     // MARK: General
 
     private var generalSettings: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: SettingsLayoutMetrics.paneSectionSpacing) {
-                paneHeader(
-                    title: "General",
-                    subtitle: "Appearance, startup, background activity, and software updates."
-                )
-
-                CardSection(
-                    "Appearance",
-                    footer: "Panel backgrounds require Frosted Glass. When hidden from the Dock, EasyTier remains available from the menu bar."
-                ) {
-                    SettingsToggleRow(isOn: appearance.glassEffectsEnabledBinding) {
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text("Frosted Glass")
-                            Text("Beta")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .fixedSize()
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1)
-                                .background(.secondary.opacity(0.13), in: Capsule(style: .continuous))
-                                .accessibilityLabel(Text("Beta"))
-                        }
-                        .accessibilityElement(children: .combine)
-                    }
-                    .accessibilityLabel(Text("Frosted Glass, Beta"))
-                    SettingsRowDivider()
-                    SettingsToggleRow("Panel Backgrounds", isOn: appearance.glassPanelBackgroundsEnabledBinding)
-                        .disabled(!appearance.glassEffectsEnabled)
-                    SettingsRowDivider()
-                    SettingsToggleRow("Show in Dock", isOn: appearance.showsDockIconBinding)
-                }
-
-                CardSection(
-                    "Startup & Background",
-                    footer: "Helper-managed networks can continue running after the EasyTier app quits."
-                ) {
-                    SettingsToggleRow("Launch at Login", isOn: loginItemBinding)
-                        .onChange(of: loginItem.isEnabled) { _, _ in loginItem.apply() }
-                    SettingsRowDivider()
-                    SettingsToggleRow("Keep Networks Running After Quit", isOn: vpnOnDemandBinding)
-                }
-
-                CardSection(
-                    "Software Update",
-                    footer: softwareUpdateFooterText
-                ) {
-                    SettingsToggleRow("Check for Updates Automatically", isOn: autoCheckUpdatesBinding)
-                    SettingsRowDivider()
-                    SettingsInlineRow("Update To") {
-                        Picker("Update To", selection: updateTrackBinding) {
-                            ForEach(SoftwareUpdateTrack.allCases) { track in
-                                Text(track.displayName).tag(track)
-                            }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(minWidth: 156, alignment: .trailing)
-                        .disabled(updater.sessionInProgress)
-                    }
-                    SettingsRowDivider()
-                    SettingsInlineRow("Status") {
-                        Text(generalUpdateSummaryText)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    SettingsRowDivider()
-                    SettingsInlineRow("Updates") {
-                        Button("Check for Updates…", action: performUpdateAction)
-                            .controlSize(.small)
-                            .disabled(!updater.canCheckForUpdates)
-                    }
-                }
-
-                HelperDiagnosticsSection()
+        settingsForm {
+            Section {
+                settingsSwitch("Use Frosted Glass", isOn: appearance.glassEffectsEnabledBinding)
+                settingsSwitch("Show EasyTier in Dock", isOn: appearance.showsDockIconBinding)
+            } header: {
+                Text("Appearance")
+            } footer: {
+                Text("Frosted Glass is an optional preview appearance. EasyTier always respects Reduce Transparency.")
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, SettingsLayoutMetrics.paneVerticalPadding)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+
+            Section {
+                settingsSwitch("Launch at Login", isOn: loginItemBinding)
+                    .onChange(of: loginItem.isEnabled) { _, _ in loginItem.apply() }
+                settingsSwitch("Keep Networks Running After Quit", isOn: vpnOnDemandBinding)
+            } header: {
+                Text("Startup & Background")
+            } footer: {
+                Text("Helper-managed networks can continue running after the EasyTier app quits.")
+            }
+
+            Section {
+                settingsSwitch("Check for Updates Automatically", isOn: autoCheckUpdatesBinding)
+                LabeledContent("Update Channel") {
+                    Picker("Update Channel", selection: updateTrackBinding) {
+                        ForEach(SoftwareUpdateTrack.allCases) { track in
+                            Text(track.displayName).tag(track)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 170)
+                    .disabled(updater.sessionInProgress)
+                }
+                LabeledContent("Updates") {
+                    Button("Check for Updates…", action: performUpdateAction)
+                        .controlSize(.small)
+                        .disabled(!updater.canCheckForUpdates)
+                }
+            } header: {
+                Text("Software Update")
+            } footer: {
+                Text(softwareUpdateFooterText)
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .scrollIndicators(.hidden, axes: .vertical)
-        .hideScrollViewScrollers()
         .task {
             await Task.yield()
             loginItem.refresh()
         }
     }
 
-    @ViewBuilder
-    private func paneHeader(title: String, subtitle: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.title2)
-            if !subtitle.isEmpty {
-                Text(subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+    // MARK: Network
+
+    private var networkSettings: some View {
+        settingsForm {
+            Section {
+                LabeledContent("DNS Suffix") {
+                    TextField("et.net.", text: $magicDNSSuffix)
+                        .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
+                        .font(.body.monospaced())
+                        .frame(width: 180)
+                        .focused($focusedTextField, equals: .magicDNSSuffix)
+                        .onSubmit { focusedTextField = nil }
+                }
+                LabeledContent("DNS Routing", value: "Split DNS")
+            } header: {
+                Text("Magic DNS")
+            } footer: {
+                Text("Only names under this suffix are resolved by EasyTier. Running networks need a restart after the suffix changes.")
             }
         }
     }
 
-    // MARK: EasyTier
+    // MARK: Advanced
 
-    @ViewBuilder
-    private func easyTierSectionView(_ section: EasyTierSection) -> some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: SettingsLayoutMetrics.paneSectionSpacing) {
-                paneHeader(title: section.rawValue, subtitle: section.subtitle)
+    private var advancedSettings: some View {
+        settingsForm {
+            Section {
+                settingsSwitch("Allow TCP RPC Connections", isOn: rpcListenBinding)
 
-                switch section {
-                case .magicDNS: magicDNSSection
-                case .rpcServer: rpcServerSection
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, SettingsLayoutMetrics.paneVerticalPadding)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .scrollIndicators(.hidden, axes: .vertical)
-        .hideScrollViewScrollers()
-    }
-
-    private var magicDNSSection: some View {
-        CardSection(
-            "Resolver",
-            footer: "Only names under this suffix are resolved by EasyTier. Other domains keep using system DNS. Running networks need a restart after it changes."
-        ) {
-            SettingsInlineRow("DNS Suffix") {
-                TextField("", text: $magicDNSSuffix)
-                    .textFieldStyle(.glassField)
-                    .font(.body.monospaced())
-                    .frame(width: 160)
-                    .focused($focusedTextField, equals: .magicDNSSuffix)
-                    .onSubmit {
-                        focusedTextField = nil
-                    }
-            }
-            SettingsRowDivider()
-            SettingsInlineRow("DNS Routing") {
-                Text("Split DNS")
-                    .foregroundStyle(.secondary)
-            }
-            SettingsRowDivider()
-            SettingsInlineRow("Resolver") {
-                HStack(spacing: 8) {
-                    Text(MagicDNSDisplay.resolverIP)
-                        .font(.callout.monospaced())
-                        .foregroundStyle(.secondary)
-                    StatusDot(
-                        tone: store.isMagicDNSResolverActive ? .positive : .neutral,
-                        accessibilityLabel: store.isMagicDNSResolverActive ? "Active" : "Inactive"
-                    )
-                }
-            }
-        }
-    }
-
-    private var rpcServerSection: some View {
-        VStack(alignment: .leading, spacing: SettingsLayoutMetrics.paneSectionSpacing) {
-            CardSection("Status") {
-                SettingsInlineRow("Status") {
-                    Text(rpcListenEnabled ? "Listening" : "Off")
-                        .foregroundStyle(.secondary)
-                }
-                SettingsRowDivider()
-                SettingsInlineRow("Port") {
-                    Text(rpcListenEnabled ? "\(rpcListenPort)" : "-")
-                        .foregroundStyle(.secondary)
-                }
-                SettingsRowDivider()
-                SettingsInlineRow("Whitelist") {
-                    Text("\(rpcPortalWhitelist.count)")
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            CardSection("Server", footer: "Address the GUI uses to reach EasyTier.") {
-                SettingsToggleRow("TCP Listen", isOn: rpcListenBinding)
-                SettingsRowDivider()
-                SettingsInlineRow("Portal") {
-                    if rpcListenEnabled {
+                if rpcListenEnabled {
+                    LabeledContent("Portal") {
                         Text(verbatim: "tcp://0.0.0.0:\(rpcListenPort)")
                             .font(.callout.monospaced())
                             .foregroundStyle(.secondary)
-                    } else {
-                        StatusPill("Off", tone: .neutral)
+                    }
+                    LabeledContent("Listen Port") {
+                        HStack(spacing: 8) {
+                            TextField("Port", text: integerText($rpcListenPort))
+                                .labelsHidden()
+                                .textFieldStyle(.roundedBorder)
+                                .font(.body.monospacedDigit())
+                                .frame(width: 96)
+                                .focused($focusedTextField, equals: .rpcListenPort)
+                                .onSubmit { focusedTextField = nil }
+                            Stepper("Listen Port", value: rpcListenPortStepperBinding, in: 1...65_535)
+                                .labelsHidden()
+                        }
+                    }
+                    LabeledContent("Whitelist") {
+                        RPCPortalWhitelistEditor(values: $rpcPortalWhitelist) {
+                            applySettings()
+                        }
+                        .frame(maxWidth: 360, alignment: .leading)
                     }
                 }
-                SettingsRowDivider()
-                SettingsInlineRow("Listen Port") {
-                    HStack(spacing: 8) {
-                        TextField("", text: integerText($rpcListenPort))
-                            .textFieldStyle(.glassField)
-                            .font(.body.monospacedDigit())
-                            .frame(width: 96)
-                            .focused($focusedTextField, equals: .rpcListenPort)
-                            .onSubmit {
-                                focusedTextField = nil
-                            }
-                        Stepper("Listen Port", value: rpcListenPortStepperBinding, in: 1...65_535)
-                            .labelsHidden()
-                    }
-                    .disabled(!rpcListenEnabled)
-                }
-                SettingsRowDivider()
-                SettingsInlineRow("Whitelist", alignment: .top) {
-                    RPCPortalWhitelistEditor(values: $rpcPortalWhitelist) {
-                        applySettings()
-                    }
-                        .disabled(!rpcListenEnabled)
-                        .frame(maxWidth: 340, alignment: .leading)
-                }
+            } header: {
+                Text("RPC Server")
+            } footer: {
+                Text("Enable this only when remote EasyTier clients need to access this Mac's control plane.")
             }
+
+            Section {
+                settingsSwitch(
+                    "Use Backgrounds Behind Panels",
+                    isOn: appearance.glassPanelBackgroundsEnabledBinding
+                )
+                .disabled(!appearance.glassEffectsEnabled)
+            } header: {
+                Text("Experimental Appearance")
+            } footer: {
+                Text("Panel backgrounds require Frosted Glass and may change as the appearance evolves.")
+            }
+
+            HelperDiagnosticsSection()
         }
     }
 
-    // MARK: Footer
+    private func settingsForm<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        Form { content() }
+            .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+            .scrollIndicators(.hidden, axes: .vertical)
+            .hideScrollViewScrollers()
+    }
+
+    private func settingsSwitch(_ title: LocalizedStringKey, isOn: Binding<Bool>) -> some View {
+        Toggle(title, isOn: isOn)
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+    }
 
     // MARK: Bindings
 
@@ -474,14 +354,6 @@ struct EasyTierSettingsSheet: View {
         return "EasyTier checks signed Stable releases at most once every 24 hours."
     }
 
-    private var generalUpdateSummaryText: String {
-        if updater.sessionInProgress { return "Update session in progress" }
-        guard updater.automaticallyChecksForUpdates else { return "Automatic checks are off" }
-        return updater.updateTrack == .nightly
-            ? "Checks signed Stable and Nightly builds daily"
-            : "Checks signed Stable releases daily"
-    }
-
     private func performUpdateAction() {
         updater.checkForUpdates()
     }
@@ -505,10 +377,6 @@ struct EasyTierSettingsSheet: View {
         }
     }
 
-    private var settingsEscapeKeyHandlingEnabled: Bool {
-        settingsError == nil && !showingDisableRPCListenWarning
-    }
-
     private func buildMode() -> AppMode {
         AppMode(
             rpcListenEnabled: rpcListenEnabled,
@@ -518,49 +386,10 @@ struct EasyTierSettingsSheet: View {
     }
 
     private func selectSettingsTab(_ tab: EasyTierSettingsTab) {
-        let target: SettingsSelection
-        switch tab {
-        case .general:
-            target = .general
-        case .gateway:
-            target = .gateway
-        case .easyTier:
-            if case .easyTier(let current) = selection {
-                target = sanitizedSelection(.easyTier(current))
-            } else {
-                target = .easyTier(.magicDNS)
-            }
-        case .about:
-            target = .about
-        }
-        guard target != selection else { return }
+        guard tab != selection else { return }
         withAnimation(EasyTierMotion.selection(reduceMotion: reduceMotion)) {
-            selection = target
+            selection = tab
         }
-    }
-
-    private var effectiveSelection: SettingsSelection {
-        sanitizedSelection(selection)
-    }
-
-    private var effectiveSelectionBinding: Binding<SettingsSelection> {
-        Binding(
-            get: { effectiveSelection },
-            set: { selection = sanitizedSelection($0) }
-        )
-    }
-
-    private func sanitizedSelection(_ candidate: SettingsSelection) -> SettingsSelection {
-        switch candidate {
-        case .easyTier(let section) where !visibleEasyTierSections.contains(section):
-            .easyTier(.magicDNS)
-        default:
-            candidate
-        }
-    }
-
-    private var visibleEasyTierSections: [EasyTierSection] {
-        [.magicDNS, .rpcServer]
     }
 
     private var normalizedRPCPortalWhitelist: [String]? {
@@ -577,118 +406,6 @@ struct EasyTierSettingsSheet: View {
         return values.isEmpty || Set(values).isSubset(of: legacyDefaults) ? AppMode.defaultRPCPortalWhitelist : values
     }
 
-    private static let sidebarWidth: CGFloat = 220
-    fileprivate static let sidebarTopClearance: CGFloat = 8
-}
-
-private struct SettingsEscapeKeyBridge: NSViewRepresentable {
-    nonisolated(unsafe) var isEnabled: Bool
-    nonisolated(unsafe) var onEscape: () -> Void
-
-    func makeNSView(context: Context) -> NSView {
-        let view = SettingsEscapeMonitorView(frame: .zero)
-        view.onWindowChange = { [weak coordinator = context.coordinator] window in
-            coordinator?.window = window
-        }
-        context.coordinator.installMonitor()
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.parent = self
-        context.coordinator.window = nsView.window
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(parent: self)
-    }
-
-    final class Coordinator {
-        nonisolated(unsafe) var parent: SettingsEscapeKeyBridge
-        nonisolated(unsafe) weak var window: NSWindow?
-        private var monitor: Any?
-
-        init(parent: SettingsEscapeKeyBridge) {
-            self.parent = parent
-        }
-
-        deinit {
-            if let monitor {
-                NSEvent.removeMonitor(monitor)
-            }
-        }
-
-        func installMonitor() {
-            guard monitor == nil else { return }
-            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                self?.handle(event) ?? event
-            }
-        }
-
-        private func handle(_ event: NSEvent) -> NSEvent? {
-            guard parent.isEnabled, event.keyCode == Self.escapeKeyCode else { return event }
-            guard event.modifierFlags.intersection([.command, .option, .control]).isEmpty else { return event }
-            guard let window, event.window == window else { return event }
-
-            parent.onEscape()
-            return nil
-        }
-
-        private static let escapeKeyCode: UInt16 = 53
-    }
-}
-
-private final class SettingsEscapeMonitorView: NSView {
-    var onWindowChange: ((NSWindow?) -> Void)?
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        onWindowChange?(window)
-    }
-}
-
-private struct SettingsSidebar: View {
-    @Binding var selection: SettingsSelection
-    var visibleEasyTierSections: [EasyTierSection]
-
-    var body: some View {
-        List(selection: $selection) {
-            Section {
-                Label("General", systemImage: "gearshape")
-                    .tag(SettingsSelection.general)
-
-                HStack(spacing: 6) {
-                    Label("Gateway", systemImage: "network.badge.shield.half.filled")
-                    Text("Beta")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize()
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(.secondary.opacity(0.13), in: Capsule(style: .continuous))
-                }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel(Text("Gateway, Beta"))
-                .tag(SettingsSelection.gateway)
-
-                ForEach(visibleEasyTierSections) { section in
-                    Label(section.rawValue, systemImage: section.systemImage)
-                        .tag(SettingsSelection.easyTier(section))
-                }
-
-                Label("About", systemImage: "info.circle")
-                    .tag(SettingsSelection.about)
-            } header: {
-                Color.clear
-                    .frame(height: EasyTierSettingsSheet.sidebarTopClearance)
-                    .listRowInsets(EdgeInsets())
-                    .listRowSeparator(.hidden)
-                    .accessibilityHidden(true)
-            }
-        }
-        .listStyle(.sidebar)
-        .hideScrollViewScrollers()
-    }
 }
 
 private struct SettingsAboutView: View {
@@ -701,13 +418,13 @@ private struct SettingsAboutView: View {
     private var updater: SoftwareUpdateController { appContext.softwareUpdate.controller }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(spacing: 7) {
                 EasyTierMark()
-                    .frame(width: 96, height: 96)
+                    .frame(width: 72, height: 72)
 
                 Text("EasyTier for macOS")
-                    .font(.largeTitle.weight(.semibold))
+                    .font(.title2.weight(.semibold))
 
                 Text("Version \(appInfo.displayVersion)")
                     .font(.callout)
@@ -719,34 +436,29 @@ private struct SettingsAboutView: View {
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity)
-            .padding(.top, 18)
-            .padding(.bottom, 4)
+            .padding(.top, 12)
 
             Form {
                 Section("Software Update") {
-                    LabeledContent {
-                        HStack(spacing: 10) {
-                            Spacer(minLength: 0)
-                            Button("Check for Updates…", action: performUpdateAction)
-                                .controlSize(.small)
-                                .disabled(!updater.canCheckForUpdates)
-                        }
-                    } label: {
+                    HStack(spacing: 12) {
                         Text(updateSummaryText)
-                            .font(.body)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 8)
+                        Button("Check for Updates…", action: performUpdateAction)
+                            .controlSize(.small)
+                            .disabled(!updater.canCheckForUpdates)
                     }
-                    LabeledContent("Update track", value: updater.updateTrack.displayName)
+                    LabeledContent("Update Channel", value: updater.updateTrack.displayName)
                     if let lastCheck = updater.lastUpdateCheckDate {
-                        LabeledContent("Last check", value: lastCheck.formatted(date: .abbreviated, time: .shortened))
+                        LabeledContent("Last Check", value: lastCheck.formatted(date: .abbreviated, time: .shortened))
                     }
                 }
 
                 Section("Version") {
                     SettingsMetadataRow(label: "GUI", value: "\(appInfo.version) · \(revisions.guiCommit)")
                     SettingsMetadataRow(label: "Core", value: revisions.coreVersion)
-                    SettingsMetadataRow(label: "Build channel", value: appInfo.buildChannel.buildDisplayName)
+                    SettingsMetadataRow(label: "Build Channel", value: appInfo.buildChannel.buildDisplayName)
                     SettingsMetadataRow(label: "Build", value: appInfo.build)
                 }
 
@@ -767,8 +479,8 @@ private struct SettingsAboutView: View {
             .scrollIndicators(.hidden, axes: .vertical)
             .hideScrollViewScrollers()
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 18)
+        .padding(.horizontal, 12)
+        .padding(.bottom, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: updateSummaryText)
     }
@@ -804,7 +516,7 @@ private struct SettingsMetadataRow: View {
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         } label: {
             Text(label)
                 .font(.body)

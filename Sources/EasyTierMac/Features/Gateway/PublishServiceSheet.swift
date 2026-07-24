@@ -4,7 +4,7 @@ import SwiftUI
 
 struct PublishServiceSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @Environment(AppContext.self) private var appContext
 
     let preferredTargetPeerID: String?
@@ -362,7 +362,7 @@ struct PublishServiceSheet: View {
 
     private func openGatewaySettings() {
         appContext.settings.request(.gateway)
-        openWindow(id: EasyTierWindowID.settings)
+        openSettings()
     }
 
     private func copyPublicURL() {

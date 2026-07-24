@@ -3,7 +3,7 @@ import EasyTierShared
 import SwiftUI
 
 struct MainWindowView: View {
-    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettingsAction
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -738,7 +738,7 @@ struct MainWindowView: View {
 
     private func openSettings(tab: EasyTierSettingsTab) {
         appContext.settings.request(tab)
-        openWindow(id: EasyTierWindowID.settings)
+        openSettingsAction()
     }
 
     private func highlightSearchResult(peerID: String) {

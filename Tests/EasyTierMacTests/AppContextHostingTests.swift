@@ -42,11 +42,12 @@ import Testing
 }
 
 @MainActor
-@Test func gatewaySettingsRendersWithAppContextEnvironment() {
+@Test(arguments: [EasyTierSettingsTab.network, .gateway, .advanced, .about])
+func settingsPanesRenderWithAppContextEnvironment(tab: EasyTierSettingsTab) {
     let appContext = AppContext.preview()
     let store = appContext.workspace.store
     let rootView = EasyTierSettingsSheet(
-        initialTab: .gateway,
+        initialTab: tab,
         mode: store.mode,
         magicDNSSettings: store.magicDNSSettings,
         onChange: { _, _ in }

@@ -14,7 +14,9 @@ import Testing
 
     let restored = makeSettingsFeature(userDefaults: fixture.defaults)
     #expect(restored.requestedTab == .gateway)
+    #expect(EasyTierSettingsTab.allCases.contains(.network))
     #expect(EasyTierSettingsTab.allCases.contains(.gateway))
+    #expect(EasyTierSettingsTab.allCases.contains(.advanced))
 }
 
 @MainActor
