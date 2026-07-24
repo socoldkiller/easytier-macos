@@ -6,13 +6,9 @@ struct GatewaySettingsView: View {
     private var gateway: GatewayRuntimeController { appContext.runtime.gateway }
 
     var body: some View {
-        Form {
+        SettingsForm {
             GatewayTLSSettingsSection(gateway: gateway)
             GatewayDNSCredentialsSettingsSection(gateway: gateway)
         }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
-        .scrollIndicators(.hidden, axes: .vertical)
-        .hideScrollViewScrollers()
     }
 }

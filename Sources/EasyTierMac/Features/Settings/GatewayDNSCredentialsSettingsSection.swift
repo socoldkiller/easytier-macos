@@ -5,9 +5,10 @@ struct GatewayDNSCredentialsSettingsSection: View {
     let gateway: GatewayRuntimeController
 
     @State private var editingCredential: GatewayDNSCredentialDescriptor?
+    @State private var credentialPendingDeletion: GatewayDNSCredentialDescriptor?
+    @State private var credentialPendingDefaultID: String?
     @State private var isAddingCredential = false
     @State private var errorMessage: String?
-    @State private var defaultCredentialID: String?
 
     var body: some View {
         Section {
@@ -17,72 +18,39 @@ struct GatewayDNSCredentialsSettingsSection: View {
             }
 
             if gateway.dnsCredentials.isEmpty {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("No credentials configured")
-                        Text("Add a DNS provider to issue wildcard certificates.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 12)
-                    Button("Add Credential…") {
-                        isAddingCredential = true
-                    }
-                    .controlSize(.small)
-                    .fixedSize()
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("No credentials configured")
+                    Text("Add a DNS provider to issue wildcard certificates.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             } else {
-                LabeledContent("Default Credential") {
-                    Picker("Default DNS Credential", selection: $defaultCredentialID) {
-                        Text("None").tag(Optional<String>.none)
-                        ForEach(gateway.dnsCredentials) { credential in
-                            Text(credential.label).tag(Optional(credential.id))
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(width: 210)
-                    .onChange(of: defaultCredentialID) { _, newValue in
-                        updateDefaultCredential(newValue)
-                    }
-                }
-
                 ForEach(gateway.dnsCredentials) { credential in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(credential.label)
-                            Text(credential.provider.displayName)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 12)
-                        Menu {
-                            Button("Edit", systemImage: "pencil") {
-                                editingCredential = credential
-                            }
-                            Divider()
-                            Button("Delete", systemImage: "trash", role: .destructive) {
-                                delete(credential)
-                            }
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
-                        }
-                        .menuStyle(.borderlessButton)
-                        .menuIndicator(.hidden)
-                        .fixedSize()
-                    }
-                    .frame(maxWidth: .infinity)
+                    GatewayDNSCredentialSettingsRow(
+                        credential: credential,
+                        isDefault: credential.id == gateway.defaultDNSCredentialID,
+                        isChangingDefault: credential.id == credentialPendingDefaultID,
+                        setDefaultAction: {
+                            updateDefaultCredential(
+                                credential.id,
+                                sourceCredentialID: credential.id
+                            )
+                        },
+                        clearDefaultAction: {
+                            updateDefaultCredential(
+                                nil,
+                                sourceCredentialID: credential.id
+                            )
+                        },
+                        editAction: { editingCredential = credential },
+                        deleteAction: { credentialPendingDeletion = credential }
+                    )
                 }
-
-                HStack {
-                    Spacer(minLength: 0)
-                    Button("Add Credential…") {
-                        isAddingCredential = true
-                    }
-                    .controlSize(.small)
-                }
-                .frame(maxWidth: .infinity)
             }
+
+            Button("Add Credential…", systemImage: "plus.circle", action: beginAddingCredential)
+                .buttonStyle(.plain)
+                .font(.body)
         } header: {
             Text("DNS Credentials")
         } footer: {
@@ -94,15 +62,36 @@ struct GatewayDNSCredentialsSettingsSection: View {
         .sheet(item: $editingCredential) { credential in
             GatewayDNSCredentialEditor(gateway: gateway, credential: credential)
         }
-        .task(id: gateway.defaultDNSCredentialID) {
-            defaultCredentialID = gateway.defaultDNSCredentialID
+        .alert(
+            "Delete DNS Credential?",
+            isPresented: deletionAlertPresented,
+            presenting: credentialPendingDeletion
+        ) { credential in
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                delete(credential)
+            }
+        } message: { credential in
+            Text(deletionMessage(for: credential))
         }
+    }
+
+    private var deletionAlertPresented: Binding<Bool> {
+        Binding(
+            get: { credentialPendingDeletion != nil },
+            set: { isPresented in
+                if !isPresented {
+                    credentialPendingDeletion = nil
+                }
+            }
+        )
     }
 
     private func delete(_ credential: GatewayDNSCredentialDescriptor) {
         Task {
             do {
                 try await gateway.deleteDNSCredential(id: credential.id)
+                credentialPendingDeletion = nil
                 errorMessage = nil
             } catch {
                 errorMessage = error.localizedDescription
@@ -110,14 +99,28 @@ struct GatewayDNSCredentialsSettingsSection: View {
         }
     }
 
-    private func updateDefaultCredential(_ id: String?) {
-        guard id != gateway.defaultDNSCredentialID else { return }
+    private func deletionMessage(for credential: GatewayDNSCredentialDescriptor) -> String {
+        let defaultWarning = credential.id == gateway.defaultDNSCredentialID
+            ? " It is currently the default credential."
+            : ""
+        return "“\(credential.label)” will be removed from EasyTier and Keychain.\(defaultWarning) Automatic certificate issuance may stop until another credential is selected."
+    }
+
+    private func beginAddingCredential() {
+        isAddingCredential = true
+    }
+
+    private func updateDefaultCredential(_ id: String?, sourceCredentialID: String) {
+        guard id != gateway.defaultDNSCredentialID, credentialPendingDefaultID == nil else {
+            return
+        }
         Task {
+            credentialPendingDefaultID = sourceCredentialID
+            defer { credentialPendingDefaultID = nil }
             do {
                 try await gateway.setDefaultDNSCredential(id: id)
                 errorMessage = nil
             } catch {
-                defaultCredentialID = gateway.defaultDNSCredentialID
                 errorMessage = error.localizedDescription
             }
         }

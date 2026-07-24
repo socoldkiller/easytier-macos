@@ -2,6 +2,13 @@ import EasyTierShared
 import SwiftUI
 
 struct GatewayDNSCredentialEditor: View {
+    private enum FocusedField: Hashable {
+        case name
+        case apiToken
+        case accessKeyID
+        case accessKeySecret
+    }
+
     @Environment(\.dismiss) private var dismiss
 
     let gateway: GatewayRuntimeController
@@ -14,6 +21,15 @@ struct GatewayDNSCredentialEditor: View {
     @State private var accessKeySecret = ""
     @State private var isWorking = false
     @State private var errorMessage: String?
+    @FocusState private var focusedField: FocusedField?
+
+    private var title: String {
+        credential == nil ? "Add DNS Credential" : "Edit DNS Credential"
+    }
+
+    private var primaryActionTitle: String {
+        credential == nil ? "Add" : "Save"
+    }
 
     init(
         gateway: GatewayRuntimeController,
@@ -34,46 +50,127 @@ struct GatewayDNSCredentialEditor: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text(credential == nil ? "Add DNS Credential" : "Edit DNS Credential")
-                .font(.title3)
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 16) {
+                PublishedServiceSheetHeader(
+                    title: title,
+                    subtitle: "Stored securely in Keychain"
+                )
 
-            if let errorMessage {
-                ErrorBanner(message: errorMessage)
-            }
+                VStack(alignment: .leading, spacing: 14) {
+                    PublishedServiceFormRow("Name", systemImage: "tag") {
+                        TextField("Credential name", text: $label)
+                            .labelsHidden()
+                            .textFieldStyle(.glassField)
+                            .frame(width: 280)
+                            .focused($focusedField, equals: .name)
+                            .onSubmit(advanceFromName)
+                    }
 
-            Form {
-                TextField("Name", text: $label)
-                Picker("DNS Provider", selection: $provider) {
-                    ForEach([GatewayDNSProvider.cloudflare, .aliyun], id: \.self) { provider in
-                        Text(provider.displayName).tag(provider)
+                    PublishedServiceFormRow("Provider", systemImage: "building.2") {
+                        if credential == nil {
+                            Picker("DNS Provider", selection: $provider) {
+                                ForEach(
+                                    [GatewayDNSProvider.cloudflare, .aliyun],
+                                    id: \.self
+                                ) { provider in
+                                    Text(provider.displayName).tag(provider)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(width: 280, alignment: .leading)
+                            .help("Choose the DNS provider for certificate validation.")
+                        } else {
+                            Text(provider.displayName)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    switch provider {
+                    case .cloudflare:
+                        PublishedServiceFormRow("API Token", systemImage: "key") {
+                            SecureField("Required", text: $apiToken)
+                                .labelsHidden()
+                                .textFieldStyle(.glassField)
+                                .frame(width: 280)
+                                .focused($focusedField, equals: .apiToken)
+                                .onSubmit(submitIfPossible)
+                        }
+                    case .aliyun:
+                        PublishedServiceFormRow(
+                            "AccessKey ID",
+                            systemImage: "person.text.rectangle"
+                        ) {
+                            TextField("Required", text: $accessKeyID)
+                                .labelsHidden()
+                                .textFieldStyle(.glassField)
+                                .frame(width: 280)
+                                .focused($focusedField, equals: .accessKeyID)
+                                .onSubmit {
+                                    focusedField = .accessKeySecret
+                                }
+                        }
+                        PublishedServiceFormRow("Secret", systemImage: "key.fill") {
+                            SecureField("Required", text: $accessKeySecret)
+                                .labelsHidden()
+                                .textFieldStyle(.glassField)
+                                .frame(width: 280)
+                                .focused($focusedField, equals: .accessKeySecret)
+                                .onSubmit(submitIfPossible)
+                        }
                     }
                 }
-                .disabled(credential != nil)
 
-                switch provider {
-                case .cloudflare:
-                    SecureField("API Token", text: $apiToken)
-                case .aliyun:
-                    TextField("AccessKey ID", text: $accessKeyID)
-                    SecureField("AccessKey Secret", text: $accessKeySecret)
+                if let errorMessage {
+                    ErrorBanner(message: errorMessage)
                 }
             }
-            .formStyle(.grouped)
+            .padding(20)
+
+            Divider()
 
             HStack {
                 Spacer(minLength: 0)
-                Button("Cancel", role: .cancel) { dismiss() }
+                Button("Cancel", role: .cancel, action: dismiss.callAsFunction)
+                    .keyboardShortcut(.cancelAction)
                     .disabled(isWorking)
-                Button("Save", systemImage: "checkmark", action: save)
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(isWorking || !canSave)
+                Button(action: save) {
+                    HStack {
+                        if isWorking {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text(isWorking ? "Saving…" : primaryActionTitle)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(isWorking || !canSave)
             }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            .background(.bar)
         }
-        .padding(22)
-        .frame(width: 440)
-        .task(loadSecret)
+        .frame(width: 500)
+        .controlSize(.regular)
+        .task {
+            await loadSecret()
+            await Task.yield()
+            focusedField = .name
+        }
+    }
+
+    private func advanceFromName() {
+        focusedField = switch provider {
+        case .cloudflare: .apiToken
+        case .aliyun: .accessKeyID
+        }
+    }
+
+    private func submitIfPossible() {
+        guard canSave else { return }
+        save()
     }
 
     private func loadSecret() async {
