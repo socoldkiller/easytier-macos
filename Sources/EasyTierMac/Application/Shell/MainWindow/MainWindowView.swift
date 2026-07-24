@@ -28,6 +28,8 @@ struct MainWindowView: View {
     @State private var configEditorScrolledPastTop = false
     @State private var configEditorTitlebarScrollEdgeVisible = false
     @State private var publishServiceRequest: PublishServiceRequest?
+    @State private var isChangingGateway = false
+    @State private var gatewayControlError: String?
 
     private static let tabTransitionDistance: CGFloat = 14
     private static let networkTransitionDistance: CGFloat = 7
@@ -227,7 +229,7 @@ struct MainWindowView: View {
                 }
             )
         case .services:
-            ServicesView {
+            ServicesView(gatewayControlError: gatewayControlError) {
                 beginPublishingService()
             }
         case .view:
@@ -382,7 +384,19 @@ struct MainWindowView: View {
                 .help(publishServiceHelp)
             }
 
-            if let remoteSession = remoteToolbarSession {
+            if store.selectedTab == .services {
+                Button {
+                    toggleGateway()
+                } label: {
+                    Label(
+                        gatewayActionTitle,
+                        systemImage: gatewayActionSystemImage
+                    )
+                    .foregroundStyle(gatewayActionColor)
+                }
+                .disabled(isChangingGateway || gateway.isBusy)
+                .help(gatewayActionHelp)
+            } else if let remoteSession = remoteToolbarSession {
                 Button {
                     Task { await applyRemoteToolbarChanges() }
                 } label: {
@@ -498,6 +512,44 @@ struct MainWindowView: View {
 
     private var selectedConfigCanStop: Bool {
         store.selectedConfigCanStop
+    }
+
+    private var gatewayActionTitle: String {
+        if isChangingGateway || gateway.isBusy { return "Working" }
+        return gateway.desiredEnabled ? "Pause Services" : "Run Services"
+    }
+
+    private var gatewayActionSystemImage: String {
+        if isChangingGateway || gateway.isBusy { return "hourglass" }
+        return gateway.desiredEnabled ? "pause.fill" : "play.fill"
+    }
+
+    private var gatewayActionColor: Color {
+        if isChangingGateway || gateway.isBusy {
+            return Color(nsColor: .secondaryLabelColor)
+        }
+        return gateway.desiredEnabled ? EasyTierColors.statusError : .accentColor
+    }
+
+    private var gatewayActionHelp: String {
+        if isChangingGateway || gateway.isBusy { return "Updating published services" }
+        return gateway.desiredEnabled
+            ? "Pause all published services"
+            : "Run published services"
+    }
+
+    private func toggleGateway() {
+        let enabled = !gateway.desiredEnabled
+        Task {
+            isChangingGateway = true
+            gatewayControlError = nil
+            defer { isChangingGateway = false }
+            do {
+                try await gateway.setGatewayEnabled(enabled)
+            } catch {
+                gatewayControlError = error.localizedDescription
+            }
+        }
     }
 
     private var serviceCreationTargets: [PublishedServiceTargetOption] {

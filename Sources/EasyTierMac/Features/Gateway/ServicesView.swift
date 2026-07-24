@@ -11,11 +11,11 @@ struct ServicesView: View {
     @State private var searchText = ""
     @State private var serviceGridIsScrolling = false
     @State private var workingServiceID: String?
-    @State private var isChangingGateway = false
     @State private var editingService: GatewayPublishedService?
     @State private var deletionCandidate: GatewayPublishedService?
     @State private var errorMessage: String?
 
+    var gatewayControlError: String?
     var onPublishService: () -> Void = {}
 
     private var store: EasyTierAppStore { appContext.workspace.store }
@@ -37,7 +37,7 @@ struct ServicesView: View {
     }
 
     private var displayedError: String? {
-        errorMessage ?? gateway.convergence.message ?? gateway.lastError
+        errorMessage ?? gatewayControlError ?? gateway.convergence.message ?? gateway.lastError
             ?? gateway.status.runtimeIssues.last?.message
     }
 
@@ -73,7 +73,7 @@ struct ServicesView: View {
             }
 
             if !gateway.services.isEmpty, !gateway.isAutomaticHTTPSReady {
-                GatewayTLSRequirementBanner(action: openGatewaySettings)
+                GatewayTLSRequirementBanner(action: openNetworkSettings)
                     .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 8))
             }
 
@@ -121,7 +121,7 @@ struct ServicesView: View {
                 defaultDNSZoneBindingID: gateway.defaultDNSZoneBindingID,
                 sslProvider: row?.sslProvider
                     ?? PublishedServiceSSLProvider(acmeConfiguration: gateway.acmeConfiguration),
-                onManageDNSCredentials: openGatewaySettings
+                onManageDNSCredentials: openNetworkSettings
                 ) { target, port, certificateSelection in
                 try await updateService(
                     target: target,
@@ -150,20 +150,11 @@ struct ServicesView: View {
 
     private var header: some View {
         ServicesHeader(
-            gatewayEnabled: gatewayEnabledBinding,
             gatewayStatus: display.runtimePresentation.statusLabel,
             gatewayIsInProgress: display.runtimePresentation.isInProgress,
-            gatewayControlDisabled: isChangingGateway || gateway.isBusy,
             serviceSummary: display.serviceSummary,
             networkName: display.networkName,
             modeLabel: store.mode.label
-        )
-    }
-
-    private var gatewayEnabledBinding: Binding<Bool> {
-        Binding(
-            get: { gateway.desiredEnabled },
-            set: { enabled in setGatewayEnabled(enabled) }
         )
     }
 
@@ -239,20 +230,6 @@ struct ServicesView: View {
         }
     }
 
-    private func setGatewayEnabled(_ enabled: Bool) {
-        guard enabled != gateway.desiredEnabled else { return }
-        Task {
-            isChangingGateway = true
-            errorMessage = nil
-            defer { isChangingGateway = false }
-            do {
-                try await gateway.setGatewayEnabled(enabled)
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-        }
-    }
-
     private func editService(_ service: GatewayPublishedService) {
         editingService = service
     }
@@ -317,8 +294,8 @@ struct ServicesView: View {
         }
     }
 
-    private func openGatewaySettings() {
-        appContext.settings.request(.gateway)
+    private func openNetworkSettings() {
+        appContext.settings.request(.network)
         openSettings()
     }
 

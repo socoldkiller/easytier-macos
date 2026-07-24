@@ -20,9 +20,7 @@ enum MagicDNSDisplay {
 
 enum EasyTierSettingsTab: String, CaseIterable, Identifiable, Hashable {
     case general = "General"
-    // Keep the legacy raw value so existing installations restore this pane.
-    case network = "EasyTier"
-    case gateway = "Gateway"
+    case network = "Network"
     case advanced = "Advanced"
     case about = "About"
 
@@ -32,7 +30,6 @@ enum EasyTierSettingsTab: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .general: "General"
         case .network: "Network"
-        case .gateway: "Gateway"
         case .advanced: "Advanced"
         case .about: "About"
         }
@@ -42,7 +39,6 @@ enum EasyTierSettingsTab: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .general: "gearshape"
         case .network: "globe"
-        case .gateway: "network.badge.shield.half.filled"
         case .advanced: "slider.horizontal.3"
         case .about: "info.circle"
         }
@@ -103,14 +99,6 @@ struct EasyTierSettingsSheet: View {
             }
 
             Tab(
-                EasyTierSettingsTab.gateway.title,
-                systemImage: EasyTierSettingsTab.gateway.systemImage,
-                value: EasyTierSettingsTab.gateway
-            ) {
-                GatewaySettingsView()
-            }
-
-            Tab(
                 EasyTierSettingsTab.advanced.title,
                 systemImage: EasyTierSettingsTab.advanced.systemImage,
                 value: EasyTierSettingsTab.advanced
@@ -131,7 +119,7 @@ struct EasyTierSettingsSheet: View {
                 EasyTierAboutView()
             }
         }
-        .frame(minWidth: 640, idealWidth: 680, minHeight: 520, idealHeight: 560)
+        .frame(minWidth: 576, idealWidth: 612, minHeight: 468, idealHeight: 504)
         .onChange(of: appContext.settings.requestedTab) { _, tab in
             selectSettingsTab(tab)
         }

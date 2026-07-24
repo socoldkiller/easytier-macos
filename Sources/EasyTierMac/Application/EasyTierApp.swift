@@ -84,7 +84,6 @@ struct EasyTierApp: App {
             ) { mode, magicDNSSettings in
                 Task { await store.applyMode(mode, magicDNSSettings: magicDNSSettings) }
             }
-            .easyTierScrollEdgeEffect()
             .easyTierWindowBackground(
                 glassEffectsEnabled: appearanceSettings.glassEffectsEnabled,
                 renderCoordinator: appContext.presentation.glassRenderCoordinator
@@ -99,7 +98,7 @@ struct EasyTierApp: App {
             )
             .environment(appContext)
         }
-        .defaultSize(width: 680, height: 560)
+        .defaultSize(width: 612, height: 504)
         .windowResizability(.contentMinSize)
 
         .commands {

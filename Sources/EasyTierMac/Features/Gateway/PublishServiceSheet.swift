@@ -217,7 +217,7 @@ struct PublishServiceSheet: View {
                                 Button(
                                     "Open Gateway Settings",
                                     systemImage: "gear",
-                                    action: openGatewaySettings
+                                    action: openNetworkSettings
                                 )
                             }
                         }
@@ -237,7 +237,7 @@ struct PublishServiceSheet: View {
                             acmeConfiguration: gateway.acmeConfiguration
                         ),
                         isDisabled: isWorking,
-                        onManageDNSCredentials: openGatewaySettings
+                        onManageDNSCredentials: openNetworkSettings
                     )
                 }
 
@@ -358,8 +358,8 @@ struct PublishServiceSheet: View {
         }
     }
 
-    private func openGatewaySettings() {
-        appContext.settings.request(.gateway)
+    private func openNetworkSettings() {
+        appContext.settings.request(.network)
         openSettings()
     }
 

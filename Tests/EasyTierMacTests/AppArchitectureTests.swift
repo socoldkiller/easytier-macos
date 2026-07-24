@@ -10,12 +10,11 @@ import Testing
     let first = makeSettingsFeature(userDefaults: fixture.defaults)
     #expect(first.requestedTab == .general)
 
-    first.request(.gateway)
+    first.request(.network)
 
     let restored = makeSettingsFeature(userDefaults: fixture.defaults)
-    #expect(restored.requestedTab == .gateway)
+    #expect(restored.requestedTab == .network)
     #expect(EasyTierSettingsTab.allCases.contains(.network))
-    #expect(EasyTierSettingsTab.allCases.contains(.gateway))
     #expect(EasyTierSettingsTab.allCases.contains(.advanced))
     #expect(EasyTierSettingsTab.allCases.contains(.about))
 }

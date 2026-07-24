@@ -71,7 +71,6 @@ struct MenuBarContent: View {
             MenuBarNetworkRow(
                 name: currentNetworkName,
                 subtitle: selectedNetworkSubtitle,
-                state: selectedNetworkState,
                 canSwitch: canSwitchNetworks,
                 open: openMainWindowAndDismiss,
                 previous: selectPreviousNetwork,
@@ -147,14 +146,6 @@ struct MenuBarContent: View {
     private var menuBackgroundTint: Color {
         Color(nsColor: .windowBackgroundColor)
             .opacity(colorScheme == .dark ? 0.58 : 0.68)
-    }
-
-    private var selectedNetworkState: ConnectionGlyphState {
-        if store.lastError != nil || store.selectedRuntimeReadinessPhase == .failed { return .error }
-        if store.isBusy || store.isQuitting { return .connecting }
-        guard var instance = selectedRunningInstance else { return .idle }
-        instance.detail = store.selectedRuntimeDetail
-        return store.instanceIsFullyConnected(instance) ? .connected : .connecting
     }
 
     private var selectedRunningInstance: NetworkInstance? {
