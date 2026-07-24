@@ -3,6 +3,7 @@ import EasyTierShared
 import SwiftUI
 
 struct MainWindowView: View {
+    @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettingsAction
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -134,7 +135,7 @@ struct MainWindowView: View {
         }
         .onChange(of: store.isShowingAbout) { _, isShowing in
             if isShowing {
-                openSettings(tab: .about)
+                openAboutWindow()
                 store.isShowingAbout = false
             }
         }
@@ -394,14 +395,6 @@ struct MainWindowView: View {
                 localConfigApplyStatus
 
                 Button {
-                    openSettings(tab: .general)
-                } label: {
-                    Label("Settings", systemImage: "gearshape")
-                }
-                .help("EasyTier Settings")
-                .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
-
-                Button {
                     performSelectedConnectionAction()
                 } label: {
                     Label(
@@ -450,24 +443,19 @@ struct MainWindowView: View {
                 Label("More", systemImage: "ellipsis.circle")
             }
             .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
+        }
 
-            Menu {
-                Button("Install on Linux") {
-                    store.isShowingLinuxInstallGuide = true
-                }
-                Link("Online Docs", destination: URL(string: "https://easytier.cn") ?? URL(fileURLWithPath: "/"))
-                Link("Releases", destination: URL(string: "https://github.com/EasyTier/EasyTier/releases") ?? URL(fileURLWithPath: "/"))
-            } label: {
-                Label("Help", systemImage: "questionmark.circle")
-            }
-            .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
+        if #available(macOS 26.0, *) {
+            ToolbarSpacer(.fixed, placement: .primaryAction)
+        }
 
+        ToolbarItem(placement: .primaryAction) {
             Button {
-                store.isShowingAbout = true
+                openSettings(tab: .general)
             } label: {
-                Label("About", systemImage: "info.circle")
+                Label("Settings", systemImage: "gearshape")
             }
-            .help("About EasyTier")
+            .help("EasyTier Settings")
             .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
         }
     }
@@ -739,6 +727,10 @@ struct MainWindowView: View {
     private func openSettings(tab: EasyTierSettingsTab) {
         appContext.settings.request(tab)
         openSettingsAction()
+    }
+
+    private func openAboutWindow() {
+        openWindow(id: EasyTierWindowID.about)
     }
 
     private func highlightSearchResult(peerID: String) {

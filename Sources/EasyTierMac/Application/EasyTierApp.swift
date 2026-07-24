@@ -5,6 +5,7 @@ import SwiftUI
 
 enum EasyTierWindowID {
     static let main = EasyTierWindowRole.main.rawValue
+    static let about = "about"
 }
 
 @main
@@ -65,6 +66,16 @@ struct EasyTierApp: App {
         }
         .windowToolbarStyle(.unified)
 
+        Window("About EasyTier", id: EasyTierWindowID.about) {
+            EasyTierAboutView()
+                .easyTierWindowBackground(
+                    glassEffectsEnabled: appearanceSettings.glassEffectsEnabled,
+                    renderCoordinator: appContext.presentation.glassRenderCoordinator
+                )
+                .environment(appContext)
+        }
+        .windowResizability(.contentSize)
+
         Settings {
             EasyTierSettingsSheet(
                 initialTab: appContext.settings.requestedTab,
@@ -88,9 +99,12 @@ struct EasyTierApp: App {
             )
             .environment(appContext)
         }
-        .windowResizability(.contentSize)
+        .defaultSize(width: 680, height: 560)
+        .windowResizability(.contentMinSize)
 
         .commands {
+            EasyTierAboutCommands()
+
             CommandGroup(replacing: .newItem) {
                 Button("New Network") { store.addConfig() }
                     .keyboardShortcut("n")

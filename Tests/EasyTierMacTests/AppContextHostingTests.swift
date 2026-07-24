@@ -61,3 +61,17 @@ func settingsPanesRenderWithAppContextEnvironment(tab: EasyTierSettingsTab) {
     #expect(hostingView.fittingSize.width > 0)
     #expect(hostingView.fittingSize.height > 0)
 }
+
+@MainActor
+@Test func aboutWindowRendersWithAppContextEnvironment() {
+    let appContext = AppContext.preview()
+    let rootView = EasyTierAboutView()
+        .environment(appContext)
+    let hostingView = NSHostingView(rootView: rootView)
+
+    hostingView.frame = NSRect(x: 0, y: 0, width: 460, height: 520)
+    hostingView.layoutSubtreeIfNeeded()
+
+    #expect(hostingView.fittingSize.width > 0)
+    #expect(hostingView.fittingSize.height > 0)
+}
