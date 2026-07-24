@@ -14,7 +14,7 @@ package enum GatewayPublishedServicesValidator {
         desiredEnabled: Bool,
         certificateID: String
     ) throws -> GatewayPublishedService {
-        let serviceLabel = try normalizeLabel(serviceLabel, field: "Service name")
+        let serviceLabel = try normalizeServiceLabel(serviceLabel)
         let nodeLabel = try normalizeLabel(targetHostname, field: "Target hostname")
         let suffix = try MagicDNSSettings.normalizedDNSSuffix(magicDNSSuffix)
         try validatePort(targetPort)
@@ -73,7 +73,7 @@ package enum GatewayPublishedServicesValidator {
         }
 
         var certificateIDs = Set<String>()
-        var automaticWildcardDomains = Set<String>()
+        var automaticDomains = Set<String>()
         normalized.certificates = try state.certificates.map { certificate in
             var certificate = certificate
             certificate.id = try required(certificate.id, field: "Certificate ID")
@@ -90,8 +90,8 @@ package enum GatewayPublishedServicesValidator {
                 guard credentialIDs.contains(credentialID) else {
                     throw invalid("Automatic certificate references an unknown DNS credential.")
                 }
-                let domain = try normalizeWildcardDomain(certificate.domains[0])
-                guard automaticWildcardDomains.insert(domain).inserted else {
+                let domain = try normalizeAutomaticDomain(certificate.domains[0])
+                guard automaticDomains.insert(domain).inserted else {
                     throw invalid("Only one automatic certificate may use \(domain).")
                 }
                 certificate.domains = [domain]
@@ -131,7 +131,7 @@ package enum GatewayPublishedServicesValidator {
             service.targetInstanceID = service.targetInstanceID?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .nilIfEmpty
-            service.serviceLabel = try normalizeLabel(service.serviceLabel, field: "Service name")
+            service.serviceLabel = try normalizeServiceLabel(service.serviceLabel)
             service.publicNodeLabel = try normalizeLabel(service.publicNodeLabel, field: "Public node label")
             service.publicDNSSuffix = try MagicDNSSettings.normalizedDNSSuffix(service.publicDNSSuffix)
             service.lastKnownTargetHostname = try normalizeLabel(
@@ -224,6 +224,12 @@ package enum GatewayPublishedServicesValidator {
         return label
     }
 
+    package static func normalizeServiceLabel(_ value: String) throws -> String {
+        let label = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty else { return "" }
+        return try normalizeLabel(label, field: "Service name")
+    }
+
     package static func normalizeIPv4(_ value: String, field: String) throws -> String {
         let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
         var address = in_addr()
@@ -262,7 +268,8 @@ package enum GatewayPublishedServicesValidator {
         suffix: String
     ) -> String {
         let suffix = suffix.hasSuffix(".") ? String(suffix.dropLast()) : suffix
-        return "\(serviceLabel).\(nodeLabel).\(suffix)"
+        let targetDomain = "\(nodeLabel).\(suffix)"
+        return serviceLabel.isEmpty ? targetDomain : "\(serviceLabel).\(targetDomain)"
     }
 
     private static func normalizeDomain(_ value: String, field: String) throws -> String {
@@ -285,10 +292,10 @@ package enum GatewayPublishedServicesValidator {
         return domain
     }
 
-    private static func normalizeWildcardDomain(_ value: String) throws -> String {
+    private static func normalizeAutomaticDomain(_ value: String) throws -> String {
         let value = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard value.hasPrefix("*.") else {
-            throw invalid("Automatic certificate domain must be a wildcard.")
+            return try normalizeDomain(value, field: "Automatic certificate domain")
         }
         return "*.\(try normalizeDomain(String(value.dropFirst(2)), field: "Wildcard domain"))"
     }
@@ -353,6 +360,9 @@ package enum GatewayConfigurationFactory {
         let enabledCertificateIDs = Set(enabledServices.flatMap { service in
             [service.certificateID, service.fallbackCertificateID].compactMap { $0 }
         })
+        let publishedBaseDomains = Set(enabledServices.compactMap { service in
+            service.publicHostname == service.targetDomain ? service.publicHostname : nil
+        })
 
         var configuration = try GatewayConfigurationValidator.validate(
             GatewayConfiguration(
@@ -376,20 +386,24 @@ package enum GatewayConfigurationFactory {
                 routes: enabledServices.map { service in
                     let serviceAvailability = routeAvailabilityByServiceID[service.id]
                         ?? routeAvailability
+                    let expectedIPv4 = serviceAvailability == .ready
+                        ? expectedIPv4ByServiceID[service.id]
+                        : nil
+                    let upstreamHost = publishedBaseDomains.contains(service.targetDomain)
+                        ? expectedIPv4 ?? service.targetDomain
+                        : service.targetDomain
                     return GatewayRouteConfiguration(
                         domain: service.publicHostname,
                         certificateID: service.certificateID,
                         fallbackCertificateID: service.fallbackCertificateID,
                         upstream: GatewayUpstreamConfiguration(
-                            url: "http://\(service.targetDomain):\(service.targetPort)",
+                            url: "http://\(upstreamHost):\(service.targetPort)",
                             allowedIPv4CIDR: allowedIPv4CIDR,
                             availability: serviceAvailability == .ready
-                                && expectedIPv4ByServiceID[service.id] == nil
+                                && expectedIPv4 == nil
                                 ? .unavailable
                                 : serviceAvailability,
-                            expectedIPv4: serviceAvailability == .ready
-                                ? expectedIPv4ByServiceID[service.id]
-                                : nil
+                            expectedIPv4: expectedIPv4
                         )
                     )
                 },

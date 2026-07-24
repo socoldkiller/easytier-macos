@@ -302,7 +302,7 @@ package enum GatewayConfigurationValidator {
             return try normalizeDomain(trimmed, label: "Certificate domain")
         case .automaticWildcard:
             guard trimmed.hasPrefix("*.") else {
-                throw invalid("Automatic certificates must use a wildcard domain.")
+                return try normalizeDomain(trimmed, label: "Automatic certificate domain")
             }
             let baseDomain = try normalizeDomain(
                 String(trimmed.dropFirst(2)),

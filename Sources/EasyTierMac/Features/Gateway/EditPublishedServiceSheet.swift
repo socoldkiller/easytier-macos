@@ -242,7 +242,8 @@ struct EditPublishedServiceSheet: View {
         let suffix = service.publicDNSSuffix.hasSuffix(".")
             ? String(service.publicDNSSuffix.dropLast())
             : service.publicDNSSuffix
-        return "*.\(service.publicNodeLabel).\(suffix)"
+        let targetDomain = "\(service.publicNodeLabel).\(suffix)"
+        return service.serviceLabel.isEmpty ? targetDomain : "*.\(targetDomain)"
     }
 
     private static func selection(

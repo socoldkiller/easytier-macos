@@ -10,7 +10,7 @@ struct PublishServiceSheet: View {
     let preferredTargetPeerID: String?
 
     @State private var serviceLabel = ""
-    @State private var targetPort = "3000"
+    @State private var targetPort = ""
     @State private var selectedTargetPeerID: String
     @State private var certificateMode = PublishedServiceCertificateMode.automatic
     @State private var certificateAuthority = GatewayCertificateAuthority.letsEncrypt
@@ -91,6 +91,16 @@ struct PublishServiceSheet: View {
         normalizedPublicName != nil && publicNameError == nil && selectedTarget != nil
     }
 
+    private var displayedTargetDomain: String {
+        serviceLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? targetDomain
+            : ".\(targetDomain)"
+    }
+
+    private var automaticCertificateDomain: String {
+        normalizedPublicName?.isEmpty == true ? targetDomain : "*.\(targetDomain)"
+    }
+
     private var certificateSelection: GatewayServiceCertificateSelection? {
         if certificateMode == .automatic {
             return gateway.defaultDNSCredentialID == nil ? nil : .automatic
@@ -139,7 +149,7 @@ struct PublishServiceSheet: View {
                                     .disabled(isWorking)
                                     .onSubmit(focusPort)
 
-                                Text(".\(targetDomain)")
+                                Text(displayedTargetDomain)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
@@ -182,7 +192,7 @@ struct PublishServiceSheet: View {
                                 Text(":")
                                     .foregroundStyle(.tertiary)
 
-                                TextField("Port", text: $targetPort)
+                                TextField("80", text: $targetPort)
                                     .labelsHidden()
                                     .textFieldStyle(.roundedBorder)
                                     .font(.body.monospacedDigit())
@@ -223,7 +233,7 @@ struct PublishServiceSheet: View {
                         challengeMode: $challengeMode,
                         dnsCredentialID: $dnsCredentialID,
                         dnsCredentials: gateway.dnsCredentials,
-                        automaticDomain: "*.\(targetDomain)",
+                        automaticDomain: automaticCertificateDomain,
                         defaultDNSCredentialID: gateway.defaultDNSCredentialID,
                         status: PublishedServiceSSLProvider(
                             acmeConfiguration: gateway.acmeConfiguration
