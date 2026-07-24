@@ -32,8 +32,11 @@ struct StaticGatewayFFITests {
         #expect(running.listeners.http?.hasPrefix("127.0.0.1:") == true)
         #expect(running.listeners.https?.hasPrefix("127.0.0.1:") == true)
         #expect(running.listeners.dns?.hasPrefix("127.0.0.1:") == true)
+        #expect(running.appliedDeployment == configuration.deployment)
 
         configuration.acme.contactEmail = "renewals@example.com"
+        configuration.deployment.revision = 2
+        configuration.deployment.fingerprint = "contact-update"
         runtime = GatewayFFIConfiguration(
             configuration: configuration,
             storageDirectory: root.path,
@@ -42,7 +45,7 @@ struct StaticGatewayFFITests {
             dnsListener: "127.0.0.1:0"
         )
         try ffi.applySync(configuration: runtime)
-        #expect(try ffi.statusSync().configGeneration >= running.configGeneration)
+        #expect(try ffi.statusSync().appliedDeployment == configuration.deployment)
 
         try ffi.requestRenewalSync(certificateID: nil)
         try ffi.stopSync()
@@ -193,7 +196,7 @@ struct StaticGatewayFFITests {
     #expect(try String(contentsOf: foreignResolver, encoding: .utf8) == "nameserver 192.0.2.53\n")
 }
 
-@Test func helperControllerReconcilesIdempotentHotAndRestartChanges() async throws {
+@Test func helperControllerReconcilesIdempotentHotChanges() async throws {
     let fixture = GatewayHelperFixture()
     defer { fixture.cleanup() }
     let session = GatewayHelperSession(userID: 501)
@@ -215,16 +218,9 @@ struct StaticGatewayFFITests {
         session: session
     )
 
-    var restartUpdate = hotUpdate
-    restartUpdate.acme.directory = .letsencryptProduction
-    try await fixture.controller.apply(
-        configurationJSON: encode(restartUpdate),
-        session: session
-    )
-
-    #expect(fixture.ffi.callNames() == ["start", "apply", "stop", "start"])
+    #expect(fixture.ffi.callNames() == ["start", "apply"])
     let startConfigurations = fixture.ffi.startConfigurations()
-    #expect(startConfigurations.count == 2)
+    #expect(startConfigurations.count == 1)
     #expect(startConfigurations.allSatisfy { $0.listeners.http == "0.0.0.0:80" })
     #expect(startConfigurations.allSatisfy { $0.listeners.https == "127.0.0.1:443" })
     #expect(startConfigurations.allSatisfy { $0.listeners.dns == "127.0.0.1:53535" })
@@ -298,33 +294,6 @@ struct StaticGatewayFFITests {
         from: Data(try await controller.status(session: otherUser).utf8)
     )
     #expect(status.state == .stopped)
-}
-
-@Test func helperControllerRollsBackWhenImmutableRestartFails() async throws {
-    let fixture = GatewayHelperFixture()
-    defer { fixture.cleanup() }
-    let session = GatewayHelperSession(userID: 501)
-    let staging = gatewayRuntimeTestConfiguration()
-    try await fixture.controller.start(
-        configurationJSON: encode(staging),
-        session: session
-    )
-
-    fixture.ffi.failNextStarts(1)
-    var production = staging
-    production.acme.directory = .letsencryptProduction
-
-    await #expect(throws: GatewayHelperControllerError.self) {
-        try await fixture.controller.apply(
-            configurationJSON: encode(production),
-            session: session
-        )
-    }
-    #expect(fixture.ffi.callNames() == ["start", "stop", "start", "start"])
-    #expect(try JSONDecoder().decode(
-        GatewayStatus.self,
-        from: Data(try await fixture.controller.status(session: session).utf8)
-    ).state == .running)
 }
 
 @Test func helperLeaseStopsAfterTheLastSessionAndReconnectCancelsTheStop() async throws {
@@ -632,14 +601,16 @@ private final class ManualGatewayLeaseCancellation: GatewayLeaseCancellation, Se
     }
 }
 
-private func gatewayRuntimeTestConfiguration(
-    directory: GatewayACMEDirectory = .letsencryptStaging
-) -> GatewayConfiguration {
+private func gatewayRuntimeTestConfiguration() -> GatewayConfiguration {
     GatewayConfiguration(
+        deployment: GatewayDeploymentIdentity(
+            configurationID: "00000000-0000-0000-0000-000000000000",
+            revision: 1,
+            fingerprint: "initial"
+        ),
         acme: GatewayACMEConfiguration(
-            directory: directory,
             contactEmail: "ops@example.com",
-            termsOfServiceAgreed: false
+            acceptedAuthorities: []
         ),
         certificates: [],
         routes: []
@@ -649,12 +620,15 @@ private func gatewayRuntimeTestConfiguration(
 private func gatewayRuntimePublishedConfiguration(domain: String) -> GatewayConfiguration {
     GatewayConfiguration(
         acme: GatewayACMEConfiguration(
-            directory: .letsencryptStaging,
             contactEmail: "ops@example.com",
-            termsOfServiceAgreed: true
+            acceptedAuthorities: [.letsEncrypt]
         ),
         certificates: [
-            GatewayCertificateConfiguration(id: "service-cert", domains: [domain]),
+            GatewayCertificateConfiguration(
+                id: "service-cert",
+                domains: [domain],
+                strategy: .custom(authority: .letsEncrypt, challenge: .http01)
+            ),
         ],
         routes: [
             GatewayRouteConfiguration(

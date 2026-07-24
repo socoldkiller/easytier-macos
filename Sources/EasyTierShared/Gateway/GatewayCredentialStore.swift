@@ -95,7 +95,12 @@ package actor SystemGatewayCredentialStore: GatewayCredentialStoring {
         var cloudflare: [String: GatewayCloudflareSecret] = [:]
         var aliyun: [String: GatewayAliyunSecret] = [:]
         for descriptor in descriptors {
-            guard let secret = try load(id: descriptor.id) else { continue }
+            guard let secret = try load(id: descriptor.id) else {
+                throw GatewayCredentialStoreError.missingCredential(
+                    id: descriptor.id,
+                    label: descriptor.label
+                )
+            }
             switch (descriptor.provider, secret) {
             case let (.cloudflare, .cloudflare(apiToken)):
                 cloudflare[descriptor.id] = GatewayCloudflareSecret(apiToken: apiToken)
@@ -105,7 +110,10 @@ package actor SystemGatewayCredentialStore: GatewayCredentialStoring {
                     accessKeySecret: accessKeySecret
                 )
             default:
-                continue
+                throw GatewayCredentialStoreError.providerMismatch(
+                    id: descriptor.id,
+                    label: descriptor.label
+                )
             }
         }
         return GatewaySecrets(cloudflare: cloudflare, aliyun: aliyun)
@@ -124,12 +132,18 @@ package actor SystemGatewayCredentialStore: GatewayCredentialStoring {
 
 package enum GatewayCredentialStoreError: LocalizedError, Sendable {
     case keychain(OSStatus)
+    case missingCredential(id: String, label: String)
+    case providerMismatch(id: String, label: String)
 
     package var errorDescription: String? {
         switch self {
         case let .keychain(status):
             SecCopyErrorMessageString(status, nil) as String?
                 ?? "Gateway credential Keychain error \(status)."
+        case let .missingCredential(id, label):
+            "DNS credential \(label) (\(id)) is missing. Save it again before retrying."
+        case let .providerMismatch(id, label):
+            "DNS credential \(label) (\(id)) does not match its configured provider. Save it again before retrying."
         }
     }
 }

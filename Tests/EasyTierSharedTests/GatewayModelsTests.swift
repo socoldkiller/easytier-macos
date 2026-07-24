@@ -9,13 +9,17 @@ import Testing
         JSONSerialization.jsonObject(with: data) as? [String: Any]
     )
     let acme = try #require(object["acme"] as? [String: Any])
-    let directory = try #require(acme["directory"] as? [String: Any])
+    let deployment = try #require(object["deployment"] as? [String: Any])
     let certificates = try #require(object["certificates"] as? [[String: Any]])
-    let challenge = try #require(certificates.first?["challenge"] as? [String: Any])
+    let certificate = try #require(certificates.first)
+    let strategy = try #require(certificate["strategy"] as? [String: Any])
+    let challenge = try #require(strategy["challenge"] as? [String: Any])
 
     #expect((object["schema_version"] as? NSNumber)?.uint32Value == GatewaySchema.version)
-    #expect(directory["kind"] as? String == "letsencrypt_staging")
+    #expect(deployment["fingerprint"] as? String == "manual")
+    #expect(acme["directory"] == nil)
     #expect(acme["contact_email"] as? String == "ops@example.com")
+    #expect(strategy["authority"] as? String == "letsencrypt")
     #expect(challenge["type"] as? String == "http01")
     #expect(object["storage_dir"] == nil)
     #expect(object["listeners"] == nil)
@@ -27,10 +31,17 @@ import Testing
         gatewayEnabled: true,
         acmeAccount: GatewayACMEConfiguration(
             contactEmail: "ops@example.com",
-            termsOfServiceAgreed: true
+            acceptedAuthorities: GatewayCertificateAuthority.allCases
         ),
         publishingNetworkConfigID: "network-a",
         lastKnownNetworkIPv4CIDR: "10.0.0.0/24",
+        certificates: [
+            GatewayManagedCertificate(
+                id: "service-a-certificate",
+                domains: ["web.alpha.et.net"],
+                strategy: .custom(authority: .letsEncrypt, challenge: .http01)
+            ),
+        ],
         services: [
             GatewayPublishedService(
                 id: "service-a",
@@ -43,7 +54,8 @@ import Testing
                 serviceLabel: "web",
                 publicHostname: "web.alpha.et.net",
                 targetPort: 3_000,
-                desiredEnabled: true
+                desiredEnabled: true,
+                certificateID: "service-a-certificate"
             ),
         ]
     )
@@ -61,7 +73,9 @@ import Testing
 
 @Test func gatewayValidationRejectsExpectedIPv4OutsideEasyTierCIDR() {
     let configuration = GatewayConfiguration(
-        acme: GatewayACMEConfiguration(termsOfServiceAgreed: true),
+        acme: GatewayACMEConfiguration(
+            acceptedAuthorities: GatewayCertificateAuthority.allCases
+        ),
         routes: [
             GatewayRouteConfiguration(
                 domain: "web.example.com",
@@ -116,6 +130,47 @@ import Testing
     #expect(normalized.routes[0].upstream.hostHeader == "backend.internal")
 }
 
+@Test func gatewayValidationPreservesEveryExplicitCertificatePolicy() throws {
+    for authority in GatewayCertificateAuthority.allCases {
+        for challenge in [
+            GatewayChallengeConfiguration.http01,
+            .dns01(
+                GatewayDNS01Configuration(
+                    provider: .cloudflare,
+                    credentialID: "cloudflare-main"
+                )
+            ),
+        ] {
+            var configuration = gatewayTestConfiguration()
+            configuration.certificates[0].strategy = .custom(
+                authority: authority,
+                challenge: challenge
+            )
+
+            let normalized = try GatewayConfigurationValidator.validate(configuration)
+
+            #expect(normalized.certificates[0].authority == authority)
+            #expect(normalized.certificates[0].challenge == challenge)
+        }
+    }
+}
+
+@Test func gatewayValidationAllowsDNS01WildcardForOneLabelRoutes() throws {
+    var configuration = gatewayTestConfiguration()
+    configuration.certificates[0].domains = ["*.example.com"]
+    configuration.certificates[0].strategy = .automaticWildcard(
+        GatewayDNS01Configuration(
+            provider: .cloudflare,
+            credentialID: "cloudflare-main"
+        )
+    )
+
+    let normalized = try GatewayConfigurationValidator.validate(configuration)
+
+    #expect(normalized.certificates[0].domains == ["*.example.com"])
+    #expect(normalized.routes[0].domain == "app.example.com")
+}
+
 @Test(arguments: ["*.example.com", "127.0.0.1", "bad domain.example"])
 func gatewayValidationRejectsNonExactCertificateDomains(_ domain: String) {
     var configuration = gatewayTestConfiguration()
@@ -130,20 +185,30 @@ func gatewayValidationRejectsNonExactCertificateDomains(_ domain: String) {
     let data = Data(
         """
         {
-          "schema_version": 4,
+          "schema_version": 7,
+          "deployment": {
+            "configuration_id": "00000000-0000-0000-0000-000000000000",
+            "revision": 0,
+            "fingerprint": "dns01-test"
+          },
           "acme": {
-            "directory": {"kind": "letsencrypt_staging"},
             "contact_email": "ops@example.com",
-            "terms_of_service_agreed": true
+            "accepted_authorities": ["zerossl"]
           },
           "certificates": [{
             "id": "app-cert",
             "domains": ["app.example.com"],
-            "challenge": {
-              "type": "dns01",
-              "provider": "cloudflare",
-              "credential_id": "main"
-            }
+            "strategy": {
+              "type": "custom",
+              "authority": "zerossl",
+              "challenge": {
+                "type": "dns01",
+                "provider": "cloudflare",
+                "credential_id": "main",
+                "credential_revision": 1
+              }
+            },
+            "renewal_enabled": true
           }],
           "routes": [],
           "local_domains": []
@@ -156,6 +221,94 @@ func gatewayValidationRejectsNonExactCertificateDomains(_ domain: String) {
         configuration.certificates.first?.challenge
             == .dns01(GatewayDNS01Configuration(provider: .cloudflare, credentialID: "main"))
     )
+    #expect(configuration.certificates.first?.authority == .zeroSSL)
+}
+
+@Test func publishedServicePersistsAnExplicitCertificateReference() throws {
+    let state = gatewayPersistedTestState()
+    let data = try JSONEncoder().encode(state)
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    let services = try #require(object["services"] as? [[String: Any]])
+    #expect(services.first?["certificate_id"] as? String == "service-a-certificate")
+}
+
+@Test func allCertificatePoliciesRoundTrip() throws {
+    for authority in GatewayCertificateAuthority.allCases {
+        for challenge in [
+            GatewayPublishedServiceChallenge.http01,
+            .dns01(credentialID: "dns-main"),
+        ] {
+            var state = gatewayPersistedTestState()
+            state.certificates[0].strategy = .custom(
+                authority: authority,
+                challenge: challenge
+            )
+
+            let decoded = try JSONDecoder().decode(
+                GatewayPersistedState.self,
+                from: JSONEncoder().encode(state)
+            )
+
+            #expect(decoded == state)
+        }
+    }
+}
+
+@Test func newPublishedServicesUseTheProvidedCertificateReference() throws {
+    let service = try GatewayPublishedServicesValidator.makeService(
+        networkConfigID: "network-a",
+        targetPeerID: "peer-a",
+        targetHostname: "alpha",
+        magicDNSSuffix: "et.net",
+        serviceLabel: "web",
+        targetPort: 443,
+        desiredEnabled: true,
+        certificateID: "custom-certificate"
+    )
+
+    #expect(service.desiredEnabled)
+    #expect(service.certificateID == "custom-certificate")
+}
+
+@Test func certificateContactEmailNormalizationTrimsAndValidatesInput() throws {
+    #expect(
+        try GatewayPublishedServicesValidator.normalizeContactEmail("  ops@example.com  ")
+            == "ops@example.com"
+    )
+    #expect(try GatewayPublishedServicesValidator.normalizeContactEmail("   ") == nil)
+    #expect(try GatewayPublishedServicesValidator.normalizeContactEmail(nil) == nil)
+    #expect(throws: GatewayConfigurationValidationError.self) {
+        try GatewayPublishedServicesValidator.normalizeContactEmail("not-an-email")
+    }
+}
+
+@Test func runtimeCertificateRejectsMissingAuthorityAndAutomaticChallenge() throws {
+    let missingAuthority = Data(
+        """
+        {
+          "id": "app-cert",
+          "domains": ["app.example.com"],
+          "challenge": {"type": "http01"}
+        }
+        """.utf8
+    )
+    let automaticChallenge = Data(
+        """
+        {
+          "id": "app-cert",
+          "domains": ["app.example.com"],
+          "authority": "letsencrypt",
+          "challenge": {"type": "automatic"}
+        }
+        """.utf8
+    )
+
+    #expect(throws: DecodingError.self) {
+        try JSONDecoder().decode(GatewayCertificateConfiguration.self, from: missingAuthority)
+    }
+    #expect(throws: DecodingError.self) {
+        try JSONDecoder().decode(GatewayCertificateConfiguration.self, from: automaticChallenge)
+    }
 }
 
 @Test func gatewayConfigurationStorePersistsAtomicallyWithPrivatePermissions() async throws {
@@ -179,19 +332,38 @@ func gatewayValidationRejectsNonExactCertificateDomains(_ domain: String) {
     #expect((directoryAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o700)
 }
 
-@Test func publishedServiceDraftBuildsTheImmutablePublicHostname() throws {
-    let draft = try GatewayPublishedServicesValidator.makeDraft(
+@Test func publishedServiceBuildsTheImmutablePublicHostname() throws {
+    let service = try GatewayPublishedServicesValidator.makeService(
         networkConfigID: "network-a",
         targetPeerID: "peer-a",
         targetHostname: "A",
         magicDNSSuffix: "ET.NET",
         serviceLabel: "ABC",
-        targetPort: 3_000
+        targetPort: 3_000,
+        desiredEnabled: false,
+        certificateID: "service-certificate"
     )
 
-    #expect(draft.publicHostname == "abc.a.et.net")
-    #expect(draft.targetDomain == "a.et.net")
-    #expect(!draft.desiredEnabled)
+    #expect(service.publicHostname == "abc.a.et.net")
+    #expect(service.targetDomain == "a.et.net")
+    #expect(!service.desiredEnabled)
+}
+
+@Test func publishedServiceWithoutLabelUsesTheTargetDomain() throws {
+    let service = try GatewayPublishedServicesValidator.makeService(
+        networkConfigID: "network-a",
+        targetPeerID: "peer-a",
+        targetHostname: "A",
+        magicDNSSuffix: "ET.NET",
+        serviceLabel: "   ",
+        targetPort: 80,
+        desiredEnabled: false,
+        certificateID: "service-certificate"
+    )
+
+    #expect(service.serviceLabel.isEmpty)
+    #expect(service.publicHostname == "a.et.net")
+    #expect(service.targetDomain == "a.et.net")
 }
 
 @Test func publishedServicesRejectMultipleOwningNetworks() {
@@ -213,11 +385,44 @@ func gatewayValidationRejectsNonExactCertificateDomains(_ domain: String) {
         from: gatewayPersistedTestState()
     )
 
-    #expect(configuration.acme.directory == .letsencryptProduction)
+    #expect(configuration.certificates.first?.authority == .letsEncrypt)
     #expect(configuration.certificates.map(\.domains) == [["abc.a.et.net"]])
     #expect(configuration.routes.first?.upstream.url == "http://a.et.net:3000")
     #expect(configuration.routes.first?.upstream.allowedIPv4CIDR == "10.0.0.0/24")
     #expect(configuration.localDomains == ["abc.a.et.net"])
+}
+
+@Test func dnsCredentialRevisionIsPartOfTheRuntimeAttemptIdentity() throws {
+    var state = gatewayPersistedTestState()
+    state.dnsCredentials = [
+        GatewayDNSCredentialDescriptor(
+            id: "cloudflare-main",
+            provider: .cloudflare,
+            label: "Cloudflare Main",
+            revision: 7
+        ),
+    ]
+    state.certificates[0].strategy = .custom(
+        authority: .zeroSSL,
+        challenge: .dns01(credentialID: "cloudflare-main")
+    )
+
+    let first = try GatewayConfigurationFactory.makeRuntimeConfiguration(from: state)
+    state.dnsCredentials[0].revision = 8
+    let second = try GatewayConfigurationFactory.makeRuntimeConfiguration(from: state)
+
+    #expect(
+        first.certificates[0].challenge
+            == .dns01(
+                GatewayDNS01Configuration(
+                    provider: .cloudflare,
+                    credentialID: "cloudflare-main",
+                    credentialRevision: 7
+                )
+            )
+    )
+    #expect(first.deployment.fingerprint != second.deployment.fingerprint)
+    #expect(first.certificates[0].challenge != second.certificates[0].challenge)
 }
 
 @Test func gatewayFactoryBuildsAnEmptyRuntimeWithoutACMETerms() throws {
@@ -228,38 +433,18 @@ func gatewayValidationRejectsNonExactCertificateDomains(_ domain: String) {
     #expect(configuration.certificates.isEmpty)
     #expect(configuration.routes.isEmpty)
     #expect(configuration.localDomains.isEmpty)
-    #expect(!configuration.acme.termsOfServiceAgreed)
+    #expect(configuration.acme.acceptedAuthorities.isEmpty)
 }
 
-@Test func gatewayStateWithoutMasterSwitchMigratesExistingServiceIntent() throws {
-    let encoded = try JSONEncoder().encode(gatewayPersistedTestState())
-    var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
-    object.removeValue(forKey: "gateway_enabled")
-
-    let migrated = try JSONDecoder().decode(
-        GatewayPersistedState.self,
-        from: JSONSerialization.data(withJSONObject: object)
-    )
-
-    #expect(migrated.gatewayEnabled)
-}
-
-@Test func publishedServicePersistsStableInstanceIdentityAndDecodesLegacyRecords() throws {
+@Test func publishedServicePersistsStableInstanceIdentity() throws {
     var state = gatewayPersistedTestState()
     state.services[0].targetInstanceID = "instance-a"
 
     let encoded = try JSONEncoder().encode(state)
-    var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
-    var services = try #require(object["services"] as? [[String: Any]])
+    let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    let services = try #require(object["services"] as? [[String: Any]])
     #expect(services.first?["target_instance_id"] as? String == "instance-a")
     #expect(try JSONDecoder().decode(GatewayPersistedState.self, from: encoded) == state)
-
-    services[0].removeValue(forKey: "target_instance_id")
-    object["services"] = services
-    let legacyData = try JSONSerialization.data(withJSONObject: object)
-    let legacyState = try JSONDecoder().decode(GatewayPersistedState.self, from: legacyData)
-
-    #expect(legacyState.services.first?.targetInstanceID == nil)
 }
 
 @Test func incompatibleGatewayConfigurationIsBackedUpAndNotOverwritten() async throws {
@@ -312,7 +497,7 @@ func gatewayValidationRejectsNonExactCertificateDomains(_ domain: String) {
         at: fileURL.deletingLastPathComponent(),
         withIntermediateDirectories: true
     )
-    let state = GatewayPersistedState(schemaVersion: GatewaySchema.version + 1)
+    let state = GatewayPersistedState(schemaVersion: GatewaySchema.persistedVersion + 1)
     try JSONEncoder().encode(state).write(to: fileURL)
     let store = GatewayConfigurationStore(fileURL: fileURL)
 
@@ -334,19 +519,17 @@ func gatewayValidationRejectsNonExactCertificateDomains(_ domain: String) {
     #expect(PrivilegedHelperClientRequirement.debug == "identifier \"com.kkrainbow.easytier.mac\"")
 }
 
-private func gatewayTestConfiguration(
-    directory: GatewayACMEDirectory = .letsencryptStaging
-) -> GatewayConfiguration {
+private func gatewayTestConfiguration() -> GatewayConfiguration {
     GatewayConfiguration(
         acme: GatewayACMEConfiguration(
-            directory: directory,
             contactEmail: "ops@example.com",
-            termsOfServiceAgreed: true
+            acceptedAuthorities: GatewayCertificateAuthority.allCases
         ),
         certificates: [
             GatewayCertificateConfiguration(
                 id: "app-cert",
-                domains: ["app.example.com"]
+                domains: ["app.example.com"],
+                strategy: .custom(authority: .letsEncrypt, challenge: .http01)
             ),
         ],
         routes: [
@@ -367,12 +550,18 @@ private func gatewayPersistedTestState() -> GatewayPersistedState {
     GatewayPersistedState(
         gatewayEnabled: true,
         acmeAccount: GatewayACMEConfiguration(
-            directory: .letsencryptProduction,
             contactEmail: "ops@example.com",
-            termsOfServiceAgreed: true
+            acceptedAuthorities: GatewayCertificateAuthority.allCases
         ),
         publishingNetworkConfigID: "network-a",
         lastKnownNetworkIPv4CIDR: "10.0.0.0/24",
+        certificates: [
+            GatewayManagedCertificate(
+                id: "service-a-certificate",
+                domains: ["abc.a.et.net"],
+                strategy: .custom(authority: .letsEncrypt, challenge: .http01)
+            ),
+        ],
         services: [
             GatewayPublishedService(
                 id: "service-a",
@@ -385,7 +574,8 @@ private func gatewayPersistedTestState() -> GatewayPersistedState {
                 serviceLabel: "abc",
                 publicHostname: "abc.a.et.net",
                 targetPort: 3_000,
-                desiredEnabled: true
+                desiredEnabled: true,
+                certificateID: "service-a-certificate"
             ),
         ]
     )

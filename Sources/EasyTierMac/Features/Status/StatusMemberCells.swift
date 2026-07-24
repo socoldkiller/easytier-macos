@@ -153,10 +153,11 @@ private struct MemberStatusIdentity: View {
     }
 
     private var canPublish: Bool {
-        publishAction != nil
-            && gateway.magicDNSState == .ready
-            && member.isLive
-            && member.peerID != "-"
+        let availability = PublishedServiceCreationAvailability(
+            magicDNSState: gateway.magicDNSState,
+            targets: PublishedServiceTargetOption.creationOptions(members: [member])
+        )
+        return publishAction != nil && availability.isAvailable
     }
 
     private var memberSubtitle: String {

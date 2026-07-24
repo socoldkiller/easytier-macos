@@ -10,7 +10,7 @@ struct GatewayCertificateErrorBanner: View {
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading) {
-                Text("Managed HTTPS is unavailable")
+                Text("Automatic HTTPS needs attention")
                     .bold()
 
                 ForEach(failures) { failure in

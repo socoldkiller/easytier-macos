@@ -105,6 +105,14 @@ enum GatewayTopologyBridge {
         {
             return runtimeAddress
         }
+        if let runtimeAddress = detail?
+            .my_node_info?
+            .ipv4_addr?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !runtimeAddress.isEmpty
+        {
+            return runtimeAddress
+        }
         let address = config.virtual_ipv4.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !address.isEmpty else { return nil }
         return address.contains("/") ? address : "\(address)/\(config.network_length)"

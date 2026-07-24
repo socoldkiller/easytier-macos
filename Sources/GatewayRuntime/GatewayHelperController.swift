@@ -429,67 +429,29 @@ package final class GatewayHelperController: @unchecked Sendable {
         }
         guard previousConfiguration != configuration || previousSecrets != secrets else { return }
 
-        if previousConfiguration.acme.directory == configuration.acme.directory {
-            try ffi.applySync(configuration: ffiConfiguration, secrets: secrets)
-            do {
-                try synchronizeResolvers(for: configuration)
-            } catch {
-                let resolverError = error.localizedDescription
-                do {
-                    try restoreRuntime(
-                        configuration: previousConfiguration,
-                        ffiConfiguration: previousFFIConfiguration,
-                        secrets: previousSecrets
-                    )
-                } catch {
-                    clearRuntimeStateAfterFailedRollback()
-                    throw GatewayHelperControllerError.restartFailed(
-                        newConfiguration: resolverError,
-                        rollback: error.localizedDescription
-                    )
-                }
-                throw GatewayHelperControllerError.resolverConfigurationFailed(resolverError)
-            }
-            currentConfiguration = configuration
-            currentFFIConfiguration = ffiConfiguration
-            currentSecrets = secrets
-            return
-        }
-
-        try ffi.stopSync()
-        var newRuntimeStarted = false
+        try ffi.applySync(configuration: ffiConfiguration, secrets: secrets)
         do {
-            try ffi.startSync(configuration: ffiConfiguration, secrets: secrets)
-            newRuntimeStarted = true
             try synchronizeResolvers(for: configuration)
-            currentConfiguration = configuration
-            currentFFIConfiguration = ffiConfiguration
-            currentSecrets = secrets
         } catch {
-            let newConfigurationError = error.localizedDescription
-            if newRuntimeStarted {
-                try? ffi.stopSync()
-            }
+            let resolverError = error.localizedDescription
             do {
-                try ffi.startSync(configuration: previousFFIConfiguration, secrets: previousSecrets)
-                try synchronizeResolvers(for: previousConfiguration)
-                currentConfiguration = previousConfiguration
-                currentFFIConfiguration = previousFFIConfiguration
-                currentSecrets = previousSecrets
-                throw GatewayHelperControllerError.restartFailed(
-                    newConfiguration: newConfigurationError,
-                    rollback: "Previous configuration was restored."
+                try restoreRuntime(
+                    configuration: previousConfiguration,
+                    ffiConfiguration: previousFFIConfiguration,
+                    secrets: previousSecrets
                 )
-            } catch let rollbackError as GatewayHelperControllerError {
-                throw rollbackError
             } catch {
                 clearRuntimeStateAfterFailedRollback()
                 throw GatewayHelperControllerError.restartFailed(
-                    newConfiguration: newConfigurationError,
-                    rollback: "Previous configuration also failed: \(error.localizedDescription)"
+                    newConfiguration: resolverError,
+                    rollback: error.localizedDescription
                 )
             }
+            throw GatewayHelperControllerError.resolverConfigurationFailed(resolverError)
         }
+        currentConfiguration = configuration
+        currentFFIConfiguration = ffiConfiguration
+        currentSecrets = secrets
     }
 
     private func attach(

@@ -51,6 +51,52 @@ The two Rust archives are compiled from mutually exclusive Cargo features. The
 EasyTier helper does not contain Gateway entry points, the Gateway helper does
 not contain EasyTier Core entry points, and the GUI contains neither set.
 
+## Gateway ownership
+
+Gateway is split across three deep modules with narrow interfaces:
+
+```text
+GatewayRuntimeController (Swift)
+  owns Desired Configuration and convergence retries
+                |
+                | XPC apply/status using exact Deployment Identity
+                v
+GatewayPrivilegedHelper
+  owns the local apply transaction, helper lifecycle, and resolver rollback
+                |
+                | schema-checked runtime configuration and secrets
+                v
+Rust certificate coordinator
+  owns Automatic CA fallback, issuance, renewal, replacement, cooldowns,
+  cleanup, serving material, HTTP-only eligibility, and the persistent journal
+```
+
+The Swift controller owns managed-certificate intent: shared Automatic wildcard
+certificates, exact-host Custom certificates, DNS credential selection, and
+primary/fallback references during strategy transitions. It never infers runtime success from a request acknowledgement.
+It compares Desired and Applied Deployment Identities. The helper never performs
+remote ACME contact synchronization as a prerequisite for local apply. The Rust
+coordinator keeps every attempt immutable. For Automatic only, it persists the
+preferred authority and may schedule ZeroSSL after a classified Let's Encrypt
+CA-side failure. It never changes the selected challenge method, and Custom never
+changes authority.
+
+Internal seams isolate behavior that varies:
+
+- ACME authority and HTTP transport adapters implement Let's Encrypt, ZeroSSL,
+  EAB acquisition, `Retry-After`, and account contact operations.
+- DNS provider adapters implement Cloudflare and Aliyun presentation/cleanup.
+- Storage adapters own account credentials, atomic certificate generations,
+  coordinator journals, and DNS cleanup obligations.
+- Scheduling functions isolate renewal windows, exponential retry delays, and
+  jitter calculations so their policy can be tested without listener behavior.
+- Serving derivation selects valid primary then fallback material, and permits
+  HTTP-only only for an Automatic certificate that exhausted both authorities
+  before ever activating HTTPS.
+
+See `Documentation/GATEWAY_STATE_MACHINE.md` for the canonical state model,
+failure classification, restart behavior, and serving invariants.
+
 `AppContext` is concrete intentionally. SwiftUI can observe concrete `@Observable`
 models reached through it without existential type erasure. Replaceable capabilities
 sit behind consumer-owned protocols instead of turning `AppContext` into a dynamic

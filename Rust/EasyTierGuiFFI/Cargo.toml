@@ -21,6 +21,7 @@ gateway = [
     "dep:hickory-resolver",
     "dep:hex",
     "dep:http",
+    "dep:http-body-util",
     "dep:hmac",
     "dep:instant-acme",
     "dep:pingora",
@@ -51,6 +52,7 @@ easytier = { path = "../../Vendor/EasyTier/easytier", optional = true }
 hickory-resolver = { version = "0.25.2", optional = true }
 hex = { version = "0.4", optional = true }
 http = { version = "1", optional = true }
+http-body-util = { version = "0.1", optional = true }
 hmac = { version = "0.12", optional = true }
 instant-acme = { version = "0.8.5", default-features = false, features = ["ring", "hyper-rustls", "rcgen", "time", "x509-parser"], optional = true }
 pingora = { version = "0.8.1", default-features = false, features = ["proxy", "boringssl"], optional = true }
@@ -71,7 +73,6 @@ zeroize = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
 h2 = "0.4"
-http-body-util = "0.1"
 rcgen = { version = "0.14.8", features = ["x509-parser"] }
 tempfile = "3"
 tokio-rustls = "0.26.4"

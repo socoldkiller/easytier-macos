@@ -5,26 +5,30 @@ import Testing
 
 @Test func publishedServiceSSLProviderUsesCertificateServingMode() {
     let notAccepted = GatewayACMEConfiguration(
-        directory: .letsencryptProduction,
-        termsOfServiceAgreed: false
+        contactEmail: "ops@example.com",
+        acceptedAuthorities: []
+    )
+    let missingContactEmail = GatewayACMEConfiguration(
+        acceptedAuthorities: GatewayCertificateAuthority.allCases
     )
     let production = GatewayACMEConfiguration(
-        directory: .letsencryptProduction,
-        termsOfServiceAgreed: true
+        contactEmail: "ops@example.com",
+        acceptedAuthorities: GatewayCertificateAuthority.allCases
     )
     let staging = GatewayACMEConfiguration(
-        directory: .letsencryptStaging,
-        termsOfServiceAgreed: true
+        contactEmail: "ops@example.com",
+        acceptedAuthorities: GatewayCertificateAuthority.allCases
     )
 
-    #expect(PublishedServiceSSLProvider(acmeConfiguration: nil) == .httpOnly)
-    #expect(PublishedServiceSSLProvider(acmeConfiguration: notAccepted) == .httpOnly)
+    #expect(PublishedServiceSSLProvider(acmeConfiguration: nil) == .unavailable)
+    #expect(PublishedServiceSSLProvider(acmeConfiguration: notAccepted) == .unavailable)
+    #expect(PublishedServiceSSLProvider(acmeConfiguration: missingContactEmail) == .unavailable)
     #expect(PublishedServiceSSLProvider(acmeConfiguration: production) == .requesting)
     #expect(PublishedServiceSSLProvider(acmeConfiguration: staging) == .requesting)
-    #expect(PublishedServiceSSLProvider.httpOnly.label == "HTTP Only")
-    #expect(PublishedServiceSSLProvider.managedHTTPS.label == "Managed HTTPS")
-    #expect(PublishedServiceSSLProvider.requesting.label == "Requesting Certificate")
-    #expect(PublishedServiceSSLProvider.httpOnly.urlScheme == "http")
+    #expect(PublishedServiceSSLProvider.unavailable.label == "Email Required")
+    #expect(PublishedServiceSSLProvider.managedHTTPS.label == "Secure")
+    #expect(PublishedServiceSSLProvider.requesting.label == "Issuing Certificate")
+    #expect(PublishedServiceSSLProvider.unavailable.urlScheme == "https")
     #expect(PublishedServiceSSLProvider.managedHTTPS.urlScheme == "https")
 }
 
@@ -74,8 +78,8 @@ import Testing
 }
 
 @Test func publishedServiceCertificatePresentationHandlesOperationalStates() {
-    let httpOnly = PublishedServiceCertificatePresentation(
-        provider: .httpOnly,
+    let unavailable = PublishedServiceCertificatePresentation(
+        provider: .unavailable,
         certificate: nil
     )
     let notIssued = PublishedServiceCertificatePresentation(
@@ -108,8 +112,8 @@ import Testing
         )
     )
 
-    #expect(httpOnly.state == .unavailable)
-    #expect(httpOnly.label == "—")
+    #expect(unavailable.state == .unavailable)
+    #expect(unavailable.label == "—")
     #expect(notIssued.state == .notIssued)
     #expect(renewing.state == .renewing)
     #expect(renewing.label == "Renewing…")
@@ -233,12 +237,12 @@ import Testing
         status: status,
         gatewayEnabled: true,
         acmeConfiguration: GatewayACMEConfiguration(
-            directory: .letsencryptProduction,
-            termsOfServiceAgreed: true
+            contactEmail: "ops@example.com",
+            acceptedAuthorities: GatewayCertificateAuthority.allCases
         ),
         networkName: "Production",
         members: [servicesTestMember(peerID: serviceA.targetPeerID, ipv4: "10.0.0.10/24")],
-        searchText: "SERVICE-A 10.0.0.10 MANAGED LIVE"
+        searchText: "SERVICE-A 10.0.0.10 HTTPS LIVE"
     )
 
     #expect(display.networkName == "Production")
@@ -289,8 +293,8 @@ import Testing
         ),
         gatewayEnabled: true,
         acmeConfiguration: GatewayACMEConfiguration(
-            directory: .letsencryptProduction,
-            termsOfServiceAgreed: true
+            contactEmail: "ops@example.com",
+            acceptedAuthorities: GatewayCertificateAuthority.allCases
         ),
         networkName: "Production",
         members: [],
@@ -405,13 +409,25 @@ func publishedServiceSummary(liveCount: Int, serviceCount: Int, expected: String
     #expect(WorkspaceTab.services.systemImage == "network.badge.shield.half.filled")
     #expect(
         PublishedServiceGridColumn.allCases.map(\.title)
-            == ["Service", "IPv4", "Target", "SSL", "Expires", "Last Online", "Enabled", ""]
+            == [
+                "Service",
+                "IPv4",
+                "Target",
+                "Certificate Authority",
+                "Challenge",
+                "Expires",
+                "Last Online",
+                "Enabled",
+                "",
+            ]
     )
     #expect(PublishedServiceGridColumn.service.minimumWidth == 324)
     #expect(PublishedServiceGridColumn.service.idealWidth == 398)
     #expect(PublishedServiceGridColumn.ipv4.minimumWidth == 142)
     #expect(PublishedServiceGridColumn.ipv4.idealWidth == 156)
     #expect(PublishedServiceGridColumn.target.idealWidth >= 200)
+    #expect(PublishedServiceGridColumn.authority.idealWidth >= 160)
+    #expect(PublishedServiceGridColumn.challenge.minimumWidth >= 90)
 }
 
 private func servicesTestService(
@@ -431,29 +447,60 @@ private func servicesTestService(
         serviceLabel: id,
         publicHostname: hostname,
         targetPort: port,
-        desiredEnabled: true
+        desiredEnabled: true,
+        certificateID: id
     )
 }
 
 private func servicesTestCertificate(
     id: String,
     domain: String,
-    state: GatewayCertificateState,
+    state: ServicesTestCertificateState,
     notAfter: String? = nil,
     nextRenewalAt: String? = nil,
     lastError: String? = nil
 ) -> GatewayCertificateStatus {
-    GatewayCertificateStatus(
+    let availability: GatewayCertificateAvailability = switch state {
+    case .active, .renewing, .degraded: .valid
+    case .failed: .unavailable
+    }
+    let operation: GatewayCertificateOperation = switch state {
+    case .active: .idle
+    case .renewing: .renewing
+    case .degraded: .waitingRetry
+    case .failed: .suspended
+    }
+    let failure = lastError.map {
+        GatewayFailure(
+            source: .acmeAuthorization,
+            kind: state == .failed ? .userActionRequired : .transient,
+            code: state == .failed ? "unauthorized" : "retry_scheduled",
+            message: $0,
+            occurredAt: "2026-07-20T00:00:00Z",
+            retryAt: state == .degraded ? "2026-07-20T00:05:00Z" : nil,
+            authority: .letsEncrypt,
+            challenge: "HTTP-01",
+            dnsProvider: nil,
+            acmeProblemType: nil,
+            httpStatus: nil
+        )
+    }
+    return GatewayCertificateStatus(
         id: id,
         domains: [domain],
+        authority: .letsEncrypt,
         challenge: "http-01",
-        state: state,
-        servingMode: state == .active ? .https : .pendingHTTPS,
+        activeAuthority: availability == .valid ? .letsEncrypt : nil,
+        activeChallenge: availability == .valid ? "http-01" : nil,
+        availability: availability,
+        operation: operation,
+        stage: nil,
         notBefore: nil,
         notAfter: notAfter,
         nextRenewalAt: nextRenewalAt,
+        nextAttemptAt: state == .degraded ? "2026-07-20T00:05:00Z" : nil,
         lastAttemptAt: nil,
-        lastError: lastError
+        failure: failure
     )
 }
 
@@ -483,13 +530,21 @@ private func servicesTestStatus(
     GatewayStatus(
         schemaVersion: GatewaySchema.version,
         state: state,
-        configGeneration: 1,
+        appliedDeployment: .manual,
         listeners: GatewayListenerStatus(http: "127.0.0.1:80", https: "127.0.0.1:443"),
         routes: routes,
         certificates: certificates,
         pendingDNSCleanups: 0,
-        lastError: nil
+        providerCooldowns: [],
+        runtimeIssues: []
     )
+}
+
+private enum ServicesTestCertificateState: Equatable {
+    case active
+    case renewing
+    case degraded
+    case failed
 }
 
 private func servicesTestMember(

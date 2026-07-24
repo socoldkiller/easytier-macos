@@ -24,27 +24,26 @@ struct ServicesView: View {
         PublishedServiceTargetOption.creationOptions(members: gateway.topologyMembers)
     }
 
-    private var canBeginPublishingService: Bool {
-        gateway.magicDNSState == .ready && !serviceCreationTargets.isEmpty
+    private var serviceCreationAvailability: PublishedServiceCreationAvailability {
+        PublishedServiceCreationAvailability(
+            magicDNSState: gateway.magicDNSState,
+            targets: serviceCreationTargets
+        )
     }
 
     private var publishingEmptyStateDescription: String {
-        if gateway.magicDNSState != .ready {
-            return "Wait for Magic DNS to become ready before publishing a service."
-        }
-        if serviceCreationTargets.isEmpty {
-            return "Run a network with at least one online member before publishing a service."
-        }
-        return "Publish an HTTP service from an online network member."
+        serviceCreationAvailability.emptyStateDescription
     }
 
     private var displayedError: String? {
-        errorMessage ?? gateway.lastError ?? gateway.status.lastError
+        errorMessage ?? gateway.convergence.message ?? gateway.lastError
+            ?? gateway.status.runtimeIssues.last?.message
     }
 
     private var display: PublishedServicesDisplayModel {
         PublishedServicesDisplayModel(
             services: gateway.services,
+            certificates: gateway.certificates,
             status: gateway.status,
             gatewayEnabled: gateway.desiredEnabled,
             acmeConfiguration: gateway.acmeConfiguration,
@@ -52,7 +51,8 @@ struct ServicesView: View {
             members: gateway.topologyMembers,
             searchText: searchText,
             magicDNSState: gateway.magicDNSState,
-            magicDNSStateByServiceID: gateway.magicDNSStateByServiceID
+            magicDNSStateByServiceID: gateway.magicDNSStateByServiceID,
+            convergence: gateway.convergence
         )
     }
 
@@ -71,7 +71,7 @@ struct ServicesView: View {
                 )
             }
 
-            if !gateway.isTLSConfigured {
+            if !gateway.services.isEmpty, !gateway.isAutomaticHTTPSReady {
                 GatewayTLSRequirementBanner(action: openGatewaySettings)
                     .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 8))
             }
@@ -106,7 +106,8 @@ struct ServicesView: View {
         .task(prepare)
         .sheet(item: $editingService) { service in
             let row = display.rows.first { $0.id == service.id }
-            EditPublishedServiceSheet(
+            if let certificate = gateway.certificate(for: service) {
+                EditPublishedServiceSheet(
                 service: service,
                 targetOptions: PublishedServiceTargetOption.options(
                     for: service,
@@ -114,16 +115,19 @@ struct ServicesView: View {
                     members: gateway.topologyMembers
                 ),
                 dnsCredentials: gateway.dnsCredentials,
+                certificate: certificate,
+                defaultDNSCredentialID: gateway.defaultDNSCredentialID,
                 sslProvider: row?.sslProvider
                     ?? PublishedServiceSSLProvider(acmeConfiguration: gateway.acmeConfiguration),
-                onConfigureSSL: openGatewaySettings
-            ) { target, port, challenge in
-                updateService(
+                onManageDNSCredentials: openGatewaySettings
+                ) { target, port, certificateSelection in
+                try await updateService(
                     target: target,
                     port: port,
-                    challenge: challenge,
+                    certificateSelection: certificateSelection,
                     service: service
                 )
+                }
             }
         }
         .alert(
@@ -166,7 +170,7 @@ struct ServicesView: View {
             } actions: {
                 Button("Publish Service…", systemImage: "plus", action: onPublishService)
                     .buttonStyle(.borderedProminent)
-                    .disabled(!canBeginPublishingService)
+                    .disabled(!serviceCreationAvailability.isAvailable)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if display.searchIsActive, display.filteredRows.isEmpty {
@@ -174,7 +178,7 @@ struct ServicesView: View {
                 "No Search Results",
                 systemImage: "magnifyingglass",
                 description: Text(
-                    "Try a domain, target, address, protocol, SSL provider, or status."
+                    "Try a domain, target, address, protocol, HTTPS state, or status."
                 )
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -185,14 +189,15 @@ struct ServicesView: View {
                 globalScrolling: $store.isAnyViewScrolling,
                 gatewayBusy: gateway.isBusy,
                 workingServiceID: workingServiceID,
+                feedbackOperations: gateway.serviceFeedbackOperations,
                 onSetEnabled: setEnabled,
                 onOpen: open,
                 onCopyDomain: copyDomain,
                 onCopyProxyIPv4: copyProxyIPv4,
                 onEditService: editService,
-                onConfigureSSL: openGatewaySettings,
                 onRetryCertificate: retryCertificate,
-                onDelete: requestDeletion
+                onDelete: requestDeletion,
+                onConsumeFeedbackOperation: gateway.consumeServiceFeedbackOperation
             )
         }
     }
@@ -230,28 +235,31 @@ struct ServicesView: View {
     private func updateService(
         target: PublishedServiceTargetOption,
         port: Int,
-        challenge: GatewayPublishedServiceChallenge,
+        certificateSelection: GatewayServiceCertificateSelection,
         service: GatewayPublishedService
-    ) {
-        perform(service) {
-            try await gateway.updateService(
-                serviceID: service.id,
-                targetPeerID: target.peerID,
-                targetInstanceID: target.instanceID,
-                targetHostname: target.hostname,
-                magicDNSSuffix: gateway.appliedMagicDNSSuffix
-                    ?? store.magicDNSSettings.dnsSuffix,
-                port: port,
-                challenge: challenge
-            )
-        }
+    ) async throws {
+        workingServiceID = service.id
+        defer { workingServiceID = nil }
+        try await gateway.updateService(
+            serviceID: service.id,
+            targetPeerID: target.peerID,
+            targetInstanceID: target.instanceID,
+            targetHostname: target.hostname,
+            magicDNSSuffix: gateway.appliedMagicDNSSuffix
+                ?? store.magicDNSSettings.dnsSuffix,
+            port: port,
+            certificateSelection: certificateSelection
+        )
     }
 
     private func retryCertificate(_ service: GatewayPublishedService) {
         Task {
             workingServiceID = service.id
             errorMessage = nil
-            await gateway.requestRenewal(certificateID: service.id)
+            await gateway.requestRenewal(
+                certificateID: service.certificateID,
+                serviceID: service.id
+            )
             errorMessage = gateway.lastError
             workingServiceID = nil
         }

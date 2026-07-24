@@ -1,6 +1,8 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use super::config::GATEWAY_SCHEMA_VERSION;
+use super::config::{
+    CertificateAuthorityKind, DeploymentIdentity, DnsProviderKind, GATEWAY_SCHEMA_VERSION,
+};
 
 #[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -18,12 +20,13 @@ pub enum GatewayState {
 pub struct GatewayStatusSnapshot {
     pub schema_version: u32,
     pub state: GatewayState,
-    pub config_generation: u64,
+    pub applied_deployment: Option<DeploymentIdentity>,
     pub listeners: ListenerStatus,
     pub routes: Vec<RouteStatus>,
     pub certificates: Vec<CertificateStatus>,
     pub pending_dns_cleanups: usize,
-    pub last_error: Option<String>,
+    pub provider_cooldowns: Vec<ProviderCooldownStatus>,
+    pub runtime_issues: Vec<RuntimeIssue>,
 }
 
 impl Default for GatewayStatusSnapshot {
@@ -31,12 +34,13 @@ impl Default for GatewayStatusSnapshot {
         Self {
             schema_version: GATEWAY_SCHEMA_VERSION,
             state: GatewayState::Stopped,
-            config_generation: 0,
+            applied_deployment: None,
             listeners: ListenerStatus::default(),
             routes: Vec::new(),
             certificates: Vec::new(),
             pending_dns_cleanups: 0,
-            last_error: None,
+            provider_cooldowns: Vec::new(),
+            runtime_issues: Vec::new(),
         }
     }
 }
@@ -67,60 +71,157 @@ pub struct RouteStatus {
     pub resolved_ipv4s: Vec<String>,
     pub expected_ipv4: Option<String>,
     pub certificate_id: String,
+    pub serving_certificate_id: Option<String>,
+    pub serving_mode: RouteServingMode,
     pub resolution_state: RouteResolutionState,
     pub last_resolved_at: Option<String>,
     pub last_online_at: Option<String>,
     pub last_error: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum CertificateState {
-    #[default]
-    Pending,
-    Issuing,
-    Active,
-    Renewing,
-    Degraded,
-    Failed,
-}
-
-#[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum CertificateServingMode {
-    #[default]
-    PendingHttps,
+pub enum RouteServingMode {
     Https,
     HttpOnly,
+    #[default]
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CertificateAvailability {
+    #[default]
+    Unavailable,
+    Valid,
+    Expired,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CertificateOperation {
+    #[default]
+    Idle,
+    Queued,
+    Issuing,
+    Renewing,
+    Replacing,
+    WaitingRetry,
+    Suspended,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CertificateStage {
+    Account,
+    Ordering,
+    ProvisioningChallenge,
+    Validating,
+    Finalizing,
+    Downloading,
+    Installing,
+    Cleanup,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureSource {
+    Configuration,
+    Network,
+    AcmeAccount,
+    AcmeOrder,
+    AcmeAuthorization,
+    AcmeFinalize,
+    CertificateDownload,
+    CertificateValidation,
+    Storage,
+    DnsProvider,
+    DnsPropagation,
+    DnsCleanup,
+    Runtime,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureKind {
+    Transient,
+    RateLimited,
+    UserActionRequired,
+    Permanent,
+    Interrupted,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CertificateFailure {
+    pub source: FailureSource,
+    pub kind: FailureKind,
+    pub code: String,
+    pub message: String,
+    pub occurred_at: String,
+    pub retry_at: Option<String>,
+    pub authority: Option<CertificateAuthorityKind>,
+    pub challenge: Option<String>,
+    pub dns_provider: Option<DnsProviderKind>,
+    pub acme_problem_type: Option<String>,
+    pub http_status: Option<u16>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ProviderCooldownStatus {
+    pub authority: CertificateAuthorityKind,
+    pub until: String,
+    pub reason: CertificateFailure,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RuntimeIssue {
+    pub code: String,
+    pub message: String,
+    pub occurred_at: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct CertificateStatus {
     pub id: String,
     pub domains: Vec<String>,
+    pub authority: CertificateAuthorityKind,
     pub challenge: String,
-    pub state: CertificateState,
-    pub serving_mode: CertificateServingMode,
+    pub active_authority: Option<CertificateAuthorityKind>,
+    pub active_challenge: Option<String>,
+    pub availability: CertificateAvailability,
+    pub operation: CertificateOperation,
+    pub stage: Option<CertificateStage>,
     pub not_before: Option<String>,
     pub not_after: Option<String>,
     pub next_renewal_at: Option<String>,
+    pub next_attempt_at: Option<String>,
     pub last_attempt_at: Option<String>,
-    pub last_error: Option<String>,
+    pub failure: Option<CertificateFailure>,
 }
 
 impl CertificateStatus {
-    pub fn pending(id: String, domains: Vec<String>, challenge: String) -> Self {
+    pub fn pending(
+        id: String,
+        domains: Vec<String>,
+        authority: CertificateAuthorityKind,
+        challenge: String,
+    ) -> Self {
         Self {
             id,
             domains,
+            authority,
             challenge,
-            state: CertificateState::Pending,
-            serving_mode: CertificateServingMode::PendingHttps,
+            active_authority: None,
+            active_challenge: None,
+            availability: CertificateAvailability::Unavailable,
+            operation: CertificateOperation::Queued,
+            stage: None,
             not_before: None,
             not_after: None,
             next_renewal_at: None,
+            next_attempt_at: None,
             last_attempt_at: None,
-            last_error: None,
+            failure: None,
         }
     }
 }

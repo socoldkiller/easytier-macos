@@ -4,7 +4,7 @@ package enum GatewayPrivilegedHelperConstants {
     package static let bundleIdentifier = "com.coldkiller.gateway.helper"
     package static let machServiceName = "com.coldkiller.gateway.helper"
     package static let launchDaemonPlistName = "com.coldkiller.gateway.helper.plist"
-    package static let protocolVersion = "5"
+    package static let protocolVersion = "6"
     package static let pingPayload = "pong:\(protocolVersion)"
 }
 

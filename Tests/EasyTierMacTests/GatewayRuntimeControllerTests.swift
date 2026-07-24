@@ -4,55 +4,189 @@ import Testing
 @testable import EasyTierMac
 
 @MainActor
-@Test func publishingServiceStartsDerivedConfigurationWhenGatewayIsEnabled() async throws {
+@Test func publishingServiceConfiguresAutomaticHTTPSAndStartsGateway() async throws {
     let store = InMemoryGatewayConfigurationStore()
     let client = RecordingGatewayClient()
     let controller = makeController(store: store, client: client)
     await controller.load()
-    #expect(!controller.isTLSConfigured)
-
-    let draft = try await controller.createDraft(
-        networkConfigID: "network-a",
-        targetPeerID: "peer-a",
-        targetHostname: "a",
-        magicDNSSuffix: "et.net.",
-        serviceLabel: "abc",
-        targetPort: 3_000
+    try await controller.saveDNSCredential(
+        descriptor: GatewayDNSCredentialDescriptor(
+            id: "cloudflare-main",
+            provider: .cloudflare,
+            label: "Cloudflare Main"
+        ),
+        secret: .cloudflare(apiToken: "test-token")
     )
-    try await controller.configureACME(
-        contactEmail: "ops@example.com",
-        termsOfServiceAgreed: true
-    )
-    #expect(controller.isTLSConfigured)
-    #expect(controller.acmeConfiguration?.contactEmail == "ops@example.com")
+    #expect(!controller.isAutomaticHTTPSReady)
     await controller.reconcileTopology(
         networkConfigID: "network-a",
         allowedIPv4CIDR: "10.0.0.0/24",
         magicDNSSuffix: "et.net.",
         hostnamesByPeerID: ["peer-a": "a"]
     )
-    try await controller.setServiceEnabled(true, serviceID: draft.id)
-    #expect(!controller.desiredEnabled)
-    #expect(await client.callNames().isEmpty)
-
-    try await controller.setGatewayEnabled(true)
+    let service = try await controller.createService(
+        networkConfigID: "network-a",
+        targetPeerID: "peer-a",
+        targetHostname: "a",
+        magicDNSSuffix: "et.net.",
+        serviceLabel: "abc",
+        targetPort: 3_000,
+        contactEmail: " ops@example.com "
+    )
 
     let runtime = try #require(await client.lastStartedConfiguration())
     let route = try #require(runtime.routes.first)
     let saved = try #require(await store.currentState())
     #expect(controller.desiredEnabled)
+    #expect(controller.isAutomaticHTTPSReady)
     #expect(controller.status.state == .running)
+    #expect(saved.acmeAccount?.contactEmail == "ops@example.com")
+    #expect(saved.acmeAccount?.acceptedAuthorities == GatewayCertificateAuthority.allCases)
+    #expect(saved.services.first?.id == service.id)
     #expect(saved.services.first?.desiredEnabled == true)
     #expect(saved.gatewayEnabled)
     #expect(runtime.localDomains == ["abc.a.et.net"])
     #expect(route.domain == "abc.a.et.net")
     #expect(route.upstream.url == "http://a.et.net:3000")
     #expect(route.upstream.allowedIPv4CIDR == "10.0.0.0/24")
+    let feedback = try #require(controller.serviceFeedbackOperations[service.id])
+    #expect(feedback.kind == .publish)
+    #expect(feedback.expectsEnabledService)
+    #expect(feedback.targetDeployment == runtime.deployment)
+    controller.consumeServiceFeedbackOperation(serviceID: service.id, operationID: UUID())
+    #expect(controller.serviceFeedbackOperations[service.id]?.id == feedback.id)
+    controller.consumeServiceFeedbackOperation(serviceID: service.id, operationID: feedback.id)
+    #expect(controller.serviceFeedbackOperations[service.id] == nil)
     #expect(await client.callNames() == [
         "retain:false",
         "start",
         "status",
     ])
+}
+
+@MainActor
+@Test func publishingWithoutCertificateEmailDoesNotPersistPartialState() async throws {
+    let store = InMemoryGatewayConfigurationStore()
+    let client = RecordingGatewayClient()
+    let controller = makeController(store: store, client: client)
+    await controller.load()
+    await controller.reconcileTopology(
+        networkConfigID: "network-a",
+        allowedIPv4CIDR: "10.0.0.0/24",
+        magicDNSSuffix: "et.net.",
+        hostnamesByPeerID: ["peer-a": "a"]
+    )
+
+    await #expect(throws: GatewayConfigurationValidationError.self) {
+        try await controller.createService(
+            networkConfigID: "network-a",
+            targetPeerID: "peer-a",
+            targetHostname: "a",
+            magicDNSSuffix: "et.net.",
+            serviceLabel: "abc",
+            targetPort: 3_000
+        )
+    }
+
+    #expect(await store.currentState() == nil)
+    #expect(controller.acmeConfiguration == nil)
+    #expect(controller.services.isEmpty)
+    #expect(!controller.desiredEnabled)
+    #expect(await client.callNames().isEmpty)
+}
+
+@MainActor
+@Test func automaticServicesOnTheSameNodeReuseOneWildcardCertificate() async throws {
+    let store = InMemoryGatewayConfigurationStore()
+    let client = RecordingGatewayClient()
+    let controller = makeController(store: store, client: client)
+    await controller.load()
+    try await controller.saveDNSCredential(
+        descriptor: GatewayDNSCredentialDescriptor(
+            id: "cloudflare-main",
+            provider: .cloudflare,
+            label: "Cloudflare Main"
+        ),
+        secret: .cloudflare(apiToken: "test-token")
+    )
+    await controller.reconcileTopology(
+        networkConfigID: "network-a",
+        allowedIPv4CIDR: "10.0.0.0/24",
+        magicDNSSuffix: "et.net.",
+        hostnamesByPeerID: ["peer-a": "a"]
+    )
+
+    let first = try await controller.createService(
+        networkConfigID: "network-a",
+        targetPeerID: "peer-a",
+        targetHostname: "a",
+        magicDNSSuffix: "et.net.",
+        serviceLabel: "api",
+        targetPort: 3_000,
+        contactEmail: "ops@example.com"
+    )
+    let second = try await controller.createService(
+        networkConfigID: "network-a",
+        targetPeerID: "peer-a",
+        targetHostname: "a",
+        magicDNSSuffix: "et.net.",
+        serviceLabel: "admin",
+        targetPort: 4_000
+    )
+
+    let saved = try #require(await store.currentState())
+    #expect(first.certificateID == second.certificateID)
+    #expect(saved.certificates.count == 1)
+    #expect(saved.certificates[0].domains == ["*.a.et.net"])
+    #expect(
+        saved.certificates[0].strategy
+            == .automaticWildcard(credentialID: "cloudflare-main")
+    )
+}
+
+@MainActor
+@Test func publishingWithoutServiceLabelUsesTargetDomainCertificateAndPort80() async throws {
+    let store = InMemoryGatewayConfigurationStore()
+    let client = RecordingGatewayClient()
+    let controller = makeController(store: store, client: client)
+    await controller.load()
+    try await controller.saveDNSCredential(
+        descriptor: GatewayDNSCredentialDescriptor(
+            id: "cloudflare-main",
+            provider: .cloudflare,
+            label: "Cloudflare Main"
+        ),
+        secret: .cloudflare(apiToken: "test-token")
+    )
+    await controller.reconcileTopology(
+        networkConfigID: "network-a",
+        allowedIPv4CIDR: "10.0.0.0/24",
+        magicDNSSuffix: "et.net.",
+        hostnamesByPeerID: ["peer-a": "a"]
+    )
+
+    let service = try await controller.createService(
+        networkConfigID: "network-a",
+        targetPeerID: "peer-a",
+        targetHostname: "a",
+        magicDNSSuffix: "et.net.",
+        serviceLabel: "",
+        targetPort: 80,
+        contactEmail: "ops@example.com"
+    )
+
+    let runtime = try #require(await client.lastStartedConfiguration())
+    let saved = try #require(await store.currentState())
+    #expect(service.publicHostname == "a.et.net")
+    #expect(saved.certificates.count == 1)
+    #expect(saved.certificates[0].domains == ["a.et.net"])
+    #expect(
+        saved.certificates[0].strategy
+            == .automaticWildcard(credentialID: "cloudflare-main")
+    )
+    #expect(runtime.localDomains == ["a.et.net"])
+    #expect(runtime.routes.first?.domain == "a.et.net")
+    #expect(runtime.routes.first?.upstream.url == "http://a.et.net:80")
 }
 
 @MainActor
@@ -70,8 +204,89 @@ import Testing
     #expect(runtime.certificates.isEmpty)
     #expect(runtime.routes.isEmpty)
     #expect(runtime.localDomains.isEmpty)
-    #expect(!runtime.acme.termsOfServiceAgreed)
+    #expect(runtime.acme.acceptedAuthorities.isEmpty)
     #expect(await client.callNames() == ["retain:false", "start", "status"])
+}
+
+@MainActor
+@Test func newDNS01ServicePersistsAndAppliesOnlyItsFinalPolicy() async throws {
+    let configurationStore = InMemoryGatewayConfigurationStore()
+    let credentialStore = InMemoryGatewayCredentialStore()
+    let client = RecordingGatewayClient()
+    let controller = GatewayRuntimeController(
+        client: client,
+        configurationStore: configurationStore,
+        credentialStore: credentialStore,
+        helperRegistration: nil
+    )
+    await controller.load()
+    try await controller.configureAutomaticHTTPS(contactEmail: "ops@example.com")
+    await controller.reconcileTopology(
+        networkConfigID: "network-a",
+        allowedIPv4CIDR: "10.0.0.10/24",
+        magicDNSSuffix: "et.net.",
+        hostnamesByPeerID: ["peer-a": "a"]
+    )
+    let descriptor = GatewayDNSCredentialDescriptor(
+        id: "cloudflare-main",
+        provider: .cloudflare,
+        label: "Cloudflare Main"
+    )
+    try await controller.saveDNSCredential(
+        descriptor: descriptor,
+        secret: .cloudflare(apiToken: "test-token")
+    )
+
+    let service = try await controller.createService(
+        networkConfigID: "network-a",
+        targetPeerID: "peer-a",
+        targetHostname: "a",
+        magicDNSSuffix: "et.net.",
+        serviceLabel: "dns",
+        targetPort: 3_000,
+        certificateSelection: .custom(
+            authority: .zeroSSL,
+            challenge: .dns01(credentialID: descriptor.id)
+        )
+    )
+
+    let saved = try #require(await configurationStore.currentState())
+    #expect(saved.services == [service])
+    #expect(saved.lastKnownNetworkIPv4CIDR == "10.0.0.10/24")
+    #expect(
+        saved.certificates[0].strategy
+            == .custom(
+                authority: .zeroSSL,
+                challenge: .dns01(credentialID: descriptor.id)
+            )
+    )
+    #expect(saved.gatewayEnabled)
+    let expectedRuntime = try GatewayConfigurationFactory.makeRuntimeConfiguration(from: saved)
+    #expect(expectedRuntime.certificates.first?.authority == .zeroSSL)
+    #expect(
+        expectedRuntime.certificates.first?.challenge
+            == .dns01(
+                GatewayDNS01Configuration(
+                    provider: .cloudflare,
+                    credentialID: descriptor.id,
+                    credentialRevision: descriptor.revision
+                )
+            )
+    )
+
+    let runtime = try #require(await client.lastStartedConfiguration())
+    let certificate = try #require(runtime.certificates.first)
+    #expect(certificate.authority == .zeroSSL)
+    #expect(
+        certificate.challenge
+            == .dns01(
+                GatewayDNS01Configuration(
+                    provider: .cloudflare,
+                    credentialID: descriptor.id,
+                    credentialRevision: descriptor.revision
+                )
+            )
+    )
 }
 
 @MainActor
@@ -92,8 +307,13 @@ import Testing
     #expect(saved.publishingNetworkConfigID == "network-a")
     #expect(controller.status.state == .running)
     let applied = try #require(await client.lastAppliedConfiguration())
-    #expect(applied.certificates.isEmpty)
+    #expect(applied.certificates.count == 1)
+    #expect(applied.certificates[0].renewalEnabled == false)
     #expect(applied.routes.isEmpty)
+    let feedback = try #require(controller.serviceFeedbackOperations["service-a"])
+    #expect(feedback.kind == .disable)
+    #expect(!feedback.expectsEnabledService)
+    #expect(feedback.targetDeployment == applied.deployment)
     #expect(await client.callNames() == [
         "retain:false",
         "start",
@@ -102,6 +322,115 @@ import Testing
         "apply",
         "status",
     ])
+}
+
+@MainActor
+@Test func certificateRetryTargetsOnlyTheRequestedServiceFeedbackRow() async throws {
+    let state = gatewayControllerTestState(gatewayEnabled: true, serviceEnabled: true)
+    let store = InMemoryGatewayConfigurationStore(state: state)
+    let client = RecordingGatewayClient()
+    let controller = makeController(store: store, client: client)
+    await controller.load()
+    await controller.reconcile()
+
+    await controller.requestRenewal(
+        certificateID: state.services[0].certificateID,
+        serviceID: state.services[0].id
+    )
+
+    let feedback = try #require(controller.serviceFeedbackOperations["service-a"])
+    #expect(feedback.kind == .retryCertificate)
+    #expect(feedback.serviceID == "service-a")
+    #expect(feedback.targetDeployment == controller.status.appliedDeployment)
+    #expect(await client.callNames().suffix(2) == ["renew", "status"])
+}
+
+@MainActor
+@Test func failedApplyKeepsDesiredPolicyAndReportsAppliedDivergence() async throws {
+    let state = gatewayControllerTestState(gatewayEnabled: true, serviceEnabled: true)
+    let configurationStore = InMemoryGatewayConfigurationStore(state: state)
+    let client = RecordingGatewayClient(applyFailures: 10)
+    let controller = makeController(store: configurationStore, client: client)
+    await controller.load()
+    await controller.reconcile()
+    let initiallyApplied = try #require(controller.status.appliedDeployment)
+
+    try await controller.updateCertificateSelection(
+        serviceID: "service-a",
+        selection: .custom(
+            authority: .zeroSSL,
+            challenge: .http01
+        )
+    )
+
+    let saved = try #require(await configurationStore.currentState())
+    #expect(
+        saved.certificates.first { $0.id == saved.services[0].certificateID }?.strategy
+            == .custom(authority: .zeroSSL, challenge: .http01)
+    )
+    #expect(controller.status.appliedDeployment == initiallyApplied)
+    #expect(controller.convergence.phase == .retryScheduled)
+    #expect(controller.convergence.desired != initiallyApplied)
+    #expect(controller.convergence.applied == initiallyApplied)
+    #expect(controller.convergence.isServingPreviousConfiguration)
+    await controller.stopForLifecycle()
+}
+
+@MainActor
+@Test func ambiguousApplyFailureConvergesWhenStatusProvesTheDeployment() async throws {
+    let state = gatewayControllerTestState(gatewayEnabled: true, serviceEnabled: true)
+    let configurationStore = InMemoryGatewayConfigurationStore(state: state)
+    let client = RecordingGatewayClient(applyThenThrowOnce: true)
+    let controller = makeController(store: configurationStore, client: client)
+    await controller.load()
+    await controller.reconcile()
+
+    try await controller.updatePort(serviceID: "service-a", port: 4_000)
+
+    let saved = try #require(await configurationStore.currentState())
+    #expect(saved.services[0].targetPort == 4_000)
+    #expect(controller.convergence.phase == .converged)
+    #expect(controller.convergence.desired == controller.status.appliedDeployment)
+    #expect(await client.callNames().filter { $0 == "apply" }.count == 1)
+    await controller.stopForLifecycle()
+}
+
+@MainActor
+@Test func missingDNSCredentialBlocksApplyWithoutChangingDesiredPolicy() async throws {
+    var state = gatewayControllerTestState(gatewayEnabled: true, serviceEnabled: true)
+    let descriptor = GatewayDNSCredentialDescriptor(
+        id: "missing-cloudflare",
+        provider: .cloudflare,
+        label: "Missing Cloudflare"
+    )
+    state.dnsCredentials = [descriptor]
+    state.certificates = [GatewayManagedCertificate(
+        id: "service-a-certificate",
+        domains: ["abc.a.et.net"],
+        strategy: .custom(
+            authority: .zeroSSL,
+            challenge: .dns01(credentialID: descriptor.id)
+        )
+    )]
+    state.services[0].certificateID = "service-a-certificate"
+    state.defaultDNSCredentialID = descriptor.id
+    let configurationStore = InMemoryGatewayConfigurationStore(state: state)
+    let client = RecordingGatewayClient()
+    let controller = GatewayRuntimeController(
+        client: client,
+        configurationStore: configurationStore,
+        credentialStore: InMemoryGatewayCredentialStore(),
+        helperRegistration: nil
+    )
+
+    await controller.load()
+    await controller.reconcile()
+
+    #expect(controller.convergence.phase == .blocked)
+    #expect(controller.convergence.applied == nil)
+    #expect(controller.persistedState?.certificates == state.certificates)
+    #expect(controller.lastError?.contains("is missing") == true)
+    #expect(await client.callNames() == ["status"])
 }
 
 @MainActor
@@ -629,7 +958,15 @@ import Testing
             serviceLabel: "def",
             publicHostname: "def.b.et.net",
             targetPort: 8_080,
-            desiredEnabled: true
+            desiredEnabled: true,
+            certificateID: "service-b-certificate"
+        )
+    )
+    state.certificates.append(
+        GatewayManagedCertificate(
+            id: "service-b-certificate",
+            domains: ["def.b.et.net"],
+            strategy: .custom(authority: .letsEncrypt, challenge: .http01)
         )
     )
     let configurationStore = InMemoryGatewayConfigurationStore(state: state)
@@ -684,18 +1021,155 @@ import Testing
         let started = await client.lastStartedConfiguration()
         guard let runtime = applied ?? started else { return false }
         let routes = Dictionary(uniqueKeysWithValues: runtime.routes.map { ($0.certificateID, $0) })
-        return routes["service-a"]?.upstream.availability == .ready
-            && routes["service-b"]?.upstream.availability == .unavailable
+        return routes["service-a-certificate"]?.upstream.availability == .ready
+            && routes["service-b-certificate"]?.upstream.availability == .unavailable
     }
 
     let appliedRuntime = await client.lastAppliedConfiguration()
     let startedRuntime = await client.lastStartedConfiguration()
     let runtime = try #require(appliedRuntime ?? startedRuntime)
     let routes = Dictionary(uniqueKeysWithValues: runtime.routes.map { ($0.certificateID, $0) })
-    #expect(routes["service-a"]?.upstream.availability == .ready)
-    #expect(routes["service-a"]?.upstream.expectedIPv4 == "10.0.0.20")
-    #expect(routes["service-b"]?.upstream.availability == .unavailable)
-    #expect(routes["service-b"]?.upstream.expectedIPv4 == nil)
+    #expect(routes["service-a-certificate"]?.upstream.availability == .ready)
+    #expect(routes["service-a-certificate"]?.upstream.expectedIPv4 == "10.0.0.20")
+    #expect(routes["service-b-certificate"]?.upstream.availability == .unavailable)
+    #expect(routes["service-b-certificate"]?.upstream.expectedIPv4 == nil)
+}
+
+@MainActor
+@Test func baseDomainAndChildServiceUseMagicDNSAddressWithoutResolverLoop() async throws {
+    var state = gatewayControllerTestState(gatewayEnabled: true, serviceEnabled: true)
+    state.services[0].targetPeerID = "20"
+    state.services[0].targetInstanceID = "target-instance"
+    state.services[0].serviceLabel = ""
+    state.services[0].publicHostname = "a.et.net"
+    state.services[0].targetPort = 80
+    state.certificates[0].domains = ["a.et.net"]
+    state.services.append(
+        GatewayPublishedService(
+            id: "service-b",
+            networkConfigID: "network-a",
+            targetPeerID: "20",
+            targetInstanceID: "target-instance",
+            publicNodeLabel: "a",
+            publicDNSSuffix: "et.net.",
+            lastKnownTargetHostname: "a",
+            lastKnownMagicDNSSuffix: "et.net.",
+            serviceLabel: "clash",
+            publicHostname: "clash.a.et.net",
+            targetPort: 9_090,
+            desiredEnabled: true,
+            certificateID: "service-b-certificate"
+        )
+    )
+    state.certificates.append(
+        GatewayManagedCertificate(
+            id: "service-b-certificate",
+            domains: ["clash.a.et.net"],
+            strategy: .custom(authority: .letsEncrypt, challenge: .http01)
+        )
+    )
+    let configurationStore = InMemoryGatewayConfigurationStore(state: state)
+    let client = RecordingGatewayClient()
+    let resolver = MutableMagicDNSResolver()
+    await resolver.setAddresses(["10.0.0.20"], for: "a.et.net")
+    await resolver.setAddresses(["10.0.0.10"], for: "local.et.net")
+    let controller = GatewayRuntimeController(
+        client: client,
+        configurationStore: configurationStore,
+        helperRegistration: nil,
+        magicDNSResolver: resolver
+    )
+    let appStore = EasyTierAppStore(client: PreviewEasyTierCoreClient(), storage: .isolatedForTesting())
+    var config = NetworkConfig(instance_id: "network-a", network_name: "mesh")
+    config.enable_magic_dns = true
+    appStore.configs = [config]
+    appStore.selectedConfigID = config.instance_id
+    let detail = NetworkInstanceRunningInfo(
+        my_node_info: NodeInfo(
+            virtual_ipv4: IPv4InetValue(rawValue: "10.0.0.10/24"),
+            hostname: "local",
+            peer_id: 10
+        ),
+        peer_route_pairs: [
+            gatewayTestPeerRoute(
+                peerID: 20,
+                ipv4: "10.0.0.20/24",
+                hostname: "a",
+                instanceID: "target-instance"
+            ),
+        ],
+        running: true,
+        applied_magic_dns_enabled: true,
+        applied_magic_dns_suffix: "et.net.",
+        instance_id: config.instance_id
+    )
+    appStore.instances = [
+        NetworkInstance(
+            instance_id: config.instance_id,
+            name: config.network_name,
+            running: true,
+            detail: detail
+        ),
+    ]
+    appStore.runtimeDetails = [config.network_name: detail]
+    controller.bind(to: appStore)
+    await controller.load()
+
+    await waitUntil {
+        let applied = await client.lastAppliedConfiguration()
+        let started = await client.lastStartedConfiguration()
+        return controller.magicDNSState(for: "service-a") == .ready
+            && controller.magicDNSState(for: "service-b") == .ready
+            && (applied ?? started)?.routes.count == 2
+    }
+
+    let appliedRuntime = await client.lastAppliedConfiguration()
+    let startedRuntime = await client.lastStartedConfiguration()
+    let runtime = try #require(appliedRuntime ?? startedRuntime)
+    let routes = Dictionary(uniqueKeysWithValues: runtime.routes.map { ($0.domain, $0) })
+    #expect(routes["a.et.net"]?.upstream.url == "http://10.0.0.20:80")
+    #expect(routes["clash.a.et.net"]?.upstream.url == "http://10.0.0.20:9090")
+    #expect(routes.values.allSatisfy { $0.upstream.availability == .ready })
+    #expect(routes.values.allSatisfy { $0.upstream.expectedIPv4 == "10.0.0.20" })
+
+    await resolver.setAddresses(["10.0.0.21"], for: "a.et.net")
+    let movedDetail = NetworkInstanceRunningInfo(
+        my_node_info: detail.my_node_info,
+        peer_route_pairs: [
+            gatewayTestPeerRoute(
+                peerID: 20,
+                ipv4: "10.0.0.21/24",
+                hostname: "a",
+                instanceID: "target-instance"
+            ),
+        ],
+        running: true,
+        applied_magic_dns_enabled: true,
+        applied_magic_dns_suffix: "et.net.",
+        instance_id: config.instance_id
+    )
+    appStore.instances = [
+        NetworkInstance(
+            instance_id: config.instance_id,
+            name: config.network_name,
+            running: true,
+            detail: movedDetail
+        ),
+    ]
+    appStore.runtimeDetails = [config.network_name: movedDetail]
+    controller.environmentDidChange(store: appStore)
+
+    await waitUntil {
+        guard let runtime = await client.lastAppliedConfiguration() else { return false }
+        return runtime.routes.allSatisfy {
+            $0.upstream.url.contains("10.0.0.21")
+                && $0.upstream.expectedIPv4 == "10.0.0.21"
+        }
+    }
+
+    let movedRuntime = try #require(await client.lastAppliedConfiguration())
+    #expect(movedRuntime.routes.count == 2)
+    #expect(movedRuntime.routes.allSatisfy { $0.upstream.url.contains("10.0.0.21") })
 }
 
 @MainActor
@@ -937,6 +1411,7 @@ private func makeController(
     GatewayRuntimeController(
         client: client,
         configurationStore: store,
+        credentialStore: InMemoryGatewayCredentialStore(),
         helperRegistration: nil
     )
 }
@@ -947,20 +1422,34 @@ private actor RecordingGatewayClient: GatewayClient {
     private var startedConfigurations: [GatewayConfiguration] = []
     private var appliedConfigurations: [GatewayConfiguration] = []
     private var remainingReadyApplyFailures: Int
+    private var remainingApplyFailures: Int
+    private var applyThenThrowOnce: Bool
     private var readyApplyAttempts = 0
+    private var appliedDeployment: GatewayDeploymentIdentity?
 
-    init(readyApplyFailures: Int = 0) {
+    init(
+        readyApplyFailures: Int = 0,
+        applyFailures: Int = 0,
+        applyThenThrowOnce: Bool = false
+    ) {
         remainingReadyApplyFailures = readyApplyFailures
+        remainingApplyFailures = applyFailures
+        self.applyThenThrowOnce = applyThenThrowOnce
     }
 
     func start(configuration: GatewayConfiguration) {
         calls.append("start")
         startedConfigurations.append(configuration)
+        appliedDeployment = configuration.deployment
         isRunning = true
     }
 
     func apply(configuration: GatewayConfiguration) throws {
         calls.append("apply")
+        if remainingApplyFailures > 0 {
+            remainingApplyFailures -= 1
+            throw CancellationError()
+        }
         if configuration.routes.contains(where: { $0.upstream.availability == .ready }) {
             readyApplyAttempts += 1
             if remainingReadyApplyFailures > 0 {
@@ -969,17 +1458,24 @@ private actor RecordingGatewayClient: GatewayClient {
             }
         }
         appliedConfigurations.append(configuration)
+        appliedDeployment = configuration.deployment
+        if applyThenThrowOnce {
+            applyThenThrowOnce = false
+            throw CancellationError()
+        }
     }
 
     func stop() {
         calls.append("stop")
         isRunning = false
+        appliedDeployment = nil
     }
 
     func status() -> GatewayStatus {
         calls.append("status")
         var status = GatewayStatus.stopped
         status.state = isRunning ? .running : .stopped
+        status.appliedDeployment = appliedDeployment
         return status
     }
 
@@ -1005,23 +1501,33 @@ private actor RecordingGatewayClient: GatewayClient {
 private actor SequencedStatusGatewayClient: GatewayClient {
     private var statuses: [GatewayStatus]
     private var lastStatus: GatewayStatus
+    private var appliedDeployment: GatewayDeploymentIdentity?
 
     init(statuses: [GatewayStatus]) {
         self.statuses = statuses
         lastStatus = statuses.first ?? .stopped
     }
 
-    func start(configuration _: GatewayConfiguration) {}
+    func start(configuration: GatewayConfiguration) {
+        appliedDeployment = configuration.deployment
+    }
 
-    func apply(configuration _: GatewayConfiguration) {}
+    func apply(configuration: GatewayConfiguration) {
+        appliedDeployment = configuration.deployment
+    }
 
     func stop() {
         lastStatus = .stopped
+        appliedDeployment = nil
     }
 
     func status() -> GatewayStatus {
-        guard !statuses.isEmpty else { return lastStatus }
-        lastStatus = statuses.removeFirst()
+        if !statuses.isEmpty {
+            lastStatus = statuses.removeFirst()
+        }
+        if lastStatus.state == .running, lastStatus.appliedDeployment == nil {
+            lastStatus.appliedDeployment = appliedDeployment
+        }
         return lastStatus
     }
 
@@ -1053,6 +1559,56 @@ private actor InMemoryGatewayConfigurationStore: GatewayConfigurationStoring {
 
     func numberOfSaves() -> Int {
         saveCount
+    }
+}
+
+private actor InMemoryGatewayCredentialStore: GatewayCredentialStoring {
+    private var secrets: [String: GatewayCredentialSecret]
+
+    init(secrets: [String: GatewayCredentialSecret] = [
+        "cloudflare-main": .cloudflare(apiToken: "test-token"),
+    ]) {
+        self.secrets = secrets
+    }
+
+    func save(_ secret: GatewayCredentialSecret, id: String) {
+        secrets[id] = secret
+    }
+
+    func load(id: String) -> GatewayCredentialSecret? {
+        secrets[id]
+    }
+
+    func remove(id: String) {
+        secrets.removeValue(forKey: id)
+    }
+
+    func resolve(_ descriptors: [GatewayDNSCredentialDescriptor]) throws -> GatewaySecrets {
+        var cloudflare: [String: GatewayCloudflareSecret] = [:]
+        var aliyun: [String: GatewayAliyunSecret] = [:]
+        for descriptor in descriptors {
+            guard let secret = secrets[descriptor.id] else {
+                throw GatewayCredentialStoreError.missingCredential(
+                    id: descriptor.id,
+                    label: descriptor.label
+                )
+            }
+            switch (descriptor.provider, secret) {
+            case let (.cloudflare, .cloudflare(apiToken)):
+                cloudflare[descriptor.id] = GatewayCloudflareSecret(apiToken: apiToken)
+            case let (.aliyun, .aliyun(accessKeyID, accessKeySecret)):
+                aliyun[descriptor.id] = GatewayAliyunSecret(
+                    accessKeyID: accessKeyID,
+                    accessKeySecret: accessKeySecret
+                )
+            default:
+                throw GatewayCredentialStoreError.providerMismatch(
+                    id: descriptor.id,
+                    label: descriptor.label
+                )
+            }
+        }
+        return GatewaySecrets(cloudflare: cloudflare, aliyun: aliyun)
     }
 }
 
@@ -1132,15 +1688,21 @@ private func gatewayControllerTestState(
     gatewayEnabled: Bool,
     serviceEnabled: Bool
 ) -> GatewayPersistedState {
-    GatewayPersistedState(
+    return GatewayPersistedState(
         gatewayEnabled: gatewayEnabled,
         acmeAccount: GatewayACMEConfiguration(
-            directory: .letsencryptProduction,
             contactEmail: "ops@example.com",
-            termsOfServiceAgreed: true
+            acceptedAuthorities: GatewayCertificateAuthority.allCases
         ),
         publishingNetworkConfigID: "network-a",
         lastKnownNetworkIPv4CIDR: "10.0.0.0/24",
+        certificates: [
+            GatewayManagedCertificate(
+                id: "service-a-certificate",
+                domains: ["abc.a.et.net"],
+                strategy: .custom(authority: .letsEncrypt, challenge: .http01)
+            ),
+        ],
         services: [
             GatewayPublishedService(
                 id: "service-a",
@@ -1153,7 +1715,8 @@ private func gatewayControllerTestState(
                 serviceLabel: "abc",
                 publicHostname: "abc.a.et.net",
                 targetPort: 3_000,
-                desiredEnabled: serviceEnabled
+                desiredEnabled: serviceEnabled,
+                certificateID: "service-a-certificate"
             ),
         ]
     )

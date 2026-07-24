@@ -13,27 +13,33 @@ struct GeneralGatewaySettingsSection: View {
             status: gateway.status,
             desiredEnabled: gateway.desiredEnabled,
             services: gateway.services,
-            magicDNSState: gateway.magicDNSState
+            magicDNSState: gateway.magicDNSState,
+            convergence: gateway.convergence
         )
     }
 
     private var displayedError: String? {
         if let errorMessage { return errorMessage }
-        guard gateway.status.state == .failed else { return nil }
-        return gateway.lastError ?? gateway.status.lastError
+        return gateway.convergence.message
+            ?? gateway.lastError
+            ?? gateway.status.runtimeIssues.last?.message
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            CardSection("Gateway", systemImage: "network.badge.shield.half.filled") {
-                SettingsInlineRow("Gateway") {
+            CardSection(
+                "Published Services",
+                systemImage: "network.badge.shield.half.filled",
+                footer: "Publishing a service turns this on automatically. Turn it off to pause all published services."
+            ) {
+                SettingsInlineRow("Run Published Services") {
                     HStack(spacing: 10) {
                         StatusPill(
                             presentation.statusLabel,
                             tone: presentation.tone.statusPillTone,
                             showsProgress: presentation.isInProgress
                         )
-                        Toggle("Gateway", isOn: gatewayEnabledBinding)
+                        Toggle("Run Published Services", isOn: gatewayEnabledBinding)
                             .labelsHidden()
                             .disabled(isChangingGateway || gateway.isBusy)
                     }

@@ -1,17 +1,20 @@
 import Darwin
+import CryptoKit
 import Foundation
 
 package enum GatewayPublishedServicesValidator {
-    package static func makeDraft(
+    package static func makeService(
         networkConfigID: String,
         targetPeerID: String,
         targetInstanceID: String? = nil,
         targetHostname: String,
         magicDNSSuffix: String,
         serviceLabel: String,
-        targetPort: Int
+        targetPort: Int,
+        desiredEnabled: Bool,
+        certificateID: String
     ) throws -> GatewayPublishedService {
-        let serviceLabel = try normalizeLabel(serviceLabel, field: "Service name")
+        let serviceLabel = try normalizeServiceLabel(serviceLabel)
         let nodeLabel = try normalizeLabel(targetHostname, field: "Target hostname")
         let suffix = try MagicDNSSettings.normalizedDNSSuffix(magicDNSSuffix)
         try validatePort(targetPort)
@@ -29,7 +32,9 @@ package enum GatewayPublishedServicesValidator {
                 nodeLabel: nodeLabel,
                 suffix: suffix
             ),
-            targetPort: targetPort
+            targetPort: targetPort,
+            desiredEnabled: desiredEnabled,
+            certificateID: certificateID
         )
     }
 
@@ -38,18 +43,13 @@ package enum GatewayPublishedServicesValidator {
             throw invalid("Unsupported Gateway schema version \(state.schemaVersion).")
         }
 
+        guard UUID(uuidString: state.configurationID) != nil else {
+            throw invalid("Gateway configuration ID is invalid.")
+        }
+
         var normalized = state
         if var acme = state.acmeAccount {
-            guard acme.directory == .letsencryptProduction else {
-                throw invalid("Published Services requires the production automatic certificate service.")
-            }
-            if let email = acme.contactEmail {
-                let email = email.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard isValidEmail(email) else {
-                    throw invalid("ACME contact email is invalid.")
-                }
-                acme.contactEmail = email
-            }
+            acme.contactEmail = try normalizeContactEmail(acme.contactEmail)
             normalized.acmeAccount = acme
         }
 
@@ -63,6 +63,55 @@ package enum GatewayPublishedServicesValidator {
             }
             return credential
         }.sorted { $0.label.localizedStandardCompare($1.label) == .orderedAscending }
+
+        if let defaultDNSCredentialID = state.defaultDNSCredentialID {
+            let defaultID = try required(defaultDNSCredentialID, field: "Default DNS credential ID")
+            guard credentialIDs.contains(defaultID) else {
+                throw invalid("Default DNS credential does not exist.")
+            }
+            normalized.defaultDNSCredentialID = defaultID
+        }
+
+        var certificateIDs = Set<String>()
+        var automaticDomains = Set<String>()
+        normalized.certificates = try state.certificates.map { certificate in
+            var certificate = certificate
+            certificate.id = try required(certificate.id, field: "Certificate ID")
+            guard certificateIDs.insert(certificate.id).inserted else {
+                throw invalid("Duplicate certificate ID \(certificate.id).")
+            }
+            guard certificate.domains.count == 1 else {
+                throw invalid("Managed certificates must contain exactly one domain.")
+            }
+
+            switch certificate.strategy {
+            case let .automaticWildcard(credentialID):
+                let credentialID = try required(credentialID, field: "DNS credential ID")
+                guard credentialIDs.contains(credentialID) else {
+                    throw invalid("Automatic certificate references an unknown DNS credential.")
+                }
+                let domain = try normalizeAutomaticDomain(certificate.domains[0])
+                guard automaticDomains.insert(domain).inserted else {
+                    throw invalid("Only one automatic certificate may use \(domain).")
+                }
+                certificate.domains = [domain]
+                certificate.strategy = .automaticWildcard(credentialID: credentialID)
+            case let .custom(authority, challenge):
+                if case let .dns01(credentialID) = challenge, !credentialIDs.contains(credentialID) {
+                    throw invalid("Custom certificate references an unknown DNS credential.")
+                }
+                certificate.domains = [try normalizeDomain(
+                    certificate.domains[0],
+                    field: "Certificate domain"
+                )]
+                certificate.strategy = .custom(authority: authority, challenge: challenge)
+            }
+            return certificate
+        }.sorted { $0.id < $1.id }
+
+        let certificatesByID = Dictionary(uniqueKeysWithValues: normalized.certificates.map {
+            ($0.id, $0)
+        })
 
         if let cidr = state.lastKnownNetworkIPv4CIDR {
             normalized.lastKnownNetworkIPv4CIDR = try normalizeIPv4CIDR(cidr)
@@ -82,7 +131,7 @@ package enum GatewayPublishedServicesValidator {
             service.targetInstanceID = service.targetInstanceID?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .nilIfEmpty
-            service.serviceLabel = try normalizeLabel(service.serviceLabel, field: "Service name")
+            service.serviceLabel = try normalizeServiceLabel(service.serviceLabel)
             service.publicNodeLabel = try normalizeLabel(service.publicNodeLabel, field: "Public node label")
             service.publicDNSSuffix = try MagicDNSSettings.normalizedDNSSuffix(service.publicDNSSuffix)
             service.lastKnownTargetHostname = try normalizeLabel(
@@ -107,17 +156,21 @@ package enum GatewayPublishedServicesValidator {
                 throw invalid("Duplicate public hostname \(publicHostname).")
             }
             service.publicHostname = publicHostname
-            switch service.challenge {
-            case let .automatic(dnsCredentialID):
-                if let dnsCredentialID, !credentialIDs.contains(dnsCredentialID) {
-                    throw invalid("Service references an unknown DNS credential.")
+            service.certificateID = try required(service.certificateID, field: "Certificate ID")
+            guard let certificate = certificatesByID[service.certificateID],
+                  certificate.domains.contains(where: { certificateDomainCovers($0, publicHostname) })
+            else {
+                throw invalid("Service certificate does not cover \(publicHostname).")
+            }
+            if let fallbackCertificateID = service.fallbackCertificateID {
+                let fallbackID = try required(fallbackCertificateID, field: "Fallback certificate ID")
+                guard fallbackID != service.certificateID,
+                      let fallback = certificatesByID[fallbackID],
+                      fallback.domains.contains(where: { certificateDomainCovers($0, publicHostname) })
+                else {
+                    throw invalid("Fallback certificate does not cover \(publicHostname).")
                 }
-            case .http01:
-                break
-            case let .dns01(credentialID):
-                guard credentialIDs.contains(credentialID) else {
-                    throw invalid("Service references an unknown DNS credential.")
-                }
+                service.fallbackCertificateID = fallbackID
             }
             networkIDs.insert(service.networkConfigID)
             return service
@@ -132,11 +185,26 @@ package enum GatewayPublishedServicesValidator {
         }
 
         if normalized.hasEnabledServices {
-            guard let acme = normalized.acmeAccount, acme.termsOfServiceAgreed else {
-                throw invalid("Accept the certificate service terms before enabling a service.")
+            guard let acme = normalized.acmeAccount else {
+                throw invalid("Configure certificate services before enabling a service.")
             }
             guard acme.contactEmail != nil else {
                 throw invalid("Enter a certificate contact email before enabling a service.")
+            }
+            let accepted = Set(acme.acceptedAuthorities)
+            let requiredAuthorities = normalized.services
+                .filter(\.desiredEnabled)
+                .reduce(into: Set<GatewayCertificateAuthority>()) { result, service in
+                    guard let certificate = certificatesByID[service.certificateID] else { return }
+                    switch certificate.strategy {
+                    case .automaticWildcard:
+                        result.formUnion(GatewayCertificateAuthority.allCases)
+                    case let .custom(authority, _):
+                        result.insert(authority)
+                    }
+                }
+            guard requiredAuthorities.isSubset(of: accepted) else {
+                throw invalid("Accept the required certificate authority terms before enabling a service.")
             }
         }
         return normalized
@@ -154,6 +222,12 @@ package enum GatewayPublishedServicesValidator {
             throw invalid("\(field) must be a 1–63 character DNS label using letters, numbers, or hyphens.")
         }
         return label
+    }
+
+    package static func normalizeServiceLabel(_ value: String) throws -> String {
+        let label = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty else { return "" }
+        return try normalizeLabel(label, field: "Service name")
     }
 
     package static func normalizeIPv4(_ value: String, field: String) throws -> String {
@@ -178,13 +252,24 @@ package enum GatewayPublishedServicesValidator {
         return "\(ip)/\(prefix)"
     }
 
+    package static func normalizeContactEmail(_ value: String?) throws -> String? {
+        guard let value else { return nil }
+        let email = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !email.isEmpty else { return nil }
+        guard isValidEmail(email) else {
+            throw invalid("Certificate contact email is invalid.")
+        }
+        return email
+    }
+
     private static func makePublicHostname(
         serviceLabel: String,
         nodeLabel: String,
         suffix: String
     ) -> String {
         let suffix = suffix.hasSuffix(".") ? String(suffix.dropLast()) : suffix
-        return "\(serviceLabel).\(nodeLabel).\(suffix)"
+        let targetDomain = "\(nodeLabel).\(suffix)"
+        return serviceLabel.isEmpty ? targetDomain : "\(serviceLabel).\(targetDomain)"
     }
 
     private static func normalizeDomain(_ value: String, field: String) throws -> String {
@@ -205,6 +290,23 @@ package enum GatewayPublishedServicesValidator {
             throw invalid("\(field) is not a valid DNS name.")
         }
         return domain
+    }
+
+    private static func normalizeAutomaticDomain(_ value: String) throws -> String {
+        let value = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard value.hasPrefix("*.") else {
+            return try normalizeDomain(value, field: "Automatic certificate domain")
+        }
+        return "*.\(try normalizeDomain(String(value.dropFirst(2)), field: "Wildcard domain"))"
+    }
+
+    private static func certificateDomainCovers(_ pattern: String, _ domain: String) -> Bool {
+        if pattern == domain { return true }
+        guard pattern.hasPrefix("*.") else { return false }
+        let suffix = String(pattern.dropFirst(2))
+        guard domain.hasSuffix(".\(suffix)") else { return false }
+        let prefix = domain.dropLast(suffix.count + 1)
+        return !prefix.isEmpty && !prefix.contains(".")
     }
 
     private static func validatePort(_ port: Int) throws {
@@ -251,46 +353,101 @@ package enum GatewayConfigurationFactory {
             allowedIPv4CIDR = networkIPv4CIDR
         }
         let acme = state.acmeAccount ?? GatewayACMEConfiguration(
-            directory: .letsencryptProduction,
             contactEmail: nil,
-            termsOfServiceAgreed: false
+            acceptedAuthorities: []
         )
 
-        return try GatewayConfigurationValidator.validate(
+        let enabledCertificateIDs = Set(enabledServices.flatMap { service in
+            [service.certificateID, service.fallbackCertificateID].compactMap { $0 }
+        })
+        let publishedBaseDomains = Set(enabledServices.compactMap { service in
+            service.publicHostname == service.targetDomain ? service.publicHostname : nil
+        })
+
+        var configuration = try GatewayConfigurationValidator.validate(
             GatewayConfiguration(
+                deployment: GatewayDeploymentIdentity(
+                    configurationID: state.configurationID,
+                    revision: state.revision,
+                    fingerprint: "pending"
+                ),
                 acme: acme,
-                certificates: enabledServices.map { service in
+                certificates: try state.certificates.map { certificate in
                     GatewayCertificateConfiguration(
-                        id: service.id,
-                        domains: [service.publicHostname],
-                        challenge: try runtimeChallenge(
-                            service.challenge,
+                        id: certificate.id,
+                        domains: certificate.domains,
+                        strategy: try runtimeStrategy(
+                            certificate.strategy,
                             credentials: state.dnsCredentials
-                        )
+                        ),
+                        renewalEnabled: enabledCertificateIDs.contains(certificate.id)
                     )
                 },
                 routes: enabledServices.map { service in
                     let serviceAvailability = routeAvailabilityByServiceID[service.id]
                         ?? routeAvailability
+                    let expectedIPv4 = serviceAvailability == .ready
+                        ? expectedIPv4ByServiceID[service.id]
+                        : nil
+                    let upstreamHost = publishedBaseDomains.contains(service.targetDomain)
+                        ? expectedIPv4 ?? service.targetDomain
+                        : service.targetDomain
                     return GatewayRouteConfiguration(
                         domain: service.publicHostname,
-                        certificateID: service.id,
+                        certificateID: service.certificateID,
+                        fallbackCertificateID: service.fallbackCertificateID,
                         upstream: GatewayUpstreamConfiguration(
-                            url: "http://\(service.targetDomain):\(service.targetPort)",
+                            url: "http://\(upstreamHost):\(service.targetPort)",
                             allowedIPv4CIDR: allowedIPv4CIDR,
                             availability: serviceAvailability == .ready
-                                && expectedIPv4ByServiceID[service.id] == nil
+                                && expectedIPv4 == nil
                                 ? .unavailable
                                 : serviceAvailability,
-                            expectedIPv4: serviceAvailability == .ready
-                                ? expectedIPv4ByServiceID[service.id]
-                                : nil
+                            expectedIPv4: expectedIPv4
                         )
                     )
                 },
                 localDomains: enabledServices.map(\.publicHostname)
             )
         )
+        configuration.deployment.fingerprint = try deploymentFingerprint(
+            configuration: configuration
+        )
+        return configuration
+    }
+
+    private static func deploymentFingerprint(
+        configuration: GatewayConfiguration
+    ) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(configuration)
+        let digits = Array("0123456789abcdef")
+        return SHA256.hash(data: data).map { byte in
+            String([digits[Int(byte >> 4)], digits[Int(byte & 0x0f)]])
+        }.joined()
+    }
+
+    private static func runtimeStrategy(
+        _ strategy: GatewayManagedCertificateStrategy,
+        credentials: [GatewayDNSCredentialDescriptor]
+    ) throws -> GatewayCertificateStrategyConfiguration {
+        switch strategy {
+        case let .automaticWildcard(credentialID):
+            let credential = try credential(id: credentialID, in: credentials)
+            return .automaticWildcard(
+                GatewayDNS01Configuration(
+                    provider: credential.provider,
+                    credentialID: credential.id,
+                    credentialRevision: credential.revision
+                )
+            )
+        case let .custom(authority, challenge):
+            return .custom(
+                authority: authority,
+                challenge: try runtimeChallenge(challenge, credentials: credentials)
+            )
+        }
     }
 
     private static func runtimeChallenge(
@@ -298,25 +455,14 @@ package enum GatewayConfigurationFactory {
         credentials: [GatewayDNSCredentialDescriptor]
     ) throws -> GatewayChallengeConfiguration {
         switch challenge {
-        case let .automatic(dnsCredentialID):
-            guard let dnsCredentialID else {
-                return .automatic(dns01: nil)
-            }
-            let credential = try credential(id: dnsCredentialID, in: credentials)
-            return .automatic(
-                dns01: GatewayDNS01Configuration(
-                    provider: credential.provider,
-                    credentialID: credential.id
-                )
-            )
         case .http01:
-            return .http01
+            .http01
         case let .dns01(credentialID):
-            let credential = try credential(id: credentialID, in: credentials)
-            return .dns01(
+            .dns01(
                 GatewayDNS01Configuration(
-                    provider: credential.provider,
-                    credentialID: credential.id
+                    provider: try credential(id: credentialID, in: credentials).provider,
+                    credentialID: credentialID,
+                    credentialRevision: try credential(id: credentialID, in: credentials).revision
                 )
             )
         }

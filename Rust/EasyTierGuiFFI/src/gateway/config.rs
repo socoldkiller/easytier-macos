@@ -8,12 +8,13 @@ use http::HeaderValue;
 use serde::{Deserialize, Serialize};
 use url::{Host, Url};
 
-pub const GATEWAY_SCHEMA_VERSION: u32 = 4;
+pub const GATEWAY_SCHEMA_VERSION: u32 = 7;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GatewayConfig {
     pub schema_version: u32,
+    pub deployment: DeploymentIdentity,
     pub storage_dir: PathBuf,
     pub listeners: ListenerConfig,
     pub local_dns: LocalDnsConfig,
@@ -22,6 +23,14 @@ pub struct GatewayConfig {
     pub certificates: Vec<CertificateConfig>,
     #[serde(default)]
     pub routes: Vec<RouteConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DeploymentIdentity {
+    pub configuration_id: String,
+    pub revision: u64,
+    pub fingerprint: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -44,39 +53,24 @@ pub struct LocalDnsConfig {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AcmeConfig {
-    #[serde(default)]
-    pub directory: AcmeDirectoryConfig,
     pub contact_email: Option<String>,
+    #[serde(default)]
+    pub accepted_authorities: Vec<CertificateAuthorityKind>,
+    #[serde(default)]
     pub terms_of_service_agreed: bool,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum AcmeDirectoryConfig {
-    #[default]
-    LetsencryptStaging,
-    LetsencryptProduction,
-    Custom {
-        url: String,
-        ca_cert_path: PathBuf,
-    },
+impl AcmeConfig {
+    pub fn accepts(&self, authority: CertificateAuthorityKind) -> bool {
+        self.terms_of_service_agreed || self.accepted_authorities.contains(&authority)
+    }
 }
 
-impl AcmeDirectoryConfig {
-    pub fn url(&self) -> &str {
-        match self {
-            Self::LetsencryptStaging => instant_acme::LetsEncrypt::Staging.url(),
-            Self::LetsencryptProduction => instant_acme::LetsEncrypt::Production.url(),
-            Self::Custom { url, .. } => url,
-        }
-    }
-
-    pub fn custom_ca_cert_path(&self) -> Option<&PathBuf> {
-        match self {
-            Self::Custom { ca_cert_path, .. } => Some(ca_cert_path),
-            _ => None,
-        }
-    }
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum CertificateAuthorityKind {
+    Letsencrypt,
+    Zerossl,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -84,34 +78,45 @@ impl AcmeDirectoryConfig {
 pub struct CertificateConfig {
     pub id: String,
     pub domains: Vec<String>,
-    pub challenge: ChallengeConfig,
+    pub strategy: CertificateStrategyConfig,
+    #[serde(default = "default_true")]
+    pub renewal_enabled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CertificateStrategyConfig {
+    AutomaticWildcard {
+        challenge: Dns01Config,
+    },
+    Custom {
+        authority: CertificateAuthorityKind,
+        challenge: ChallengeConfig,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Dns01Config {
+    pub provider: DnsProviderKind,
+    pub credential_id: String,
+    pub credential_revision: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ChallengeConfig {
-    Automatic {
-        #[serde(default)]
-        dns01: Option<Dns01Config>,
-    },
     Http01,
     Dns01 {
         provider: DnsProviderKind,
         credential_id: String,
+        credential_revision: u64,
     },
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct Dns01Config {
-    pub provider: DnsProviderKind,
-    pub credential_id: String,
 }
 
 impl ChallengeConfig {
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::Automatic { .. } => "automatic",
             Self::Http01 => "http01",
             Self::Dns01 { .. } => "dns01",
         }
@@ -119,19 +124,17 @@ impl ChallengeConfig {
 
     pub fn dns01(&self) -> Option<(DnsProviderKind, &str)> {
         match self {
-            Self::Automatic { dns01: Some(dns01) } => {
-                Some((dns01.provider, dns01.credential_id.as_str()))
-            }
             Self::Dns01 {
                 provider,
                 credential_id,
+                ..
             } => Some((*provider, credential_id.as_str())),
-            Self::Automatic { dns01: None } | Self::Http01 => None,
+            Self::Http01 => None,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum DnsProviderKind {
     Cloudflare,
@@ -143,6 +146,7 @@ pub enum DnsProviderKind {
 pub struct RouteConfig {
     pub domain: String,
     pub certificate_id: String,
+    pub fallback_certificate_id: Option<String>,
     pub upstream: UpstreamConfig,
 }
 
@@ -200,17 +204,21 @@ pub struct ValidatedGatewayConfig {
     pub routes: BTreeMap<String, ValidatedRoute>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct ValidatedCertificate {
     pub id: String,
     pub domains: Vec<String>,
+    pub authority: CertificateAuthorityKind,
     pub challenge: ChallengeConfig,
+    pub automatic: bool,
+    pub renewal_enabled: bool,
 }
 
 #[derive(Clone, Debug)]
 pub struct ValidatedRoute {
     pub domain: String,
     pub certificate_id: String,
+    pub fallback_certificate_id: Option<String>,
     pub upstream: ParsedUpstream,
 }
 
@@ -220,7 +228,7 @@ pub enum UpstreamScheme {
     Https,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParsedUpstream {
     pub original_url: String,
     pub scheme: UpstreamScheme,
@@ -265,10 +273,12 @@ impl GatewayConfig {
         if !self.storage_dir.is_absolute() {
             return Err("storage_dir must be an absolute path".to_string());
         }
+        uuid::Uuid::parse_str(&self.deployment.configuration_id)
+            .map_err(|_| "deployment.configuration_id must be a UUID".to_string())?;
+        if self.deployment.fingerprint.trim().is_empty() {
+            return Err("deployment.fingerprint must not be empty".to_string());
+        }
         if !self.certificates.is_empty() {
-            if !self.acme.terms_of_service_agreed {
-                return Err("acme.terms_of_service_agreed must be true".to_string());
-            }
             if self.acme.contact_email.is_none() {
                 return Err(
                     "acme.contact_email is required when certificates are enabled".to_string(),
@@ -278,8 +288,6 @@ impl GatewayConfig {
         if let Some(email) = self.acme.contact_email.as_deref() {
             validate_email(email)?;
         }
-        validate_acme_directory(&self.acme.directory)?;
-
         let http_addr = parse_listener(&self.listeners.http, "listeners.http")?;
         let https_addr = parse_listener(&self.listeners.https, "listeners.https")?;
         let dns_addr = parse_listener(&self.listeners.dns, "listeners.dns")?;
@@ -320,7 +328,31 @@ impl GatewayConfig {
             }
             domains.sort();
 
-            match &certificate.challenge {
+            let (authority, challenge, automatic) = match &certificate.strategy {
+                CertificateStrategyConfig::AutomaticWildcard { challenge } => (
+                    CertificateAuthorityKind::Letsencrypt,
+                    ChallengeConfig::Dns01 {
+                        provider: challenge.provider,
+                        credential_id: challenge.credential_id.clone(),
+                        credential_revision: challenge.credential_revision,
+                    },
+                    true,
+                ),
+                CertificateStrategyConfig::Custom {
+                    authority,
+                    challenge,
+                } => (*authority, challenge.clone(), false),
+            };
+            if !self.acme.accepts(authority)
+                || automatic && !self.acme.accepts(CertificateAuthorityKind::Zerossl)
+            {
+                return Err(format!(
+                    "certificate {} requires accepted certificate authority terms",
+                    certificate.id
+                ));
+            }
+
+            match &challenge {
                 ChallengeConfig::Http01
                     if domains.iter().any(|domain| domain.starts_with("*.")) =>
                 {
@@ -329,18 +361,14 @@ impl GatewayConfig {
                         certificate.id
                     ));
                 }
-                ChallengeConfig::Dns01 { credential_id, .. } => {
+                ChallengeConfig::Dns01 {
+                    credential_id,
+                    credential_revision,
+                    ..
+                } => {
                     validate_identifier(credential_id, "credential id")?;
-                }
-                ChallengeConfig::Automatic { dns01 } => {
-                    if domains.iter().any(|domain| domain.starts_with("*.")) && dns01.is_none() {
-                        return Err(format!(
-                            "certificate {} uses Automatic for a wildcard but has no DNS credential",
-                            certificate.id
-                        ));
-                    }
-                    if let Some(dns01) = dns01 {
-                        validate_identifier(&dns01.credential_id, "credential id")?;
+                    if *credential_revision == 0 {
+                        return Err("DNS credential revision must be greater than zero".to_string());
                     }
                 }
                 ChallengeConfig::Http01 => {}
@@ -349,7 +377,10 @@ impl GatewayConfig {
             let validated = ValidatedCertificate {
                 id: certificate.id.clone(),
                 domains,
-                challenge: certificate.challenge.clone(),
+                authority,
+                challenge,
+                automatic,
+                renewal_enabled: certificate.renewal_enabled,
             };
             if certificates
                 .insert(certificate.id.clone(), validated)
@@ -379,9 +410,26 @@ impl GatewayConfig {
                 ));
             }
 
+            if let Some(fallback_id) = route.fallback_certificate_id.as_deref() {
+                let fallback = certificates.get(fallback_id).ok_or_else(|| {
+                    format!("route {domain} references unknown fallback certificate {fallback_id}")
+                })?;
+                if fallback_id == route.certificate_id
+                    || !fallback
+                        .domains
+                        .iter()
+                        .any(|pattern| certificate_domain_covers(pattern, &domain))
+                {
+                    return Err(format!(
+                        "fallback certificate {fallback_id} does not cover route domain {domain}"
+                    ));
+                }
+            }
+
             let validated = ValidatedRoute {
                 domain: domain.clone(),
                 certificate_id: route.certificate_id.clone(),
+                fallback_certificate_id: route.fallback_certificate_id.clone(),
                 upstream: parse_upstream(&route.upstream)?,
             };
             if routes.insert(domain.clone(), validated).is_some() {
@@ -410,6 +458,10 @@ impl GatewayConfig {
             routes,
         })
     }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl GatewaySecrets {
@@ -444,7 +496,7 @@ impl GatewaySecrets {
 
     pub fn validate_references(&self, config: &ValidatedGatewayConfig) -> Result<(), String> {
         // Keychain items can be unavailable at launch. ACME treats a missing DNS
-        // credential as an attempt failure and keeps the Gateway in HTTP-only mode.
+        // credential as a suspended certificate attempt without blocking other routes.
         let _ = config;
         Ok(())
     }
@@ -611,25 +663,6 @@ fn parse_ipv4_cidr(raw: &str) -> Result<Ipv4Cidr, String> {
     })
 }
 
-fn validate_acme_directory(directory: &AcmeDirectoryConfig) -> Result<(), String> {
-    let AcmeDirectoryConfig::Custom { url, ca_cert_path } = directory else {
-        return Ok(());
-    };
-    let parsed = Url::parse(url).map_err(|error| format!("invalid ACME directory URL: {error}"))?;
-    if parsed.scheme() != "https" {
-        return Err("custom ACME directory URL must use HTTPS".to_string());
-    }
-    if !parsed.username().is_empty() || parsed.password().is_some() || parsed.fragment().is_some() {
-        return Err(
-            "custom ACME directory URL must not include credentials or fragment".to_string(),
-        );
-    }
-    if !ca_cert_path.is_absolute() {
-        return Err("custom ACME ca_cert_path must be absolute".to_string());
-    }
-    Ok(())
-}
-
 fn validate_identifier(value: &str, label: &str) -> Result<(), String> {
     if value.is_empty() || value.len() > 64 {
         return Err(format!("{label} must contain 1 to 64 characters"));
@@ -675,6 +708,11 @@ mod tests {
     fn base_config() -> GatewayConfig {
         GatewayConfig {
             schema_version: GATEWAY_SCHEMA_VERSION,
+            deployment: DeploymentIdentity {
+                configuration_id: "00000000-0000-0000-0000-000000000000".to_string(),
+                revision: 0,
+                fingerprint: "manual".to_string(),
+            },
             storage_dir: PathBuf::from("/tmp/easytier-gateway-test"),
             listeners: ListenerConfig {
                 http: "127.0.0.1:5002".to_string(),
@@ -687,18 +725,23 @@ mod tests {
                 ttl: 30,
             },
             acme: AcmeConfig {
-                directory: AcmeDirectoryConfig::LetsencryptStaging,
                 contact_email: Some("ops@example.com".to_string()),
+                accepted_authorities: Vec::new(),
                 terms_of_service_agreed: true,
             },
             certificates: vec![CertificateConfig {
                 id: "app-cert".to_string(),
                 domains: vec!["app.example.com".to_string()],
-                challenge: ChallengeConfig::Http01,
+                strategy: CertificateStrategyConfig::Custom {
+                    authority: CertificateAuthorityKind::Letsencrypt,
+                    challenge: ChallengeConfig::Http01,
+                },
+                renewal_enabled: true,
             }],
             routes: vec![RouteConfig {
                 domain: "app.example.com".to_string(),
                 certificate_id: "app-cert".to_string(),
+                fallback_certificate_id: None,
                 upstream: UpstreamConfig {
                     url: "http://127.0.0.1:8080".to_string(),
                     host_header: None,

@@ -107,7 +107,8 @@ import Testing
         gatewayEnabled: true,
         tlsConfigured: false
     )
-    #expect(presentation.statusLabel == "SSL Required")
+    #expect(presentation.statusLabel == "HTTPS Setup")
+    #expect(presentation.detailLabel == "Add certificate email")
     #expect(presentation.tone == .warning)
 
     presentation = PublishedServicePresentation(
@@ -129,7 +130,7 @@ import Testing
         gatewayEnabled: true,
         tlsConfigured: true
     )
-    #expect(presentation.statusLabel == "SSL Warning")
+    #expect(presentation.statusLabel == "HTTPS Warning")
     #expect(presentation.errorMessage == "Renewal delayed")
 
     presentation = PublishedServicePresentation(
@@ -139,7 +140,7 @@ import Testing
         gatewayEnabled: true,
         tlsConfigured: true
     )
-    #expect(presentation.statusLabel == "SSL Error")
+    #expect(presentation.statusLabel == "HTTPS Error")
     #expect(presentation.errorMessage == "ACME failed")
     #expect(presentation.certificateActionTitle == "Retry Certificate")
     #expect(!presentation.canOpen)
@@ -192,6 +193,206 @@ import Testing
     #expect(presentation.statusLabel == "Starting")
     #expect(presentation.detailLabel == "Resolving target")
     #expect(presentation.isInProgress)
+
+    var issuingCertificate = try presentationCertificate(state: .issuing)
+    issuingCertificate.stage = .validating
+    presentation = PublishedServicePresentation(
+        service: service,
+        certificate: issuingCertificate,
+        route: nil,
+        gatewayEnabled: true,
+        tlsConfigured: true
+    )
+    #expect(presentation.statusLabel == "Starting")
+    #expect(presentation.detailLabel == "Waiting for DNS validation")
+    #expect(presentation.isInProgress)
+}
+
+@Test func publishedServiceStatusFeedbackOnlyPlaysForInteractiveTransitions() {
+    let operationID = UUID()
+    let inactiveStarting = PublishedServiceStatusFeedbackObservation(
+        feedback: .none,
+        operationID: operationID,
+        isWindowInteractive: false
+    )
+    let inactiveSuccess = PublishedServiceStatusFeedbackObservation(
+        feedback: .success,
+        operationID: operationID,
+        isWindowInteractive: false
+    )
+    let interactiveSuccess = PublishedServiceStatusFeedbackObservation(
+        feedback: .success,
+        operationID: operationID,
+        isWindowInteractive: true
+    )
+    let interactiveStarting = PublishedServiceStatusFeedbackObservation(
+        feedback: .none,
+        operationID: operationID,
+        isWindowInteractive: true
+    )
+    let interactiveFailure = PublishedServiceStatusFeedbackObservation(
+        feedback: .failure,
+        operationID: UUID(),
+        isWindowInteractive: true
+    )
+    let unrelatedSuccess = PublishedServiceStatusFeedbackObservation(
+        feedback: .success,
+        operationID: nil,
+        isWindowInteractive: true
+    )
+
+    #expect(
+        inactiveSuccess.transition(from: inactiveStarting)
+            == .discard(operationID: operationID)
+    )
+    #expect(interactiveSuccess.transition(from: inactiveSuccess) == nil)
+    #expect(
+        interactiveSuccess.transition(from: interactiveStarting)
+            == .present(.success, operationID: operationID)
+    )
+    #expect(
+        interactiveFailure.transition(from: interactiveSuccess)
+            == .present(.failure, operationID: interactiveFailure.operationID!)
+    )
+    #expect(unrelatedSuccess.initialEvent() == nil)
+}
+
+@Test func publishedServiceStatusFeedbackRequiresTheMatchingOperationOutcome() throws {
+    let service = presentationTestService()
+    var disabledService = service
+    disabledService.desiredEnabled = false
+    let live = PublishedServicePresentation(
+        service: service,
+        certificate: try presentationCertificate(state: .active),
+        route: try presentationRoute(state: .ready, servingMode: .https),
+        gatewayEnabled: true,
+        tlsConfigured: true
+    )
+    let disabled = PublishedServicePresentation(
+        service: disabledService,
+        certificate: nil,
+        route: nil,
+        gatewayEnabled: true,
+        tlsConfigured: true
+    )
+    let waitingRetry = PublishedServicePresentation(
+        service: service,
+        certificate: try presentationCertificate(state: .degraded, error: "Retry later"),
+        route: try presentationRoute(state: .ready, servingMode: .https),
+        gatewayEnabled: true,
+        tlsConfigured: true
+    )
+
+    #expect(
+        PublishedServiceStatusFeedback(
+            operation: nil,
+            presentation: live,
+            configurationApplied: true,
+            serviceEnabled: true
+        ) == .none
+    )
+    #expect(
+        PublishedServiceStatusFeedback(
+            operation: feedbackOperation(kind: .enable, expectsEnabled: true),
+            presentation: live,
+            configurationApplied: false,
+            serviceEnabled: true
+        ) == .none
+    )
+    #expect(
+        PublishedServiceStatusFeedback(
+            operation: feedbackOperation(kind: .enable, expectsEnabled: true),
+            presentation: live,
+            configurationApplied: true,
+            serviceEnabled: true
+        ) == .success
+    )
+    #expect(
+        PublishedServiceStatusFeedback(
+            operation: feedbackOperation(kind: .disable, expectsEnabled: false),
+            presentation: disabled,
+            configurationApplied: true,
+            serviceEnabled: false
+        ) == .success
+    )
+    #expect(
+        PublishedServiceStatusFeedback(
+            operation: feedbackOperation(kind: .retryCertificate, expectsEnabled: true),
+            presentation: waitingRetry,
+            configurationApplied: true,
+            serviceEnabled: true
+        ) == .none
+    )
+    #expect(
+        PublishedServiceStatusFeedback(
+            operation: feedbackOperation(
+                kind: .retryCertificate,
+                expectsEnabled: true,
+                targetDeployment: nil,
+                phase: .failed
+            ),
+            presentation: live,
+            configurationApplied: true,
+            serviceEnabled: true
+        ) == .failure
+    )
+}
+
+@Test func publishServiceProgressUsesCertificateStagesAndServingOutcomes() throws {
+    var certificate = try presentationCertificate(state: .issuing)
+    certificate.stage = .validating
+
+    var presentation = PublishServiceProgressPresentation(
+        certificate: certificate,
+        route: nil,
+        convergence: .init(
+            desired: nil,
+            applied: nil,
+            phase: .converged,
+            retryAt: nil,
+            message: nil
+        )
+    )
+    #expect(presentation.phase == .requesting)
+    #expect(presentation.title == "Waiting for DNS Validation")
+    #expect(presentation.showsProgress)
+
+    presentation = PublishServiceProgressPresentation(
+        certificate: try presentationCertificate(state: .active),
+        route: try presentationRoute(state: .ready, servingMode: .https),
+        convergence: .disabled
+    )
+    #expect(presentation.phase == .https)
+    #expect(presentation.title == "Service Published")
+    #expect(!presentation.showsProgress)
+
+    presentation = PublishServiceProgressPresentation(
+        certificate: try presentationCertificate(state: .failed, error: "Authorities exhausted"),
+        route: try presentationRoute(state: .ready, servingMode: .httpOnly),
+        convergence: .disabled
+    )
+    #expect(presentation.phase == .httpOnly)
+    #expect(presentation.canRetry)
+}
+
+@Test func publishServiceProgressDoesNotSpinDuringScheduledApplyRetry() {
+    let presentation = PublishServiceProgressPresentation(
+        certificate: nil,
+        route: nil,
+        convergence: .init(
+            desired: nil,
+            applied: nil,
+            phase: .retryScheduled,
+            retryAt: nil,
+            message: "Helper unavailable"
+        )
+    )
+
+    #expect(presentation.phase == .waitingRetry)
+    #expect(presentation.title == "Publishing Delayed")
+    #expect(presentation.detail == "Helper unavailable")
+    #expect(!presentation.showsProgress)
+    #expect(!presentation.canRetry)
 }
 
 @Test func publishedServicePresentationHidesStaleErrorsWhileWaiting() throws {
@@ -254,36 +455,89 @@ private func presentationTestService(id: String = "service-a") -> GatewayPublish
         serviceLabel: id,
         publicHostname: "\(id).a.et.net",
         targetPort: 3_000,
-        desiredEnabled: true
+        desiredEnabled: true,
+        certificateID: id
+    )
+}
+
+private func feedbackOperation(
+    kind: PublishedServiceFeedbackOperation.Kind,
+    expectsEnabled: Bool,
+    targetDeployment: GatewayDeploymentIdentity? = .manual,
+    phase: PublishedServiceFeedbackOperation.Phase = .pending
+) -> PublishedServiceFeedbackOperation {
+    PublishedServiceFeedbackOperation(
+        id: UUID(),
+        serviceID: "service-a",
+        kind: kind,
+        expectsEnabledService: expectsEnabled,
+        targetDeployment: targetDeployment,
+        phase: phase
     )
 }
 
 private func presentationCertificate(
-    state: GatewayCertificateState,
+    state: PresentationCertificateState,
     error: String? = nil
 ) throws -> GatewayCertificateStatus {
-    let servingMode: GatewayCertificateServingMode = switch state {
-    case .active, .renewing, .degraded: .https
-    case .failed: .httpOnly
-    case .pending, .issuing: .pendingHTTPS
+    let availability: GatewayCertificateAvailability = switch state {
+    case .active, .renewing, .degraded: .valid
+    case .failed, .pending, .issuing: .unavailable
     }
-    let payload: [String: Any?] = [
-        "id": "service-a",
-        "domains": ["service-a.a.et.net"],
-        "challenge": "http-01",
-        "state": state.rawValue,
-        "serving_mode": servingMode.rawValue,
-        "not_before": nil,
-        "not_after": nil,
-        "next_renewal_at": nil,
-        "last_attempt_at": nil,
-        "last_error": error,
-    ]
-    return try decodePresentationFixture(payload)
+    let operation: GatewayCertificateOperation = switch state {
+    case .active: .idle
+    case .renewing: .renewing
+    case .degraded: .waitingRetry
+    case .failed: .suspended
+    case .pending: .queued
+    case .issuing: .issuing
+    }
+    let failure = error.map {
+        GatewayFailure(
+            source: .acmeAuthorization,
+            kind: state == .failed ? .userActionRequired : .transient,
+            code: state == .failed ? "unauthorized" : "retry_scheduled",
+            message: $0,
+            occurredAt: "2026-07-20T00:00:00Z",
+            retryAt: state == .degraded ? "2026-07-20T00:05:00Z" : nil,
+            authority: .letsEncrypt,
+            challenge: "HTTP-01",
+            dnsProvider: nil,
+            acmeProblemType: nil,
+            httpStatus: nil
+        )
+    }
+    return GatewayCertificateStatus(
+        id: "service-a",
+        domains: ["service-a.a.et.net"],
+        authority: .letsEncrypt,
+        challenge: "http-01",
+        activeAuthority: availability == .valid ? .letsEncrypt : nil,
+        activeChallenge: availability == .valid ? "http-01" : nil,
+        availability: availability,
+        operation: operation,
+        stage: nil,
+        notBefore: nil,
+        notAfter: nil,
+        nextRenewalAt: nil,
+        nextAttemptAt: state == .degraded ? "2026-07-20T00:05:00Z" : nil,
+        lastAttemptAt: nil,
+        failure: failure
+    )
+}
+
+private enum PresentationCertificateState: Equatable {
+    case active
+    case renewing
+    case degraded
+    case failed
+    case pending
+    case issuing
 }
 
 private func presentationRoute(
     state: GatewayRouteResolutionState,
+    servingMode: GatewayRouteServingMode = .unavailable,
     error: String? = nil
 ) throws -> GatewayRouteStatus {
     let payload: [String: Any?] = [
@@ -291,6 +545,7 @@ private func presentationRoute(
         "upstream": "http://a.et.net:3000",
         "resolved_addresses": ["10.0.0.1"],
         "certificate_id": "service-a",
+        "serving_mode": servingMode.rawValue,
         "resolution_state": state.rawValue,
         "last_resolved_at": nil,
         "last_online_at": nil,

@@ -16,10 +16,13 @@ package enum GatewayConfigurationValidator {
         guard configuration.schemaVersion == GatewaySchema.runtimeVersion else {
             throw invalid("Unsupported Gateway schema version \(configuration.schemaVersion).")
         }
-        guard configuration.certificates.isEmpty || configuration.acme.termsOfServiceAgreed else {
-            throw invalid("ACME terms of service must be accepted.")
+        guard UUID(uuidString: configuration.deployment.configurationID) != nil,
+              !configuration.deployment.fingerprint
+                  .trimmingCharacters(in: .whitespacesAndNewlines)
+                  .isEmpty
+        else {
+            throw invalid("Gateway deployment identity is invalid.")
         }
-
         var normalized = configuration
         if let email = configuration.acme.contactEmail {
             let email = email.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -38,10 +41,10 @@ package enum GatewayConfigurationValidator {
 
             var seen = Set<String>()
             let domains = try certificate.domains.map { rawDomain in
-                let domain = try normalizeDomain(rawDomain, label: "Certificate domain")
-                guard !rawDomain.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("*.") else {
-                    throw invalid("HTTP-01 certificates cannot contain wildcard domains.")
-                }
+                let domain = try normalizeCertificateDomain(
+                    rawDomain,
+                    strategy: certificate.strategy
+                )
                 guard seen.insert(domain).inserted else {
                     throw invalid("Certificate \(certificate.id) contains duplicate domain \(domain).")
                 }
@@ -51,10 +54,19 @@ package enum GatewayConfigurationValidator {
             guard certificatesByID.updateValue(Set(domains), forKey: certificate.id) == nil else {
                 throw invalid("Duplicate certificate ID \(certificate.id).")
             }
+            try validateStrategy(certificate.strategy)
+            let requiredAuthorities: Set<GatewayCertificateAuthority> = switch certificate.strategy {
+            case .automaticWildcard: Set(GatewayCertificateAuthority.allCases)
+            case let .custom(authority, _): [authority]
+            }
+            guard requiredAuthorities.isSubset(of: Set(normalized.acme.acceptedAuthorities)) else {
+                throw invalid("Certificate authority terms must be accepted.")
+            }
             return GatewayCertificateConfiguration(
                 id: certificate.id,
                 domains: domains,
-                challenge: .http01
+                strategy: certificate.strategy,
+                renewalEnabled: certificate.renewalEnabled
             )
         }
 
@@ -67,13 +79,26 @@ package enum GatewayConfigurationValidator {
             guard let certificateDomains = certificatesByID[route.certificateID] else {
                 throw invalid("Route \(domain) references unknown certificate \(route.certificateID).")
             }
-            guard certificateDomains.contains(domain) else {
+            guard certificateDomains.contains(where: { certificateDomain in
+                certificateDomain == domain || wildcard(certificateDomain, covers: domain)
+            }) else {
                 throw invalid("Certificate \(route.certificateID) does not cover route domain \(domain).")
+            }
+            if let fallbackCertificateID = route.fallbackCertificateID {
+                guard let fallbackDomains = certificatesByID[fallbackCertificateID] else {
+                    throw invalid("Route \(domain) references unknown fallback certificate \(fallbackCertificateID).")
+                }
+                guard fallbackDomains.contains(where: { certificateDomain in
+                    certificateDomain == domain || wildcard(certificateDomain, covers: domain)
+                }) else {
+                    throw invalid("Fallback certificate \(fallbackCertificateID) does not cover route domain \(domain).")
+                }
             }
 
             return GatewayRouteConfiguration(
                 domain: domain,
                 certificateID: route.certificateID,
+                fallbackCertificateID: route.fallbackCertificateID,
                 upstream: try normalizeUpstream(route.upstream)
             )
         }.sorted { $0.domain < $1.domain }
@@ -262,6 +287,57 @@ package enum GatewayConfigurationValidator {
             throw invalid("\(label) is not a valid DNS name.")
         }
         return domain
+    }
+
+    private static func normalizeCertificateDomain(
+        _ value: String,
+        strategy: GatewayCertificateStrategyConfiguration
+    ) throws -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch strategy {
+        case .custom:
+            guard !trimmed.hasPrefix("*.") else {
+                throw invalid("Custom certificates must use an exact domain.")
+            }
+            return try normalizeDomain(trimmed, label: "Certificate domain")
+        case .automaticWildcard:
+            guard trimmed.hasPrefix("*.") else {
+                return try normalizeDomain(trimmed, label: "Automatic certificate domain")
+            }
+            let baseDomain = try normalizeDomain(
+                String(trimmed.dropFirst(2)),
+                label: "Wildcard certificate domain"
+            )
+            return "*.\(baseDomain)"
+        }
+    }
+
+    private static func validateStrategy(
+        _ strategy: GatewayCertificateStrategyConfiguration
+    ) throws {
+        switch strategy {
+        case let .automaticWildcard(configuration):
+            try validateDNS01(configuration)
+        case let .custom(_, challenge):
+            if case let .dns01(configuration) = challenge {
+                try validateDNS01(configuration)
+            }
+        }
+    }
+
+    private static func validateDNS01(_ configuration: GatewayDNS01Configuration) throws {
+        try validateIdentifier(configuration.credentialID, label: "DNS credential ID")
+        guard configuration.credentialRevision > 0 else {
+            throw invalid("DNS credential revision must be greater than zero.")
+        }
+    }
+
+    private static func wildcard(_ certificateDomain: String, covers routeDomain: String) -> Bool {
+        guard certificateDomain.hasPrefix("*.") else { return false }
+        let suffix = String(certificateDomain.dropFirst(2))
+        guard routeDomain.hasSuffix(".\(suffix)") else { return false }
+        let prefix = routeDomain.dropLast(suffix.count + 1)
+        return !prefix.isEmpty && !prefix.contains(".")
     }
 
     private static func isIPAddress(_ value: String) -> Bool {

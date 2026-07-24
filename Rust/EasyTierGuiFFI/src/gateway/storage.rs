@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::{ErrorKind, Write},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
@@ -10,10 +11,13 @@ use instant_acme::AccountCredentials;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::config::{CertificateAuthorityKind, ChallengeConfig, ValidatedCertificate};
+use super::status::CertificateFailure;
 use super::tls::CertifiedMaterial;
 
 const DIRECTORY_MODE: u32 = 0o700;
 const FILE_MODE: u32 = 0o600;
+const CERTIFICATE_STORAGE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Debug)]
 pub struct GatewayStorage {
@@ -26,8 +30,15 @@ struct StoredCertificateMetadata {
     domains: Vec<String>,
     chain_sha256: String,
     key_sha256: String,
-    #[serde(default = "default_certificate_authority")]
-    authority: String,
+    authority: CertificateAuthorityKind,
+    challenge: ChallengeConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredCertificatePointer {
+    schema_version: u32,
+    generation: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -37,6 +48,40 @@ pub struct PendingDnsCleanup {
     pub zone_id: String,
     pub record_id: String,
     pub record_name: String,
+    #[serde(default)]
+    pub attempt_count: u32,
+    #[serde(default)]
+    pub next_attempt_at: Option<String>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CoordinatorJournal {
+    pub certificates: BTreeMap<String, CertificateScheduleJournal>,
+    pub provider_cooldowns: BTreeMap<CertificateAuthorityKind, ProviderCooldownJournal>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CertificateScheduleJournal {
+    pub policy_key: String,
+    #[serde(default)]
+    pub preferred_authority: Option<CertificateAuthorityKind>,
+    #[serde(default)]
+    pub ever_activated_https: bool,
+    pub attempt_count: u32,
+    #[serde(default)]
+    pub next_renewal_at: Option<String>,
+    #[serde(default)]
+    pub next_attempt_at: Option<String>,
+    pub in_flight: bool,
+    pub failure: Option<CertificateFailure>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ProviderCooldownJournal {
+    pub until: String,
+    pub reason: CertificateFailure,
 }
 
 impl GatewayStorage {
@@ -84,10 +129,32 @@ impl GatewayStorage {
         expected_domains: &[String],
     ) -> Result<Option<Arc<CertifiedMaterial>>, String> {
         let directory = self.certificate_directory(certificate_id);
-        let metadata_path = directory.join("metadata.json");
-        let metadata_bytes = match fs::read(&metadata_path) {
+        let pointer_path = directory.join("active.json");
+        let pointer_bytes = match fs::read(&pointer_path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(format!(
+                    "failed to read certificate pointer {}: {error}",
+                    pointer_path.display()
+                ));
+            }
+        };
+        let pointer: StoredCertificatePointer = serde_json::from_slice(&pointer_bytes)
+            .map_err(|error| format!("failed to decode certificate pointer: {error}"))?;
+        if pointer.schema_version != CERTIFICATE_STORAGE_SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported certificate storage schema version {}",
+                pointer.schema_version
+            ));
+        }
+        let generation = uuid::Uuid::parse_str(&pointer.generation)
+            .map_err(|_| "certificate pointer contains an invalid generation".to_string())?
+            .to_string();
+        let generation_directory = directory.join("generations").join(generation);
+        let metadata_path = generation_directory.join("metadata.json");
+        let metadata_bytes = match fs::read(&metadata_path) {
+            Ok(bytes) => bytes,
             Err(error) => {
                 return Err(format!(
                     "failed to read certificate metadata {}: {error}",
@@ -101,8 +168,8 @@ impl GatewayStorage {
             return Ok(None);
         }
 
-        let chain_path = directory.join("chain.pem");
-        let key_path = directory.join("key.pem");
+        let chain_path = generation_directory.join("chain.pem");
+        let key_path = generation_directory.join("key.pem");
         let chain = fs::read_to_string(&chain_path).map_err(|error| {
             format!(
                 "failed to read certificate chain {}: {error}",
@@ -123,49 +190,102 @@ impl GatewayStorage {
             ));
         }
 
-        CertifiedMaterial::from_pem_with_authority(
+        CertifiedMaterial::from_pem_with_policy(
             &chain,
             &key,
             expected_domains,
             metadata.authority,
+            metadata.challenge,
         )
         .map(|material| Some(Arc::new(material)))
     }
 
+    #[cfg(test)]
     pub fn store_certificate(
         &self,
-        certificate_id: &str,
-        domains: &[String],
+        certificate: &ValidatedCertificate,
         certificate_chain_pem: &str,
         private_key_pem: &str,
-        authority: &str,
     ) -> Result<Arc<CertifiedMaterial>, String> {
-        let material = Arc::new(CertifiedMaterial::from_pem_with_authority(
+        let material = Arc::new(CertifiedMaterial::from_pem_with_policy(
             certificate_chain_pem,
             private_key_pem,
-            domains,
-            authority.to_string(),
+            &certificate.domains,
+            certificate.authority,
+            certificate.challenge.clone(),
         )?);
-        let directory = self.certificate_directory(certificate_id);
+        self.commit_validated_certificate(
+            certificate,
+            certificate_chain_pem,
+            private_key_pem,
+            &material,
+        )?;
+        Ok(material)
+    }
+
+    pub(super) fn commit_validated_certificate(
+        &self,
+        certificate: &ValidatedCertificate,
+        certificate_chain_pem: &str,
+        private_key_pem: &str,
+        material: &CertifiedMaterial,
+    ) -> Result<(), String> {
+        if material.metadata.domains != certificate.domains
+            || material.metadata.authority != certificate.authority
+            || material.metadata.challenge != certificate.challenge
+        {
+            return Err("validated certificate material does not match its policy".to_string());
+        }
+
+        let directory = self.certificate_directory(&certificate.id);
         create_private_directory(&directory)?;
+        let generations_directory = directory.join("generations");
+        create_private_directory(&generations_directory)?;
+        let generation = uuid::Uuid::new_v4().to_string();
+        let generation_directory = generations_directory.join(&generation);
+        create_private_directory(&generation_directory)?;
 
         let metadata = StoredCertificateMetadata {
-            domains: domains.to_vec(),
+            domains: certificate.domains.clone(),
             chain_sha256: sha256_hex(certificate_chain_pem.as_bytes()),
             key_sha256: sha256_hex(private_key_pem.as_bytes()),
-            authority: authority.to_string(),
+            authority: certificate.authority,
+            challenge: certificate.challenge.clone(),
         };
         let metadata_bytes = serde_json::to_vec_pretty(&metadata)
             .map_err(|error| format!("failed to encode certificate metadata: {error}"))?;
+        let pointer = StoredCertificatePointer {
+            schema_version: CERTIFICATE_STORAGE_SCHEMA_VERSION,
+            generation: generation.clone(),
+        };
+        let pointer_bytes = serde_json::to_vec_pretty(&pointer)
+            .map_err(|error| format!("failed to encode certificate pointer: {error}"))?;
 
-        write_atomic(
-            &directory.join("chain.pem"),
-            certificate_chain_pem.as_bytes(),
-        )?;
-        write_atomic(&directory.join("key.pem"), private_key_pem.as_bytes())?;
-        // Metadata is the commit marker and is written only after both PEM files are durable.
-        write_atomic(&directory.join("metadata.json"), &metadata_bytes)?;
-        Ok(material)
+        let result = (|| -> Result<(), String> {
+            write_atomic(
+                &generation_directory.join("chain.pem"),
+                certificate_chain_pem.as_bytes(),
+            )?;
+            write_atomic(
+                &generation_directory.join("key.pem"),
+                private_key_pem.as_bytes(),
+            )?;
+            write_atomic(&generation_directory.join("metadata.json"), &metadata_bytes)?;
+            sync_directory(&generation_directory)?;
+            sync_directory(&generations_directory)?;
+
+            // The pointer is the only commit marker. Until it is durable, readers
+            // continue loading the previous complete generation.
+            write_atomic(&directory.join("active.json"), &pointer_bytes)
+        })();
+
+        if result.is_err() {
+            let _ = fs::remove_dir_all(&generation_directory);
+            return result;
+        }
+
+        remove_inactive_generations(&generations_directory, &generation);
+        Ok(())
     }
 
     pub fn load_cleanup_journal(&self) -> Result<Vec<PendingDnsCleanup>, String> {
@@ -174,6 +294,42 @@ impl GatewayStorage {
             .lock()
             .map_err(|_| "DNS cleanup journal lock is poisoned".to_string())?;
         self.load_cleanup_journal_unlocked()
+    }
+
+    pub fn load_coordinator_journal(&self) -> Result<CoordinatorJournal, String> {
+        let path = self.coordinator_journal_path();
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                return Ok(CoordinatorJournal::default());
+            }
+            Err(error) => {
+                return Err(format!(
+                    "failed to read certificate coordinator journal {}: {error}",
+                    path.display()
+                ));
+            }
+        };
+        match serde_json::from_slice(&bytes) {
+            Ok(journal) => Ok(journal),
+            Err(_) => {
+                let quarantine = self.root.join(format!(
+                    "certificate-coordinator.corrupt-{}.json",
+                    uuid::Uuid::new_v4()
+                ));
+                fs::rename(&path, &quarantine).map_err(|error| {
+                    format!("failed to quarantine invalid certificate coordinator journal: {error}")
+                })?;
+                Ok(CoordinatorJournal::default())
+            }
+        }
+    }
+
+    pub fn store_coordinator_journal(&self, journal: &CoordinatorJournal) -> Result<(), String> {
+        let bytes = serde_json::to_vec_pretty(journal).map_err(|error| {
+            format!("failed to encode certificate coordinator journal: {error}")
+        })?;
+        write_atomic(&self.coordinator_journal_path(), &bytes)
     }
 
     pub fn store_cleanup_journal(&self, pending: &[PendingDnsCleanup]) -> Result<(), String> {
@@ -194,7 +350,10 @@ impl GatewayStorage {
             .map_err(|_| "DNS cleanup journal lock is poisoned".to_string())?;
         let mut pending = self.load_cleanup_journal_unlocked()?;
         for cleanup in additions {
-            if !pending.contains(cleanup) {
+            if !pending
+                .iter()
+                .any(|existing| same_cleanup(existing, cleanup))
+            {
                 pending.push(cleanup.clone());
             }
         }
@@ -212,9 +371,16 @@ impl GatewayStorage {
             .lock()
             .map_err(|_| "DNS cleanup journal lock is poisoned".to_string())?;
         let mut pending = self.load_cleanup_journal_unlocked()?;
-        pending.retain(|cleanup| !attempted.contains(cleanup));
+        pending.retain(|cleanup| {
+            !attempted
+                .iter()
+                .any(|candidate| same_cleanup(cleanup, candidate))
+        });
         for cleanup in remaining {
-            if !pending.contains(cleanup) {
+            if !pending
+                .iter()
+                .any(|existing| same_cleanup(existing, cleanup))
+            {
                 pending.push(cleanup.clone());
             }
         }
@@ -257,10 +423,17 @@ impl GatewayStorage {
     fn cleanup_journal_path(&self) -> PathBuf {
         self.root.join("dns-cleanup-journal.json")
     }
+
+    fn coordinator_journal_path(&self) -> PathBuf {
+        self.root.join("certificate-coordinator.json")
+    }
 }
 
-fn default_certificate_authority() -> String {
-    "letsencrypt".to_string()
+fn same_cleanup(left: &PendingDnsCleanup, right: &PendingDnsCleanup) -> bool {
+    left.provider == right.provider
+        && left.credential_id == right.credential_id
+        && left.zone_id == right.zone_id
+        && left.record_id == right.record_id
 }
 
 fn create_private_directory(path: &Path) -> Result<(), String> {
@@ -272,6 +445,23 @@ fn create_private_directory(path: &Path) -> Result<(), String> {
             path.display()
         )
     })
+}
+
+fn sync_directory(path: &Path) -> Result<(), String> {
+    File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("failed to sync directory {}: {error}", path.display()))
+}
+
+fn remove_inactive_generations(directory: &Path, active_generation: &str) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name() != active_generation {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -343,6 +533,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
+    use crate::gateway::status::{FailureKind, FailureSource};
 
     fn cleanup(record_id: &str) -> PendingDnsCleanup {
         PendingDnsCleanup {
@@ -351,6 +542,9 @@ mod tests {
             zone_id: "zone".to_string(),
             record_id: record_id.to_string(),
             record_name: format!("_acme-challenge.{record_id}.example.com"),
+            attempt_count: 0,
+            next_attempt_at: None,
+            last_error: None,
         }
     }
 
@@ -361,6 +555,105 @@ mod tests {
         let pending = vec![cleanup("record")];
         storage.store_cleanup_journal(&pending).unwrap();
         assert_eq!(storage.load_cleanup_journal().unwrap(), pending);
+    }
+
+    #[test]
+    fn coordinator_journal_keeps_renewal_and_retry_schedules_distinct() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = GatewayStorage::initialize(directory.path().join("gateway")).unwrap();
+        let failure = CertificateFailure {
+            source: FailureSource::Network,
+            kind: FailureKind::Transient,
+            code: "network_unavailable".to_string(),
+            message: "network unavailable".to_string(),
+            occurred_at: "2026-07-22T00:00:00Z".to_string(),
+            retry_at: Some("2026-07-22T00:05:00Z".to_string()),
+            authority: Some(CertificateAuthorityKind::Letsencrypt),
+            challenge: Some("HTTP-01".to_string()),
+            dns_provider: None,
+            acme_problem_type: None,
+            http_status: None,
+        };
+        let journal = CoordinatorJournal {
+            certificates: BTreeMap::from([
+                (
+                    "renewing".to_string(),
+                    CertificateScheduleJournal {
+                        policy_key: "renew-policy".to_string(),
+                        preferred_authority: Some(CertificateAuthorityKind::Zerossl),
+                        ever_activated_https: true,
+                        attempt_count: 0,
+                        next_renewal_at: Some("2026-08-22T00:00:00Z".to_string()),
+                        next_attempt_at: None,
+                        in_flight: false,
+                        failure: None,
+                    },
+                ),
+                (
+                    "retrying".to_string(),
+                    CertificateScheduleJournal {
+                        policy_key: "retry-policy".to_string(),
+                        preferred_authority: Some(CertificateAuthorityKind::Letsencrypt),
+                        ever_activated_https: false,
+                        attempt_count: 2,
+                        next_renewal_at: None,
+                        next_attempt_at: Some("2026-07-22T00:05:00Z".to_string()),
+                        in_flight: false,
+                        failure: Some(failure),
+                    },
+                ),
+            ]),
+            provider_cooldowns: BTreeMap::new(),
+        };
+
+        storage.store_coordinator_journal(&journal).unwrap();
+
+        assert_eq!(storage.load_coordinator_journal().unwrap(), journal);
+    }
+
+    #[test]
+    fn older_coordinator_journal_defaults_certificate_history_safely() {
+        let journal: CoordinatorJournal = serde_json::from_value(serde_json::json!({
+            "certificates": {
+                "automatic": {
+                    "policy_key": "policy",
+                    "attempt_count": 0,
+                    "next_renewal_at": null,
+                    "next_attempt_at": null,
+                    "in_flight": false,
+                    "failure": null
+                }
+            },
+            "provider_cooldowns": {}
+        }))
+        .unwrap();
+
+        let schedule = &journal.certificates["automatic"];
+        assert_eq!(schedule.preferred_authority, None);
+        assert!(!schedule.ever_activated_https);
+    }
+
+    #[test]
+    fn corrupt_coordinator_journal_is_quarantined() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("gateway");
+        let storage = GatewayStorage::initialize(root.clone()).unwrap();
+        fs::write(storage.coordinator_journal_path(), b"not-json").unwrap();
+
+        assert_eq!(
+            storage.load_coordinator_journal().unwrap(),
+            CoordinatorJournal::default()
+        );
+        assert!(!storage.coordinator_journal_path().exists());
+        assert!(
+            fs::read_dir(root)
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("certificate-coordinator.corrupt-"))
+        );
     }
 
     #[test]

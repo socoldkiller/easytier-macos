@@ -1,4 +1,5 @@
 import EasyTierShared
+import Foundation
 import SwiftUI
 
 struct PublishedServicesGrid: View {
@@ -7,14 +8,15 @@ struct PublishedServicesGrid: View {
     @Binding var globalScrolling: Bool
     let gatewayBusy: Bool
     let workingServiceID: String?
+    let feedbackOperations: [String: PublishedServiceFeedbackOperation]
     let onSetEnabled: (Bool, GatewayPublishedService) -> Void
     let onOpen: (PublishedServiceTableRow) -> Void
     let onCopyDomain: (GatewayPublishedService) -> Void
     let onCopyProxyIPv4: (PublishedServiceTableRow) -> Void
     let onEditService: (GatewayPublishedService) -> Void
-    let onConfigureSSL: () -> Void
     let onRetryCertificate: (GatewayPublishedService) -> Void
     let onDelete: (GatewayPublishedService) -> Void
+    let onConsumeFeedbackOperation: (String, UUID) -> Void
 
     var body: some View {
         WorkspaceDataGrid(
@@ -29,14 +31,15 @@ struct PublishedServicesGrid: View {
                 layout: layout,
                 gatewayBusy: gatewayBusy,
                 workingServiceID: workingServiceID,
+                feedbackOperation: feedbackOperations[row.id],
                 onSetEnabled: onSetEnabled,
                 onOpen: onOpen,
                 onCopyDomain: onCopyDomain,
                 onCopyProxyIPv4: onCopyProxyIPv4,
                 onEditService: onEditService,
-                onConfigureSSL: onConfigureSSL,
                 onRetryCertificate: onRetryCertificate,
-                onDelete: onDelete
+                onDelete: onDelete,
+                onConsumeFeedbackOperation: onConsumeFeedbackOperation
             )
         }
     }

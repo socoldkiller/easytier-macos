@@ -1,56 +1,66 @@
 import EasyTierShared
 
 enum PublishedServiceSSLProvider: Equatable, Sendable {
-    case httpOnly
+    case unavailable
     case managedHTTPS
     case requesting
+    case httpOnly
 
     init(
         acmeConfiguration: GatewayACMEConfiguration?,
-        certificate: GatewayCertificateStatus? = nil
+        certificate: GatewayCertificateStatus? = nil,
+        servingMode: GatewayRouteServingMode? = nil
     ) {
-        guard let acmeConfiguration, acmeConfiguration.termsOfServiceAgreed else {
+        if servingMode == .httpOnly {
             self = .httpOnly
             return
         }
-        switch certificate?.servingMode {
-        case .httpOnly:
-            self = .httpOnly
-        case .https:
+        let contactEmail = try? GatewayPublishedServicesValidator.normalizeContactEmail(
+            acmeConfiguration?.contactEmail
+        )
+        guard !(acmeConfiguration?.acceptedAuthorities.isEmpty ?? true), contactEmail != nil else {
+            self = .unavailable
+            return
+        }
+        switch certificate?.availability {
+        case .valid:
             self = .managedHTTPS
-        case .pendingHTTPS, nil:
+        case .expired, .unavailable, nil:
             self = .requesting
         }
     }
 
     var label: String {
         switch self {
+        case .unavailable: "Email Required"
+        case .managedHTTPS: "Secure"
+        case .requesting: "Issuing Certificate"
         case .httpOnly: "HTTP Only"
-        case .managedHTTPS: "Managed HTTPS"
-        case .requesting: "Requesting Certificate"
         }
     }
 
     var urlScheme: String {
         switch self {
         case .httpOnly: "http"
-        case .managedHTTPS, .requesting: "https"
+        case .unavailable, .managedHTTPS, .requesting: "https"
         }
     }
 
     var connectionLabel: String {
         switch self {
-        case .httpOnly: "Unencrypted HTTP"
-        case .managedHTTPS: "Certificate Managed"
-        case .requesting: "HTTPS Pending"
+        case .unavailable: "Automatic HTTPS Needs Setup"
+        case .managedHTTPS: "Secure with Automatic HTTPS"
+        case .requesting: "Certificate Issuance in Progress"
+        case .httpOnly: "Temporarily Served Without HTTPS"
         }
     }
 
     var helpText: String {
         switch self {
-        case .httpOnly: "Certificate services are unavailable. HTTP remains available while HTTPS is retried."
-        case .managedHTTPS: "The service uses an automatically managed certificate."
-        case .requesting: "A managed certificate is being requested."
+        case .unavailable: "Add a certificate contact email to enable Automatic HTTPS."
+        case .managedHTTPS: "Automatic HTTPS is active with a certificate from the selected authority."
+        case .requesting: "Automatic HTTPS is issuing a certificate."
+        case .httpOnly: "Both certificate authorities are unavailable. HTTPS will be restored automatically."
         }
     }
 

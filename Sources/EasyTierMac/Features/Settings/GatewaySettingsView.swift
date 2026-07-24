@@ -10,14 +10,16 @@ struct GatewaySettingsView: View {
             LazyVStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Gateway")
-                        .font(.title2.weight(.semibold))
-                    Text("SSL for Published Services.")
+                        .font(.title2)
+                        .bold()
+                    Text("Automatic HTTPS for Published Services.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
 
                 GatewayTLSSettingsSection(gateway: gateway)
                 GatewayDNSCredentialsSettingsSection(gateway: gateway)
+                GatewayCertificatesSettingsSection(gateway: gateway)
                 GatewayAdvancedSettingsSection(gateway: gateway)
             }
             .padding(.horizontal, 20)

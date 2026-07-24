@@ -8,7 +8,6 @@ struct PublishedServiceActionsCell: View {
     var onCopyDomain: (GatewayPublishedService) -> Void
     var onCopyProxyIPv4: (PublishedServiceTableRow) -> Void
     var onEditService: (GatewayPublishedService) -> Void
-    var onConfigureSSL: () -> Void
     var onRetryCertificate: (GatewayPublishedService) -> Void
     var onDelete: (GatewayPublishedService) -> Void
 
@@ -21,7 +20,6 @@ struct PublishedServiceActionsCell: View {
                 onCopyDomain: onCopyDomain,
                 onCopyProxyIPv4: onCopyProxyIPv4,
                 onEditService: onEditService,
-                onConfigureSSL: onConfigureSSL,
                 onRetryCertificate: onRetryCertificate,
                 onDelete: onDelete
             )
