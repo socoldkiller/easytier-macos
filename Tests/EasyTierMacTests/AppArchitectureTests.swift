@@ -17,6 +17,20 @@ import Testing
     #expect(EasyTierSettingsTab.allCases.contains(.network))
     #expect(EasyTierSettingsTab.allCases.contains(.gateway))
     #expect(EasyTierSettingsTab.allCases.contains(.advanced))
+    #expect(EasyTierSettingsTab.allCases.contains(.about))
+}
+
+@MainActor
+@Test func aboutSettingsTabPersistsNavigationState() {
+    let fixture = makeArchitectureUserDefaults()
+    defer { fixture.clear() }
+
+    let first = makeSettingsFeature(userDefaults: fixture.defaults)
+    first.request(.about)
+
+    let restored = makeSettingsFeature(userDefaults: fixture.defaults)
+
+    #expect(restored.requestedTab == .about)
 }
 
 @MainActor
