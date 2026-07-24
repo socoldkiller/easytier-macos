@@ -30,12 +30,14 @@ struct TrafficView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
+            StatusBadgeGroup {
                 StatusBadge(title: "Network", value: snapshot.networkName, systemImage: "globe")
+                StatusBadgeDivider()
                 StatusBadge(title: "Upload", value: latestUploadRate, systemImage: "arrow.up", width: Self.rateMetricWidth)
+                StatusBadgeDivider()
                 StatusBadge(title: "Download", value: latestDownloadRate, systemImage: "arrow.down", width: Self.rateMetricWidth)
+                StatusBadgeDivider()
                 StatusBadge(title: "Sampling", value: samplingStatus, systemImage: "waveform.path.ecg")
-                Spacer(minLength: 0)
             }
 
             MotionSwitch(id: snapshot.hasRunningInstance ? "chart" : "empty", insertionEdge: .bottom) {

@@ -7,23 +7,23 @@ struct GatewaySettingsView: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 18) {
+            LazyVStack(alignment: .leading, spacing: SettingsLayoutMetrics.paneSectionSpacing) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Gateway")
                         .font(.title2)
-                        .bold()
-                    Text("Automatic HTTPS for Published Services.")
+                    Text("Published Services, automatic HTTPS, DNS validation, and certificates.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
 
+                GeneralGatewaySettingsSection()
                 GatewayTLSSettingsSection(gateway: gateway)
                 GatewayDNSCredentialsSettingsSection(gateway: gateway)
                 GatewayCertificatesSettingsSection(gateway: gateway)
                 GatewayAdvancedSettingsSection(gateway: gateway)
             }
             .padding(.horizontal, 20)
-            .padding(.vertical, 18)
+            .padding(.vertical, SettingsLayoutMetrics.paneVerticalPadding)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

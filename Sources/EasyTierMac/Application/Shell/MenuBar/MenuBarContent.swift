@@ -5,6 +5,7 @@ import SwiftUI
 
 struct MenuBarContent: View {
     @Environment(AppContext.self) private var appContext
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismiss) private var dismiss
@@ -15,7 +16,7 @@ struct MenuBarContent: View {
 
     @State private var copiedDeviceAddress = false
     @State private var copyFeedbackToken = 0
-    @State private var isConnectionSwitchHovering = false
+    @State private var isConnectionRowHovering = false
 
     private var store: EasyTierAppStore { appContext.workspace.store }
     private var appearanceSettings: AppAppearanceSettings { appContext.settings.appearance }
@@ -23,43 +24,47 @@ struct MenuBarContent: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .center, spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("EasyTier")
-                        .font(.body.weight(.medium))
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(connectionIndicatorColor)
-                            .frame(width: 5, height: 5)
-                        Text(connectionSubtitle)
-                            .font(.callout)
-                            .foregroundStyle(MenuBarPalette.secondaryText)
+            Button(action: toggleConnection) {
+                HStack(alignment: .center, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("EasyTier")
+                            .font(.body.weight(.medium))
+                            .foregroundStyle(connectionTitleColor)
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(connectionIndicatorColor)
+                                .frame(width: 5, height: 5)
+                            Text(connectionSubtitle)
+                                .font(.callout)
+                                .foregroundStyle(connectionSubtitleColor)
+                        }
                     }
-                }
 
-                Spacer(minLength: 0)
+                    Spacer(minLength: 0)
 
-                Button(action: toggleConnection) {
                     MenuBarConnectionSwitch(
                         phase: store.selectedRuntimeReadinessPhase,
                         isBusy: store.isBusy
                     )
-                    .padding(2)
-                    .background(
-                        connectionSwitchBackground,
-                        in: .rect(cornerRadius: 7)
-                    )
                 }
-                .buttonStyle(QuietPressButtonStyle(pressedScale: 0.94, pressedOpacity: 0.86))
-                .disabled(store.isBusy || store.isQuitting || store.selectedConfig == nil)
-                .onHover { isConnectionSwitchHovering = $0 }
-                .accessibilityLabel(Text("Connection"))
-                .accessibilityValue(Text(connectionSwitchAccessibilityValue))
-                .accessibilityHint(Text(connectionSwitchAccessibilityHint))
-                .accessibilityAddTraits(.isButton)
+                .contentShape(Rectangle())
+                .padding(.horizontal, MenuBarPalette.selectedRowContentHorizontalPadding)
+                .padding(.vertical, 5)
+                .background(
+                    connectionRowBackground,
+                    in: .rect(cornerRadius: MenuBarPalette.selectedRowCornerRadius)
+                )
+                .padding(.horizontal, MenuBarPalette.selectedRowHorizontalInset)
+                .padding(.vertical, MenuBarPalette.selectedRowVerticalInset)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
+            .buttonStyle(QuietPressButtonStyle(pressedScale: 0.985, pressedOpacity: 0.82))
+            .disabled(isConnectionRowDisabled)
+            .onHover { isConnectionRowHovering = $0 }
+            .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: isConnectionRowHovering)
+            .accessibilityLabel(Text("Connection"))
+            .accessibilityValue(Text(connectionSwitchAccessibilityValue))
+            .accessibilityHint(Text(connectionSwitchAccessibilityHint))
+            .accessibilityAddTraits(.isButton)
 
             MenuBarDivider()
 
@@ -218,15 +223,24 @@ struct MenuBarContent: View {
         return store.instanceIsFullyConnected(instance) ? MenuBarPalette.connected : .yellow.opacity(0.82)
     }
 
-    private var connectionSwitchBackground: Color {
-        guard isConnectionSwitchHovering,
-              !store.isBusy,
-              !store.isQuitting,
-              store.selectedConfig != nil
-        else {
-            return .clear
-        }
-        return MenuBarPalette.selectedRow
+    private var isConnectionRowDisabled: Bool {
+        store.isBusy || store.isQuitting || store.selectedConfig == nil
+    }
+
+    private var isConnectionRowActive: Bool {
+        isConnectionRowHovering && !isConnectionRowDisabled
+    }
+
+    private var connectionTitleColor: Color {
+        isConnectionRowActive ? MenuBarPalette.selectedRowText : MenuBarPalette.primaryText
+    }
+
+    private var connectionSubtitleColor: Color {
+        isConnectionRowActive ? MenuBarPalette.selectedRowText.opacity(0.82) : MenuBarPalette.secondaryText
+    }
+
+    private var connectionRowBackground: Color {
+        isConnectionRowActive ? MenuBarPalette.selectedRow : .clear
     }
 
     private var selectedNetworkSubtitle: String {

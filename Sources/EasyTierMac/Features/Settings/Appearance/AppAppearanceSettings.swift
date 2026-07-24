@@ -47,7 +47,7 @@ final class AppAppearanceSettings {
     }
 
     static func persistedShowsDockIcon(userDefaults: UserDefaults = .standard) -> Bool {
-        guard userDefaults.object(forKey: showsDockIconKey) != nil else { return true }
+        guard userDefaults.object(forKey: showsDockIconKey) != nil else { return false }
         return userDefaults.bool(forKey: showsDockIconKey)
     }
 

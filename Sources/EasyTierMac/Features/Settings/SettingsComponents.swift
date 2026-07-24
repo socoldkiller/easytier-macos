@@ -5,6 +5,11 @@ enum SettingsTint {
     static let rpcServer = Color.teal
 }
 
+enum SettingsLayoutMetrics {
+    static let paneSectionSpacing: CGFloat = 14
+    static let paneVerticalPadding: CGFloat = 14
+}
+
 struct SectionIcon: View {
     var systemImage: String
     var tint: Color
@@ -26,10 +31,11 @@ struct SettingsCard<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 5) {
             content
         }
-        .padding(11)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .frostedGlassBackground(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
@@ -57,7 +63,7 @@ struct CardSection<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .center, spacing: 7) {
                 if let systemImage, let tint {
                     SectionIcon(systemImage: systemImage, tint: tint)
@@ -68,7 +74,7 @@ struct CardSection<Content: View>: View {
                         .frame(width: 18, alignment: .center)
                 }
                 Text(title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.subheadline)
             }
 
             SettingsCard { content }
@@ -102,7 +108,7 @@ struct SettingsInlineRow<Content: View>: View {
     var body: some View {
         HStack(alignment: alignment, spacing: 16) {
             Text(label)
-                .font(.body.weight(.medium))
+                .font(.body)
                 .foregroundStyle(.primary)
                 .frame(minWidth: 110, alignment: .leading)
 
@@ -110,6 +116,36 @@ struct SettingsInlineRow<Content: View>: View {
 
             content
                 .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+}
+
+struct SettingsToggleRow<Label: View>: View {
+    @Binding var isOn: Bool
+    @ViewBuilder var label: Label
+
+    init(isOn: Binding<Bool>, @ViewBuilder label: () -> Label) {
+        _isOn = isOn
+        self.label = label()
+    }
+
+    var body: some View {
+        Toggle(isOn: $isOn) {
+            label
+                .font(.body)
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .toggleStyle(.switch)
+        .controlSize(.small)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+extension SettingsToggleRow where Label == Text {
+    init(_ title: LocalizedStringKey, isOn: Binding<Bool>) {
+        self.init(isOn: isOn) {
+            Text(title)
         }
     }
 }
@@ -217,7 +253,7 @@ struct StatusPill: View {
                     .accessibilityHidden(true)
             }
             Text(text)
-                .font(.caption.weight(.medium))
+                .font(.caption)
                 .foregroundStyle(tone.color == .secondary ? .secondary : .primary)
                 .lineLimit(1)
         }
@@ -290,13 +326,39 @@ struct StatusBadge: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(8)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
         .frame(width: width, alignment: .leading)
-        .liquidGlassMetricBackground(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .animation(EasyTierMotion.quick(reduceMotion: reduceMotion), value: value)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(title))
         .accessibilityValue(Text(value.isEmpty ? "-" : value))
+    }
+}
+
+struct StatusBadgeGroup<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            content
+        }
+        .padding(4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .liquidGlassMetricBackground(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+struct StatusBadgeDivider: View {
+    var body: some View {
+        Divider()
+            .frame(height: 30)
+            .padding(.horizontal, 2)
+            .opacity(0.55)
     }
 }
 
@@ -361,7 +423,7 @@ struct DisclosureHeader<Trailing: View>: View {
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
                     .frame(width: 11)
                 Text(title)
-                    .font(.body.weight(.medium))
+                    .font(.body)
                 Spacer(minLength: 10)
                 trailing
             }

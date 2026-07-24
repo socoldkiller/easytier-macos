@@ -15,8 +15,10 @@ struct GatewayCertificatesSettingsSection: View {
             footer: "Automatic wildcard certificates are shared by services on the same node."
         ) {
             if gateway.certificates.isEmpty {
-                Text("No certificates")
-                    .foregroundStyle(.secondary)
+                SettingsInlineRow("Issued") {
+                    Text("None")
+                        .foregroundStyle(.secondary)
+                }
             } else {
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
                     GridRow {
@@ -71,4 +73,3 @@ struct GatewayCertificatesSettingsSection: View {
         return date.formatted(date: .abbreviated, time: .omitted)
     }
 }
-

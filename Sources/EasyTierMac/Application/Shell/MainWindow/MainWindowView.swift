@@ -288,7 +288,6 @@ struct MainWindowView: View {
                             .accessibilityHidden(true)
                     }
                 }
-                .scrollContentBackground(.hidden)
             } else {
                 List(selection: $selectedSearchResultID) {
                     Section("Search Results") {
@@ -309,7 +308,6 @@ struct MainWindowView: View {
                         }
                     }
                 }
-                .scrollContentBackground(.hidden)
             }
         }
         .searchable(
@@ -323,10 +321,6 @@ struct MainWindowView: View {
         .onChange(of: networkSearchQuery.isEmpty ? [] : networkSearchResultIDs) { _, ids in
             reconcileSearchSelection(with: ids)
         }
-        .easyTierSidebarBackground(
-            glassEffectsEnabled: appearanceSettings.glassEffectsEnabled && !reduceTransparency,
-            renderCoordinator: appContext.presentation.glassRenderCoordinator
-        )
         .background {
             SearchKeyboardBridge(
                 isActive: !networkSearchQuery.isEmpty,
@@ -414,6 +408,7 @@ struct MainWindowView: View {
                         connectionActionTitle,
                         systemImage: connectionActionSystemImage
                     )
+                    .foregroundStyle(connectionActionColor)
                 }
                 .disabled(store.selectedConfig == nil || store.isBusy)
                 .help(connectionActionHelp)
@@ -576,9 +571,14 @@ struct MainWindowView: View {
 
     private var connectionActionSystemImage: String {
         if store.isBusy { return "hourglass" }
-        if selectedConfigHasRuntimeError { return "stop.fill" }
-        if selectedConfigCanStop { return selectedConfigIsReady ? "pause.fill" : "stop.fill" }
-        return "play.fill"
+        if selectedConfigHasRuntimeError || selectedConfigCanStop { return "cable.connector.slash" }
+        return "cable.connector"
+    }
+
+    private var connectionActionColor: Color {
+        if store.isBusy { return Color(nsColor: .secondaryLabelColor) }
+        if selectedConfigHasRuntimeError || selectedConfigCanStop { return EasyTierColors.statusError }
+        return .accentColor
     }
 
     private var connectionActionHelp: String {

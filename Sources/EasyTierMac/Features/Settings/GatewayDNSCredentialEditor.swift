@@ -37,7 +37,6 @@ struct GatewayDNSCredentialEditor: View {
         VStack(alignment: .leading, spacing: 18) {
             Text(credential == nil ? "Add DNS Credential" : "Edit DNS Credential")
                 .font(.title3)
-                .bold()
 
             if let errorMessage {
                 ErrorBanner(message: errorMessage)

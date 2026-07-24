@@ -37,24 +37,21 @@ struct GatewayTLSSettingsSection: View {
                 footer: "This global address is shared by all certificates. Certificate authorities use it for account, security, and renewal notices."
             ) {
                 SettingsInlineRow("Contact Email") {
-                    VStack(alignment: .trailing, spacing: 4) {
-                        TextField("name@example.com", text: $contactEmail)
-                            .textFieldStyle(.glassField)
-                            .frame(maxWidth: 320)
-                            .disabled(isSaving)
-                        if contactEmailIsInvalid {
-                            Text("Enter a valid email address.")
-                                .font(.caption)
-                                .foregroundStyle(.red)
+                    HStack(alignment: .top, spacing: 8) {
+                        VStack(alignment: .trailing, spacing: 4) {
+                            TextField("name@example.com", text: $contactEmail)
+                                .textFieldStyle(.glassField)
+                                .frame(minWidth: 180, maxWidth: 260)
+                                .disabled(isSaving)
+                            if contactEmailIsInvalid {
+                                Text("Enter a valid email address.")
+                                    .font(.caption)
+                                    .foregroundStyle(.red)
+                            }
                         }
+                        Button("Save", systemImage: "checkmark", action: save)
+                            .disabled(isSaving || !hasUnsavedChanges || normalizedContactEmail == nil)
                     }
-                }
-                SettingsRowDivider()
-                HStack {
-                    Spacer(minLength: 0)
-                    Button("Save", systemImage: "checkmark", action: save)
-                        .buttonStyle(.borderedProminent)
-                        .disabled(isSaving || !hasUnsavedChanges || normalizedContactEmail == nil)
                 }
             }
         }
