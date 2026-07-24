@@ -248,7 +248,7 @@ if restore_cached_ffi "$CACHE_PATH"; then
 fi
 echo "EasyTier FFI cache miss: $CACHE_PATH"
 
-cargo build \
+"$ROOT_DIR/scripts/with-preserved-file.sh" "$GUI_FFI_DIR/Cargo.lock" cargo build \
   --manifest-path "$GUI_FFI_DIR/Cargo.toml" \
   --release \
   --target "$TARGET_TRIPLE" \
@@ -257,7 +257,7 @@ cargo build \
   --features core \
   --lib
 
-cargo build \
+"$ROOT_DIR/scripts/with-preserved-file.sh" "$GUI_FFI_DIR/Cargo.lock" cargo build \
   --manifest-path "$GUI_FFI_DIR/Cargo.toml" \
   --release \
   --target "$TARGET_TRIPLE" \
