@@ -8,7 +8,6 @@ import Testing
 @Test func glassSurfaceRolesUseSemanticMaterialsAndNativeWindowState() {
     let expectations: [(GlassSurfaceRole, NSVisualEffectView.Material, NSVisualEffectView.BlendingMode)] = [
         (.windowBackdrop, .underWindowBackground, .behindWindow),
-        (.sidebar, .sidebar, .behindWindow),
         (.panel, .sidebar, .withinWindow),
         (.sheet, .sheet, .behindWindow),
         (.popover, .popover, .behindWindow),
@@ -74,7 +73,7 @@ import Testing
 @MainActor
 @Test func managedVisualEffectHostReleasesAndRecreatesItsEffectChild() throws {
     let host = ManagedVisualEffectHostView()
-    let configuration = GlassSurfaceRole.sidebar.configuration(reduceTransparency: false)
+    let configuration = GlassSurfaceRole.panel.configuration(reduceTransparency: false)
     host.reconcileRendering(isEligible: true)
     _ = host.apply(configuration: configuration)
 
@@ -87,7 +86,7 @@ import Testing
     #expect(host.effectView != nil)
     #expect(host.effectView !== originalEffectView)
     #expect(host.effectView?.material == .sidebar)
-    #expect(host.effectView?.blendingMode == .behindWindow)
+    #expect(host.effectView?.blendingMode == .withinWindow)
     #expect(host.effectView?.state == .followsWindowActiveState)
 }
 

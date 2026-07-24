@@ -4,7 +4,6 @@ import SwiftUI
 
 enum GlassSurfaceRole: CaseIterable {
     case windowBackdrop
-    case sidebar
     case panel
     case sheet
     case popover
@@ -16,9 +15,6 @@ enum GlassSurfaceRole: CaseIterable {
         switch self {
         case .windowBackdrop:
             material = .underWindowBackground
-            blendingMode = .behindWindow
-        case .sidebar:
-            material = .sidebar
             blendingMode = .behindWindow
         case .panel:
             material = .sidebar
@@ -402,25 +398,6 @@ extension View {
             }
         } else {
             containerBackground(Color(nsColor: .windowBackgroundColor), for: .window)
-        }
-    }
-
-    func easyTierSidebarBackground(
-        glassEffectsEnabled: Bool,
-        renderCoordinator: GlassRenderCoordinator
-    ) -> some View {
-        background {
-            if glassEffectsEnabled {
-                FrostedGlass(
-                    role: .sidebar,
-                    renderCoordinator: renderCoordinator
-                )
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-            } else {
-                Color(nsColor: .windowBackgroundColor)
-                    .ignoresSafeArea()
-            }
         }
     }
 

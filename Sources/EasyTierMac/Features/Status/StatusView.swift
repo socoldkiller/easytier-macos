@@ -138,21 +138,23 @@ struct StatusView: View {
     }
 
     private func header(_ display: StatusDisplayModel) -> some View {
-        HStack(spacing: 10) {
+        StatusBadgeGroup {
             StatusBadge(
                 title: "Network",
                 value: display.snapshot.networkName,
                 systemImage: "globe"
             )
+            StatusBadgeDivider()
             StatusBadge(title: "Members", value: "\(display.members.count)", systemImage: "person.2.fill", width: 136)
+            StatusBadgeDivider()
             StatusBadge(
                 title: "Device",
                 value: display.snapshot.deviceName,
                 systemImage: "desktopcomputer",
                 width: 152
             )
+            StatusBadgeDivider()
             StatusBadge(title: "Mode", value: display.modeLabel, systemImage: "slider.horizontal.3")
-            Spacer(minLength: 0)
         }
     }
 

@@ -21,7 +21,6 @@ extension View {
             safeAreaBar(edge: edge, alignment: alignment, spacing: spacing) {
                 content()
                     .frame(maxWidth: .infinity)
-                    .background(.bar)
             }
                 .scrollEdgeEffectStyle(.automatic, for: edge.edgeSet)
         } else {

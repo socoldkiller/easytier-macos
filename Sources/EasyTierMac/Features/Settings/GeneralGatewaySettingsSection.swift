@@ -26,21 +26,25 @@ struct GeneralGatewaySettingsSection: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             CardSection(
                 "Published Services",
                 systemImage: "network.badge.shield.half.filled",
                 footer: "Publishing a service turns this on automatically. Turn it off to pause all published services."
             ) {
                 SettingsInlineRow("Run Published Services") {
-                    HStack(spacing: 10) {
-                        StatusPill(
-                            presentation.statusLabel,
-                            tone: presentation.tone.statusPillTone,
-                            showsProgress: presentation.isInProgress
-                        )
+                    HStack(spacing: 8) {
+                        if presentation.statusLabel != (gateway.desiredEnabled ? "Running" : "Off") {
+                            StatusPill(
+                                presentation.statusLabel,
+                                tone: presentation.tone.statusPillTone,
+                                showsProgress: presentation.isInProgress
+                            )
+                        }
                         Toggle("Run Published Services", isOn: gatewayEnabledBinding)
                             .labelsHidden()
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
                             .disabled(isChangingGateway || gateway.isBusy)
                     }
                 }

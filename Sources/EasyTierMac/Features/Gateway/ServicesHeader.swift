@@ -8,12 +8,13 @@ struct ServicesHeader: View {
     var modeLabel: String
 
     var body: some View {
-        HStack(spacing: 10) {
+        StatusBadgeGroup {
             StatusBadge(
                 title: "Network",
                 value: networkName,
                 systemImage: "globe"
             )
+            StatusBadgeDivider()
             StatusBadge(
                 title: "Gateway",
                 value: gatewayStatus,
@@ -21,18 +22,19 @@ struct ServicesHeader: View {
                 width: 150,
                 showsProgress: gatewayIsInProgress
             )
+            StatusBadgeDivider()
             StatusBadge(
                 title: "Services",
                 value: serviceSummary,
                 systemImage: "rectangle.stack",
                 width: 160
             )
+            StatusBadgeDivider()
             StatusBadge(
                 title: "Mode",
                 value: modeLabel,
                 systemImage: "slider.horizontal.3"
             )
-            Spacer(minLength: 0)
         }
     }
 }

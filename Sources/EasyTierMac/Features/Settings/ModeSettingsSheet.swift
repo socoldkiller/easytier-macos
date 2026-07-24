@@ -122,10 +122,6 @@ struct EasyTierSettingsSheet: View {
         NavigationSplitView {
             SettingsSidebar(selection: effectiveSelectionBinding, visibleEasyTierSections: visibleEasyTierSections)
                 .navigationSplitViewColumnWidth(min: 200, ideal: Self.sidebarWidth, max: 240)
-                .easyTierSidebarBackground(
-                    glassEffectsEnabled: appearance.glassEffectsEnabled,
-                    renderCoordinator: appContext.presentation.glassRenderCoordinator
-                )
         } detail: {
             detailContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -190,21 +186,21 @@ struct EasyTierSettingsSheet: View {
 
     private var generalSettings: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 18) {
+            LazyVStack(alignment: .leading, spacing: SettingsLayoutMetrics.paneSectionSpacing) {
                 paneHeader(
                     title: "General",
-                    subtitle: "Appearance, launch, updates, and background services."
+                    subtitle: "Appearance, startup, background activity, and software updates."
                 )
 
                 CardSection(
                     "Appearance",
-                    footer: "Panel backgrounds apply only while frosted glass is enabled. Traditional mode keeps solid panels for readability."
+                    footer: "Panel backgrounds require Frosted Glass. When hidden from the Dock, EasyTier remains available from the menu bar."
                 ) {
-                    Toggle(isOn: appearance.glassEffectsEnabledBinding) {
+                    SettingsToggleRow(isOn: appearance.glassEffectsEnabledBinding) {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Text("Frosted Glass")
                             Text("Beta")
-                                .font(.caption2.weight(.semibold))
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
                                 .fixedSize()
                                 .padding(.horizontal, 5)
@@ -216,27 +212,27 @@ struct EasyTierSettingsSheet: View {
                     }
                     .accessibilityLabel(Text("Frosted Glass, Beta"))
                     SettingsRowDivider()
-                    Toggle("Panel Backgrounds", isOn: appearance.glassPanelBackgroundsEnabledBinding)
+                    SettingsToggleRow("Panel Backgrounds", isOn: appearance.glassPanelBackgroundsEnabledBinding)
                         .disabled(!appearance.glassEffectsEnabled)
+                    SettingsRowDivider()
+                    SettingsToggleRow("Show in Dock", isOn: appearance.showsDockIconBinding)
                 }
 
                 CardSection(
-                    "General",
-                    footer: "When hidden from the Dock, EasyTier remains available from the menu bar."
+                    "Startup & Background",
+                    footer: "Helper-managed networks can continue running after the EasyTier app quits."
                 ) {
-                    Toggle("Show in Dock", isOn: appearance.showsDockIconBinding)
-                    SettingsRowDivider()
-                    Toggle("Launch at Login", isOn: loginItemBinding)
+                    SettingsToggleRow("Launch at Login", isOn: loginItemBinding)
                         .onChange(of: loginItem.isEnabled) { _, _ in loginItem.apply() }
+                    SettingsRowDivider()
+                    SettingsToggleRow("Keep Networks Running After Quit", isOn: vpnOnDemandBinding)
                 }
-
-                GeneralGatewaySettingsSection()
 
                 CardSection(
                     "Software Update",
                     footer: softwareUpdateFooterText
                 ) {
-                    Toggle("Check for Updates Automatically", isOn: autoCheckUpdatesBinding)
+                    SettingsToggleRow("Check for Updates Automatically", isOn: autoCheckUpdatesBinding)
                     SettingsRowDivider()
                     SettingsInlineRow("Update To") {
                         Picker("Update To", selection: updateTrackBinding) {
@@ -263,17 +259,10 @@ struct EasyTierSettingsSheet: View {
                     }
                 }
 
-                CardSection(
-                    "Quit Behavior",
-                    footer: "Running networks and Published Services are helper-managed and can remain active after the EasyTier window and menu bar app quit."
-                ) {
-                    Toggle("Keep Networks Running After Quit", isOn: vpnOnDemandBinding)
-                }
-
                 HelperDiagnosticsSection()
             }
             .padding(.horizontal, 20)
-            .padding(.vertical, 18)
+            .padding(.vertical, SettingsLayoutMetrics.paneVerticalPadding)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -289,7 +278,7 @@ struct EasyTierSettingsSheet: View {
     private func paneHeader(title: String, subtitle: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
-                .font(.title2.weight(.semibold))
+                .font(.title2)
             if !subtitle.isEmpty {
                 Text(subtitle)
                     .font(.subheadline)
@@ -304,7 +293,7 @@ struct EasyTierSettingsSheet: View {
     @ViewBuilder
     private func easyTierSectionView(_ section: EasyTierSection) -> some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 18) {
+            LazyVStack(alignment: .leading, spacing: SettingsLayoutMetrics.paneSectionSpacing) {
                 paneHeader(title: section.rawValue, subtitle: section.subtitle)
 
                 switch section {
@@ -313,7 +302,7 @@ struct EasyTierSettingsSheet: View {
                 }
             }
             .padding(.horizontal, 20)
-            .padding(.vertical, 18)
+            .padding(.vertical, SettingsLayoutMetrics.paneVerticalPadding)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -357,7 +346,7 @@ struct EasyTierSettingsSheet: View {
     }
 
     private var rpcServerSection: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: SettingsLayoutMetrics.paneSectionSpacing) {
             CardSection("Status") {
                 SettingsInlineRow("Status") {
                     Text(rpcListenEnabled ? "Listening" : "Off")
@@ -376,7 +365,7 @@ struct EasyTierSettingsSheet: View {
             }
 
             CardSection("Server", footer: "Address the GUI uses to reach EasyTier.") {
-                Toggle("TCP Listen", isOn: rpcListenBinding)
+                SettingsToggleRow("TCP Listen", isOn: rpcListenBinding)
                 SettingsRowDivider()
                 SettingsInlineRow("Portal") {
                     if rpcListenEnabled {
@@ -668,8 +657,19 @@ private struct SettingsSidebar: View {
                 Label("General", systemImage: "gearshape")
                     .tag(SettingsSelection.general)
 
-                Label("Gateway", systemImage: "network.badge.shield.half.filled")
-                    .tag(SettingsSelection.gateway)
+                HStack(spacing: 6) {
+                    Label("Gateway", systemImage: "network.badge.shield.half.filled")
+                    Text("Beta")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize()
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(.secondary.opacity(0.13), in: Capsule(style: .continuous))
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(Text("Gateway, Beta"))
+                .tag(SettingsSelection.gateway)
 
                 ForEach(visibleEasyTierSections) { section in
                     Label(section.rawValue, systemImage: section.systemImage)
@@ -687,7 +687,6 @@ private struct SettingsSidebar: View {
             }
         }
         .listStyle(.sidebar)
-        .scrollContentBackground(.hidden)
         .hideScrollViewScrollers()
     }
 }
@@ -808,7 +807,7 @@ private struct SettingsMetadataRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         } label: {
             Text(label)
-                .font(.body.weight(.medium))
+                .font(.body)
                 .foregroundStyle(.secondary)
         }
     }

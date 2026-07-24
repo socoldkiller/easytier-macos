@@ -4,7 +4,7 @@ import Testing
 @testable import EasyTierMac
 
 @MainActor
-@Test func dockIconIsVisibleByDefaultAndPersistsChanges() {
+@Test func dockIconIsHiddenByDefaultAndPersistsChanges() {
     let suiteName = "AppAppearanceSettingsTests.\(UUID().uuidString)"
     let userDefaults = UserDefaults(suiteName: suiteName)!
     defer { userDefaults.removePersistentDomain(forName: suiteName) }
@@ -15,19 +15,19 @@ import Testing
         dockIconVisibility: dockIconVisibility
     )
 
-    #expect(settings.showsDockIcon)
+    #expect(!settings.showsDockIcon)
     #expect(dockIconVisibility.appliedVisibility.isEmpty)
 
-    settings.showsDockIcon = false
+    settings.showsDockIcon = true
 
-    #expect(userDefaults.object(forKey: "EasyTierShowsDockIcon") as? Bool == false)
-    #expect(dockIconVisibility.appliedVisibility == [false])
+    #expect(userDefaults.object(forKey: "EasyTierShowsDockIcon") as? Bool == true)
+    #expect(dockIconVisibility.appliedVisibility == [true])
 
     let restoredSettings = AppAppearanceSettings(
         userDefaults: userDefaults,
         dockIconVisibility: TestDockIconVisibilityService()
     )
-    #expect(!restoredSettings.showsDockIcon)
+    #expect(restoredSettings.showsDockIcon)
 }
 
 @MainActor
