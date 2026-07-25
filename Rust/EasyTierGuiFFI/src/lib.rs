@@ -85,6 +85,10 @@ const RPC_MAX_CONCURRENT_PER_ENDPOINT: usize = 4;
 const RPC_MAX_CONCURRENT_TOTAL: usize = 32;
 #[cfg(feature = "core")]
 const RPC_MAX_CONNECTING_TOTAL: usize = 8;
+#[cfg(feature = "core")]
+const RPC_PORTAL_LISTEN_ATTEMPTS: usize = 4;
+#[cfg(feature = "core")]
+const RPC_PORTAL_LISTEN_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 #[cfg(feature = "core")]
 struct RpcEndpoint {
@@ -926,13 +930,30 @@ pub unsafe extern "C" fn configure_rpc_portal(
             };
 
             let server = RPC_RUNTIME.block_on(async {
-                let server =
-                    ApiRpcServer::new(Some(listen_addr), whitelist, INSTANCE_MANAGER.clone())
-                        .map_err(|e| format!("failed to create RPC portal: {e}"))?;
-                server
-                    .serve()
-                    .await
-                    .map_err(|e| format!("failed to start RPC portal: {e}"))
+                let mut last_error = None;
+
+                for attempt in 1..=RPC_PORTAL_LISTEN_ATTEMPTS {
+                    let server = ApiRpcServer::new(
+                        Some(listen_addr.clone()),
+                        whitelist.clone(),
+                        INSTANCE_MANAGER.clone(),
+                    )
+                    .map_err(|e| format!("failed to create RPC portal: {e}"))?;
+
+                    match server.serve().await {
+                        Ok(server) => return Ok(server),
+                        Err(error) => last_error = Some(error),
+                    }
+
+                    if attempt < RPC_PORTAL_LISTEN_ATTEMPTS {
+                        tokio::time::sleep(RPC_PORTAL_LISTEN_RETRY_DELAY).await;
+                    }
+                }
+
+                let error = last_error.expect("RPC portal start loop always makes an attempt");
+                Err(format!(
+                    "failed to start RPC portal after {RPC_PORTAL_LISTEN_ATTEMPTS} attempts: {error}"
+                ))
             })?;
             *slot = Some(server);
             Ok(())
@@ -1127,6 +1148,42 @@ mod tests {
         assert!(validate_rpc_url("tcp://public.example.com:15888").is_err());
         assert!(validate_rpc_url("tcp://10.0.0.1").is_err());
         assert!(validate_rpc_url("tcp://10.0.0.1:15888/path").is_err());
+    }
+
+    #[test]
+    fn rpc_portal_waits_for_a_transient_listener_to_release() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            drop(listener);
+        });
+
+        let address = CString::new(format!("tcp://127.0.0.1:{port}")).unwrap();
+        let mut error: *const c_char = std::ptr::null();
+        let result =
+            unsafe { configure_rpc_portal(1, address.as_ptr(), std::ptr::null(), 0, &mut error) };
+        let message = if error.is_null() {
+            String::new()
+        } else {
+            unsafe { CStr::from_ptr(error) }
+                .to_string_lossy()
+                .into_owned()
+        };
+
+        release.join().unwrap();
+        unsafe {
+            let _ = configure_rpc_portal(
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+            );
+            free_string(error);
+        }
+
+        assert_eq!(result, 0, "RPC portal did not recover: {message}");
     }
 
     #[test]
