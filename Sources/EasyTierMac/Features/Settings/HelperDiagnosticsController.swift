@@ -5,8 +5,9 @@ import Observation
 @MainActor
 @Observable
 final class HelperDiagnosticsController {
-    let bundledEasyTierHelper = PrivilegedHelperBuildInfo(bundle: .main)
-    let bundledGatewayHelper = GatewayHelperBuildInfo(bundle: .main)
+    let bundledEasyTierHelper: PrivilegedHelperBuildInfo?
+    let bundledGatewayHelper: GatewayHelperBuildInfo?
+    let bundledMetadataError: String?
     private(set) var activeEasyTierHelper: PrivilegedHelperBuildInfo?
     private(set) var activeGatewayHelper: GatewayHelperBuildInfo?
     private(set) var status = "Checking helpers…"
@@ -14,12 +15,28 @@ final class HelperDiagnosticsController {
     @ObservationIgnored private let easyTierClient = PrivilegedEasyTierClient()
     @ObservationIgnored private let gatewayClient = PrivilegedGatewayClient()
 
-    var displayedEasyTierHelper: PrivilegedHelperBuildInfo {
+    var displayedEasyTierHelper: PrivilegedHelperBuildInfo? {
         activeEasyTierHelper ?? bundledEasyTierHelper
     }
 
-    var displayedGatewayHelper: GatewayHelperBuildInfo {
+    var displayedGatewayHelper: GatewayHelperBuildInfo? {
         activeGatewayHelper ?? bundledGatewayHelper
+    }
+
+    init(bundle: Bundle = .main) {
+        let metadata: (PrivilegedHelperBuildInfo?, GatewayHelperBuildInfo?, String?)
+        do {
+            metadata = (
+                try PrivilegedHelperBuildInfo(bundle: bundle),
+                try GatewayHelperBuildInfo(bundle: bundle),
+                nil
+            )
+        } catch {
+            metadata = (nil, nil, error.localizedDescription)
+        }
+        bundledEasyTierHelper = metadata.0
+        bundledGatewayHelper = metadata.1
+        bundledMetadataError = metadata.2
     }
 
     func refresh(
@@ -31,7 +48,8 @@ final class HelperDiagnosticsController {
         let (easyTier, gateway) = await (easyTierResult, gatewayResult)
         activeEasyTierHelper = easyTier.info
         activeGatewayHelper = gateway.info
-        status = "EasyTier: \(easyTier.status) Gateway: \(gateway.status)"
+        let metadataStatus = bundledMetadataError.map { " Bundle metadata invalid: \($0)" } ?? ""
+        status = "EasyTier: \(easyTier.status) Gateway: \(gateway.status)\(metadataStatus)"
     }
 
     private func loadEasyTierHelper(

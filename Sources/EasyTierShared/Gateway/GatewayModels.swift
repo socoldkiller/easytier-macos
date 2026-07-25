@@ -3,7 +3,6 @@ import Foundation
 package enum GatewaySchema {
     package static let version: UInt32 = 7
     package static let persistedVersion: UInt32 = 7
-    package static let previousPersistedVersion: UInt32 = 6
     package static let runtimeVersion: UInt32 = version
 }
 
@@ -373,7 +372,6 @@ package struct GatewayPersistedState: Codable, Equatable, Sendable {
         case gatewayEnabled = "gateway_enabled"
         case acmeAccount = "acme_account"
         case defaultDNSZoneBindingID = "default_dns_zone_binding_id"
-        case legacyDefaultDNSCredentialID = "default_dns_credential_id"
         case publishingNetworkConfigID = "publishing_network_config_id"
         case lastKnownNetworkIPv4CIDR = "last_known_network_ipv4_cidr"
         case dnsCredentials = "dns_credentials"
@@ -391,7 +389,7 @@ package struct GatewayPersistedState: Codable, Equatable, Sendable {
         defaultDNSZoneBindingID = try container.decodeIfPresent(
             String.self,
             forKey: .defaultDNSZoneBindingID
-        ) ?? container.decodeIfPresent(String.self, forKey: .legacyDefaultDNSCredentialID)
+        )
         publishingNetworkConfigID = try container.decodeIfPresent(
             String.self,
             forKey: .publishingNetworkConfigID
@@ -498,7 +496,6 @@ extension GatewayManagedCertificateStrategy: Codable {
     private enum CodingKeys: String, CodingKey {
         case type
         case zoneBindingID = "zone_binding_id"
-        case legacyCredentialID = "credential_id"
         case authority
         case challenge
     }
@@ -513,8 +510,7 @@ extension GatewayManagedCertificateStrategy: Codable {
         switch try container.decode(Kind.self, forKey: .type) {
         case .automaticWildcard:
             self = .automaticWildcard(
-                zoneBindingID: try container.decodeIfPresent(String.self, forKey: .zoneBindingID)
-                    ?? container.decode(String.self, forKey: .legacyCredentialID)
+                zoneBindingID: try container.decode(String.self, forKey: .zoneBindingID)
             )
         case .custom:
             self = .custom(
@@ -558,7 +554,6 @@ extension GatewayPublishedServiceChallenge: Codable {
     private enum CodingKeys: String, CodingKey {
         case type
         case zoneBindingID = "zone_binding_id"
-        case legacyCredentialID = "credential_id"
     }
 
     private enum Kind: String, Codable {
@@ -573,8 +568,7 @@ extension GatewayPublishedServiceChallenge: Codable {
             self = .http01
         case .dns01:
             self = .dns01(
-                zoneBindingID: try container.decodeIfPresent(String.self, forKey: .zoneBindingID)
-                    ?? container.decode(String.self, forKey: .legacyCredentialID)
+                zoneBindingID: try container.decode(String.self, forKey: .zoneBindingID)
             )
         }
     }

@@ -51,6 +51,34 @@ The two Rust archives are compiled from mutually exclusive Cargo features. The
 EasyTier helper does not contain Gateway entry points, the Gateway helper does
 not contain EasyTier Core entry points, and the GUI contains neither set.
 
+Both helpers are registered exclusively through signed `SMAppService` launch
+daemons. Historical manually installed helper layouts are unsupported and are
+not detected, migrated, or removed by the app. XPC errors and helper build
+metadata use the current JSON schema and fail validation when malformed or
+incomplete.
+
+## Compatibility boundaries
+
+- The deployment target remains macOS 15. System API availability branches,
+  including newer macOS UI treatments, are platform support rather than data
+  compatibility and must remain.
+- Generated `state.json`, Gateway configuration, and software-update recovery
+  payloads accept only their current schemas. Incompatible generated state is
+  deleted and rebuilt without a backup; user-authored TOML files remain intact.
+- Network secrets use one Data Protection Keychain item per
+  `NetworkConfig.instance_id`. Network-name accounts and legacy Keychain
+  backends are not read or migrated, so upgrading from an older build may
+  require entering a network password once.
+- Local FFI and remote runtime JSON accept the current Rust snake_case schema
+  with exact JSON value types. Remote nodes must run a compatible protocol
+  version. Unknown remote configuration fields are still preserved by the raw
+  JSON merge because Swift intentionally models only part of the current Rust
+  configuration.
+- External subscription variation is accepted only by
+  `PeerSubscriptionImporter`. Persisted `PeerSubscription` and `PeerCard`
+  values use strict Codable schemas, and skipped importer entries are reported
+  to the application log.
+
 ## Gateway ownership
 
 Gateway is split across three deep modules with narrow interfaces:

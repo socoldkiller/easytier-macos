@@ -322,7 +322,7 @@ func gatewayValidationRejectsNonExactCertificateDomains(_ domain: String) {
     let state = gatewayPersistedTestState()
 
     try await store.save(state)
-    let loaded = try await store.load(magicDNSSuffix: "et.net.")
+    let loaded = try await store.load()
     let fileAttributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
     let directoryAttributes = try FileManager.default.attributesOfItem(
         atPath: fileURL.deletingLastPathComponent().path
@@ -331,150 +331,6 @@ func gatewayValidationRejectsNonExactCertificateDomains(_ domain: String) {
     #expect(loaded == state)
     #expect((fileAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
     #expect((directoryAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o700)
-}
-
-@Test func gatewayConfigurationStoreMigratesLegacyDNSCredentialsToDomains() async throws {
-    let root = FileManager.default.temporaryDirectory
-        .appendingPathComponent("GatewayConfigurationMigrationTests", isDirectory: true)
-        .appendingPathComponent(UUID().uuidString, isDirectory: true)
-    defer { try? FileManager.default.removeItem(at: root) }
-    let fileURL = root.appendingPathComponent("gateway/config.json")
-    try FileManager.default.createDirectory(
-        at: fileURL.deletingLastPathComponent(),
-        withIntermediateDirectories: true
-    )
-    try Data(
-        """
-        {
-          "schema_version": 6,
-          "configuration_id": "00000000-0000-0000-0000-000000000001",
-          "revision": 4,
-          "gateway_enabled": false,
-          "default_dns_credential_id": "cloudflare-main",
-          "dns_credentials": [
-            {
-              "id": "cloudflare-main",
-              "provider": "cloudflare",
-              "label": "Cloudflare Main",
-              "revision": 7
-            },
-            {
-              "id": "aliyun-main",
-              "provider": "aliyun",
-              "label": "Aliyun Main",
-              "revision": 2
-            }
-          ],
-          "certificates": [],
-          "services": []
-        }
-        """.utf8
-    ).write(to: fileURL)
-    let store = GatewayConfigurationStore(fileURL: fileURL)
-
-    let migrated = try #require(await store.load(magicDNSSuffix: "Corp.Example"))
-
-    #expect(migrated.schemaVersion == GatewaySchema.persistedVersion)
-    #expect(migrated.defaultDNSZoneBindingID == "cloudflare-main")
-    #expect(Set(migrated.dnsZoneBindings.map(\.id)) == ["aliyun-main", "cloudflare-main"])
-    #expect(Set(migrated.dnsZoneBindings.map(\.dnsSuffix)) == ["corp.example."])
-    #expect(migrated.dnsCredentials.map(\.revision) == [2, 7])
-
-    let persisted = try #require(
-        JSONSerialization.jsonObject(with: Data(contentsOf: fileURL)) as? [String: Any]
-    )
-    #expect((persisted["schema_version"] as? NSNumber)?.uint32Value == GatewaySchema.persistedVersion)
-    #expect(persisted["default_dns_zone_binding_id"] as? String == "cloudflare-main")
-    #expect(persisted["default_dns_credential_id"] == nil)
-    #expect((persisted["dns_zone_bindings"] as? [[String: Any]])?.count == 2)
-
-    let loadedAgain = try #require(await store.load(magicDNSSuffix: "ignored.example"))
-    #expect(loadedAgain == migrated)
-}
-
-@Test func gatewayConfigurationMigrationPreservesCertificatesServicesAndRepeatedLoads() throws {
-    let cloudflare = GatewayDNSCredentialDescriptor(
-        id: "cloudflare-main",
-        provider: .cloudflare,
-        label: "Cloudflare Main",
-        revision: 7
-    )
-    let aliyun = GatewayDNSCredentialDescriptor(
-        id: "aliyun-main",
-        provider: .aliyun,
-        label: "Aliyun Main",
-        revision: 2
-    )
-    let automaticCertificate = GatewayManagedCertificate(
-        id: "automatic-certificate",
-        domains: ["*.node.legacy.example"],
-        strategy: .automaticWildcard(zoneBindingID: cloudflare.id)
-    )
-    let customCertificate = GatewayManagedCertificate(
-        id: "custom-certificate",
-        domains: ["app.example.com"],
-        strategy: .custom(
-            authority: .zeroSSL,
-            challenge: .dns01(zoneBindingID: aliyun.id)
-        )
-    )
-    let service = GatewayPublishedService(
-        id: "service-a",
-        networkConfigID: "network-a",
-        targetPeerID: "peer-a",
-        publicNodeLabel: "node",
-        publicDNSSuffix: "legacy.example.",
-        lastKnownTargetHostname: "node",
-        lastKnownMagicDNSSuffix: "legacy.example.",
-        serviceLabel: "app",
-        publicHostname: "app.node.legacy.example",
-        targetPort: 443,
-        desiredEnabled: true,
-        certificateID: automaticCertificate.id
-    )
-    let legacy = GatewayPersistedState(
-        schemaVersion: GatewaySchema.previousPersistedVersion,
-        configurationID: "00000000-0000-0000-0000-000000000001",
-        revision: 9,
-        gatewayEnabled: true,
-        defaultDNSZoneBindingID: aliyun.id,
-        publishingNetworkConfigID: service.networkConfigID,
-        lastKnownNetworkIPv4CIDR: "10.0.0.0/24",
-        dnsCredentials: [cloudflare, aliyun],
-        certificates: [automaticCertificate, customCertificate],
-        services: [service]
-    )
-
-    let migrated = try GatewayConfigurationMigration.migrate(
-        legacy,
-        magicDNSSuffix: "Shared.Example"
-    )
-    let loadedAgain = try GatewayConfigurationMigration.migrate(
-        migrated,
-        magicDNSSuffix: "ignored.example"
-    )
-
-    #expect(migrated.defaultDNSZoneBindingID == aliyun.id)
-    #expect(migrated.dnsZoneBindings.map(\.credentialID) == [cloudflare.id, aliyun.id])
-    #expect(Set(migrated.dnsZoneBindings.map(\.dnsSuffix)) == ["shared.example."])
-    #expect(migrated.certificates == legacy.certificates)
-    #expect(migrated.services == legacy.services)
-    #expect(migrated.configurationID == legacy.configurationID)
-    #expect(migrated.revision == legacy.revision)
-    #expect(loadedAgain == migrated)
-}
-
-@Test func gatewayConfigurationMigrationHandlesAnEmptyLegacyConfiguration() throws {
-    let legacy = GatewayPersistedState(schemaVersion: GatewaySchema.previousPersistedVersion)
-
-    let migrated = try GatewayConfigurationMigration.migrate(
-        legacy,
-        magicDNSSuffix: "et.net."
-    )
-
-    #expect(migrated.schemaVersion == GatewaySchema.persistedVersion)
-    #expect(migrated.dnsZoneBindings.isEmpty)
-    #expect(migrated.defaultDNSZoneBindingID == nil)
 }
 
 @Test func gatewayValidationNormalizesDNSDomainsAndRequiresADefault() throws {
@@ -625,7 +481,7 @@ func gatewayValidationRejectsNonExactCertificateDomains(_ domain: String) {
     #expect(try JSONDecoder().decode(GatewayPersistedState.self, from: encoded) == state)
 }
 
-@Test func incompatibleGatewayConfigurationIsBackedUpAndNotOverwritten() async throws {
+@Test func incompatibleGatewayConfigurationIsRemoved() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("GatewayConfigurationStoreTests", isDirectory: true)
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -655,17 +511,17 @@ func gatewayValidationRejectsNonExactCertificateDomains(_ domain: String) {
     let store = GatewayConfigurationStore(fileURL: fileURL)
 
     await #expect(throws: GatewayConfigurationStoreError.self) {
-        try await store.load(magicDNSSuffix: "et.net.")
+        try await store.load()
     }
     let files = try FileManager.default.contentsOfDirectory(
         at: fileURL.deletingLastPathComponent(),
         includingPropertiesForKeys: nil
     )
     #expect(!FileManager.default.fileExists(atPath: fileURL.path))
-    #expect(files.contains { $0.lastPathComponent.hasPrefix("config.incompatible-") })
+    #expect(files.isEmpty)
 }
 
-@Test func semanticallyIncompatibleGatewayConfigurationIsBackedUp() async throws {
+@Test func semanticallyIncompatibleGatewayConfigurationIsRemoved() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("GatewayConfigurationStoreTests", isDirectory: true)
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -680,14 +536,14 @@ func gatewayValidationRejectsNonExactCertificateDomains(_ domain: String) {
     let store = GatewayConfigurationStore(fileURL: fileURL)
 
     await #expect(throws: GatewayConfigurationStoreError.self) {
-        try await store.load(magicDNSSuffix: "et.net.")
+        try await store.load()
     }
     let files = try FileManager.default.contentsOfDirectory(
         at: fileURL.deletingLastPathComponent(),
         includingPropertiesForKeys: nil
     )
     #expect(!FileManager.default.fileExists(atPath: fileURL.path))
-    #expect(files.contains { $0.lastPathComponent.hasPrefix("config.incompatible-") })
+    #expect(files.isEmpty)
 }
 
 @Test func releaseHelperRequirementPinsBundleAndTeamWhileDebugRemainsExplicit() {

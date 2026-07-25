@@ -685,26 +685,6 @@ import Testing
 }
 
 @MainActor
-@Test func verifiedSaveSurfacesLegacyCleanupAsANonblockingNotice() async throws {
-    let secrets = MemoryNetworkSecretStore()
-    secrets.saveCleanup = .pending([
-        NetworkSecretCleanupIssue(backend: .legacy, status: errSecAuthFailed),
-    ])
-    let config = NetworkConfig(instance_id: "cleanup-notice-id", network_name: "office")
-    let store = EasyTierAppStore(
-        client: RecordingToggleClient(),
-        networkSecretStore: secrets
-    )
-
-    try await store.saveNetworkSecretToKeychain("secret", for: config)
-
-    #expect(store.networkSecretCleanupNotice != nil)
-    #expect(store.lastError == nil)
-    store.dismissNetworkSecretCleanupNotice()
-    #expect(store.networkSecretCleanupNotice == nil)
-}
-
-@MainActor
 @Test func runSelectedConfigUsesKeychainNetworkSecret() async throws {
     let client = RecordingToggleClient()
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "run-secret"])
@@ -1923,7 +1903,7 @@ import Testing
 }
 
 @MainActor
-@Test func deleteSelectedConfigKeepsASecretReferencedByAnotherConfig() async {
+@Test func deleteSelectedConfigAlwaysDeletesItsUUIDScopedSecret() async {
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "secret"])
     let first = NetworkConfig(instance_id: "delete-shared-first", network_name: "office")
     let second = NetworkConfig(instance_id: "delete-shared-second", network_name: "office")
@@ -1933,7 +1913,7 @@ import Testing
 
     await store.deleteSelectedConfig()
 
-    #expect(secrets.secrets["office"] == "secret")
+    #expect(secrets.secrets["office"] == nil)
     #expect(store.configs.map(\.id) == [second.id])
 }
 
@@ -1957,7 +1937,7 @@ import Testing
 }
 
 @MainActor
-@Test func keychainNetworkSecretsAreScopedByNetworkName() async throws {
+@Test func keychainNetworkSecretsRemainIndependentAcrossConfigurations() async throws {
     let secrets = MemoryNetworkSecretStore()
     let first = NetworkConfig(instance_id: "first-id", network_name: "office", network_secret: "office-secret")
     let second = NetworkConfig(instance_id: "second-id", network_name: "lab", network_secret: "lab-secret")
@@ -1980,7 +1960,7 @@ import Testing
 }
 
 @MainActor
-@Test func updateConfigMigratesKeychainSecretWhenNetworkNameChanges() async throws {
+@Test func updateConfigDoesNotMoveKeychainSecretWhenNetworkNameChanges() async throws {
     let secrets = MemoryNetworkSecretStore(secrets: ["office": "office-secret"])
     let original = NetworkConfig(instance_id: "rename-id", network_name: "office")
     let store = EasyTierAppStore(
@@ -1995,11 +1975,11 @@ import Testing
     updated.network_name = "renamed"
     try await store.updateConfig(id: original.instance_id, with: updated, saveImmediately: true)
 
-    #expect(secrets.secrets["renamed"] == "office-secret")
-    #expect(secrets.secrets["office"] == nil)
+    #expect(secrets.secrets["office"] == "office-secret")
+    #expect(secrets.secrets["renamed"] == nil)
 }
 
-@Test func incompatibleStateIsBackedUpAndTomlFilesArePreserved() throws {
+@Test func incompatibleStateIsResetWithoutBackupAndTomlFilesArePreserved() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let storage = EasyTierStorage(baseDirectory: directory)
     let config = NetworkConfig(instance_id: "legacy-id", network_name: "legacy")
@@ -2022,12 +2002,12 @@ import Testing
 
     let loaded = try storage.load()
 
-    #expect(loaded.recoveryMessage?.contains("re-import") == true)
+    #expect(loaded.recoveryMessage?.contains("reset") == true)
     #expect(loaded.configs.count == 1)
     #expect(loaded.configs.first?.instance_id != config.instance_id)
     #expect(FileManager.default.fileExists(atPath: configURL.path))
     let backupNames = try FileManager.default.contentsOfDirectory(atPath: directory.path)
-    #expect(backupNames.contains { $0.hasPrefix("state.incompatible-") && $0.hasSuffix(".json") })
+    #expect(!backupNames.contains { $0.hasPrefix("state.incompatible-") && $0.hasSuffix(".json") })
 }
 
 @Test func currentSchemaConfigFailureDoesNotResetState() throws {
@@ -2543,14 +2523,14 @@ import Testing
     #expect(!message.contains("TUN"))
 }
 
-@Test func privilegedHelperErrorPayloadRoundTripsAndFeedsLocalizedDescription() {
+@Test func privilegedHelperErrorPayloadRoundTripsAndFeedsLocalizedDescription() throws {
     let payload = PrivilegedHelperErrorPayload(
         code: "runFailed",
         message: "TUN device creation failed.",
         recoverySuggestion: "Reinstall the privileged helper."
     )
 
-    let decoded = PrivilegedHelperErrorPayload.decode(from: payload.encodedString())
+    let decoded = try PrivilegedHelperErrorPayload.decode(from: payload.encodedString())
     let message = PrivilegedHelperError.helperReported(decoded).localizedDescription
 
     #expect(decoded == payload)
@@ -3994,20 +3974,25 @@ import Testing
     #expect(backend.registerCount == 1)
 }
 
-@Test func helperBuildCompatibilityDetectsStaleEasyTierAndGatewayBuilds() {
+@Test func helperBuildCompatibilityDetectsStaleEasyTierAndGatewayBuilds() throws {
     let appInfo: [String: Any] = [
         "CFBundleShortVersionString": "2.4.5",
         "CFBundleVersion": "20260721100346",
+        "EasyTierBuildTime": "2026-07-21T10:03:46Z",
         "EasyTierGUICommit": "1e55428b3ab78cf7baa3b135a48a781e1eaee914",
+        "EasyTierCoreTag": "v2.4.5",
+        "EasyTierCoreCommit": "core-current",
+        "GatewayBuildTime": "2026-07-21T10:03:46Z",
         "GatewayVersion": "1.3.2",
         "GatewayCommit": "gateway-current",
     ]
-    let bundledEasyTier = PrivilegedHelperBuildInfo(infoDictionary: appInfo)
+    let bundledEasyTier = try PrivilegedHelperBuildInfo(infoDictionary: appInfo)
     var installedEasyTier = bundledEasyTier
-    let bundledGateway = GatewayHelperBuildInfo(infoDictionary: appInfo)
-    var installedGateway = GatewayHelperBuildInfo(infoDictionary: [
+    let bundledGateway = try GatewayHelperBuildInfo(infoDictionary: appInfo)
+    var installedGateway = try GatewayHelperBuildInfo(infoDictionary: [
         "CFBundleShortVersionString": "1.3.2",
         "CFBundleVersion": "20260721100346",
+        "GatewayBuildTime": "2026-07-21T10:03:46Z",
         "GatewayVersion": "1.3.2",
         "GatewayCommit": "gateway-current",
     ])
@@ -4077,22 +4062,6 @@ import Testing
 #endif
 
 @MainActor
-@Test func ensureRegisteredRemovesLegacyHelperBeforeModernRegistration() async throws {
-    let backend = HelperRegistrationBackendSpy(status: .notRegistered)
-    backend.legacyArtifactsPresent = true
-    backend.statusAfterRegister = .enabled
-    let registration = HelperRegistrationService(backend: backend.backend(), refreshOnInit: false)
-
-    try await registration.ensureRegistered()
-
-    #expect(backend.unregisterCount == 1)
-    #expect(backend.uninstallLegacyCount == 1)
-    #expect(backend.registerCount == 1)
-    #expect(!backend.legacyArtifactsPresent)
-    #expect(registration.state == .enabled)
-}
-
-@MainActor
 @Test func ensureRegisteredUsesXPCProbeWhenServiceStatusIsStillNotFound() async throws {
     let backend = HelperRegistrationBackendSpy(status: .notFound)
     backend.statusAfterRegister = .notFound
@@ -4140,7 +4109,7 @@ import Testing
         {
           "route": {
             "peer_id": 200,
-            "ipv4_addr": "10.10.0.2/24",
+            "ipv4_addr": { "address": { "addr": 168427522 }, "network_length": 24 },
             "next_hop_peer_id": 200,
             "cost": 1,
             "hostname": "office-mini",
@@ -4239,7 +4208,7 @@ import Testing
       },
       "peer_route_pairs": [
         {
-          "route": { "peer_id": 200, "ipv4_addr": "10.10.0.2/24", "hostname": "office-mini", "cost": 2 },
+          "route": { "peer_id": 200, "ipv4_addr": { "address": { "addr": 168427522 }, "network_length": 24 }, "hostname": "office-mini", "cost": 2 },
           "peer": { "peer_id": 200, "conns": [] }
         }
       ],
@@ -4253,7 +4222,7 @@ import Testing
         "peer_id": 100
       },
       "routes": [
-        { "peer_id": 200, "ipv4_addr": "10.10.0.2/24", "hostname": "office-mini", "cost": 2 }
+        { "peer_id": 200, "ipv4_addr": { "address": { "addr": 168427522 }, "network_length": 24 }, "hostname": "office-mini", "cost": 2 }
       ],
       "running": true
     }
@@ -4270,7 +4239,7 @@ import Testing
           "peer": { "peer_id": 200, "conns": [ { "conn_id": "public-server" } ] }
         },
         {
-          "route": { "peer_id": 201, "ipv4_addr": "10.10.0.2/24", "hostname": "office-mini", "cost": 1 },
+          "route": { "peer_id": 201, "ipv4_addr": { "address": { "addr": 168427522 }, "network_length": 24 }, "hostname": "office-mini", "cost": 1 },
           "peer": { "peer_id": 201, "conns": [] }
         }
       ],
@@ -4374,17 +4343,22 @@ import Testing
         {
           "route": {
             "peer_id": 200,
-            "ipv4_addr": "10.10.0.2/24",
+            "ipv4_addr": { "address": { "addr": 168427522 }, "network_length": 24 },
             "hostname": "remote-public",
             "stun_info": { "udp_nat_type": 3 },
             "feature_flag": { "is_public_server": true }
           },
           "peer": {
             "peer_id": 200,
-            "default_conn_id": "preferred",
+            "default_conn_id": {
+              "part1": 286331153,
+              "part2": 572666675,
+              "part3": 1145328981,
+              "part4": 1717991287
+            },
             "conns": [
               { "conn_id": "backup", "loss_rate": 0.8 },
-              { "conn_id": "preferred", "loss_rate": 0.125 }
+              { "conn_id": "11111111-2222-3333-4444-555566667777", "loss_rate": 0.125 }
             ]
           }
         }
@@ -4402,7 +4376,7 @@ import Testing
     #expect(members[1].isPublicServer)
 }
 
-@Test func runtimeInfoAcceptsProtobufJsonFieldNames() throws {
+@Test func runtimeInfoRejectsProtobufCamelCaseFieldNames() throws {
     let json = """
     {
       "peer_route_pairs": [
@@ -4425,16 +4399,12 @@ import Testing
     }
     """
 
-    let info = try JSONDecoder().decode(NetworkInstanceRunningInfo.self, from: Data(json.utf8))
-    let member = try #require(info.memberStatuses.first)
-
-    #expect(member.peerID == "200")
-    #expect(member.lossRate == "30%")
-    #expect(member.natType == "Symmetric")
-    #expect(member.isPublicServer)
+    #expect(throws: DecodingError.self) {
+        _ = try JSONDecoder().decode(NetworkInstanceRunningInfo.self, from: Data(json.utf8))
+    }
 }
 
-@Test func runtimeInfoAcceptsUppercaseNatEnumNames() throws {
+@Test func runtimeInfoRejectsStringNatEnumNames() throws {
     let json = """
     {
       "peer_route_pairs": [
@@ -4450,17 +4420,16 @@ import Testing
     }
     """
 
-    let info = try JSONDecoder().decode(NetworkInstanceRunningInfo.self, from: Data(json.utf8))
-    let member = try #require(info.memberStatuses.first)
-
-    #expect(member.natType == "Port Restricted")
+    #expect(throws: DecodingError.self) {
+        _ = try JSONDecoder().decode(NetworkInstanceRunningInfo.self, from: Data(json.utf8))
+    }
 }
 
 @Test func runtimeInfoTotalsTrafficFromPeerRoutePairs() throws {
     let json = """
     {
       "peer_route_pairs": [
-        { "peer": { "peer_id": 1, "conns": [ { "stats": { "rx_bytes": "100", "tx_bytes": "200", "latency_us": "900" } } ] } },
+        { "peer": { "peer_id": 1, "conns": [ { "stats": { "rx_bytes": 100, "tx_bytes": 200, "latency_us": 900 } } ] } },
         { "peer": { "peer_id": 2, "conns": [ { "stats": { "rx_bytes": 300, "tx_bytes": 400 } } ] } }
       ]
     }
@@ -4474,7 +4443,7 @@ import Testing
     #expect(info.peer_route_pairs?.first?.peer?.conns?.first?.stats?.latency_us == 900)
 }
 
-@Test func runtimeInfoKeepsMembersWhenOneConnectionHasUnexpectedShape() throws {
+@Test func runtimeInfoRejectsAConnectionWithUnexpectedShape() throws {
     let json = """
     {
       "my_node_info": { "hostname": "macbook", "version": "2.4.0", "peer_id": 100 },
@@ -4493,14 +4462,9 @@ import Testing
     }
     """
 
-    let info = try JSONDecoder().decode(NetworkInstanceRunningInfo.self, from: Data(json.utf8))
-    let members = info.memberStatuses
-
-    #expect(members.count == 2)
-    #expect(members[1].hostname == "office-mini")
-    #expect(members[1].uploadTotal == "5.0 KiB")
-    #expect(members[1].downloadTotal == "2.0 KiB")
-    #expect(members[1].lossRate == "10%")
+    #expect(throws: DecodingError.self) {
+        _ = try JSONDecoder().decode(NetworkInstanceRunningInfo.self, from: Data(json.utf8))
+    }
 }
 
 @Test func workspaceTabsExposeWorkspaceDestinations() {
@@ -4546,7 +4510,6 @@ private final class MemoryNetworkSecretStore: NetworkSecretStore, @unchecked Sen
     var saveError: Error?
     var deleteError: Error?
     var containsError: Error?
-    var saveCleanup: NetworkSecretCleanupState = .notNeeded
     var authenticationPurposes: [NetworkSecretAccessPurpose] = []
     private(set) var presenceCallCount = 0
     private(set) var authenticationInvalidationCount = 0
@@ -4559,24 +4522,21 @@ private final class MemoryNetworkSecretStore: NetworkSecretStore, @unchecked Sen
         _ secret: String,
         for config: NetworkConfig,
         purpose: NetworkSecretAccessPurpose
-    ) async throws -> NetworkSecretWriteResult {
+    ) async throws {
         savePurposes.append(purpose)
         if let saveError { throw saveError }
         secrets[config.network_name] = secret
-        return NetworkSecretWriteResult(cleanup: saveCleanup)
     }
 
     func secret(
         for config: NetworkConfig,
         purpose: NetworkSecretAccessPurpose,
         reason: String?
-    ) async throws -> NetworkSecretReadResult? {
+    ) async throws -> String? {
         readPurposes.append(purpose)
         readReasons.append(reason)
         if let readError { throw readError }
-        return secrets[config.network_name].map {
-            NetworkSecretReadResult(secret: $0, cleanup: .notNeeded)
-        }
+        return secrets[config.network_name]
     }
 
     func deleteSecret(
@@ -4593,22 +4553,6 @@ private final class MemoryNetworkSecretStore: NetworkSecretStore, @unchecked Sen
         presenceCallCount += 1
         if let containsError { throw containsError }
         return secrets[config.network_name] == nil ? .missing : .present
-    }
-
-    func migrateSecret(
-        from oldConfig: NetworkConfig,
-        to newConfig: NetworkConfig,
-        removeSource: Bool
-    ) async throws -> NetworkSecretWriteResult {
-        if secrets[newConfig.network_name] == nil,
-           let secret = secrets[oldConfig.network_name]
-        {
-            secrets[newConfig.network_name] = secret
-        }
-        if removeSource {
-            secrets.removeValue(forKey: oldConfig.network_name)
-        }
-        return NetworkSecretWriteResult(cleanup: .notNeeded)
     }
 
     func authenticate(
@@ -4652,22 +4596,20 @@ private final class BlockingNetworkSecretStore: NetworkSecretStore, @unchecked S
         _: String,
         for _: NetworkConfig,
         purpose _: NetworkSecretAccessPurpose
-    ) async throws -> NetworkSecretWriteResult {
-        NetworkSecretWriteResult(cleanup: .notNeeded)
-    }
+    ) async throws {}
 
     func secret(
         for _: NetworkConfig,
         purpose _: NetworkSecretAccessPurpose,
         reason _: String?
-    ) async throws -> NetworkSecretReadResult? {
+    ) async throws -> String? {
         await withCheckedContinuation { continuation in
             lock.withLock {
                 storedReadCount += 1
                 readContinuations.append(continuation)
             }
         }
-        return NetworkSecretReadResult(secret: storedSecret, cleanup: .notNeeded)
+        return storedSecret
     }
 
     func deleteSecret(
@@ -4683,14 +4625,6 @@ private final class BlockingNetworkSecretStore: NetworkSecretStore, @unchecked S
     }
 
     func presence(for _: NetworkConfig) async throws -> NetworkSecretPresence { .present }
-
-    func migrateSecret(
-        from _: NetworkConfig,
-        to _: NetworkConfig,
-        removeSource _: Bool
-    ) async throws -> NetworkSecretWriteResult {
-        NetworkSecretWriteResult(cleanup: .notNeeded)
-    }
 
     func invalidateAuthenticationSession() {
         lock.withLock { storedAuthenticationInvalidationCount += 1 }
@@ -4969,12 +4903,9 @@ private final class RecordingSystemSleepPreventer: SystemSleepPreventing, @unche
 private final class HelperRegistrationBackendSpy {
     var status: SMAppService.Status
     var statusAfterRegister: SMAppService.Status?
-    var legacyArtifactsPresent = false
-    var legacyInstalled = false
     var registerCount = 0
     var unregisterCount = 0
     var waitAfterUnregisterCount = 0
-    var uninstallLegacyCount = 0
     var probeCount = 0
     var probeError: Error?
     var probeErrors: [Error] = []
@@ -5000,15 +4931,6 @@ private final class HelperRegistrationBackendSpy {
             unregister: { self.unregisterCount += 1 },
             waitAfterUnregister: { self.waitAfterUnregisterCount += 1 },
             canInstallHelper: { true },
-            useLegacyInstaller: { false },
-            legacyArtifactsExist: { self.legacyArtifactsPresent },
-            legacyIsInstalled: { self.legacyInstalled },
-            installLegacy: {},
-            uninstallLegacy: {
-                self.uninstallLegacyCount += 1
-                self.legacyArtifactsPresent = false
-                self.legacyInstalled = false
-            },
             probeHelper: {
                 self.probeCount += 1
                 if !self.probeErrors.isEmpty {

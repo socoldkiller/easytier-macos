@@ -21,41 +21,6 @@ public struct PeerSubscription: Codable, Identifiable, Equatable, Sendable {
         self.lastFetchedAt = lastFetchedAt
     }
 
-    enum CodingKeys: String, CodingKey {
-        case id, name, subscriptionURL, cards, lastFetchedAt
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: AnyCodingKey.self)
-        id = try container.decodeStringIfPresent("id", "subscriptionURL", "url", "name") ?? UUID().uuidString.lowercased()
-        name = try container.decodeStringIfPresent("name", "title", "subscription") ?? "Untitled Subscription"
-        if let urlString = try container.decodeStringIfPresent("subscriptionURL", "subscription_url", "url", "source") {
-            subscriptionURL = URL(string: urlString)
-        } else if let url = try? container.decodeIfPresent(URL.self, forKeys: "subscriptionURL", "subscription_url", "url", "source") {
-            subscriptionURL = url
-        } else {
-            subscriptionURL = nil
-        }
-        let cardKeyNames = ["cards", "peers", "nodes"]
-        let cardKey = cardKeyNames.first { container.contains(AnyCodingKey(stringValue: $0)) }
-        guard let cardKey else {
-            throw DecodingError.keyNotFound(
-                AnyCodingKey(stringValue: "cards"),
-                .init(codingPath: decoder.codingPath, debugDescription: "PeerSubscription requires a `cards` field.")
-            )
-        }
-        cards = try container.decodeLossyArray(PeerCard.self, forKeys: cardKey) ?? []
-        lastFetchedAt = try container.decodeIfPresent(Date.self, forKeys: "lastFetchedAt", "last_fetched_at", "fetchedAt")
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(id, forKey: .id)
-        try container.encode(name, forKey: .name)
-        try container.encodeIfPresent(subscriptionURL, forKey: .subscriptionURL)
-        try container.encode(cards, forKey: .cards)
-        try container.encodeIfPresent(lastFetchedAt, forKey: .lastFetchedAt)
-    }
 }
 
 public struct PeerCard: Codable, Identifiable, Equatable, Sendable {
@@ -77,43 +42,6 @@ public struct PeerCard: Codable, Identifiable, Equatable, Sendable {
         self.proto = proto
         self.urls = urls
         self.note = note
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case id, name, proto, urls, note
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: AnyCodingKey.self)
-        let decodedID = try container.decodeStringIfPresent("id", "cardId", "key") ?? UUID().uuidString.lowercased()
-        let decodedName = try container.decodeStringIfPresent("name", "title", "label") ?? "Unnamed"
-        var decodedProto = try container.decodeStringIfPresent("proto", "protocol", "tunnel", "scheme") ?? ""
-        var decodedURLs = try container.decodeLossyArray(String.self, forKeys: "urls", "url", "peers", "peer_urls", "endpoints") ?? []
-
-        decodedURLs = decodedURLs
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-
-        if decodedProto.isEmpty {
-            decodedProto = PeerCard.inferProto(from: decodedURLs)
-        }
-
-        let decodedNote = try container.decodeStringIfPresent("note", "description", "comment")
-
-        self.id = decodedID
-        self.name = decodedName
-        self.proto = decodedProto
-        self.urls = decodedURLs
-        self.note = decodedNote
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(id, forKey: .id)
-        try container.encode(name, forKey: .name)
-        try container.encode(proto, forKey: .proto)
-        try container.encode(urls, forKey: .urls)
-        try container.encodeIfPresent(note, forKey: .note)
     }
 
     public static func inferProto(from urls: [String]) -> String {
@@ -144,26 +72,40 @@ public struct PeerCard: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
-public enum PeerSubscriptionCodec {
-    public static func decode(_ data: Data) throws -> [PeerSubscription] {
+public struct PeerSubscriptionImportResult: Equatable, Sendable {
+    public var subscriptions: [PeerSubscription]
+    public var issues: [PeerSubscriptionImportIssue]
+}
+
+public struct PeerSubscriptionImportIssue: Equatable, Sendable {
+    public var outboundIndex: Int
+    public var message: String
+}
+
+public enum PeerSubscriptionImporter {
+    public static func decode(_ data: Data) throws -> PeerSubscriptionImportResult {
         let decoder = JSONDecoder()
-        guard let config = try? decoder.decode(OutboundSubscriptionConfig.self, from: data) else {
+        let config: OutboundSubscriptionConfig
+        do {
+            config = try decoder.decode(OutboundSubscriptionConfig.self, from: data)
+        } catch {
             throw PeerSubscriptionDecodeError.invalidFormat
         }
 
-        let cards = config.importablePeerCards()
+        let imported = config.importablePeerCards()
+        let cards = imported.cards
         guard !cards.isEmpty else {
             throw PeerSubscriptionDecodeError.noImportableOutbounds
         }
 
-        return [PeerSubscription(name: "Node Subscription", cards: cards)]
+        return PeerSubscriptionImportResult(
+            subscriptions: [PeerSubscription(name: "Node Subscription", cards: cards)],
+            issues: imported.issues
+        )
     }
 
-    public static func decode(_ string: String) throws -> [PeerSubscription] {
-        guard let data = string.data(using: .utf8) else {
-            throw PeerSubscriptionDecodeError.invalidFormat
-        }
-        return try decode(data)
+    public static func decode(_ string: String) throws -> PeerSubscriptionImportResult {
+        try decode(Data(string.utf8))
     }
 }
 
@@ -182,30 +124,39 @@ public enum PeerSubscriptionDecodeError: Error, LocalizedError {
 }
 
 private struct OutboundSubscriptionConfig: Decodable {
-    var outbounds: [SubscriptionOutbound]
+    var outbounds: [ImportedOutbound]
 
-    func importablePeerCards() -> [PeerCard] {
+    func importablePeerCards() -> (cards: [PeerCard], issues: [PeerSubscriptionImportIssue]) {
         var usedIDs: Set<String> = []
-        return outbounds.enumerated().compactMap { index, outbound in
-            guard outbound.isImportable,
-                  let server = outbound.normalizedServer,
-                  let port = outbound.serverPort?.value
-            else {
-                return nil
+        var cards: [PeerCard] = []
+        var issues: [PeerSubscriptionImportIssue] = []
+        for (index, importedOutbound) in outbounds.enumerated() {
+            guard let outbound = importedOutbound.value else {
+                issues.append(.init(outboundIndex: index, message: "Outbound has an invalid structure or value type."))
+                continue
+            }
+            guard outbound.isImportable else {
+                issues.append(.init(outboundIndex: index, message: "Unsupported outbound type `\(outbound.normalizedType)`."))
+                continue
+            }
+            guard let server = outbound.normalizedServer, let port = outbound.serverPort?.value else {
+                issues.append(.init(outboundIndex: index, message: "EasyTier outbound is missing server or server_port."))
+                continue
             }
 
             let scheme = outbound.normalizedType
             let name = outbound.normalizedTag ?? "\(server):\(port)"
             let baseID = outbound.normalizedTag ?? "\(scheme)-\(server)-\(port)"
             let id = uniqueID(from: baseID, fallbackIndex: index, usedIDs: &usedIDs)
-            return PeerCard(
+            cards.append(PeerCard(
                 id: id,
                 name: name,
                 proto: scheme,
                 urls: ["\(scheme)://\(server):\(port)"],
                 note: "Imported \(scheme) peer from subscription."
-            )
+            ))
         }
+        return (cards, issues)
     }
 
     private func uniqueID(from rawValue: String, fallbackIndex: Int, usedIDs: inout Set<String>) -> String {
@@ -229,6 +180,14 @@ private struct OutboundSubscriptionConfig: Decodable {
         }
         usedIDs.insert(candidate)
         return candidate
+    }
+}
+
+private struct ImportedOutbound: Decodable {
+    var value: SubscriptionOutbound?
+
+    init(from decoder: Decoder) throws {
+        value = try? SubscriptionOutbound(from: decoder)
     }
 }
 

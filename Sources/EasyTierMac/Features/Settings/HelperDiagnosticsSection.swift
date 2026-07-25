@@ -16,32 +16,32 @@ struct HelperDiagnosticsSection: View {
         Section {
             DisclosureGroup("Show Helper Details") {
                 LabeledContent("EasyTier Helper") {
-                    Text(diagnostics.displayedEasyTierHelper.easyTierHelperDisplay)
+                    Text(diagnostics.displayedEasyTierHelper?.easyTierHelperDisplay ?? "Invalid helper metadata")
                         .font(.callout.monospaced())
                         .textSelection(.enabled)
                 }
                 LabeledContent("Gateway Helper") {
-                    Text(diagnostics.displayedGatewayHelper.componentDisplay)
+                    Text(diagnostics.displayedGatewayHelper?.componentDisplay ?? "Invalid helper metadata")
                         .font(.callout.monospaced())
                         .textSelection(.enabled)
                 }
                 LabeledContent("EasyTier Binary") {
-                    Text(diagnostics.displayedEasyTierHelper.binaryDisplay)
+                    Text(diagnostics.displayedEasyTierHelper?.binaryDisplay ?? "Invalid helper metadata")
                         .font(.callout.monospaced())
                         .textSelection(.enabled)
                 }
                 LabeledContent("EasyTier Built") {
-                    Text(diagnostics.displayedEasyTierHelper.buildTime)
+                    Text(diagnostics.displayedEasyTierHelper?.buildTime ?? "Invalid helper metadata")
                         .font(.callout.monospaced())
                         .textSelection(.enabled)
                 }
                 LabeledContent("Gateway Binary") {
-                    Text(diagnostics.displayedGatewayHelper.binaryDisplay)
+                    Text(diagnostics.displayedGatewayHelper?.binaryDisplay ?? "Invalid helper metadata")
                         .font(.callout.monospaced())
                         .textSelection(.enabled)
                 }
                 LabeledContent("Gateway Built") {
-                    Text(diagnostics.displayedGatewayHelper.buildTime)
+                    Text(diagnostics.displayedGatewayHelper?.buildTime ?? "Invalid helper metadata")
                         .font(.callout.monospaced())
                         .textSelection(.enabled)
                 }

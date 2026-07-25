@@ -65,16 +65,6 @@ struct MainWindowView: View {
             isVisible: configEditorTitlebarScrollEdgeVisible,
             glassEffectsEnabled: appearanceSettings.glassEffectsEnabled && !reduceTransparency
         )
-        .overlay(alignment: .top) {
-            if let notice = store.networkSecretCleanupNotice {
-                NetworkSecretCleanupBanner(
-                    message: notice,
-                    dismiss: store.dismissNetworkSecretCleanupNotice
-                )
-                .padding(.top, 12)
-                .transition(.move(edge: .top).combined(with: .opacity))
-            }
-        }
         .task(id: store.selectedConfigID) {
             loadDraft(for: store.selectedConfigID)
         }
@@ -1246,36 +1236,5 @@ struct MainWindowView: View {
                 store.lastError = error.localizedDescription
             }
         }
-    }
-}
-
-private struct NetworkSecretCleanupBanner: View {
-    var message: String
-    var dismiss: () -> Void
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "key.horizontal.fill")
-                .foregroundStyle(.orange)
-            Text(message)
-                .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
-            Button(action: dismiss) {
-                Image(systemName: "xmark")
-                    .font(.caption.weight(.semibold))
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Dismiss Keychain cleanup notice")
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .frame(maxWidth: 620)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.orange.opacity(0.35), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.12), radius: 12, y: 5)
-        .padding(.horizontal, 18)
     }
 }

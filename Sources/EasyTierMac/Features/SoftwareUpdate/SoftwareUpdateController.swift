@@ -67,7 +67,6 @@ final class SoftwareUpdateController: SoftwareUpdateClientDelegate {
         self.restoreRunningConfigIDs = restoreRunningConfigIDs
         self.restoreGatewayDesiredEnabled = restoreGatewayDesiredEnabled
         self.recordNotice = recordNotice
-        migrateLegacyPreferencesIfNeeded()
         userDefaults.set(updateTrack.rawValue, forKey: Self.updateTrackKey)
         client = clientFactory(self)
         client?.stateDidChange = { [weak self] in self?.synchronizeState() }
@@ -198,24 +197,6 @@ final class SoftwareUpdateController: SoftwareUpdateClientDelegate {
         isSynchronizingState = false
     }
 
-    private func migrateLegacyPreferencesIfNeeded() {
-        if userDefaults.object(forKey: Self.sparkleAutomaticChecksKey) == nil,
-           let legacyValue = userDefaults.object(forKey: Self.legacyAutomaticChecksKey) as? Bool
-        {
-            userDefaults.set(legacyValue, forKey: Self.sparkleAutomaticChecksKey)
-        }
-
-        if userDefaults.object(forKey: Self.sparkleLastCheckDateKey) == nil,
-           let legacyDate = userDefaults.object(forKey: Self.legacyLastCheckDateKey) as? Date
-        {
-            userDefaults.set(legacyDate, forKey: Self.sparkleLastCheckDateKey)
-        }
-
-        userDefaults.removeObject(forKey: Self.legacyAutomaticChecksKey)
-        userDefaults.removeObject(forKey: Self.legacyLastCheckDateKey)
-        userDefaults.removeObject(forKey: Self.legacySkippedVersionKey)
-    }
-
     private func persistPendingRestoreState(_ state: SoftwareUpdateRuntimeRestoreState) {
         guard let data = try? JSONEncoder().encode(state) else { return }
         userDefaults.set(data, forKey: Self.pendingRestoreStateKey)
@@ -230,11 +211,6 @@ final class SoftwareUpdateController: SoftwareUpdateClientDelegate {
         userDefaults.removeObject(forKey: Self.pendingRestoreStateKey)
     }
 
-    private static let legacyAutomaticChecksKey = "EasyTierAutoCheckUpdates"
-    private static let legacyLastCheckDateKey = "EasyTierLastUpdateCheckDate"
-    private static let legacySkippedVersionKey = "EasyTierUpdaterSkippedVersion"
-    private static let sparkleAutomaticChecksKey = "SUEnableAutomaticChecks"
-    private static let sparkleLastCheckDateKey = "SULastCheckTime"
     private static let updateTrackKey = "EasyTierSoftwareUpdateTrack"
     private static let pendingRestoreStateKey = "EasyTierPendingSoftwareUpdateRuntimeRestore"
 }

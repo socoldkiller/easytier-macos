@@ -192,8 +192,8 @@ make test-packaging
 ```
 
 Data Protection Keychain routing is also covered by a signed app-like harness.
-It uses a unique test service/account, verifies a protected write and a one-way
-legacy migration, then precisely removes both test backends:
+It uses a unique test service and UUID-scoped account, verifies a protected
+write/read/delete cycle, then removes the test item:
 
 ```bash
 make test-keychain-integration \

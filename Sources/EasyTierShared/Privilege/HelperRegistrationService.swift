@@ -57,8 +57,7 @@ public final class HelperRegistrationService {
 
     /// Ensure the privileged helper is installed, approved, reachable, and protocol-compatible.
     public func ensureRegistered() async throws {
-        let useLegacy = await backend.useLegacyInstaller()
-        await refreshAsync(useLegacy: useLegacy)
+        await refreshAsync()
         var repairingEnabledHelper = false
         switch state {
         case .enabled:
@@ -69,7 +68,7 @@ public final class HelperRegistrationService {
                 throw error
             } catch {
                 guard !didAttemptEnabledRepair else {
-                    await refreshAfterRegistrationFailure(error, useLegacy: useLegacy)
+                    await refreshAfterRegistrationFailure(error)
                     throw error
                 }
                 didAttemptEnabledRepair = true
@@ -78,7 +77,7 @@ public final class HelperRegistrationService {
             }
         case .registering:
             await waitForBusy()
-            await refreshAsync(useLegacy: useLegacy)
+            await refreshAsync()
             if state == .enabled { return }
             if state == .requiresApproval { throw PrivilegedHelperError.needsRegistration }
         case .requiresApproval:
@@ -107,28 +106,16 @@ public final class HelperRegistrationService {
         detail = "Registering \(helperName)..."
 
         do {
-            if useLegacy {
-                _ = try? await backend.unregister()
-                try await backend.installLegacy()
-                await refreshAsync(useLegacy: true)
-                if state != .enabled {
-                    throw PrivilegedHelperError.needsRegistration
-                }
-            } else {
-                _ = try? await backend.unregister()
-                if repairingEnabledHelper {
-                    try await backend.waitAfterUnregister()
-                }
-                if await backend.legacyArtifactsExist() {
-                    try await backend.uninstallLegacy()
-                }
-                try await backend.register()
-                try await backend.probeHelper()
-                state = .enabled
-                detail = "\(helperName) is enabled."
+            _ = try? await backend.unregister()
+            if repairingEnabledHelper {
+                try await backend.waitAfterUnregister()
             }
+            try await backend.register()
+            try await backend.probeHelper()
+            state = .enabled
+            detail = "\(helperName) is enabled."
         } catch {
-            await refreshAfterRegistrationFailure(error, useLegacy: useLegacy)
+            await refreshAfterRegistrationFailure(error)
             if state == .requiresApproval {
                 throw PrivilegedHelperError.needsRegistration
             }
@@ -150,23 +137,6 @@ public final class HelperRegistrationService {
     // MARK: - Internals
 
     private func refreshAsync() async {
-        let useLegacy = await backend.useLegacyInstaller()
-        await refreshAsync(useLegacy: useLegacy)
-    }
-
-    private func refreshAsync(useLegacy: Bool) async {
-        if useLegacy {
-            let installed = await backend.legacyIsInstalled()
-            if installed {
-                state = .enabled
-                detail = "\(helperName) is enabled."
-            } else {
-                state = .notRegistered
-                detail = "\(helperName) is not installed. The app will request permission when it is needed."
-            }
-            return
-        }
-
         let status = await backend.status()
         switch status {
         case .notRegistered:
@@ -187,13 +157,8 @@ public final class HelperRegistrationService {
         }
     }
 
-    private func refreshAfterRegistrationFailure(_ error: Error, useLegacy: Bool) async {
+    private func refreshAfterRegistrationFailure(_ error: Error) async {
         let message = error.localizedDescription
-        if useLegacy {
-            state = .error
-            detail = message
-            return
-        }
         let status = await backend.status()
         if status == .requiresApproval || message.localizedCaseInsensitiveContains("operation not permitted") {
             state = .requiresApproval
@@ -210,11 +175,6 @@ public final class HelperRegistrationService {
         var unregister: @MainActor () async throws -> Void
         var waitAfterUnregister: @MainActor () async throws -> Void
         var canInstallHelper: @MainActor () -> Bool
-        var useLegacyInstaller: @MainActor () async -> Bool
-        var legacyArtifactsExist: @MainActor () async -> Bool
-        var legacyIsInstalled: @MainActor () async -> Bool
-        var installLegacy: @MainActor () async throws -> Void
-        var uninstallLegacy: @MainActor () async throws -> Void
         var probeHelper: @MainActor () async throws -> Void
     }
 
@@ -250,18 +210,6 @@ public final class HelperRegistrationService {
         try await Task.detached { @Sendable in try box.service.unregister() }.value
     }
 
-    private nonisolated static func readShouldUseLegacyInstaller() async -> Bool {
-        await Task.detached { @Sendable in LegacyPrivilegedHelperService.shouldUseLegacyInstaller }.value
-    }
-
-    private nonisolated static func readLegacyIsInstalled() async -> Bool {
-        await Task.detached { @Sendable in LegacyPrivilegedHelperService.isInstalled }.value
-    }
-
-    private nonisolated static func readLegacyArtifactsExist() async -> Bool {
-        await Task.detached { @Sendable in LegacyPrivilegedHelperService.hasInstalledArtifacts }.value
-    }
-
     private static func liveBackend(service: SMAppService) -> Backend {
         let box = ServiceBox(service: service)
         return Backend(
@@ -270,11 +218,6 @@ public final class HelperRegistrationService {
             unregister: { try await Self.serviceUnregister(box) },
             waitAfterUnregister: { try await Task.sleep(for: .seconds(1)) },
             canInstallHelper: { Self.currentBundleCanInstallHelper },
-            useLegacyInstaller: { await Self.readShouldUseLegacyInstaller() },
-            legacyArtifactsExist: { await Self.readLegacyArtifactsExist() },
-            legacyIsInstalled: { await Self.readLegacyIsInstalled() },
-            installLegacy: { try await Self.installLegacy() },
-            uninstallLegacy: { try await Self.uninstallLegacy() },
             probeHelper: { try await Self.validateModernHelper() }
         )
     }
@@ -287,28 +230,15 @@ public final class HelperRegistrationService {
             unregister: { try await Self.serviceUnregister(box) },
             waitAfterUnregister: { try await Task.sleep(for: .seconds(1)) },
             canInstallHelper: { Self.currentBundleCanInstallHelper },
-            useLegacyInstaller: { false },
-            legacyArtifactsExist: { false },
-            legacyIsInstalled: { false },
-            installLegacy: {},
-            uninstallLegacy: {},
             probeHelper: { try await Self.validateGatewayHelper() }
         )
-    }
-
-    private nonisolated static func installLegacy() async throws {
-        try await Task.detached { @Sendable in try LegacyPrivilegedHelperService.installUsingAdministratorPrivileges() }.value
-    }
-
-    private nonisolated static func uninstallLegacy() async throws {
-        try await Task.detached { @Sendable in try LegacyPrivilegedHelperService.uninstallUsingAdministratorPrivileges() }.value
     }
 
     private nonisolated static func validateModernHelper() async throws {
         let client = PrivilegedEasyTierClient()
         try await client.probeHelperAvailability()
         let installed = try await client.helperBuildInfo()
-        let bundled = PrivilegedHelperBuildInfo(bundle: .main)
+        let bundled = try PrivilegedHelperBuildInfo(bundle: .main)
         guard modernHelperBuildMatches(installed: installed, bundled: bundled) else {
             throw PrivilegedHelperError.helperReported(
                 PrivilegedHelperErrorPayload(
@@ -324,7 +254,7 @@ public final class HelperRegistrationService {
         let client = PrivilegedGatewayClient()
         try await client.probeHelperAvailability()
         let installed = try await client.helperBuildInfo()
-        let bundled = GatewayHelperBuildInfo(bundle: .main)
+        let bundled = try GatewayHelperBuildInfo(bundle: .main)
         guard gatewayHelperBuildMatches(installed: installed, bundled: bundled) else {
             throw PrivilegedHelperError.helperReported(
                 PrivilegedHelperErrorPayload(
@@ -343,7 +273,7 @@ public final class HelperRegistrationService {
         installed.version == bundled.version
             && installed.build == bundled.build
             && installed.protocolVersion == bundled.protocolVersion
-            && (bundled.guiCommit == "unknown" || installed.guiCommit == bundled.guiCommit)
+            && installed.guiCommit == bundled.guiCommit
     }
 
     nonisolated static func gatewayHelperBuildMatches(
@@ -354,7 +284,7 @@ public final class HelperRegistrationService {
             && installed.gatewayVersion == bundled.gatewayVersion
             && installed.protocolVersion == bundled.protocolVersion
             && installed.schemaVersion == bundled.schemaVersion
-            && (bundled.gatewayCommit == "unknown" || installed.gatewayCommit == bundled.gatewayCommit)
+            && installed.gatewayCommit == bundled.gatewayCommit
     }
 }
 

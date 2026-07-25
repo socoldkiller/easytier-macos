@@ -1,8 +1,8 @@
 import Testing
 @testable import EasyTierShared
 
-@Test func helperBuildInfoReadsAndFormatsInjectedMetadata() {
-    let info = PrivilegedHelperBuildInfo(
+@Test func helperBuildInfoReadsAndFormatsInjectedMetadata() throws {
+    let info = try PrivilegedHelperBuildInfo(
         infoDictionary: [
             "CFBundleShortVersionString": "1.4.0",
             "CFBundleVersion": "20260718124530",
@@ -18,16 +18,14 @@ import Testing
     #expect(info.buildTime == "2026-07-18T12:45:30Z")
 }
 
-@Test func helperBuildInfoUsesDiagnosticFallbacksForLocalBuilds() {
-    let info = PrivilegedHelperBuildInfo(infoDictionary: [:])
-
-    #expect(info.version == "Development")
-    #expect(info.build == "0")
-    #expect(info.easyTierHelperDisplay == "unknown")
+@Test func helperBuildInfoRejectsMissingMetadata() {
+    #expect(throws: HelperBuildMetadataError.missingValue("CFBundleShortVersionString")) {
+        try PrivilegedHelperBuildInfo(infoDictionary: [:])
+    }
 }
 
-@Test func gatewayHelperBuildInfoUsesIndependentMetadata() {
-    let info = GatewayHelperBuildInfo(
+@Test func gatewayHelperBuildInfoUsesIndependentMetadata() throws {
+    let info = try GatewayHelperBuildInfo(
         infoDictionary: [
             "CFBundleShortVersionString": "0.1.0",
             "CFBundleVersion": "20260718124530",

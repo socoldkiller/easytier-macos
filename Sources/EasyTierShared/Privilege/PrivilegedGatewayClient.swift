@@ -247,7 +247,15 @@ package final class PrivilegedGatewayClient: GatewayClient, @unchecked Sendable 
                 }
                 body(service) { payload, error in
                     if let error, !error.isEmpty {
-                        state.finish(.failure(PrivilegedHelperError.helperReported(PrivilegedHelperErrorPayload.decode(from: error))))
+                        do {
+                            state.finish(.failure(PrivilegedHelperError.helperReported(
+                                try PrivilegedHelperErrorPayload.decode(from: error)
+                            )))
+                        } catch {
+                            state.finish(.failure(PrivilegedHelperError.invalidPayload(
+                                "Gateway helper returned malformed error JSON: \(error.localizedDescription)"
+                            )))
+                        }
                     } else if let payload {
                         state.finish(.success(payload))
                     } else {

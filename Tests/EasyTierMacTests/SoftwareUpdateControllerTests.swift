@@ -3,7 +3,7 @@ import Testing
 @testable import EasyTierMac
 
 @MainActor
-@Test func legacyUpdatePreferencesMigrateBeforeSparkleStarts() {
+@Test func legacyUpdatePreferencesAreIgnored() {
     let fixture = makeUserDefaults()
     defer { fixture.clear() }
 
@@ -18,11 +18,11 @@ import Testing
         clientFactory: { _ in client }
     )
 
-    #expect(fixture.defaults.object(forKey: "SUEnableAutomaticChecks") as? Bool == false)
-    #expect(fixture.defaults.object(forKey: "SULastCheckTime") as? Date == date)
-    #expect(fixture.defaults.object(forKey: "EasyTierAutoCheckUpdates") == nil)
-    #expect(fixture.defaults.object(forKey: "EasyTierLastUpdateCheckDate") == nil)
-    #expect(fixture.defaults.object(forKey: "EasyTierUpdaterSkippedVersion") == nil)
+    #expect(fixture.defaults.object(forKey: "SUEnableAutomaticChecks") == nil)
+    #expect(fixture.defaults.object(forKey: "SULastCheckTime") == nil)
+    #expect(fixture.defaults.object(forKey: "EasyTierAutoCheckUpdates") as? Bool == false)
+    #expect(fixture.defaults.object(forKey: "EasyTierLastUpdateCheckDate") as? Date == date)
+    #expect(fixture.defaults.object(forKey: "EasyTierUpdaterSkippedVersion") as? String == "1.3.3")
 
     controller.start()
     controller.start()
@@ -270,7 +270,7 @@ import Testing
     #expect(fixture.defaults.data(forKey: pendingRestoreKey) == nil)
 }
 
-@Test func legacySoftwareUpdateRestoreStateDefaultsGatewayToDisabled() throws {
+@Test func legacySoftwareUpdateRestoreStateIsRejected() throws {
     struct LegacyState: Encodable {
         var sourceBuild = "100"
         var targetBuild = "200"
@@ -279,10 +279,9 @@ import Testing
     }
 
     let data = try JSONEncoder().encode(LegacyState())
-    let state = try JSONDecoder().decode(SoftwareUpdateRuntimeRestoreState.self, from: data)
-
-    #expect(!state.gatewayDesiredEnabled)
-    #expect(state.configIDs == ["network-a"])
+    #expect(throws: DecodingError.self) {
+        _ = try JSONDecoder().decode(SoftwareUpdateRuntimeRestoreState.self, from: data)
+    }
 }
 
 @MainActor

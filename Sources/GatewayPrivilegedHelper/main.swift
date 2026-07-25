@@ -35,7 +35,7 @@ private final class GatewayPrivilegedService: NSObject, GatewayPrivilegedService
 
     func buildInfo(reply: @escaping (String?, String?) -> Void) {
         do {
-            let data = try JSONEncoder().encode(GatewayHelperBuildInfo(bundle: .main))
+            let data = try JSONEncoder().encode(try GatewayHelperBuildInfo(bundle: .main))
             reply(String(decoding: data, as: UTF8.self), nil)
         } catch {
             replyFailure(error, code: "buildInfoFailed", reply: reply)
@@ -109,7 +109,7 @@ private final class GatewayPrivilegedService: NSObject, GatewayPrivilegedService
                 try await controller.shutdown()
                 replyBox.call("ok", nil)
             } catch {
-                replyBox.call(nil, Self.errorPayload(error, code: "gatewayShutdownFailed").encodedString())
+                replyBox.call(nil, try? Self.errorPayload(error, code: "gatewayShutdownFailed").encodedString())
             }
             try? await Task.sleep(for: .milliseconds(50))
             Foundation.exit(EXIT_SUCCESS)
@@ -127,13 +127,13 @@ private final class GatewayPrivilegedService: NSObject, GatewayPrivilegedService
                 replyBox.call(try await operation(), nil)
             } catch {
                 fputs("gateway helper \(code) error: \(error.localizedDescription)\n", stderr)
-                replyBox.call(nil, Self.errorPayload(error, code: code).encodedString())
+                replyBox.call(nil, try? Self.errorPayload(error, code: code).encodedString())
             }
         }
     }
 
     private func replyFailure(_ error: Error, code: String, reply: @escaping (String?, String?) -> Void) {
-        reply(nil, Self.errorPayload(error, code: code).encodedString())
+        reply(nil, try? Self.errorPayload(error, code: code).encodedString())
     }
 
     private static func errorPayload(_ error: Error, code: String) -> PrivilegedHelperErrorPayload {
@@ -161,10 +161,6 @@ private final class GatewayPrivilegedService: NSObject, GatewayPrivilegedService
 
 private final class GatewayHelperDelegate: NSObject, NSXPCListenerDelegate, @unchecked Sendable {
     private let controller = GatewayHelperController(
-        legacyStorageRoot: URL(
-            fileURLWithPath: "/Library/Application Support/EasyTier/Gateway",
-            isDirectory: true
-        ),
         idleExitHandler: { Foundation.exit(EXIT_SUCCESS) }
     )
 

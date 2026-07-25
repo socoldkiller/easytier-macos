@@ -17,36 +17,33 @@ package struct GatewayHelperBuildInfo: Codable, Equatable, Sendable {
     package var schemaVersion: UInt32
     package var protocolVersion: String
 
-    package init(infoDictionary: [String: Any]) {
-        version = Self.value(named: "CFBundleShortVersionString", in: infoDictionary, fallback: "Development")
-        build = Self.value(named: "CFBundleVersion", in: infoDictionary, fallback: "0")
-        buildTime = Self.value(named: "GatewayBuildTime", in: infoDictionary, fallback: "unknown")
-        gatewayVersion = Self.value(named: "GatewayVersion", in: infoDictionary, fallback: "Development")
-        gatewayCommit = Self.value(named: "GatewayCommit", in: infoDictionary, fallback: "unknown")
+    package init(infoDictionary: [String: Any]) throws {
+        version = try Self.value(named: "CFBundleShortVersionString", in: infoDictionary)
+        build = try Self.value(named: "CFBundleVersion", in: infoDictionary)
+        buildTime = try Self.value(named: "GatewayBuildTime", in: infoDictionary)
+        gatewayVersion = try Self.value(named: "GatewayVersion", in: infoDictionary)
+        gatewayCommit = try Self.value(named: "GatewayCommit", in: infoDictionary)
         schemaVersion = GatewaySchema.version
         protocolVersion = GatewayPrivilegedHelperConstants.protocolVersion
     }
 
-    package init(bundle: Bundle) {
-        self.init(infoDictionary: bundle.infoDictionary ?? [:])
+    package init(bundle: Bundle) throws {
+        try self.init(infoDictionary: bundle.infoDictionary ?? [:])
     }
 
     package var componentDisplay: String {
         let commit = Self.abbreviated(gatewayCommit)
-        let values = [gatewayVersion == "unknown" ? nil : gatewayVersion, commit == "unknown" ? nil : commit]
-            .compactMap(\.self)
-        let source = values.isEmpty ? "unknown" : values.joined(separator: " · ")
-        return "\(source) · schema \(schemaVersion)"
+        return "\(gatewayVersion) · \(commit) · schema \(schemaVersion)"
     }
 
     package var binaryDisplay: String {
         "\(version) (\(build)) · protocol \(protocolVersion)"
     }
 
-    private static func value(named key: String, in info: [String: Any], fallback: String) -> String {
+    private static func value(named key: String, in info: [String: Any]) throws -> String {
         guard let value = info[key] as? String,
               !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else { return fallback }
+        else { throw HelperBuildMetadataError.missingValue(key) }
         return value
     }
 

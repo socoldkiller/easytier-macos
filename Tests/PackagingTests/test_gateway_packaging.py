@@ -31,21 +31,9 @@ class GatewayPackagingTests(unittest.TestCase):
             ROOT_DIR / "Packaging" / "com.coldkiller.gateway.helper.plist"
         ).open("rb") as handle:
             gateway = plistlib.load(handle)
-        legacy_source = (
-            ROOT_DIR
-            / "Sources"
-            / "EasyTierShared"
-            / "Privilege"
-            / "LegacyPrivilegedHelperService.swift"
-        ).read_text(encoding="utf-8")
-
         self.assertIs(modern["RunAtLoad"], False)
         self.assertIs(gateway["RunAtLoad"], False)
         self.assertEqual(gateway["Label"], "com.coldkiller.gateway.helper")
-        self.assertRegex(
-            legacy_source,
-            re.compile(r"<key>RunAtLoad</key>\s*<false/>", re.MULTILINE),
-        )
 
     def test_gateway_uses_an_independent_xpc_protocol(self) -> None:
         source = (
@@ -133,7 +121,7 @@ class GatewayPackagingTests(unittest.TestCase):
         self.assertLess(unregister_index, replace_index)
         self.assertLess(replace_index, register_index)
         self.assertLess(register_index, open_index)
-        self.assertIn("EASYTIER_SKIP_LEGACY_HELPER_UNINSTALL=1", install_script)
+        self.assertNotIn("EASYTIER_SKIP_LEGACY_HELPER_UNINSTALL", install_script)
 
     def test_debug_install_temporarily_exposes_the_signing_keychain_to_xcode(self) -> None:
         build_script = (ROOT_DIR / "scripts" / "build-debug-app.sh").read_text(

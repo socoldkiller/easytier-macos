@@ -535,9 +535,9 @@ public struct NetworkInstanceRunningInfo: Codable, Equatable, Sendable {
         dev_name = try container.decodeIfPresent(String.self, forKey: .dev_name)
         my_node_info = try container.decodeIfPresent(NodeInfo.self, forKey: .my_node_info)
         events = try container.decodeIfPresent([String].self, forKey: .events)
-        routes = try container.decodeLossyArray(Route.self, forKey: .routes)
-        peers = try container.decodeLossyArray(PeerInfo.self, forKey: .peers)
-        peer_route_pairs = try container.decodeLossyArray(PeerRoutePair.self, forKey: .peer_route_pairs)
+        routes = try container.decodeIfPresent([Route].self, forKey: .routes)
+        peers = try container.decodeIfPresent([PeerInfo].self, forKey: .peers)
+        peer_route_pairs = try container.decodeIfPresent([PeerRoutePair].self, forKey: .peer_route_pairs)
         running = try container.decodeIfPresent(Bool.self, forKey: .running)
         error_msg = try container.decodeIfPresent(String.self, forKey: .error_msg)
         applied_magic_dns_enabled = try container.decodeIfPresent(
@@ -589,18 +589,6 @@ public struct NodeInfo: Codable, Equatable, Sendable {
         self.feature_flag = feature_flag
     }
 
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: AnyCodingKey.self)
-        ipv4_addr = try container.decodeStringIfPresent("ipv4_addr", "ipv4Addr")
-        virtual_ipv4 = try container.decodeIfPresent(IPv4InetValue.self, forKeys: "virtual_ipv4", "virtualIpv4")
-        hostname = try container.decodeStringIfPresent("hostname")
-        version = try container.decodeStringIfPresent("version")
-        peer_id = container.decodeFlexibleInt(forKeys: "peer_id", "peerId")
-        listeners = try container.decodeLossyArray(URLValue.self, forKeys: "listeners")
-        stun_info = try container.decodeIfPresent(StunInfo.self, forKeys: "stun_info", "stunInfo")
-        vpn_portal_cfg = try container.decodeStringIfPresent("vpn_portal_cfg", "vpnPortalCfg")
-        feature_flag = try container.decodeIfPresent(PeerFeatureFlag.self, forKeys: "feature_flag", "featureFlag")
-    }
 }
 
 public struct PeerFeatureFlag: Codable, Equatable, Sendable {
@@ -614,10 +602,6 @@ public struct PeerFeatureFlag: Codable, Equatable, Sendable {
         self.is_public_server = is_public_server
     }
 
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: AnyCodingKey.self)
-        is_public_server = try container.decodeBoolIfPresent("is_public_server", "isPublicServer")
-    }
 }
 
 public struct IPv4AddressValue: Codable, Equatable, Sendable {
@@ -631,10 +615,6 @@ public struct IPv4AddressValue: Codable, Equatable, Sendable {
         self.addr = addr
     }
 
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        addr = container.decodeFlexibleInt64(forKey: .addr)
-    }
 }
 
 public struct IPv4InetValue: Codable, Equatable, Sendable {
@@ -653,13 +633,6 @@ public struct IPv4InetValue: Codable, Equatable, Sendable {
     }
 
     public init(from decoder: Decoder) throws {
-        if let value = try? decoder.singleValueContainer().decode(String.self) {
-            rawValue = value
-            address = nil
-            network_length = nil
-            return
-        }
-
         let container = try decoder.container(keyedBy: CodingKeys.self)
         rawValue = nil
         address = try container.decodeIfPresent(IPv4AddressValue.self, forKey: .address)
@@ -713,12 +686,6 @@ public struct StunInfo: Codable, Equatable, Sendable {
         self.last_update_time = last_update_time
     }
 
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: AnyCodingKey.self)
-        udp_nat_type = container.decodeFlexibleNatType(forKeys: "udp_nat_type", "udpNatType")
-        tcp_nat_type = container.decodeFlexibleNatType(forKeys: "tcp_nat_type", "tcpNatType")
-        last_update_time = container.decodeFlexibleInt64(forKeys: "last_update_time", "lastUpdateTime")
-    }
 }
 
 public struct Route: Codable, Equatable, Sendable {
@@ -762,18 +729,19 @@ public struct Route: Codable, Equatable, Sendable {
     }
 
     public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: AnyCodingKey.self)
-        peer_id = container.decodeFlexibleInt(forKeys: "peer_id", "peerId")
-        ipv4_addr = try container.decodeIfPresent(IPv4InetValue.self, forKeys: "ipv4_addr", "ipv4Addr")
-        next_hop_peer_id = container.decodeFlexibleInt(forKeys: "next_hop_peer_id", "nextHopPeerId")
-        cost = container.decodeFlexibleInt(forKeys: "cost")
-        proxy_cidrs = try container.decodeIfPresent([String].self, forKeys: "proxy_cidrs", "proxyCidrs")
-        hostname = try container.decodeStringIfPresent("hostname")
-        stun_info = try container.decodeIfPresent(StunInfo.self, forKeys: "stun_info", "stunInfo")
-        inst_id = try container.decodeStringIfPresent("inst_id", "instId")
-        version = try container.decodeStringIfPresent("version")
-        feature_flag = try container.decodeIfPresent(PeerFeatureFlag.self, forKeys: "feature_flag", "featureFlag")
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        peer_id = try container.decode(Int.self, forKey: .peer_id)
+        ipv4_addr = try container.decodeIfPresent(IPv4InetValue.self, forKey: .ipv4_addr)
+        next_hop_peer_id = try container.decodeIfPresent(Int.self, forKey: .next_hop_peer_id)
+        cost = try container.decodeIfPresent(Int.self, forKey: .cost)
+        proxy_cidrs = try container.decodeIfPresent([String].self, forKey: .proxy_cidrs)
+        hostname = try container.decodeIfPresent(String.self, forKey: .hostname)
+        stun_info = try container.decodeIfPresent(StunInfo.self, forKey: .stun_info)
+        inst_id = try container.decodeIfPresent(String.self, forKey: .inst_id)
+        version = try container.decodeIfPresent(String.self, forKey: .version)
+        feature_flag = try container.decodeIfPresent(PeerFeatureFlag.self, forKey: .feature_flag)
     }
+
 }
 
 public struct PeerInfo: Codable, Equatable, Sendable {
@@ -792,11 +760,14 @@ public struct PeerInfo: Codable, Equatable, Sendable {
     }
 
     public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: AnyCodingKey.self)
-        peer_id = container.decodeFlexibleInt(forKeys: "peer_id", "peerId")
-        conns = try container.decodeLossyArray(PeerConnInfo.self, forKeys: "conns")
-        default_conn_id = container.decodeFlexibleString(forKeys: "default_conn_id", "defaultConnId")
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        peer_id = try container.decodeIfPresent(Int.self, forKey: .peer_id)
+        conns = try container.decodeIfPresent([PeerConnInfo].self, forKey: .conns)
+        default_conn_id = try container
+            .decodeIfPresent(EasyTierProtobufUUID.self, forKey: .default_conn_id)?
+            .stringValue
     }
+
 }
 
 public struct PeerConnInfo: Codable, Equatable, Sendable {
@@ -833,17 +804,6 @@ public struct PeerConnInfo: Codable, Equatable, Sendable {
         self.stats = stats
     }
 
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: AnyCodingKey.self)
-        conn_id = try container.decodeStringIfPresent("conn_id", "connId")
-        my_peer_id = container.decodeFlexibleInt(forKeys: "my_peer_id", "myPeerId")
-        is_client = try container.decodeBoolIfPresent("is_client", "isClient")
-        peer_id = container.decodeFlexibleInt(forKeys: "peer_id", "peerId")
-        features = try container.decodeIfPresent([String].self, forKeys: "features")
-        tunnel = try container.decodeIfPresent(TunnelInfo.self, forKeys: "tunnel")
-        loss_rate = container.decodeFlexibleDouble(forKeys: "loss_rate", "lossRate")
-        stats = try container.decodeIfPresent(PeerConnStats.self, forKeys: "stats")
-    }
 }
 
 public struct TunnelInfo: Codable, Equatable, Sendable {
@@ -877,14 +837,6 @@ public struct PeerConnStats: Codable, Equatable, Sendable {
         self.latency_us = latency_us
     }
 
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        rx_bytes = container.decodeFlexibleInt(forKey: .rx_bytes)
-        tx_bytes = container.decodeFlexibleInt(forKey: .tx_bytes)
-        rx_packets = container.decodeFlexibleInt(forKey: .rx_packets)
-        tx_packets = container.decodeFlexibleInt(forKey: .tx_packets)
-        latency_us = container.decodeFlexibleInt(forKey: .latency_us)
-    }
 }
 
 public struct PeerRoutePair: Codable, Equatable, Sendable {
@@ -1227,41 +1179,5 @@ public enum ByteFormatter {
 
     public static func formatRate(_ bytesPerSecond: Double) -> String {
         format(Int64(max(0, bytesPerSecond).rounded()), suffix: "/s")
-    }
-}
-
-private extension KeyedDecodingContainer where Key == AnyCodingKey {
-    func decodeFlexibleNatType(forKeys keys: String...) -> Int? {
-        for keyName in keys {
-            if let value = decodeFlexibleInt(forKey: key(keyName)) { return value }
-            if let raw = try? decodeIfPresent(String.self, forKey: key(keyName)),
-               let value = Self.natTypeValue(raw) {
-                return value
-            }
-        }
-        return nil
-    }
-
-    private static func natTypeValue(_ raw: String) -> Int? {
-        let normalized = raw
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "_", with: "")
-            .replacingOccurrences(of: "-", with: "")
-            .replacingOccurrences(of: " ", with: "")
-            .lowercased()
-
-        switch normalized {
-        case "0", "unknown": return 0
-        case "1", "openinternet": return 1
-        case "2", "nopat": return 2
-        case "3", "fullcone": return 3
-        case "4", "restricted": return 4
-        case "5", "portrestricted": return 5
-        case "6", "symmetric": return 6
-        case "7", "symudpfirewall", "symmetricudpfirewall": return 7
-        case "8", "symmetriceasyinc": return 8
-        case "9", "symmetriceasydec": return 9
-        default: return nil
-        }
     }
 }

@@ -159,11 +159,6 @@ struct EasyTierApp: App {
                     try? await service.unregister()
                     try? await gatewayService.unregister()
                 }
-                if arguments.contains("--unregister-helper"),
-                   LegacyPrivilegedHelperService.isInstalled,
-                   ProcessInfo.processInfo.environment["EASYTIER_SKIP_LEGACY_HELPER_UNINSTALL"] != "1" {
-                    try LegacyPrivilegedHelperService.uninstallUsingAdministratorPrivileges()
-                }
                 let registration = HelperRegistrationService()
                 let gatewayRegistration = HelperRegistrationService(kind: .gateway)
                 if arguments.contains("--register-helper") {
@@ -228,9 +223,6 @@ struct EasyTierApp: App {
     }
 
     private static func currentHelperStatusDescription() -> String {
-        if LegacyPrivilegedHelperService.shouldUseLegacyInstaller {
-            return LegacyPrivilegedHelperService.isInstalled ? "enabled" : "notRegistered"
-        }
         let service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
         return describe(service.status)
     }

@@ -75,7 +75,6 @@ public final class EasyTierAppStore {
     public var peerSubscriptions: [PeerSubscription] = []
     public var isRefreshingPeerSubscriptions = false
     public var pendingPeerCardMerge: PeerCard?
-    public private(set) var networkSecretCleanupNotice: String?
     public private(set) var runtimeTransitionsByConfigID: [String: NetworkRuntimeTransition] = [:]
 
     /// Presentation-only scroll state. Runtime collection must continue while
@@ -92,7 +91,6 @@ public final class EasyTierAppStore {
     private let networkSecretStore: any NetworkSecretStore
     private let peerSubscriptionDataLoader: any PeerSubscriptionDataLoading
     private let systemSleepPreventer: any SystemSleepPreventing
-    @ObservationIgnored private var didReportNetworkSecretCleanupIssue = false
     private var lastErrorKind: LastErrorKind?
 
     @ObservationIgnored private lazy var runtimeSession = RuntimeSessionController(
@@ -504,22 +502,17 @@ public final class EasyTierAppStore {
                     return
                 }
             }
-            let hasSharedCredentialReference = configs.enumerated().contains { candidateIndex, candidate in
-                candidateIndex != index && Self.secretNamespace(for: candidate) == Self.secretNamespace(for: config)
-            }
-            if !hasSharedCredentialReference {
-                do {
-                    try await networkSecretStore.deleteSecret(for: config, purpose: .delete)
-                    clearCachedNetworkSecret(for: config)
-                } catch {
-                    if Self.isNetworkSecretAccessCancellation(error) {
-                        log("Network deletion canceled during Keychain authorization.")
-                    } else {
-                        setLastError(error)
-                        log("Delete canceled because the saved network secret could not be removed: \(error.localizedDescription)")
-                    }
-                    return
+            do {
+                try await networkSecretStore.deleteSecret(for: config, purpose: .delete)
+                clearCachedNetworkSecret(for: config)
+            } catch {
+                if Self.isNetworkSecretAccessCancellation(error) {
+                    log("Network deletion canceled during Keychain authorization.")
+                } else {
+                    setLastError(error)
+                    log("Delete canceled because the saved network secret could not be removed: \(error.localizedDescription)")
                 }
+                return
             }
             runtimeSession.clearConfigTracking(for: config)
             runtimeSession.clearPendingStart(for: config)
@@ -544,32 +537,10 @@ public final class EasyTierAppStore {
         saveImmediately: Bool = false
     ) async throws {
         guard let index = configs.firstIndex(where: { $0.id == id }) else { return }
-        let oldConfig = configs[index]
-        if Self.secretNamespace(for: oldConfig) != Self.secretNamespace(for: config) {
-            try await migrateNetworkSecret(from: oldConfig, to: config, replacingIndex: index)
-        }
         configs[index] = Self.configWithoutNetworkSecret(config)
         if saveImmediately {
             save()
         }
-    }
-
-    private func migrateNetworkSecret(
-        from oldConfig: NetworkConfig,
-        to newConfig: NetworkConfig,
-        replacingIndex: Int
-    ) async throws {
-        let removeSource = !configs.enumerated().contains { candidateIndex, candidate in
-            candidateIndex != replacingIndex
-                && Self.secretNamespace(for: candidate) == Self.secretNamespace(for: oldConfig)
-        }
-        let result = try await networkSecretStore.migrateSecret(
-            from: oldConfig,
-            to: newConfig,
-            removeSource: removeSource
-        )
-        handleNetworkSecretCleanup(result.cleanup)
-        invalidateSecretAuthenticationSession()
     }
 
     public func selectPreviousConfig() {
@@ -940,10 +911,6 @@ public final class EasyTierAppStore {
         log(message)
     }
 
-    public func dismissNetworkSecretCleanupNotice() {
-        networkSecretCleanupNotice = nil
-    }
-
     public var lastErrorIsHelperPermission: Bool {
         guard let message = lastError else { return false }
         if lastErrorKind == .helperPermission { return true }
@@ -1295,8 +1262,7 @@ public final class EasyTierAppStore {
         guard let secret = secret.nilIfEmpty else { return }
         let authenticationGeneration = networkSecretAccessGeneration
         do {
-            let result = try await networkSecretStore.save(secret, for: config, purpose: .update)
-            handleNetworkSecretCleanup(result.cleanup)
+            try await networkSecretStore.save(secret, for: config, purpose: .update)
             if authenticationGeneration == networkSecretAccessGeneration {
                 cacheNetworkSecret(secret, for: config)
             }
@@ -1707,9 +1673,8 @@ public final class EasyTierAppStore {
             throw CancellationError()
         }
         guard let result else { return config }
-        handleNetworkSecretCleanup(result.cleanup)
-        cacheNetworkSecret(result.secret, for: config)
-        return Self.config(config, withNetworkSecret: result.secret)
+        cacheNetworkSecret(result, for: config)
+        return Self.config(config, withNetworkSecret: result)
     }
 
     private func configWithResolvedNetworkSecret(
@@ -1791,18 +1756,8 @@ public final class EasyTierAppStore {
         networkSecretStore.invalidateAuthenticationSession()
     }
 
-    private func handleNetworkSecretCleanup(_ cleanup: NetworkSecretCleanupState) {
-        guard !cleanup.issues.isEmpty else { return }
-        let statuses = cleanup.issues.map { "\($0.backend.rawValue):\($0.status)" }.joined(separator: ", ")
-        log("Saved the protected network secret; legacy Keychain cleanup is pending (\(statuses)).")
-        guard !didReportNetworkSecretCleanupIssue else { return }
-        didReportNetworkSecretCleanupIssue = true
-        networkSecretCleanupNotice = "The network password was saved securely, but an old Keychain entry could not be removed. EasyTier will retry automatically."
-    }
-
     private static func secretNamespace(for config: NetworkConfig) -> String {
-        let trimmed = config.network_name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? config.network_name : trimmed
+        config.instance_id
     }
 
     private func encodedTOML(for config: NetworkConfig) throws -> String {
@@ -1955,9 +1910,10 @@ public final class EasyTierAppStore {
                 from: url,
                 using: peerSubscriptionDataLoader
             )
-            peerSubscriptions.append(contentsOf: fetched)
+            peerSubscriptions.append(contentsOf: fetched.subscriptions)
             saveInBackground()
-            log("Added \(fetched.count) subscription(s) from \(url.absoluteString).")
+            log("Added \(fetched.subscriptions.count) subscription(s) from \(url.absoluteString).")
+            logPeerSubscriptionIssues(fetched.issues, source: url.absoluteString)
         } catch {
             setLastError(error)
             log("Failed to fetch subscription from \(url.absoluteString): \(error.localizedDescription)")
@@ -1966,9 +1922,10 @@ public final class EasyTierAppStore {
 
     public func addPeerSubscription(json: String) throws {
         let decoded = try PeerSubscriptionLibrary.decode(json)
-        peerSubscriptions.append(contentsOf: decoded)
+        peerSubscriptions.append(contentsOf: decoded.subscriptions)
         saveInBackground()
-        log("Added \(decoded.count) subscription(s) from pasted JSON.")
+        log("Added \(decoded.subscriptions.count) subscription(s) from pasted JSON.")
+        logPeerSubscriptionIssues(decoded.issues, source: "pasted JSON")
     }
 
     public func refreshPeerSubscriptions() async {
@@ -1984,8 +1941,17 @@ public final class EasyTierAppStore {
         for failure in result.failures {
             log("Failed to refresh subscription from \(failure.url.absoluteString): \(failure.message)")
         }
+        for issue in result.issues {
+            log("Skipped subscription outbound \(issue.issue.outboundIndex + 1) from \(issue.url.absoluteString): \(issue.issue.message)")
+        }
         saveInBackground()
         log("Subscriptions refresh complete.")
+    }
+
+    private func logPeerSubscriptionIssues(_ issues: [PeerSubscriptionImportIssue], source: String) {
+        for issue in issues {
+            log("Skipped subscription outbound \(issue.outboundIndex + 1) from \(source): \(issue.message)")
+        }
     }
 
     public func peerCardLatency(for card: PeerCard) -> Int? {

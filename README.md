@@ -104,6 +104,8 @@ EasyTier Core 的运行输出和 App 自身的操作记录都收在一个日志�
 
 EasyTier Core 统一运行在 privileged helper（LaunchDaemon）中，App 通过 XPC 控制它。TUN 网卡仍需要 root 权限；`no_tun` 不创建 TUN 网卡，但也使用同一 helper，以避免 GUI 和后台进程各维护一套 Core。
 
+Helper 仅支持当前签名 App 通过 `SMAppService` 注册的版本；旧式手动安装的 Helper 不再自动识别、迁移或清理。运行状态和远端管理协议也只接受当前格式。网络密码按配置 UUID 存入 Data Protection Keychain，旧版本按网络名保存的密码不会迁移，升级后可能需要重新输入一次。
+
 ## 安装
 
 macOS 15 及以上。

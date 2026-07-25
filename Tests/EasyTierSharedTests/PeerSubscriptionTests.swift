@@ -5,6 +5,7 @@ import Testing
 @Test func peerCardDecodesFromInternalStorageJSON() throws {
     let json = #"""
     {
+      "id": "tokyo-relay",
       "name": "Tokyo Relay",
       "proto": "quic",
       "urls": ["quic://1.2.3.4:11012", "udp://1.2.3.4:11010"],
@@ -20,22 +21,23 @@ import Testing
     #expect(!card.id.isEmpty)
 }
 
-@Test func peerCardInfersProtoFromURLsWhenMissing() throws {
+@Test func peerCardRejectsMissingProtocol() throws {
     let json = #"""
     { "name": "SF Node", "urls": ["tcp://5.6.7.8:11010"] }
     """#.data(using: .utf8)!
 
-    let card = try JSONDecoder().decode(PeerCard.self, from: json)
-    #expect(card.proto == "tcp")
+    #expect(throws: DecodingError.self) {
+        _ = try JSONDecoder().decode(PeerCard.self, from: json)
+    }
 }
 
-@Test func peerCardTrimsAndFiltersEmptyURLs() throws {
+@Test func peerCardStorageDecodingPreservesStoredURLsExactly() throws {
     let json = #"""
-    { "name": "X", "urls": ["  tcp://1.1.1.1:11010  ", "", "   "] }
+    { "id": "x", "name": "X", "proto": "tcp", "urls": ["  tcp://1.1.1.1:11010  ", "", "   "] }
     """#.data(using: .utf8)!
 
     let card = try JSONDecoder().decode(PeerCard.self, from: json)
-    #expect(card.urls == ["tcp://1.1.1.1:11010"])
+    #expect(card.urls == ["  tcp://1.1.1.1:11010  ", "", "   "])
 }
 
 @Test func peerSubscriptionCodecImportsOutboundSubscriptionNodes() throws {
@@ -51,7 +53,9 @@ import Testing
     }
     """#.data(using: .utf8)!
 
-    let subs = try PeerSubscriptionCodec.decode(json)
+    let result = try PeerSubscriptionImporter.decode(json)
+    let subs = result.subscriptions
+    #expect(result.issues.count == 3)
     #expect(subs.count == 1)
     #expect(subs[0].name == "Node Subscription")
     #expect(subs[0].cards.count == 2)
@@ -73,7 +77,7 @@ func peerSubscriptionCodecImportsEasyTierProtocolOutboundTypes(_ type: String) t
     }
     """.data(using: .utf8)!
 
-    let subs = try PeerSubscriptionCodec.decode(json)
+    let subs = try PeerSubscriptionImporter.decode(json).subscriptions
     #expect(subs[0].cards.count == 1)
     #expect(subs[0].cards[0].proto == type)
     #expect(subs[0].cards[0].urls == ["\(type)://\(type).example.com:11010"])
@@ -90,7 +94,7 @@ func peerSubscriptionCodecRejectsNonEasyTierProtocolOutboundTypes(_ type: String
     """.data(using: .utf8)!
 
     #expect(throws: PeerSubscriptionDecodeError.self) {
-        _ = try PeerSubscriptionCodec.decode(json)
+        _ = try PeerSubscriptionImporter.decode(json)
     }
 }
 
@@ -103,7 +107,7 @@ func peerSubscriptionCodecRejectsNonEasyTierProtocolOutboundTypes(_ type: String
     }
     """#.data(using: .utf8)!
 
-    let subs = try PeerSubscriptionCodec.decode(json)
+    let subs = try PeerSubscriptionImporter.decode(json).subscriptions
     #expect(subs[0].cards[0].name == "1.2.3.4:11010")
     #expect(subs[0].cards[0].id == "udp-1-2-3-4-11010")
 }
@@ -119,9 +123,32 @@ func peerSubscriptionCodecRejectsNonEasyTierProtocolOutboundTypes(_ type: String
     }
     """#.data(using: .utf8)!
 
-    let subs = try PeerSubscriptionCodec.decode(json)
+    let result = try PeerSubscriptionImporter.decode(json)
+    let subs = result.subscriptions
+    #expect(result.issues.count == 2)
     #expect(subs[0].cards.map(\.name) == ["Valid"])
     #expect(subs[0].cards[0].urls == ["wss://valid.example.com:11012"])
+}
+
+@Test func peerSubscriptionImporterReportsMalformedOutboundsWithoutDroppingValidOnes() throws {
+    let json = #"""
+    {
+      "outbounds": [
+        { "type": "tcp", "server": "bad.example.com", "server_port": { "invalid": true } },
+        { "type": "quic", "tag": "Valid", "server": "valid.example.com", "server_port": 11012 }
+      ]
+    }
+    """#.data(using: .utf8)!
+
+    let result = try PeerSubscriptionImporter.decode(json)
+
+    #expect(result.subscriptions[0].cards.map(\.name) == ["Valid"])
+    #expect(result.issues == [
+        PeerSubscriptionImportIssue(
+            outboundIndex: 0,
+            message: "Outbound has an invalid structure or value type."
+        ),
+    ])
 }
 
 @Test func peerSubscriptionCodecRejectsOnlySkippedOutbounds() {
@@ -138,7 +165,7 @@ func peerSubscriptionCodecRejectsNonEasyTierProtocolOutboundTypes(_ type: String
     """#.data(using: .utf8)!
 
     #expect(throws: PeerSubscriptionDecodeError.self) {
-        _ = try PeerSubscriptionCodec.decode(json)
+        _ = try PeerSubscriptionImporter.decode(json)
     }
 }
 
@@ -148,7 +175,7 @@ func peerSubscriptionCodecRejectsNonEasyTierProtocolOutboundTypes(_ type: String
     """#.data(using: .utf8)!
 
     #expect(throws: PeerSubscriptionDecodeError.self) {
-        _ = try PeerSubscriptionCodec.decode(json)
+        _ = try PeerSubscriptionImporter.decode(json)
     }
 }
 
@@ -161,13 +188,13 @@ func peerSubscriptionCodecRejectsNonEasyTierProtocolOutboundTypes(_ type: String
     """#.data(using: .utf8)!
 
     #expect(throws: PeerSubscriptionDecodeError.self) {
-        _ = try PeerSubscriptionCodec.decode(json)
+        _ = try PeerSubscriptionImporter.decode(json)
     }
 }
 
 @Test func peerSubscriptionCodecRejectsGarbage() {
     #expect(throws: PeerSubscriptionDecodeError.self) {
-        _ = try PeerSubscriptionCodec.decode("not json at all".data(using: .utf8)!)
+        _ = try PeerSubscriptionImporter.decode("not json at all".data(using: .utf8)!)
     }
 }
 
@@ -190,10 +217,10 @@ func peerSubscriptionCodecRejectsNonEasyTierProtocolOutboundTypes(_ type: String
     #"{"name":"garbage urls","urls":[1,2,3]}"#,
     #"{"name":"partially valid","urls":["tcp://1.1.1.1:11010", 42]}"#,
 ])
-func peerCardDecodesLossily(_ json: String) throws {
-    let card = try JSONDecoder().decode(PeerCard.self, from: json.data(using: .utf8)!)
-    #expect(!card.id.isEmpty)
-    #expect(card.name == card.name)
+func peerCardRejectsHistoricalLooseStorage(_ json: String) throws {
+    #expect(throws: DecodingError.self) {
+        _ = try JSONDecoder().decode(PeerCard.self, from: Data(json.utf8))
+    }
 }
 
 @MainActor
@@ -241,8 +268,8 @@ func peerCardDecodesLossily(_ json: String) throws {
         sourceURL: sourceURL,
         fetchedAt: fetchedAt
     )
-    #expect(fetched[0].subscriptionURL == sourceURL)
-    #expect(fetched[0].lastFetchedAt == fetchedAt)
+    #expect(fetched.subscriptions[0].subscriptionURL == sourceURL)
+    #expect(fetched.subscriptions[0].lastFetchedAt == fetchedAt)
 
     var existing = [PeerSubscription(
         id: "stable-id",
@@ -250,7 +277,7 @@ func peerCardDecodesLossily(_ json: String) throws {
         subscriptionURL: sourceURL,
         cards: [PeerCard(name: "Old Peer")]
     )]
-    PeerSubscriptionLibrary.merge(fetched, from: sourceURL, into: &existing)
+    PeerSubscriptionLibrary.merge(fetched.subscriptions, from: sourceURL, into: &existing)
 
     #expect(existing.count == 1)
     #expect(existing[0].id == "stable-id")
@@ -275,9 +302,9 @@ func peerCardDecodesLossily(_ json: String) throws {
     )
 
     #expect(await dataLoader.requestedURLs == [sourceURL])
-    #expect(fetched[0].subscriptionURL == sourceURL)
-    #expect(fetched[0].lastFetchedAt == fetchedAt)
-    #expect(fetched[0].cards[0].name == "Injected")
+    #expect(fetched.subscriptions[0].subscriptionURL == sourceURL)
+    #expect(fetched.subscriptions[0].lastFetchedAt == fetchedAt)
+    #expect(fetched.subscriptions[0].cards[0].name == "Injected")
 }
 
 @Test func peerSubscriptionLibraryFindsLatencyAcrossTunnelEndpoints() {

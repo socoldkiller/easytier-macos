@@ -1405,7 +1405,7 @@ import Testing
 }
 
 @MainActor
-@Test func legacyLocalTargetMigratesAndTracksLaterPeerIDChanges() async throws {
+@Test func historicalLocalTargetRemainsUnresolvedWithoutStableIdentity() async throws {
     var state = gatewayControllerTestState(gatewayEnabled: true, serviceEnabled: true)
     state.services[0].targetPeerID = "old-local-peer"
     state.services[0].targetInstanceID = nil
@@ -1453,14 +1453,12 @@ import Testing
         guard let saved = await configurationStore.currentState()?.services.first else {
             return false
         }
-        return saved.targetPeerID == "10"
-            && saved.targetInstanceID == "network-a"
-            && controller.magicDNSState(for: saved.id) == .ready
+        return controller.magicDNSState(for: saved.id) == .loading
     }
 
     let saved = try #require(await configurationStore.currentState()?.services.first)
-    #expect(saved.targetPeerID == "10")
-    #expect(saved.targetInstanceID == "network-a")
+    #expect(saved.targetPeerID == "old-local-peer")
+    #expect(saved.targetInstanceID == nil)
     await waitUntil {
         let applied = await client.lastAppliedConfiguration()
         let started = await client.lastStartedConfiguration()
@@ -1469,8 +1467,8 @@ import Testing
     let appliedRuntime = await client.lastAppliedConfiguration()
     let startedRuntime = await client.lastStartedConfiguration()
     let runtime = try #require(appliedRuntime ?? startedRuntime)
-    #expect(runtime.routes.first?.upstream.availability == .ready)
-    #expect(runtime.routes.first?.upstream.expectedIPv4 == "10.0.0.10")
+    #expect(runtime.routes.first?.upstream.availability == .waiting)
+    #expect(runtime.routes.first?.upstream.expectedIPv4 == nil)
 
     let restartedDetail = NetworkInstanceRunningInfo(
         my_node_info: NodeInfo(
@@ -1494,16 +1492,16 @@ import Testing
     appStore.runtimeDetails = [config.network_name: restartedDetail]
 
     await waitUntil {
-        await configurationStore.currentState()?.services.first?.targetPeerID == "11"
+        await configurationStore.currentState()?.services.first?.targetPeerID == "old-local-peer"
     }
 
     let rebound = try #require(await configurationStore.currentState()?.services.first)
-    #expect(rebound.targetPeerID == "11")
-    #expect(rebound.targetInstanceID == "network-a")
+    #expect(rebound.targetPeerID == "old-local-peer")
+    #expect(rebound.targetInstanceID == nil)
 }
 
 @MainActor
-@Test func legacyTargetDoesNotRebindWhenMagicDNSPointsAtWrongIPv4() async throws {
+@Test func historicalTargetDoesNotEnterMismatchWithoutStableIdentity() async throws {
     var state = gatewayControllerTestState(gatewayEnabled: true, serviceEnabled: true)
     state.services[0].targetPeerID = "old-local-peer"
     state.services[0].targetInstanceID = nil
@@ -1548,16 +1546,14 @@ import Testing
     await controller.load()
 
     await waitUntil {
-        controller.magicDNSState(for: "service-a")
-            == .mismatch(expected: "10.0.0.10", resolved: ["10.0.0.99"])
+        controller.magicDNSState(for: "service-a") == .loading
     }
 
     let saved = try #require(await configurationStore.currentState()?.services.first)
     #expect(saved.targetPeerID == "old-local-peer")
     #expect(saved.targetInstanceID == nil)
     #expect(
-        controller.magicDNSState(for: saved.id)
-            == .mismatch(expected: "10.0.0.10", resolved: ["10.0.0.99"])
+        controller.magicDNSState(for: saved.id) == .loading
     )
 }
 
@@ -1712,7 +1708,7 @@ private actor InMemoryGatewayConfigurationStore: GatewayConfigurationStoring {
         self.state = state
     }
 
-    func load(magicDNSSuffix _: String) -> GatewayPersistedState? {
+    func load() -> GatewayPersistedState? {
         state
     }
 
