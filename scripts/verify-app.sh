@@ -92,14 +92,14 @@ verify_keychain_signing() {
   wildcard_keychain_group="$app_team.*"
   profile_team="$(plutil -extract TeamIdentifier.0 raw -o - "$profile_plist" 2>/dev/null || true)"
   profile_identifier="$(
-    plutil -extract Entitlements.application-identifier raw -o - "$profile_plist" 2>/dev/null \
-      || /usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.application-identifier' "$profile_plist" 2>/dev/null \
+    plutil -extract 'Entitlements.com\.apple\.application-identifier' raw -o - "$profile_plist" 2>/dev/null \
+      || plutil -extract Entitlements.application-identifier raw -o - "$profile_plist" 2>/dev/null \
       || true
   )"
   profile_groups="$(plutil -extract Entitlements.keychain-access-groups json -o - "$profile_plist" 2>/dev/null || true)"
-  signed_identifier="$(/usr/libexec/PlistBuddy -c 'Print :com.apple.application-identifier' "$signed_entitlements" 2>/dev/null || true)"
+  signed_identifier="$(plutil -extract 'com\.apple\.application-identifier' raw -o - "$signed_entitlements" 2>/dev/null || true)"
   signed_groups="$(plutil -extract keychain-access-groups json -o - "$signed_entitlements" 2>/dev/null || true)"
-  biometric="$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.device.biometric' "$signed_entitlements" 2>/dev/null || true)"
+  biometric="$(plutil -extract 'com\.apple\.security\.device\.biometric' raw -o - "$signed_entitlements" 2>/dev/null || true)"
 
   [[ "$profile_team" == "$app_team" ]] || fail "Provisioning profile Team ID does not match the app signature."
   [[ "$profile_identifier" == "$expected_identifier" ]] || fail "Provisioning profile does not target $expected_identifier."
