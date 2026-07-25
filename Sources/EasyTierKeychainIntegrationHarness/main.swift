@@ -21,7 +21,6 @@ struct EasyTierKeychainIntegrationHarness {
 
     private static func run() async throws {
         let environment = ProcessInfo.processInfo.environment
-        let runsLegacyMigration = environment["EASYTIER_KEYCHAIN_TEST_LEGACY_MIGRATION"] != "0"
         let service = environment["EASYTIER_KEYCHAIN_TEST_SERVICE"]
             ?? "com.kkrainbow.easytier.mac.keychain-test.\(UUID().uuidString.lowercased())"
         let accessGroup = environment["EASYTIER_KEYCHAIN_ACCESS_GROUP"]?.nilIfEmpty
@@ -35,106 +34,30 @@ struct EasyTierKeychainIntegrationHarness {
             instance_id: "keychain-save-\(suffix)",
             network_name: "keychain-save-\(suffix)"
         )
-        let migrationConfig = NetworkConfig(
-            instance_id: "keychain-migrate-\(suffix)",
-            network_name: "keychain-migrate-\(suffix)"
-        )
-        let accounts = [saveConfig.network_name, migrationConfig.network_name]
+        let account = saveConfig.instance_id
 
         defer {
-            for account in accounts {
-                _ = deleteItem(
-                    service: service,
-                    account: account,
-                    accessGroup: accessGroup,
-                    dataProtection: false
-                )
-                _ = deleteItem(
-                    service: service,
-                    account: account,
-                    accessGroup: accessGroup,
-                    dataProtection: true
-                )
-            }
+            _ = deleteItem(service: service, account: account, accessGroup: accessGroup)
         }
 
-        _ = try await store.save("integration-save-secret", for: saveConfig)
+        try await store.save("integration-save-secret", for: saveConfig)
         try requireModernItem(
             service: service,
-            account: saveConfig.network_name,
-            accessGroup: accessGroup
-        )
-        try requireLegacyItemAbsent(
-            service: service,
-            account: saveConfig.network_name,
-            accessGroup: accessGroup
-        )
-
-        if runsLegacyMigration {
-            try addLegacyFixture(
-                "integration-migration-secret",
-                service: service,
-                account: migrationConfig.network_name,
-                accessGroup: accessGroup
-            )
-            let migrated = try await store.secret(
-                for: migrationConfig,
-                purpose: .reveal,
-                reason: "Migrate an EasyTier Keychain integration fixture."
-            )
-            guard migrated?.secret == "integration-migration-secret" else {
-                throw HarnessError("legacy migration returned an unexpected value")
-            }
-            try requireModernItem(
-                service: service,
-                account: migrationConfig.network_name,
-                accessGroup: accessGroup
-            )
-            try requireLegacyItemAbsent(
-                service: service,
-                account: migrationConfig.network_name,
-                accessGroup: accessGroup
-            )
-        } else {
-            print("Legacy Keychain migration skipped because this runner has no interactive user session.")
-        }
-
-        for account in accounts {
-            try requireDeleteSucceeded(
-                deleteItem(
-                    service: service,
-                    account: account,
-                    accessGroup: accessGroup,
-                    dataProtection: false
-                )
-            )
-            try requireDeleteSucceeded(
-                deleteItem(
-                    service: service,
-                    account: account,
-                    accessGroup: accessGroup,
-                    dataProtection: true
-                )
-            )
-        }
-        store.invalidateAuthenticationSession()
-    }
-
-    private static func addLegacyFixture(
-        _ secret: String,
-        service: String,
-        account: String,
-        accessGroup: String?
-    ) throws {
-        var query = baseQuery(
-            service: service,
             account: account,
-            accessGroup: accessGroup,
-            dataProtection: false
+            accessGroup: accessGroup
         )
-        query[kSecValueData as String] = Data(secret.utf8)
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        try requireStatus(SecItemAdd(query as CFDictionary, nil), operation: "add legacy fixture")
+        let loaded = try await store.secret(
+            for: saveConfig,
+            purpose: .reveal,
+            reason: "Read an EasyTier Keychain integration fixture."
+        )
+        guard loaded == "integration-save-secret" else {
+            throw HarnessError("Data Protection Keychain returned an unexpected value")
+        }
+
+        try await store.deleteSecret(for: saveConfig)
+        try requireDeleteSucceeded(deleteItem(service: service, account: account, accessGroup: accessGroup))
+        store.invalidateAuthenticationSession()
     }
 
     private static func requireModernItem(
@@ -145,8 +68,7 @@ struct EasyTierKeychainIntegrationHarness {
         var query = baseQuery(
             service: service,
             account: account,
-            accessGroup: accessGroup,
-            dataProtection: true
+            accessGroup: accessGroup
         )
         query[kSecReturnAttributes as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -168,38 +90,16 @@ struct EasyTierKeychainIntegrationHarness {
         }
     }
 
-    private static func requireLegacyItemAbsent(
-        service: String,
-        account: String,
-        accessGroup: String?
-    ) throws {
-        var query = baseQuery(
-            service: service,
-            account: account,
-            accessGroup: accessGroup,
-            dataProtection: false
-        )
-        query[kSecReturnAttributes as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUISkip
-        let status = SecItemCopyMatching(query as CFDictionary, nil)
-        guard status == errSecItemNotFound else {
-            throw NetworkSecretStoreError.keychain(status)
-        }
-    }
-
     private static func deleteItem(
         service: String,
         account: String,
-        accessGroup: String?,
-        dataProtection: Bool
+        accessGroup: String?
     ) -> OSStatus {
         SecItemDelete(
             baseQuery(
                 service: service,
                 account: account,
-                accessGroup: accessGroup,
-                dataProtection: dataProtection
+                accessGroup: accessGroup
             ) as CFDictionary
         )
     }
@@ -207,15 +107,14 @@ struct EasyTierKeychainIntegrationHarness {
     private static func baseQuery(
         service: String,
         account: String,
-        accessGroup: String?,
-        dataProtection: Bool
+        accessGroup: String?
     ) -> [String: Any] {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecAttrSynchronizable as String: false,
-            kSecUseDataProtectionKeychain as String: dataProtection,
+            kSecUseDataProtectionKeychain as String: true,
         ]
         if let accessGroup {
             query[kSecAttrAccessGroup as String] = accessGroup
@@ -229,12 +128,6 @@ struct EasyTierKeychainIntegrationHarness {
         }
     }
 
-    private static func requireStatus(_ status: OSStatus, operation: String) throws {
-        guard status == errSecSuccess else {
-            let message = SecCopyErrorMessageString(status, nil) as String? ?? "unknown error"
-            throw HarnessError("\(operation) failed with OSStatus \(status): \(message)")
-        }
-    }
 }
 
 private struct HarnessError: LocalizedError {

@@ -2,17 +2,17 @@ import Darwin
 import Foundation
 
 package protocol GatewayConfigurationStoring: Sendable {
-    func load(magicDNSSuffix: String) async throws -> GatewayPersistedState?
+    func load() async throws -> GatewayPersistedState?
     func save(_ state: GatewayPersistedState) async throws
 }
 
 package enum GatewayConfigurationStoreError: LocalizedError, Sendable {
-    case incompatibleConfiguration(backupURL: URL, underlyingMessage: String)
+    case incompatibleConfigurationRemoved(underlyingMessage: String)
 
     package var errorDescription: String? {
         switch self {
-        case let .incompatibleConfiguration(backupURL, underlyingMessage):
-            "Gateway configuration was incompatible and was backed up to \(backupURL.lastPathComponent): \(underlyingMessage)"
+        case let .incompatibleConfigurationRemoved(underlyingMessage):
+            "Gateway configuration was incompatible and was reset: \(underlyingMessage)"
         }
     }
 }
@@ -24,26 +24,17 @@ package actor GatewayConfigurationStore: GatewayConfigurationStoring {
         self.fileURL = fileURL
     }
 
-    package func load(magicDNSSuffix: String) throws -> GatewayPersistedState? {
+    package func load() throws -> GatewayPersistedState? {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
         do {
             let decoded = try JSONDecoder().decode(
                 GatewayPersistedState.self,
                 from: Data(contentsOf: fileURL)
             )
-            let state = try GatewayConfigurationMigration.migrate(
-                decoded,
-                magicDNSSuffix: magicDNSSuffix
-            )
-            let validated = try GatewayPublishedServicesValidator.validate(state)
-            if decoded.schemaVersion != state.schemaVersion {
-                try save(validated)
-            }
-            return validated
+            return try GatewayPublishedServicesValidator.validate(decoded)
         } catch {
-            let backupURL = try backUpIncompatibleConfiguration()
-            throw GatewayConfigurationStoreError.incompatibleConfiguration(
-                backupURL: backupURL,
+            try FileManager.default.removeItem(at: fileURL)
+            throw GatewayConfigurationStoreError.incompatibleConfigurationRemoved(
                 underlyingMessage: error.localizedDescription
             )
         }
@@ -80,15 +71,6 @@ package actor GatewayConfigurationStore: GatewayConfigurationStoring {
             .appendingPathComponent("com.kkrainbow.easytier.mac", isDirectory: true)
             .appendingPathComponent("gateway", isDirectory: true)
             .appendingPathComponent("config.json", isDirectory: false)
-    }
-
-    private func backUpIncompatibleConfiguration() throws -> URL {
-        let timestamp = Int(Date().timeIntervalSince1970 * 1_000)
-        let backupURL = fileURL.deletingLastPathComponent()
-            .appendingPathComponent("config.incompatible-\(timestamp).json")
-        try FileManager.default.moveItem(at: fileURL, to: backupURL)
-        try setPermissions(0o600, at: backupURL)
-        return backupURL
     }
 
     private func setPermissions(_ permissions: mode_t, at url: URL) throws {

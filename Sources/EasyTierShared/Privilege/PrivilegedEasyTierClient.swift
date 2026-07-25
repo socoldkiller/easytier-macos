@@ -262,7 +262,15 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
                 }
                 body(service) { payload, error in
                     if let error, !error.isEmpty {
-                        state.finish(.failure(PrivilegedHelperError.helperReported(PrivilegedHelperErrorPayload.decode(from: error))))
+                        do {
+                            state.finish(.failure(PrivilegedHelperError.helperReported(
+                                try PrivilegedHelperErrorPayload.decode(from: error)
+                            )))
+                        } catch {
+                            state.finish(.failure(PrivilegedHelperError.invalidPayload(
+                                "Helper returned malformed error JSON: \(error.localizedDescription)"
+                            )))
+                        }
                     } else if let payload {
                         state.finish(.success(payload))
                     } else {
@@ -276,13 +284,6 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
     }
 
     private static func connectionFailure(isRetry: Bool) -> PrivilegedHelperError {
-        if LegacyPrivilegedHelperService.shouldUseLegacyInstaller {
-            if LegacyPrivilegedHelperService.isInstalled, !isRetry {
-                return .unavailable
-            }
-            return LegacyPrivilegedHelperService.isInstalled ? helperUnavailableError() : legacyNeedsInstallError()
-        }
-
         let status = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName).status
         if status == .enabled, !isRetry {
             return .unavailable
@@ -291,13 +292,6 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
     }
 
     private static func timeoutError() -> PrivilegedHelperError {
-        if LegacyPrivilegedHelperService.shouldUseLegacyInstaller {
-            if !LegacyPrivilegedHelperService.isInstalled {
-                return legacyNeedsInstallError()
-            }
-            return helperUnavailableError()
-        }
-
         let service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
         if service.status != .enabled {
             return statusError(service.status)
@@ -313,10 +307,6 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
     }
 
     private static func registrationProbeTimeoutError() -> PrivilegedHelperError {
-        if LegacyPrivilegedHelperService.shouldUseLegacyInstaller {
-            return LegacyPrivilegedHelperService.isInstalled ? helperUnavailableError() : legacyNeedsInstallError()
-        }
-
         let service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
         if service.status != .enabled {
             return statusError(service.status)
@@ -332,13 +322,6 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
     }
 
     private static func rpcTimeoutError() -> PrivilegedHelperError {
-        if LegacyPrivilegedHelperService.shouldUseLegacyInstaller {
-            if !LegacyPrivilegedHelperService.isInstalled {
-                return legacyNeedsInstallError()
-            }
-            return helperUnavailableError()
-        }
-
         let service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
         if service.status != .enabled {
             return statusError(service.status)
@@ -359,16 +342,6 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
                 code: "helperUnavailable",
                 message: "Privileged helper is enabled but is not responding.",
                 recoverySuggestion: "Quit and reopen EasyTier. If this continues, reinstall the helper."
-            )
-        )
-    }
-
-    private static func legacyNeedsInstallError() -> PrivilegedHelperError {
-        .helperReported(
-            PrivilegedHelperErrorPayload(
-                code: "helperNeedsAdministratorInstall",
-                message: "EasyTier needs administrator permission to install the privileged helper.",
-                recoverySuggestion: "Click Install Helper and enter an administrator password, then start the network again."
             )
         )
     }

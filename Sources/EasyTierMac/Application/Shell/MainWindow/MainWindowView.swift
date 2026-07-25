@@ -50,14 +50,17 @@ struct MainWindowView: View {
             sidebar
         } detail: {
             VStack(spacing: 0) {
-            MotionSwitch(
-                id: workspaceMotionID,
-                insertionEdge: workspaceTransitionEdge,
-                distance: workspaceTransitionDistance
-            ) {
-                workspaceContent
+                if case let .unavailable(failure) = store.persistenceHealth {
+                    PersistenceRecoveryView(failure: failure)
+                }
+                MotionSwitch(
+                    id: workspaceMotionID,
+                    insertionEdge: workspaceTransitionEdge,
+                    distance: workspaceTransitionDistance
+                ) {
+                    workspaceContent
+                }
             }
-        }
             .navigationTitle("")
             .toolbar { toolbar }
         }
@@ -65,16 +68,6 @@ struct MainWindowView: View {
             isVisible: configEditorTitlebarScrollEdgeVisible,
             glassEffectsEnabled: appearanceSettings.glassEffectsEnabled && !reduceTransparency
         )
-        .overlay(alignment: .top) {
-            if let notice = store.networkSecretCleanupNotice {
-                NetworkSecretCleanupBanner(
-                    message: notice,
-                    dismiss: store.dismissNetworkSecretCleanupNotice
-                )
-                .padding(.top, 12)
-                .transition(.move(edge: .top).combined(with: .opacity))
-            }
-        }
         .task(id: store.selectedConfigID) {
             loadDraft(for: store.selectedConfigID)
         }
@@ -229,13 +222,19 @@ struct MainWindowView: View {
                 }
             )
         case .services:
-            ServicesView(gatewayControlError: gatewayControlError) {
-                beginPublishingService()
+            if store.persistenceIsReady {
+                ServicesView(gatewayControlError: gatewayControlError) {
+                    beginPublishingService()
+                }
+            } else {
+                persistenceUnavailableContent
             }
         case .view:
             TrafficView()
         case .config:
-            if let session = store.remoteConfigSession {
+            if !store.persistenceIsReady {
+                persistenceUnavailableContent
+            } else if let session = store.remoteConfigSession {
                 remoteConfigContent(session: session)
             } else if let config = draftConfigBinding() {
                 ConfigEditorView(
@@ -260,8 +259,21 @@ struct MainWindowView: View {
         case .logs:
             LogsView()
         case .peers:
-            PeersView()
+            if store.persistenceIsReady {
+                PeersView()
+            } else {
+                persistenceUnavailableContent
+            }
         }
+    }
+
+    private var persistenceUnavailableContent: some View {
+        ContentUnavailableView(
+            "Database Unavailable",
+            systemImage: "externaldrive.badge.exclamationmark",
+            description: Text("Restore database access before changing saved configuration.")
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var toolbarControlsHidden: Bool {
@@ -338,12 +350,13 @@ struct MainWindowView: View {
             HStack {
                 Button {
                     flushPendingLocalDraft()
-                    store.addConfig()
+                    Task { await store.addConfig() }
                 } label: {
                     Image(systemName: "plus")
                 }
                 .help("Add network")
                 .accessibilityLabel(Text("Add network"))
+                .disabled(!store.persistenceIsReady || store.isBusy || store.isQuitting)
                 Button(role: .destructive) {
                     requestDeleteSelectedConfig()
                 } label: {
@@ -351,7 +364,7 @@ struct MainWindowView: View {
                 }
                 .help("Delete selected network")
                 .accessibilityLabel(Text("Delete selected network"))
-                .disabled(store.selectedConfigID == nil || store.isBusy || store.isQuitting)
+                .disabled(!store.persistenceIsReady || store.selectedConfigID == nil || store.isBusy || store.isQuitting)
                 Spacer()
                 Button {
                     Task { await store.refreshRuntime() }
@@ -394,7 +407,7 @@ struct MainWindowView: View {
                     )
                     .foregroundStyle(gatewayActionColor)
                 }
-                .disabled(isChangingGateway || gateway.isBusy)
+                .disabled(!store.persistenceIsReady || isChangingGateway || gateway.isBusy)
                 .help(gatewayActionHelp)
             } else if let remoteSession = remoteToolbarSession {
                 Button {
@@ -402,7 +415,7 @@ struct MainWindowView: View {
                 } label: {
                     remoteApplyButtonLabel(for: remoteSession)
                 }
-                .disabled(remoteApplyButtonIsDisabled(for: remoteSession))
+                .disabled(!store.persistenceIsReady || remoteApplyButtonIsDisabled(for: remoteSession))
                 .help(remoteApplyButtonHelp(for: remoteSession))
                 .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
             } else {
@@ -417,7 +430,7 @@ struct MainWindowView: View {
                     )
                     .foregroundStyle(connectionActionColor)
                 }
-                .disabled(store.selectedConfig == nil || store.isBusy)
+                .disabled(!store.persistenceIsReady || store.selectedConfig == nil || store.isBusy)
                 .help(connectionActionHelp)
                 .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
             }
@@ -437,7 +450,7 @@ struct MainWindowView: View {
                     Button("Restart Network") {
                         restartSelectedNetworkManually()
                     }
-                    .disabled(!selectedConfigCanStop || store.isBusy)
+                    .disabled(!store.persistenceIsReady || !selectedConfigCanStop || store.isBusy)
 
                     Divider()
 
@@ -445,13 +458,14 @@ struct MainWindowView: View {
                         flushPendingLocalDraft()
                         openImportTOML()
                     }
+                    .disabled(!store.persistenceIsReady)
                     Button("Export TOML") {
                         Task {
                             await configApplyCoordinator.flush()
                             await openExportTOML()
                         }
                     }
-                    .disabled(store.selectedConfig == nil)
+                    .disabled(!store.persistenceIsReady || store.selectedConfig == nil)
                 }
             } label: {
                 Label("More", systemImage: "ellipsis.circle")
@@ -564,7 +578,7 @@ struct MainWindowView: View {
     }
 
     private var canBeginPublishingService: Bool {
-        serviceCreationAvailability.isAvailable
+        store.persistenceIsReady && serviceCreationAvailability.isAvailable
     }
 
     private var publishServiceHelp: String {
@@ -813,8 +827,11 @@ struct MainWindowView: View {
         EasyTierPerformanceSignposts.workspaceTransition()
         workspaceTransitionEdge = networkTransitionEdge(from: previousValue, to: newValue)
         workspaceTransitionDistance = Self.networkTransitionDistance
-        store.selectedConfigID = newValue
-        loadDraft(for: newValue)
+        Task {
+            await store.selectConfig(id: newValue)
+            selectedConfigIDLocal = store.selectedConfigID
+            loadDraft(for: store.selectedConfigID)
+        }
     }
 
     private func selectWorkspaceTab(_ tab: WorkspaceTab) {
@@ -979,22 +996,28 @@ struct MainWindowView: View {
             return false
         }
         let networkName = store.selectedRunningInstance?.name ?? store.selectedConfig?.network_name ?? ""
-        let intent = store.upsertRemoteHostnameRuntimeIntent(
-            networkName: networkName,
-            member: member,
-            desiredHostname: trimmed
-        )
+        let intent: RuntimeIntent
+        do {
+            intent = try await store.upsertRemoteHostnameRuntimeIntent(
+                networkName: networkName,
+                member: member,
+                desiredHostname: trimmed
+            )
+        } catch {
+            store.lastError = error.localizedDescription
+            return false
+        }
 
         do {
             try await EasyTierRemoteRPCClient(rpcURL: rpcURL).patchHostname(instanceID: instanceID, hostname: trimmed)
         } catch {
-            store.markRuntimeIntent(intent.id, status: .unreachable)
+            await store.markRuntimeIntent(intent.id, status: .unreachable)
             store.lastError = error.localizedDescription
             return false
         }
 
         if await waitForRemoteInstance(instanceID: instanceID, matches: { $0.hostname == trimmed }) {
-            store.markRuntimeIntent(intent.id, status: .applied)
+            await store.markRuntimeIntent(intent.id, status: .applied)
             return true
         }
 
@@ -1246,36 +1269,5 @@ struct MainWindowView: View {
                 store.lastError = error.localizedDescription
             }
         }
-    }
-}
-
-private struct NetworkSecretCleanupBanner: View {
-    var message: String
-    var dismiss: () -> Void
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "key.horizontal.fill")
-                .foregroundStyle(.orange)
-            Text(message)
-                .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
-            Button(action: dismiss) {
-                Image(systemName: "xmark")
-                    .font(.caption.weight(.semibold))
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Dismiss Keychain cleanup notice")
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .frame(maxWidth: 620)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.orange.opacity(0.35), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.12), radius: 12, y: 5)
-        .padding(.horizontal, 18)
     }
 }

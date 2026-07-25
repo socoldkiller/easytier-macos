@@ -65,7 +65,8 @@ private final class ScrollerHidingView: NSView {
         guard !applyIsScheduled else { return }
         applyIsScheduled = true
 
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
+            await Task.yield()
             guard let self else { return }
             self.applyIsScheduled = false
             self.hideScrollers()

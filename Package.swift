@@ -20,6 +20,7 @@ let package = Package(
         ),
     ],
     dependencies: [
+        .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.8.0"),
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.4"),
         .package(url: "https://github.com/mattt/swift-toml.git", from: "2.0.0"),
     ],
@@ -51,6 +52,7 @@ let package = Package(
         .target(
             name: "EasyTierShared",
             dependencies: [
+                .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "TOML", package: "swift-toml"),
             ],
             linkerSettings: [

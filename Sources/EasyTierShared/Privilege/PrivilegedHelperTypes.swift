@@ -20,19 +20,24 @@ package struct PrivilegedHelperErrorPayload: Codable, Equatable, Sendable {
         self.recoverySuggestion = recoverySuggestion
     }
 
-    package func encodedString() -> String {
-        guard let data = try? JSONEncoder().encode(self),
-              let string = String(data: data, encoding: .utf8)
-        else { return message }
-        return string
+    package func encodedString() throws -> String {
+        let data = try JSONEncoder().encode(self)
+        return String(decoding: data, as: UTF8.self)
     }
 
-    package static func decode(from string: String) -> PrivilegedHelperErrorPayload {
-        if let data = string.data(using: .utf8),
-           let payload = try? JSONDecoder().decode(PrivilegedHelperErrorPayload.self, from: data) {
-            return payload
+    package static func decode(from string: String) throws -> PrivilegedHelperErrorPayload {
+        try JSONDecoder().decode(PrivilegedHelperErrorPayload.self, from: Data(string.utf8))
+    }
+}
+
+package enum HelperBuildMetadataError: LocalizedError, Equatable {
+    case missingValue(String)
+
+    package var errorDescription: String? {
+        switch self {
+        case let .missingValue(key):
+            "Required helper build metadata is missing: \(key)."
         }
-        return PrivilegedHelperErrorPayload(code: "legacyHelperError", message: string)
     }
 }
 
@@ -45,18 +50,18 @@ package struct PrivilegedHelperBuildInfo: Codable, Equatable, Sendable {
     package var coreCommit: String
     package var protocolVersion: String
 
-    package init(infoDictionary: [String: Any]) {
-        version = Self.value(named: "CFBundleShortVersionString", in: infoDictionary, fallback: "Development")
-        build = Self.value(named: "CFBundleVersion", in: infoDictionary, fallback: "0")
-        buildTime = Self.value(named: "EasyTierBuildTime", in: infoDictionary, fallback: "unknown")
-        guiCommit = Self.value(named: "EasyTierGUICommit", in: infoDictionary, fallback: "unknown")
-        coreVersion = Self.value(named: "EasyTierCoreTag", in: infoDictionary, fallback: "unknown")
-        coreCommit = Self.value(named: "EasyTierCoreCommit", in: infoDictionary, fallback: "unknown")
+    package init(infoDictionary: [String: Any]) throws {
+        version = try Self.value(named: "CFBundleShortVersionString", in: infoDictionary)
+        build = try Self.value(named: "CFBundleVersion", in: infoDictionary)
+        buildTime = try Self.value(named: "EasyTierBuildTime", in: infoDictionary)
+        guiCommit = try Self.value(named: "EasyTierGUICommit", in: infoDictionary)
+        coreVersion = try Self.value(named: "EasyTierCoreTag", in: infoDictionary)
+        coreCommit = try Self.value(named: "EasyTierCoreCommit", in: infoDictionary)
         protocolVersion = EasyTierPrivilegedHelperConstants.protocolVersion
     }
 
-    package init(bundle: Bundle) {
-        self.init(infoDictionary: bundle.infoDictionary ?? [:])
+    package init(bundle: Bundle) throws {
+        try self.init(infoDictionary: bundle.infoDictionary ?? [:])
     }
 
     package var easyTierHelperDisplay: String {
@@ -67,10 +72,10 @@ package struct PrivilegedHelperBuildInfo: Codable, Equatable, Sendable {
         "\(version) (\(build)) · protocol \(protocolVersion)"
     }
 
-    private static func value(named key: String, in info: [String: Any], fallback: String) -> String {
+    private static func value(named key: String, in info: [String: Any]) throws -> String {
         guard let value = info[key] as? String,
               !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else { return fallback }
+        else { throw HelperBuildMetadataError.missingValue(key) }
         return value
     }
 
@@ -82,11 +87,8 @@ package struct PrivilegedHelperBuildInfo: Codable, Equatable, Sendable {
     }
 
     private static func componentDisplay(version: String, commit: String) -> String {
-        let version = version == "unknown" ? nil : version
         let commit = abbreviated(commit)
-        let commitDisplay = commit == "unknown" ? nil : commit
-        let values = [version, commitDisplay].compactMap(\.self)
-        return values.isEmpty ? "unknown" : values.joined(separator: " · ")
+        return "\(version) · \(commit)"
     }
 }
 

@@ -89,8 +89,7 @@ fi
 installed_binary="$DESTINATION_APP/Contents/MacOS/EasyTierMac"
 if [[ -x "$installed_binary" ]]; then
   if ! unregister_output="$(
-    EASYTIER_SKIP_LEGACY_HELPER_UNINSTALL=1 \
-      "$installed_binary" --unregister-helper 2>&1
+    "$installed_binary" --unregister-helper 2>&1
   )"; then
     printf '%s\n' "$unregister_output" >&2
     die "Failed to unregister the installed privileged helpers before replacing the app."

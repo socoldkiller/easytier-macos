@@ -126,10 +126,7 @@ final class GatewayRuntimeController {
     func load() async {
         await withMutation {
             do {
-                persistedState = try await configurationStore.load(
-                    magicDNSSuffix: store?.magicDNSSettings.dnsSuffix
-                        ?? MagicDNSSettings.defaultDNSSuffix
-                ) ?? .empty
+                persistedState = try await configurationStore.load() ?? .empty
                 lastError = nil
             } catch {
                 persistedState = .empty
@@ -1334,9 +1331,7 @@ final class GatewayRuntimeController {
             var expectedIPv4ByServiceID: [String: String] = [:]
             var resolvedTargetsByServiceID: [String: ResolvedGatewayServiceTarget] = [:]
             for service in probe.enabledServices {
-                let identityMatchedMember = probe.identityMatchedMembersByServiceID[service.id]
-                let member = identityMatchedMember
-                    ?? Self.uniqueLegacyMember(for: service, members: probe.liveMembers)
+                let member = probe.identityMatchedMembersByServiceID[service.id]
                 guard let member, let expectedIPv4 = member.copyableIPv4Address else {
                     byServiceID[service.id] = .loading
                     continue
@@ -1353,7 +1348,7 @@ final class GatewayRuntimeController {
                 )
                 byServiceID[service.id] = state
                 expectedIPv4ByServiceID[service.id] = expectedIPv4
-                if identityMatchedMember != nil || state == .ready {
+                if state == .ready {
                     resolvedTargetsByServiceID[service.id] = ResolvedGatewayServiceTarget(
                         member: member
                     )
@@ -1419,26 +1414,6 @@ final class GatewayRuntimeController {
             return members.first { $0.instanceID == targetInstanceID }
         }
         return members.first { $0.peerID == service.targetPeerID }
-    }
-
-    private static func uniqueLegacyMember(
-        for service: GatewayPublishedService,
-        members: [NetworkMemberStatus]
-    ) -> NetworkMemberStatus? {
-        guard service.targetInstanceID == nil,
-              let targetHostname = try? GatewayPublishedServicesValidator.normalizeLabel(
-                  service.lastKnownTargetHostname,
-                  field: "Target hostname"
-              )
-        else { return nil }
-        let candidates = members.filter { member in
-            guard let hostname = try? GatewayPublishedServicesValidator.normalizeLabel(
-                member.hostname,
-                field: "Target hostname"
-            ) else { return false }
-            return hostname == targetHostname
-        }
-        return candidates.count == 1 ? candidates[0] : nil
     }
 
     private static func aggregateMagicDNSState(

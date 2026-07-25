@@ -4,19 +4,20 @@ enum PeerSubscriptionLibrary {
     struct RefreshResult {
         var subscriptions: [PeerSubscription]
         var failures: [(url: URL, message: String)]
+        var issues: [(url: URL, issue: PeerSubscriptionImportIssue)]
     }
 
     static func fetch(
         from url: URL,
         using dataLoader: any PeerSubscriptionDataLoading,
         now: Date = Date()
-    ) async throws -> [PeerSubscription] {
+    ) async throws -> PeerSubscriptionImportResult {
         let data = try await dataLoader.data(from: url)
         return try decodedSubscriptions(from: data, sourceURL: url, fetchedAt: now)
     }
 
-    static func decode(_ json: String) throws -> [PeerSubscription] {
-        try PeerSubscriptionCodec.decode(json)
+    static func decode(_ json: String) throws -> PeerSubscriptionImportResult {
+        try PeerSubscriptionImporter.decode(json)
     }
 
     static func refresh(
@@ -25,18 +26,20 @@ enum PeerSubscriptionLibrary {
     ) async -> RefreshResult {
         var refreshed = subscriptions
         var failures: [(url: URL, message: String)] = []
+        var issues: [(url: URL, issue: PeerSubscriptionImportIssue)] = []
         var seenURLs: Set<URL> = []
         let urls = subscriptions.compactMap(\.subscriptionURL).filter { seenURLs.insert($0).inserted }
 
         for url in urls {
             do {
                 let fetched = try await fetch(from: url, using: dataLoader)
-                merge(fetched, from: url, into: &refreshed)
+                merge(fetched.subscriptions, from: url, into: &refreshed)
+                issues.append(contentsOf: fetched.issues.map { (url, $0) })
             } catch {
                 failures.append((url, error.localizedDescription))
             }
         }
-        return RefreshResult(subscriptions: refreshed, failures: failures)
+        return RefreshResult(subscriptions: refreshed, failures: failures, issues: issues)
     }
 
     static func latency(for card: PeerCard, runtimeDetails: [String: NetworkInstanceRunningInfo]) -> Int? {
@@ -64,13 +67,14 @@ enum PeerSubscriptionLibrary {
         from data: Data,
         sourceURL: URL,
         fetchedAt: Date
-    ) throws -> [PeerSubscription] {
-        try PeerSubscriptionCodec.decode(data).map { subscription in
+    ) throws -> PeerSubscriptionImportResult {
+        let result = try PeerSubscriptionImporter.decode(data)
+        return PeerSubscriptionImportResult(subscriptions: result.subscriptions.map { subscription in
             var subscription = subscription
             subscription.subscriptionURL = sourceURL
             subscription.lastFetchedAt = fetchedAt
             return subscription
-        }
+        }, issues: result.issues)
     }
 
     static func merge(

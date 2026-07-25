@@ -105,13 +105,19 @@ struct EasyTierApp: App {
             EasyTierAboutCommands()
 
             CommandGroup(replacing: .newItem) {
-                Button("New Network") { store.addConfig() }
-                    .keyboardShortcut("n")
+                Button("New Network") {
+                    Task { await store.addConfig() }
+                }
+                .keyboardShortcut("n")
+                .disabled(!store.persistenceIsReady)
             }
 
             CommandGroup(replacing: .saveItem) {
-                Button("Save") { store.save() }
-                    .keyboardShortcut("s")
+                Button("Save") {
+                    Task { await store.save() }
+                }
+                .keyboardShortcut("s")
+                .disabled(!store.persistenceIsReady)
             }
 
             SoftwareUpdateCommands(appContext: appContext)
@@ -158,11 +164,6 @@ struct EasyTierApp: App {
                 if arguments.contains("--unregister-helper") || arguments.contains("--register-helper") {
                     try? await service.unregister()
                     try? await gatewayService.unregister()
-                }
-                if arguments.contains("--unregister-helper"),
-                   LegacyPrivilegedHelperService.isInstalled,
-                   ProcessInfo.processInfo.environment["EASYTIER_SKIP_LEGACY_HELPER_UNINSTALL"] != "1" {
-                    try LegacyPrivilegedHelperService.uninstallUsingAdministratorPrivileges()
                 }
                 let registration = HelperRegistrationService()
                 let gatewayRegistration = HelperRegistrationService(kind: .gateway)
@@ -228,9 +229,6 @@ struct EasyTierApp: App {
     }
 
     private static func currentHelperStatusDescription() -> String {
-        if LegacyPrivilegedHelperService.shouldUseLegacyInstaller {
-            return LegacyPrivilegedHelperService.isInstalled ? "enabled" : "notRegistered"
-        }
         let service = SMAppService.daemon(plistName: EasyTierPrivilegedHelperConstants.launchDaemonPlistName)
         return describe(service.status)
     }

@@ -85,11 +85,13 @@ Upload and download trends as a per-second area chart. Hover for exact values. T
 
 ### Multi-network configs
 
-Each network gets its own configuration. Start and stop them independently.
+Network configurations, workspace state, and the desired Gateway configuration are stored in one local SQLite database. Start and stop networks independently.
 - Network name and secret
 - Initial node list — add or remove as needed
 - Magic DNS, tunnel protocol, and other advanced options
-- TOML format, compatible with the EasyTier CLI
+- Explicit TOML import and export, compatible with the EasyTier CLI
+
+Network secrets remain outside SQLite in the macOS Keychain.
 
 ### Peer subscriptions
 

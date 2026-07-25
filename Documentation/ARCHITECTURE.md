@@ -51,6 +51,47 @@ The two Rust archives are compiled from mutually exclusive Cargo features. The
 EasyTier helper does not contain Gateway entry points, the Gateway helper does
 not contain EasyTier Core entry points, and the GUI contains neither set.
 
+Both helpers are registered exclusively through signed `SMAppService` launch
+daemons. Historical manually installed helper layouts are unsupported and are
+not detected, migrated, or removed by the app. XPC errors and helper build
+metadata use the current JSON schema and fail validation when malformed or
+incomplete.
+
+## Compatibility boundaries
+
+- The deployment target remains macOS 15. System API availability branches,
+  including newer macOS UI treatments, are platform support rather than data
+  compatibility and must remain.
+- `ApplicationDatabase` is the GUI's single-writer source of truth for network
+  configurations, Workspace settings, runtime intents, peer subscriptions, and
+  the desired Gateway state. GRDB maps private persistence records to the public
+  domain models; GRDB and SQL types do not leak into feature or XPC interfaces.
+- On first launch after upgrading, the database imports only the TOML files
+  referenced by legacy `state.json`, plus the current legacy Gateway state. The
+  import is one-way and transactional. All legacy files, including unreferenced
+  TOML files, remain byte-for-byte untouched and the app performs no dual-write.
+- Database schema migration creates an online SQLite backup first and retains
+  the latest three backups. Migration, integrity, or legacy-import failures put
+  the GUI into restricted recovery mode instead of overwriting data. Recovery
+  supports retrying, revealing the data directory, or explicitly moving the
+  database aside and creating a new empty database.
+- TOML is an explicit CLI-compatible import/export format, not live GUI
+  persistence. Software-update recovery payloads remain separate lifecycle
+  state and accept only their current schema.
+- Network secrets use one Data Protection Keychain item per
+  `NetworkConfig.instance_id`. Network-name accounts and legacy Keychain
+  backends are not read or migrated, so upgrading from an older build may
+  require entering a network password once.
+- Local FFI and remote runtime JSON accept the current Rust snake_case schema
+  with exact JSON value types. Remote nodes must run a compatible protocol
+  version. Unknown remote configuration fields are still preserved by the raw
+  JSON merge because Swift intentionally models only part of the current Rust
+  configuration.
+- External subscription variation is accepted only by
+  `PeerSubscriptionImporter`. Persisted `PeerSubscription` and `PeerCard`
+  values use strict Codable schemas, and skipped importer entries are reported
+  to the application log.
+
 ## Gateway ownership
 
 Gateway is split across three deep modules with narrow interfaces:

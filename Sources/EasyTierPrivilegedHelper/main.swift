@@ -45,7 +45,7 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
 
     func buildInfo(reply: @escaping (String?, String?) -> Void) {
         do {
-            let info = PrivilegedHelperBuildInfo(bundle: .main)
+            let info = try PrivilegedHelperBuildInfo(bundle: .main)
             let data = try JSONEncoder().encode(info)
             reply(String(decoding: data, as: UTF8.self), nil)
         } catch {
@@ -162,7 +162,7 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
             } catch {
                 let payload = Self.errorPayload(error, code: "shutdownCleanupFailed")
                 fputs("helper shutdown cleanup error: \(error.localizedDescription)\n", stderr)
-                replyBox.call(nil, payload.encodedString())
+                replyBox.call(nil, try? payload.encodedString())
             }
             try? await Task.sleep(for: .milliseconds(50))
             Foundation.exit(EXIT_SUCCESS)
@@ -263,7 +263,7 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
         code: String,
         reply: @escaping (String?, String?) -> Void
     ) {
-        reply(nil, Self.errorPayload(error, code: code).encodedString())
+        reply(nil, try? Self.errorPayload(error, code: code).encodedString())
     }
 
     private static func errorPayload(_ error: Error, code: String) -> PrivilegedHelperErrorPayload {

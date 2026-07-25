@@ -10,8 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Split Gateway into its own `GatewayPrivilegedHelper` LaunchDaemon and XPC service (`com.coldkiller.gateway.helper`), with independent registration, lifecycle, protocol version, build metadata, and diagnostics from the EasyTier Core helper.
 - Added `Latest Stable` and opt-in `Nightly` software-update tracks. Nightly packages exact GUI and EasyTier Core `main` revisions in one signed, notarized DMG.
+- Added SQLite persistence through GRDB 7.8.0 for network configurations, Workspace state, peer subscriptions, runtime intents, and desired Gateway state, including transactional legacy import, integrity checks, migration backups, and an in-app recovery flow.
 
 ### Changed
+- TOML is now an explicit import/export format instead of the GUI's canonical storage. Existing `state.json` migrations import only referenced TOML files and leave all legacy files untouched; network secrets remain in Keychain.
 - Moved all EasyTier Core execution behind the privileged XPC helper. The GUI no longer links the Rust FFI, while `no_tun` remains supported through the same helper and can now remain running after the GUI quits.
 - The app now checks, installs, and version-probes the helper after launch; stale helper protocol versions are replaced automatically before runtime restoration.
 - TOML export now omits `network_secret` by default without opening Keychain. Including it requires an explicit plaintext warning and fresh authentication.

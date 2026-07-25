@@ -29,6 +29,7 @@ struct GeneralSettingsView: View {
                         loginItem.apply()
                     }
                 SettingsSwitch("Keep Networks Running After Quit", isOn: vpnOnDemandBinding)
+                    .disabled(!store.persistenceIsReady)
             } header: {
                 Text("Startup & Background")
             } footer: {
@@ -88,8 +89,7 @@ struct GeneralSettingsView: View {
         Binding(
             get: { store.vpnOnDemandEnabled },
             set: { enabled in
-                store.vpnOnDemandEnabled = enabled
-                store.saveInBackground()
+                Task { await store.setVPNOnDemandEnabled(enabled) }
             }
         )
     }

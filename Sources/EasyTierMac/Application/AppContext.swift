@@ -49,6 +49,16 @@ final class AppContext {
         await runtime.prepareForAppQuit()
     }
 
+    @discardableResult
+    func retryPersistence() async -> Bool {
+        await runtime.retryPersistence()
+    }
+
+    @discardableResult
+    func rebuildPersistence() async -> Bool {
+        await runtime.rebuildPersistence()
+    }
+
     private func restoreRuntimeAfterHelperPreparation() async {
         await workspace.store.retryStartAfterHelperApproval()
         await softwareUpdate.controller.restorePendingRuntimeIfNeeded()

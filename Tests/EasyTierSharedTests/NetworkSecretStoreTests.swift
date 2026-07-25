@@ -4,20 +4,18 @@ import Security
 import Testing
 @testable import EasyTierShared
 
-@Test func saveUsesExplicitBackendsAndVerifiesBeforeCleanup() async throws {
+@Test func saveUsesDataProtectionKeychainAndVerifiesTheItem() async throws {
     let keychain = RecordingNetworkSecretKeychainClient()
     keychain.updateResults = [errSecSuccess]
     keychain.copyResults = [(errSecSuccess, nil)]
-    keychain.deleteResults = [errSecSuccess]
     let store = SystemNetworkSecretStore(keychain: keychain)
     let config = NetworkConfig(instance_id: "explicit-backend-id", network_name: "office")
 
-    let result = try await store.save("secret", for: config)
+    try await store.save("secret", for: config)
 
-    #expect(result.cleanup == .completed)
     #expect(keychain.updateQueries.count == 1)
     #expect(keychain.copyQueries.count == 1)
-    #expect(keychain.deleteQueries.count == 1)
+    #expect(keychain.deleteQueries.isEmpty)
     #expect(keychain.updateQueries[0][kSecUseDataProtectionKeychain as String] as? Bool == true)
     #expect(keychain.updateAttributes[0][kSecAttrAccessControl as String] == nil)
     let updateContext = try #require(
@@ -25,9 +23,8 @@ import Testing
     )
     #expect(updateContext.touchIDAuthenticationAllowableReuseDuration == 0)
     #expect(keychain.copyQueries[0][kSecUseDataProtectionKeychain as String] as? Bool == true)
-    #expect(keychain.deleteQueries[0][kSecUseDataProtectionKeychain as String] as? Bool == false)
     #expect(keychain.allQueries.allSatisfy {
-        $0[kSecUseDataProtectionKeychain as String] is Bool
+        $0[kSecUseDataProtectionKeychain as String] as? Bool == true
             && $0[kSecAttrSynchronizable as String] as? Bool == false
     })
 }
@@ -76,7 +73,7 @@ import Testing
     })
 }
 
-@Test func failedVerificationLeavesTheLegacyItemUntouched() async {
+@Test func failedVerificationReportsTheWriteFailure() async {
     let keychain = RecordingNetworkSecretKeychainClient()
     keychain.updateResults = [errSecSuccess]
     keychain.copyResults = [
@@ -125,107 +122,6 @@ import Testing
     #expect(keychain.copyContextInteractionBlocked == [true])
 }
 
-@Test func legacyCleanupFailureDoesNotUndoAVerifiedModernWrite() async throws {
-    let keychain = RecordingNetworkSecretKeychainClient()
-    keychain.updateResults = [errSecSuccess]
-    keychain.copyResults = [(errSecSuccess, nil)]
-    keychain.deleteResults = [errSecAuthFailed]
-    let store = SystemNetworkSecretStore(keychain: keychain)
-    let config = NetworkConfig(instance_id: "cleanup-id", network_name: "office")
-
-    let result = try await store.save("secret", for: config)
-
-    #expect(result.cleanup == .pending([
-        NetworkSecretCleanupIssue(backend: .legacy, status: errSecAuthFailed),
-    ]))
-}
-
-@Test func successfulLegacyReadMigratesThenDeletesOnlyTheLegacyItem() async throws {
-    let keychain = RecordingNetworkSecretKeychainClient()
-    keychain.copyResults = [
-        (errSecItemNotFound, nil),
-        (errSecSuccess, Data("legacy-secret".utf8) as CFData),
-        (errSecSuccess, nil),
-    ]
-    keychain.updateResults = [errSecItemNotFound]
-    keychain.addResults = [errSecSuccess]
-    keychain.deleteResults = [errSecSuccess]
-    let store = SystemNetworkSecretStore(keychain: keychain)
-    let config = NetworkConfig(instance_id: "legacy-id", network_name: "office")
-
-    let result = try #require(
-        try await store.secret(for: config, purpose: .reveal)
-    )
-
-    #expect(result.secret == "legacy-secret")
-    #expect(result.cleanup == .completed)
-    #expect(keychain.copyQueries[0][kSecUseDataProtectionKeychain as String] as? Bool == true)
-    #expect(keychain.copyQueries[1][kSecUseDataProtectionKeychain as String] as? Bool == false)
-    #expect(keychain.addQueries[0][kSecUseDataProtectionKeychain as String] as? Bool == true)
-    #expect(keychain.deleteQueries[0][kSecUseDataProtectionKeychain as String] as? Bool == false)
-}
-
-@Test func failedLegacyMigrationKeepsTheLegacyItem() async {
-    let keychain = RecordingNetworkSecretKeychainClient()
-    keychain.copyResults = [
-        (errSecItemNotFound, nil),
-        (errSecSuccess, Data("legacy-secret".utf8) as CFData),
-    ]
-    keychain.updateResults = [errSecItemNotFound]
-    keychain.addResults = [errSecMissingEntitlement]
-    let store = SystemNetworkSecretStore(keychain: keychain)
-    let config = NetworkConfig(instance_id: "legacy-failure-id", network_name: "office")
-
-    do {
-        _ = try await store.secret(for: config, purpose: .reveal)
-        Issue.record("migration should fail when the protected item cannot be added")
-    } catch NetworkSecretStoreError.missingEntitlement {
-        // Expected.
-    } catch {
-        Issue.record("unexpected error: \(error)")
-    }
-
-    #expect(keychain.deleteQueries.isEmpty)
-}
-
-@Test func renameCleanupDoesNotDeleteModernSourceWhenLegacyDeletionFails() async throws {
-    let keychain = RecordingNetworkSecretKeychainClient()
-    keychain.copyResults = [
-        (errSecSuccess, nil),
-        (errSecItemNotFound, nil),
-        (errSecItemNotFound, nil),
-        (errSecSuccess, Data("source-secret".utf8) as CFData),
-        (errSecSuccess, nil),
-    ]
-    keychain.updateResults = [errSecItemNotFound]
-    keychain.addResults = [errSecSuccess]
-    keychain.deleteResults = [
-        errSecItemNotFound,
-        errSecItemNotFound,
-        errSecAuthFailed,
-    ]
-    let authenticator = RecordingNetworkSecretAuthenticator()
-    let store = SystemNetworkSecretStore(keychain: keychain, authenticator: authenticator)
-    let oldConfig = NetworkConfig(instance_id: "rename-id", network_name: "before")
-    var newConfig = oldConfig
-    newConfig.network_name = "after"
-
-    let result = try await store.migrateSecret(
-        from: oldConfig,
-        to: newConfig,
-        removeSource: true
-    )
-
-    #expect(result.cleanup.issues.contains {
-        $0.backend == .legacy && $0.status == errSecAuthFailed
-    })
-    #expect(authenticator.authenticationCount == 1)
-    #expect(keychain.deleteQueries.count == 3)
-    #expect(keychain.deleteQueries.allSatisfy {
-        $0[kSecUseDataProtectionKeychain as String] as? Bool == false
-    })
-}
-
 @Test func everyLogicalReadGetsANewPurposeScopedContext() async throws {
     let keychain = RecordingNetworkSecretKeychainClient()
     keychain.copyResults = [
@@ -253,20 +149,16 @@ import Testing
     keychain.copyResults = [
         (errSecItemNotFound, nil),
         (errSecInteractionNotAllowed, nil),
-        (errSecItemNotFound, nil),
     ]
     let store = SystemNetworkSecretStore(keychain: keychain)
     let config = NetworkConfig(instance_id: "presence-id", network_name: "office")
 
     #expect(try await store.presence(for: config) == .interactionRequired)
-    #expect(keychain.copyQueries.count == 3)
+    #expect(keychain.copyQueries.count == 2)
     #expect(keychain.copyQueries[0][kSecUseDataProtectionKeychain as String] as? Bool == true)
     #expect(keychain.copyQueries[1][kSecUseDataProtectionKeychain as String] as? Bool == true)
-    #expect(keychain.copyQueries[2][kSecUseDataProtectionKeychain as String] as? Bool == false)
     #expect(keychain.copyQueries[0][kSecUseAuthenticationUI as String] as? String == kSecUseAuthenticationUISkip as String)
-    #expect(keychain.copyQueries[2][kSecUseAuthenticationUI as String] as? String == kSecUseAuthenticationUISkip as String)
     #expect(keychain.copyQueries[0][kSecUseAuthenticationContext as String] == nil)
-    #expect(keychain.copyQueries[2][kSecUseAuthenticationContext as String] == nil)
     #expect(keychain.copyQueries[1][kSecUseAuthenticationUI as String] == nil)
     #expect(keychain.copyQueries[1][kSecReturnData as String] as? Bool == true)
     let context = try #require(
@@ -276,10 +168,10 @@ import Testing
     #expect(keychain.copyContextInteractionBlocked == [true])
 }
 
-@Test func deleteAuthenticatesFreshAndDeletesLegacyBeforeModern() async throws {
+@Test func deleteAuthenticatesFreshAndDeletesTheUUIDScopedItem() async throws {
     let keychain = RecordingNetworkSecretKeychainClient()
     keychain.copyResults = [(errSecSuccess, nil)]
-    keychain.deleteResults = [errSecSuccess, errSecSuccess]
+    keychain.deleteResults = [errSecSuccess]
     let authenticator = RecordingNetworkSecretAuthenticator()
     let store = SystemNetworkSecretStore(keychain: keychain, authenticator: authenticator)
     let config = NetworkConfig(instance_id: "delete-id", network_name: "office")
@@ -287,9 +179,9 @@ import Testing
     try await store.deleteSecret(for: config, purpose: .delete)
 
     #expect(authenticator.authenticationCount == 1)
-    #expect(keychain.deleteQueries.count == 2)
-    #expect(keychain.deleteQueries[0][kSecUseDataProtectionKeychain as String] as? Bool == false)
-    #expect(keychain.deleteQueries[1][kSecUseDataProtectionKeychain as String] as? Bool == true)
+    #expect(keychain.deleteQueries.count == 1)
+    #expect(keychain.deleteQueries[0][kSecUseDataProtectionKeychain as String] as? Bool == true)
+    #expect(keychain.deleteQueries[0][kSecAttrAccount as String] as? String == config.instance_id)
     let context = try #require(
         keychain.deleteQueries[0][kSecUseAuthenticationContext as String] as? LAContext
     )
@@ -335,7 +227,7 @@ import Testing
         $0[kSecAttrService as String] as? String == namespace.service
             && $0[kSecAttrAccessGroup as String] as? String == namespace.accessGroup
     })
-    #expect(keychain.updateQueries[0][kSecAttrAccount as String] as? String == "test-office")
+    #expect(keychain.updateQueries[0][kSecAttrAccount as String] as? String == "test-namespace-id")
 }
 
 @Test func keychainAndAuthenticationCancellationErrorsAreRecognized() {

@@ -112,7 +112,7 @@ clean_development_helper_state() {
     "$ARCHIVE_APP_PATH/Contents/MacOS/EasyTierMac" \
     "$EXPORT_APP_DIR/Contents/MacOS/EasyTierMac"; do
     if [[ -x "$binary" ]]; then
-      EASYTIER_SKIP_LEGACY_HELPER_UNINSTALL=1 "$binary" --unregister-helper >/dev/null 2>&1 || true
+      "$binary" --unregister-helper >/dev/null 2>&1 || true
     fi
   done
 

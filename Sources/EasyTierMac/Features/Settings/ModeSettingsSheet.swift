@@ -96,6 +96,7 @@ struct EasyTierSettingsSheet: View {
                     managedDNSSuffix: appContext.runtime.gateway.defaultDNSZoneBinding?.dnsSuffix,
                     commit: commitMagicDNSSettings
                 )
+                .disabled(!appContext.workspace.store.persistenceIsReady)
             }
 
             Tab(
@@ -109,6 +110,7 @@ struct EasyTierSettingsSheet: View {
                     rpcPortalWhitelist: $rpcPortalWhitelist,
                     commit: applyModeSettings
                 )
+                .disabled(!appContext.workspace.store.persistenceIsReady)
             }
 
             Tab(
@@ -165,10 +167,12 @@ struct EasyTierSettingsSheet: View {
     }
 
     private func applyModeSettings() {
+        guard appContext.workspace.store.persistenceIsReady else { return }
         onChange(buildMode(), committedMagicDNSSettings)
     }
 
     private func commitMagicDNSSettings(_ settings: MagicDNSSettings) {
+        guard appContext.workspace.store.persistenceIsReady else { return }
         committedMagicDNSSettings = settings
         onChange(buildMode(), settings)
     }
@@ -193,9 +197,6 @@ struct EasyTierSettingsSheet: View {
             .flatMap { $0.split(whereSeparator: \.isWhitespace).map(String.init) }
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        let legacyDefaults = Set(["127.0.0.0/8", "::1/128", "10.126.126.0/24"])
-        return values.isEmpty || Set(values).isSubset(of: legacyDefaults)
-            ? AppMode.defaultRPCPortalWhitelist
-            : values
+        return values.isEmpty ? AppMode.defaultRPCPortalWhitelist : values
     }
 }

@@ -45,13 +45,13 @@ public struct EasyTierStorage: Sendable {
         do {
             snapshot = try decoder.decode(AppSnapshot.self, from: data)
         } catch {
-            let backupURL = try backUpIncompatibleState(at: url)
+            try FileManager.default.removeItem(at: url)
             let state = makeDefaultState()
             try save(state.snapshot, configs: state.configs)
             return EasyTierStorageLoadResult(
                 snapshot: state.snapshot,
                 configs: state.configs,
-                recoveryMessage: "Saved state was incompatible and was backed up to \(backupURL.lastPathComponent). Existing TOML files were preserved; re-import them to restore configurations."
+                recoveryMessage: "Saved state was incompatible and was reset. Existing TOML files were left untouched."
             )
         }
 
@@ -113,14 +113,6 @@ public struct EasyTierStorage: Sendable {
         let config = NetworkConfig()
         let snapshot = AppSnapshot(configIDs: [config.id], lastSelectedConfigID: config.id)
         return EasyTierStorageLoadResult(snapshot: snapshot, configs: [config])
-    }
-
-    private func backUpIncompatibleState(at url: URL) throws -> URL {
-        let timestamp = Int(Date().timeIntervalSince1970 * 1_000)
-        let backupURL = baseDirectory.appendingPathComponent("state.incompatible-\(timestamp).json")
-        try FileManager.default.moveItem(at: url, to: backupURL)
-        repairOriginalUserOwnership(for: backupURL)
-        return backupURL
     }
 
     private func stateURL(in directory: URL) -> URL {

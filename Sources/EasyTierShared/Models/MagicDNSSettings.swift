@@ -9,7 +9,7 @@ public struct MagicDNSSettings: Codable, Equatable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let dnsSuffix = try container.decodeIfPresent(String.self, forKey: .dnsSuffix) ?? Self.defaultDNSSuffix
+        let dnsSuffix = try container.decode(String.self, forKey: .dnsSuffix)
         self.dnsSuffix = try Self.normalizedDNSSuffix(dnsSuffix)
     }
 

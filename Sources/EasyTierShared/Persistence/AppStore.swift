@@ -48,6 +48,8 @@ public final class EasyTierAppStore {
     public var isBusy = false
     public var isQuitting = false
     public var lastError: String?
+    public private(set) var persistenceHealth: PersistenceHealth = .preparing
+    public var persistenceIsReady: Bool { persistenceHealth == .ready }
     public var isShowingSettings = false
     public var isShowingAbout = false
     public var isShowingLinuxInstallGuide = false
@@ -75,7 +77,6 @@ public final class EasyTierAppStore {
     public var peerSubscriptions: [PeerSubscription] = []
     public var isRefreshingPeerSubscriptions = false
     public var pendingPeerCardMerge: PeerCard?
-    public private(set) var networkSecretCleanupNotice: String?
     public private(set) var runtimeTransitionsByConfigID: [String: NetworkRuntimeTransition] = [:]
 
     /// Presentation-only scroll state. Runtime collection must continue while
@@ -88,11 +89,10 @@ public final class EasyTierAppStore {
 
     private let runtimeClient: any EasyTierCoreClient
     public let helperRegistration: HelperRegistrationService?
-    private let storage: EasyTierStorage
+    private let database: ApplicationDatabase
     private let networkSecretStore: any NetworkSecretStore
     private let peerSubscriptionDataLoader: any PeerSubscriptionDataLoading
     private let systemSleepPreventer: any SystemSleepPreventing
-    @ObservationIgnored private var didReportNetworkSecretCleanupIssue = false
     private var lastErrorKind: LastErrorKind?
 
     @ObservationIgnored private lazy var runtimeSession = RuntimeSessionController(
@@ -148,6 +148,7 @@ public final class EasyTierAppStore {
         runtimeClient: any EasyTierCoreClient = PrivilegedEasyTierClient(),
         helperRegistration: HelperRegistrationService? = nil,
         storage: EasyTierStorage = .default,
+        database: ApplicationDatabase? = nil,
         networkSecretStore: any NetworkSecretStore = SystemNetworkSecretStore(),
         peerSubscriptionDataLoader: any PeerSubscriptionDataLoading = URLSessionPeerSubscriptionDataLoader(
             session: URLSession(configuration: .ephemeral)
@@ -156,7 +157,11 @@ public final class EasyTierAppStore {
     ) {
         self.runtimeClient = runtimeClient
         self.helperRegistration = helperRegistration
-        self.storage = storage
+        self.database = database ?? ApplicationDatabase(
+            baseDirectory: storage.baseDirectory,
+            gatewayFileURL: storage.baseDirectory.appending(path: "gateway/config.json"),
+            networkSecretStore: networkSecretStore
+        )
         self.networkSecretStore = networkSecretStore
         self.peerSubscriptionDataLoader = peerSubscriptionDataLoader
         self.systemSleepPreventer = systemSleepPreventer
@@ -366,39 +371,71 @@ public final class EasyTierAppStore {
     }
 
     public func load() async {
+        persistenceHealth = .preparing
         do {
-            let loaded = try storage.load()
-            let snapshot = loaded.snapshot
-            configs = try await configsWithSecretsStored(loaded.configs)
-            runtimeIntents = snapshot.runtimeIntents
-            reversedPortForwardFingerprints = snapshot.reversedPortForwardFingerprints
-            vpnOnDemandEnabled = snapshot.vpnOnDemandEnabled
-            magicDNSSettings = snapshot.magicDNSSettings
-            mode = snapshot.mode
-            peerSubscriptions = snapshot.peerSubscriptions
-            if let lastSelectedConfigID = snapshot.lastSelectedConfigID,
-               configs.contains(where: { $0.id == lastSelectedConfigID })
+            let state = try await database.loadWorkspace()
+            configs = state.configs
+            runtimeIntents = state.runtimeIntents
+            reversedPortForwardFingerprints = state.reversedPortForwardFingerprints
+            vpnOnDemandEnabled = state.vpnOnDemandEnabled
+            magicDNSSettings = state.magicDNSSettings
+            mode = state.mode
+            peerSubscriptions = state.peerSubscriptions
+            if let selectedConfigID = state.selectedConfigID,
+               configs.contains(where: { $0.id == selectedConfigID })
             {
-                selectedConfigID = lastSelectedConfigID
+                self.selectedConfigID = selectedConfigID
             } else {
                 selectedConfigID = configs.first?.id
             }
-            saveInBackground()
+            persistenceHealth = .ready
             log("Loaded \(configs.count) saved network config(s).")
-            if let recoveryMessage = loaded.recoveryMessage {
-                setLastError(recoveryMessage)
-                log(recoveryMessage)
-            }
         } catch {
             if configs.isEmpty {
                 configs = [NetworkConfig()]
                 selectedConfigID = configs.first?.id
             }
+            persistenceHealth = .unavailable(PersistenceFailure(
+                message: error.localizedDescription,
+                databaseURL: database.databaseURL
+            ))
             setLastError(error)
             log("Failed to load state: \(error.localizedDescription)")
         }
         await refreshRuntime()
         startPolling()
+    }
+
+    @discardableResult
+    public func retryPersistence() async -> Bool {
+        do {
+            try await database.retryPreparation()
+            await load()
+            return persistenceHealth == .ready
+        } catch {
+            persistenceHealth = .unavailable(PersistenceFailure(
+                message: error.localizedDescription,
+                databaseURL: database.databaseURL
+            ))
+            setLastError(error)
+            return false
+        }
+    }
+
+    @discardableResult
+    public func rebuildPersistence() async -> Bool {
+        do {
+            try await database.rebuildEmptyDatabase()
+            await load()
+            return persistenceHealth == .ready
+        } catch {
+            persistenceHealth = .unavailable(PersistenceFailure(
+                message: error.localizedDescription,
+                databaseURL: database.databaseURL
+            ))
+            setLastError(error)
+            return false
+        }
     }
 
     @discardableResult
@@ -439,20 +476,16 @@ public final class EasyTierAppStore {
         runtimeServiceConfigured = true
     }
 
-    public func save() {
+    public func save() async {
         do {
-            let state = try stateForStorage()
-            try storage.save(state.snapshot, configs: state.configs)
-            if state.configs != configs {
-                configs = state.configs
-            }
+            try await commitPersistenceState(stateForStorage())
         } catch {
             setLastError(error)
             log("Save failed: \(error.localizedDescription)")
         }
     }
 
-    public func addConfig() {
+    public func addConfig() async {
         // The first network takes the fixed-port listener defaults
         // (tcp/udp 11010, wg/ws 11011, ...). Any later network reuses the
         // same schemes with port 0 so the OS picks non-conflicting ports
@@ -464,28 +497,16 @@ public final class EasyTierAppStore {
             network_name: uniqueNetworkName(),
             listener_urls: listeners
         )
-        configs.append(config)
-        selectedConfigID = config.id
-        selectedTab = .config
-        saveInBackground()
-        log("Added \(config.network_name).")
-    }
-
-    public func saveInBackground() {
-        let state: (snapshot: AppSnapshot, configs: [NetworkConfig])
         do {
-            state = try stateForStorage()
+            var state = try stateForStorage()
+            state.configs.append(config)
+            state.selectedConfigID = config.id
+            try await commitPersistenceState(state)
+            selectedTab = .config
+            log("Added \(config.network_name).")
         } catch {
             setLastError(error)
-            log("Save failed: \(error.localizedDescription)")
-            return
-        }
-        if state.configs != configs {
-            configs = state.configs
-        }
-        let storage = self.storage
-        Task.detached(priority: .background) {
-            try? storage.save(state.snapshot, configs: state.configs)
+            log("Could not add \(config.network_name): \(error.localizedDescription)")
         }
     }
 
@@ -504,37 +525,41 @@ public final class EasyTierAppStore {
                     return
                 }
             }
-            let hasSharedCredentialReference = configs.enumerated().contains { candidateIndex, candidate in
-                candidateIndex != index && Self.secretNamespace(for: candidate) == Self.secretNamespace(for: config)
-            }
-            if !hasSharedCredentialReference {
-                do {
-                    try await networkSecretStore.deleteSecret(for: config, purpose: .delete)
-                    clearCachedNetworkSecret(for: config)
-                } catch {
-                    if Self.isNetworkSecretAccessCancellation(error) {
-                        log("Network deletion canceled during Keychain authorization.")
-                    } else {
-                        setLastError(error)
-                        log("Delete canceled because the saved network secret could not be removed: \(error.localizedDescription)")
-                    }
-                    return
+            do {
+                try await networkSecretStore.deleteSecret(for: config, purpose: .delete)
+                clearCachedNetworkSecret(for: config)
+            } catch {
+                if Self.isNetworkSecretAccessCancellation(error) {
+                    log("Network deletion canceled during Keychain authorization.")
+                } else {
+                    setLastError(error)
+                    log("Delete canceled because the saved network secret could not be removed: \(error.localizedDescription)")
                 }
+                return
             }
-            runtimeSession.clearConfigTracking(for: config)
-            runtimeSession.clearPendingStart(for: config)
-            runtimeIntents.removeAll { intent in
+            var state: WorkspacePersistenceState
+            do {
+                state = try stateForStorage()
+            } catch {
+                setLastError(error)
+                return
+            }
+            state.runtimeIntents.removeAll { intent in
                 intent.target.isLocal && (intent.target.instanceID == config.instance_id || intent.target.networkName == config.network_name)
             }
-            reversedPortForwardFingerprints.removeValue(forKey: config.instance_id)
-            let removedID = configs.remove(at: index).id
-            let storage = self.storage
-            Task.detached(priority: .background) {
-                try? storage.deleteConfig(id: removedID)
+            state.reversedPortForwardFingerprints.removeValue(forKey: config.instance_id)
+            state.configs.remove(at: index)
+            let nextIndex = min(index, state.configs.count - 1)
+            state.selectedConfigID = state.configs.isEmpty ? nil : state.configs[nextIndex].id
+            do {
+                try await commitPersistenceState(state)
+                runtimeSession.clearConfigTracking(for: config)
+                runtimeSession.clearPendingStart(for: config)
+                log("Deleted \(config.network_name).")
+            } catch {
+                setLastError(error)
+                log("Delete failed after Keychain cleanup: \(error.localizedDescription)")
             }
-            let nextIndex = min(index, configs.count - 1)
-            self.selectedConfigID = configs.isEmpty ? nil : configs[nextIndex].id
-            saveInBackground()
         }
     }
 
@@ -544,40 +569,35 @@ public final class EasyTierAppStore {
         saveImmediately: Bool = false
     ) async throws {
         guard let index = configs.firstIndex(where: { $0.id == id }) else { return }
-        let oldConfig = configs[index]
-        if Self.secretNamespace(for: oldConfig) != Self.secretNamespace(for: config) {
-            try await migrateNetworkSecret(from: oldConfig, to: config, replacingIndex: index)
-        }
-        configs[index] = Self.configWithoutNetworkSecret(config)
+        let sanitized = Self.configWithoutNetworkSecret(config)
         if saveImmediately {
-            save()
+            var state = try stateForStorage()
+            state.configs[index] = sanitized
+            try await commitPersistenceState(state)
+        } else {
+            configs[index] = sanitized
         }
     }
 
-    private func migrateNetworkSecret(
-        from oldConfig: NetworkConfig,
-        to newConfig: NetworkConfig,
-        replacingIndex: Int
-    ) async throws {
-        let removeSource = !configs.enumerated().contains { candidateIndex, candidate in
-            candidateIndex != replacingIndex
-                && Self.secretNamespace(for: candidate) == Self.secretNamespace(for: oldConfig)
+    public func selectConfig(id: String?) async {
+        guard selectedConfigID != id else { return }
+        guard id == nil || configs.contains(where: { $0.id == id }) else { return }
+        do {
+            var state = try stateForStorage()
+            state.selectedConfigID = id
+            try await commitPersistenceState(state)
+        } catch {
+            setLastError(error)
+            log("Could not save network selection: \(error.localizedDescription)")
         }
-        let result = try await networkSecretStore.migrateSecret(
-            from: oldConfig,
-            to: newConfig,
-            removeSource: removeSource
-        )
-        handleNetworkSecretCleanup(result.cleanup)
-        invalidateSecretAuthenticationSession()
     }
 
-    public func selectPreviousConfig() {
-        selectConfig(offset: -1)
+    public func selectPreviousConfig() async {
+        await selectConfig(offset: -1)
     }
 
-    public func selectNextConfig() {
-        selectConfig(offset: 1)
+    public func selectNextConfig() async {
+        await selectConfig(offset: 1)
     }
 
     @discardableResult
@@ -696,7 +716,7 @@ public final class EasyTierAppStore {
                 log("Stop skipped because \(config.network_name) is not running.")
                 return
             }
-            persistRuntimeHostname(from: runningInstance, forConfigID: config.instance_id)
+            try await persistRuntimeHostname(from: runningInstance, forConfigID: config.instance_id)
             try await runtimeClient.stop(instanceNames: [runningInstance.name])
             runtimeSession.clearTrafficTracking(instanceName: runningInstance.name)
             runtimeSession.clearPendingStart(for: config)
@@ -940,10 +960,6 @@ public final class EasyTierAppStore {
         log(message)
     }
 
-    public func dismissNetworkSecretCleanupNotice() {
-        networkSecretCleanupNotice = nil
-    }
-
     public var lastErrorIsHelperPermission: Bool {
         guard let message = lastError else { return false }
         if lastErrorKind == .helperPermission { return true }
@@ -957,7 +973,7 @@ public final class EasyTierAppStore {
         target: RuntimeIntentTarget,
         desiredHostname: String,
         baseHostname: String?
-    ) -> RuntimeIntent {
+    ) async throws -> RuntimeIntent {
         let desiredHostname = desiredHostname.trimmingCharacters(in: .whitespacesAndNewlines)
         let intent = RuntimeIntent(
             target: target,
@@ -966,39 +982,60 @@ public final class EasyTierAppStore {
             status: .pending
         )
 
-        let resolved = RuntimeIntentReconciler.upsert(intent, in: &runtimeIntents)
-        save()
+        var state = try stateForStorage()
+        let resolved = RuntimeIntentReconciler.upsert(intent, in: &state.runtimeIntents)
+        try await commitPersistenceState(state)
         return resolved
     }
 
-    public func markRuntimeIntent(_ id: String, status: RuntimeIntentStatus) {
-        updateRuntimeIntent(id: id) { intent in
-            intent.status = status
-            intent.updatedAt = Date()
+    public func markRuntimeIntent(_ id: String, status: RuntimeIntentStatus) async {
+        do {
+            var state = try stateForStorage()
+            guard RuntimeIntentReconciler.update(id: id, in: &state.runtimeIntents, mutate: { intent in
+                intent.status = status
+                intent.updatedAt = Date()
+            }) else { return }
+            try await commitPersistenceState(state)
+        } catch {
+            setLastError(error)
+            log("Could not save runtime intent: \(error.localizedDescription)")
         }
     }
 
-    public func useRemoteValue(forRuntimeIntent id: String) {
-        runtimeIntents.removeAll { $0.id == id }
-        save()
+    public func useRemoteValue(forRuntimeIntent id: String) async {
+        do {
+            var state = try stateForStorage()
+            state.runtimeIntents.removeAll { $0.id == id }
+            try await commitPersistenceState(state)
+        } catch {
+            setLastError(error)
+            log("Could not discard runtime intent: \(error.localizedDescription)")
+        }
     }
 
-    public func keepRuntimeIntentPending(_ id: String) {
-        markRuntimeIntent(id, status: .pending)
+    public func keepRuntimeIntentPending(_ id: String) async {
+        await markRuntimeIntent(id, status: .pending)
     }
 
     public func reapplyRuntimeIntent(_ id: String) async {
         guard let intent = runtimeIntents.first(where: { $0.id == id }),
               let observation = runtimeObservation(for: intent.target)
         else {
-            markRuntimeIntent(id, status: .unreachable)
+            await markRuntimeIntent(id, status: .unreachable)
             return
         }
 
-        updateRuntimeIntent(id: id) { intent in
-            intent.baseHostname = observation.hostname
-            intent.status = .pending
-            intent.updatedAt = Date()
+        do {
+            var state = try stateForStorage()
+            guard RuntimeIntentReconciler.update(id: id, in: &state.runtimeIntents, mutate: { intent in
+                intent.baseHostname = observation.hostname
+                intent.status = .pending
+                intent.updatedAt = Date()
+            }) else { return }
+            try await commitPersistenceState(state)
+        } catch {
+            setLastError(error)
+            return
         }
         await reconcileHostnameIntent(id: id, force: true)
     }
@@ -1016,24 +1053,31 @@ public final class EasyTierAppStore {
             recentIPv4: runningInstance.detail?.my_node_info?.displayIPv4,
             isLocal: true
         )
-        let intent = upsertHostnameRuntimeIntent(
-            target: target,
-            desiredHostname: desiredHostname,
-            baseHostname: baseHostname
-        )
+        let intent: RuntimeIntent
+        do {
+            intent = try await upsertHostnameRuntimeIntent(
+                target: target,
+                desiredHostname: desiredHostname,
+                baseHostname: baseHostname
+            )
+        } catch {
+            setLastError(error)
+            recordNotice("Could not save hostname for \(runningInstance.name): \(error.localizedDescription)")
+            return
+        }
 
         guard let observation = runtimeObservation(for: target) else {
-            markRuntimeIntent(intent.id, status: .unreachable)
+            await markRuntimeIntent(intent.id, status: .unreachable)
             recordNotice("Saved hostname for \(runningInstance.name). Runtime RPC is unavailable; it will be retried while this GUI is open.")
             return
         }
 
         do {
             try await applyHostname(desiredHostname, to: observation)
-            markRuntimeIntent(intent.id, status: .pending)
+            await markRuntimeIntent(intent.id, status: .pending)
             recordNotice("Runtime hostname patch sent for \(runningInstance.name).")
         } catch {
-            markRuntimeIntent(intent.id, status: .unreachable)
+            await markRuntimeIntent(intent.id, status: .unreachable)
             recordNotice("Saved hostname for \(runningInstance.name), but runtime patch failed: \(error.localizedDescription)")
         }
     }
@@ -1161,8 +1205,8 @@ public final class EasyTierAppStore {
         networkName: String,
         member: NetworkMemberStatus,
         desiredHostname: String
-    ) -> RuntimeIntent {
-        upsertHostnameRuntimeIntent(
+    ) async throws -> RuntimeIntent {
+        try await upsertHostnameRuntimeIntent(
             target: RuntimeIntentTarget(
                 networkName: networkName,
                 instanceID: member.instanceID,
@@ -1176,10 +1220,42 @@ public final class EasyTierAppStore {
         )
     }
 
+    public func setVPNOnDemandEnabled(_ enabled: Bool) async {
+        do {
+            var state = try stateForStorage()
+            state.vpnOnDemandEnabled = enabled
+            try await commitPersistenceState(state)
+        } catch {
+            setLastError(error)
+            log("Could not save background runtime preference: \(error.localizedDescription)")
+        }
+    }
+
     public func applyMode(_ mode: AppMode) async {
+        await applyPersistedMode(mode, magicDNSSettings: magicDNSSettings)
+    }
+
+    public func applyMode(_ mode: AppMode, magicDNSSettings: MagicDNSSettings) async {
+        await applyPersistedMode(mode, magicDNSSettings: magicDNSSettings)
+    }
+
+    private func applyPersistedMode(_ mode: AppMode, magicDNSSettings: MagicDNSSettings) async {
         let rpcConfigurationChanged = self.mode != mode
-        self.mode = mode
-        save()
+        let magicDNSSuffixChanged = self.magicDNSSettings != magicDNSSettings
+        let runningMagicDNSNames = runningMagicDNSConfigNames()
+        do {
+            var state = try stateForStorage()
+            state.mode = mode
+            state.magicDNSSettings = magicDNSSettings
+            try await commitPersistenceState(state)
+        } catch {
+            setLastError(error)
+            log("Settings save failed: \(error.localizedDescription)")
+            return
+        }
+        if magicDNSSuffixChanged, !runningMagicDNSNames.isEmpty {
+            recordNotice("Magic DNS suffix changed to \(magicDNSSettings.dnsSuffix). Restart \(runningMagicDNSNames.joined(separator: ", ")) to apply it.")
+        }
 
         // The RPC portal is daemon-side. Only route it through the privileged
         // client when the helper is enabled; tests may configure it directly.
@@ -1202,17 +1278,6 @@ public final class EasyTierAppStore {
         }
 
     }
-
-    public func applyMode(_ mode: AppMode, magicDNSSettings: MagicDNSSettings) async {
-        let magicDNSSuffixChanged = self.magicDNSSettings != magicDNSSettings
-        let runningMagicDNSNames = runningMagicDNSConfigNames()
-        self.magicDNSSettings = magicDNSSettings
-        if magicDNSSuffixChanged, !runningMagicDNSNames.isEmpty {
-            recordNotice("Magic DNS suffix changed to \(magicDNSSettings.dnsSuffix). Restart \(runningMagicDNSNames.joined(separator: ", ")) to apply it.")
-        }
-        await applyMode(mode)
-    }
-
     public var hasRunningMagicDNSNetworks: Bool {
         !runningMagicDNSConfigNames().isEmpty
     }
@@ -1267,18 +1332,19 @@ public final class EasyTierAppStore {
             if configs.contains(where: { $0.id == config.instance_id }) {
                 config.instance_id = UUID().uuidString.lowercased()
             }
+            var state = try stateForStorage()
             if let suffix = metadata.magicDNSSuffix?.nilIfEmpty {
                 let importedSettings = try MagicDNSSettings(dnsSuffix: suffix)
-                if importedSettings != magicDNSSettings {
-                    magicDNSSettings = importedSettings
+                if importedSettings != state.magicDNSSettings {
+                    state.magicDNSSettings = importedSettings
                     recordNotice("Detected custom Magic DNS suffix \(importedSettings.dnsSuffix); saved it as this Mac's Magic DNS suffix.")
                 }
             }
             let imported = try await configsWithSecretsStored([config])[0]
-            configs.append(imported)
-            selectedConfigID = imported.id
+            state.configs.append(imported)
+            state.selectedConfigID = imported.id
+            try await commitPersistenceState(state)
             selectedTab = .config
-            save()
             log("Imported \(imported.network_name).")
         } catch {
             let message = Self.errorMessage(for: error, toml: toml)
@@ -1295,8 +1361,7 @@ public final class EasyTierAppStore {
         guard let secret = secret.nilIfEmpty else { return }
         let authenticationGeneration = networkSecretAccessGeneration
         do {
-            let result = try await networkSecretStore.save(secret, for: config, purpose: .update)
-            handleNetworkSecretCleanup(result.cleanup)
+            try await networkSecretStore.save(secret, for: config, purpose: .update)
             if authenticationGeneration == networkSecretAccessGeneration {
                 cacheNetworkSecret(secret, for: config)
             }
@@ -1450,7 +1515,7 @@ public final class EasyTierAppStore {
             throw error
         }
         if let runningInstance {
-            persistRuntimeHostname(from: runningInstance, forConfigID: config.instance_id)
+            try await persistRuntimeHostname(from: runningInstance, forConfigID: config.instance_id)
             try await runtimeClient.stop(instanceNames: [runningInstance.name])
             runtimeSession.clearTrafficTracking(instanceName: runningInstance.name)
             runtimeSession.clearPendingStart(for: config)
@@ -1531,12 +1596,17 @@ public final class EasyTierAppStore {
         for id in ids {
             await reconcileHostnameIntent(id: id)
         }
-        cleanupExpiredIntents()
+        await cleanupExpiredIntents()
     }
 
-    private func cleanupExpiredIntents() {
-        if RuntimeIntentReconciler.removeExpired(from: &runtimeIntents) {
-            saveInBackground()
+    private func cleanupExpiredIntents() async {
+        do {
+            var state = try stateForStorage()
+            guard RuntimeIntentReconciler.removeExpired(from: &state.runtimeIntents) else { return }
+            try await commitPersistenceState(state)
+        } catch {
+            setLastError(error)
+            log("Could not remove expired runtime intents: \(error.localizedDescription)")
         }
     }
 
@@ -1547,10 +1617,10 @@ public final class EasyTierAppStore {
         case .ignore:
             return
         case .unreachable:
-            setRuntimeIntentStatus(id, .unreachable)
+            await setRuntimeIntentStatus(id, .unreachable)
         case .applied:
             guard let observation else { return }
-            updateRuntimeIntent(id: id) { intent in
+            await updateRuntimeIntent(id: id) { intent in
                 intent.target.recentHostname = observation.hostname
                 intent.target.recentIPv4 = observation.ipv4
                 intent.status = .applied
@@ -1558,20 +1628,20 @@ public final class EasyTierAppStore {
             }
         case let .conflict(currentHostname, baseHostname):
             guard let observation else { return }
-            setRuntimeIntentStatus(id, .conflict)
+            await setRuntimeIntentStatus(id, .conflict)
             recordNotice("Runtime intent conflict for \(observation.label). Remote hostname is \(currentHostname ?? "-"), expected base \(baseHostname ?? "-").")
         case let .apply(desiredHostname):
             guard let observation else { return }
             do {
                 try await applyHostname(desiredHostname, to: observation)
-                updateRuntimeIntent(id: id) { intent in
+                await updateRuntimeIntent(id: id) { intent in
                     intent.target.recentHostname = observation.hostname
                     intent.target.recentIPv4 = observation.ipv4
                     intent.status = .pending
                     intent.updatedAt = Date()
                 }
             } catch {
-                setRuntimeIntentStatus(id, .unreachable)
+                await setRuntimeIntentStatus(id, .unreachable)
                 recordNotice("Runtime intent replay failed for \(observation.label): \(error.localizedDescription)")
             }
         }
@@ -1636,45 +1706,75 @@ public final class EasyTierAppStore {
         )
     }
 
-    private func updateRuntimeIntent(id: String, mutate: (inout RuntimeIntent) -> Void) {
-        if RuntimeIntentReconciler.update(id: id, in: &runtimeIntents, mutate: mutate) {
-            saveInBackground()
+    private func updateRuntimeIntent(
+        id: String,
+        mutate: (inout RuntimeIntent) -> Void
+    ) async {
+        do {
+            var state = try stateForStorage()
+            guard RuntimeIntentReconciler.update(id: id, in: &state.runtimeIntents, mutate: mutate) else { return }
+            try await commitPersistenceState(state)
+        } catch {
+            setLastError(error)
+            log("Could not update runtime intent: \(error.localizedDescription)")
         }
     }
 
-    private func setRuntimeIntentStatus(_ id: String, _ status: RuntimeIntentStatus) {
-        updateRuntimeIntent(id: id) { intent in
+    private func setRuntimeIntentStatus(_ id: String, _ status: RuntimeIntentStatus) async {
+        await updateRuntimeIntent(id: id) { intent in
             intent.status = status
             intent.updatedAt = Date()
         }
     }
 
-    private func persistRuntimeHostname(from instance: NetworkInstance, forConfigID configID: String) {
+    private func persistRuntimeHostname(from instance: NetworkInstance, forConfigID configID: String) async throws {
         guard let runtimeHostname = instance.detail?.my_node_info?.hostname?.trimmedNilIfEmpty else { return }
-        guard let index = configs.firstIndex(where: { $0.id == configID }) else { return }
-        let storedHostname = configs[index].hostname?.trimmedNilIfEmpty
+        var state = try stateForStorage()
+        guard let index = state.configs.firstIndex(where: { $0.id == configID }) else { return }
+        let storedHostname = state.configs[index].hostname?.trimmedNilIfEmpty
         guard storedHostname != runtimeHostname else { return }
 
-        configs[index].hostname = runtimeHostname
-        if selectedConfigID == configID {
-            selectedConfigID = configs[index].id
-        }
-        save()
+        state.configs[index].hostname = runtimeHostname
+        try await commitPersistenceState(state)
     }
 
-    private func stateForStorage() throws -> (snapshot: AppSnapshot, configs: [NetworkConfig]) {
+    private func stateForStorage() throws -> WorkspacePersistenceState {
         let configs = configs.map(Self.configWithoutNetworkSecret)
-        let snapshot = AppSnapshot(
-            configIDs: configs.map(\.id),
+        return WorkspacePersistenceState(
+            configs: configs,
+            selectedConfigID: selectedConfigID,
             mode: mode,
-            lastSelectedConfigID: selectedConfigID,
             vpnOnDemandEnabled: vpnOnDemandEnabled,
             runtimeIntents: runtimeIntents,
             reversedPortForwardFingerprints: reversedPortForwardFingerprints,
             magicDNSSettings: magicDNSSettings,
             peerSubscriptions: peerSubscriptions
         )
-        return (snapshot, configs)
+    }
+
+    private func commitPersistenceState(_ state: WorkspacePersistenceState) async throws {
+        do {
+            try await database.saveWorkspace(state)
+            applyPersistenceState(state)
+            persistenceHealth = .ready
+        } catch {
+            persistenceHealth = .unavailable(PersistenceFailure(
+                message: error.localizedDescription,
+                databaseURL: database.databaseURL
+            ))
+            throw error
+        }
+    }
+
+    private func applyPersistenceState(_ state: WorkspacePersistenceState) {
+        configs = state.configs
+        selectedConfigID = state.selectedConfigID
+        mode = state.mode
+        vpnOnDemandEnabled = state.vpnOnDemandEnabled
+        runtimeIntents = state.runtimeIntents
+        reversedPortForwardFingerprints = state.reversedPortForwardFingerprints
+        magicDNSSettings = state.magicDNSSettings
+        peerSubscriptions = state.peerSubscriptions
     }
 
     private func configsWithSecretsStored(_ configs: [NetworkConfig]) async throws -> [NetworkConfig] {
@@ -1707,9 +1807,8 @@ public final class EasyTierAppStore {
             throw CancellationError()
         }
         guard let result else { return config }
-        handleNetworkSecretCleanup(result.cleanup)
-        cacheNetworkSecret(result.secret, for: config)
-        return Self.config(config, withNetworkSecret: result.secret)
+        cacheNetworkSecret(result, for: config)
+        return Self.config(config, withNetworkSecret: result)
     }
 
     private func configWithResolvedNetworkSecret(
@@ -1791,18 +1890,8 @@ public final class EasyTierAppStore {
         networkSecretStore.invalidateAuthenticationSession()
     }
 
-    private func handleNetworkSecretCleanup(_ cleanup: NetworkSecretCleanupState) {
-        guard !cleanup.issues.isEmpty else { return }
-        let statuses = cleanup.issues.map { "\($0.backend.rawValue):\($0.status)" }.joined(separator: ", ")
-        log("Saved the protected network secret; legacy Keychain cleanup is pending (\(statuses)).")
-        guard !didReportNetworkSecretCleanupIssue else { return }
-        didReportNetworkSecretCleanupIssue = true
-        networkSecretCleanupNotice = "The network password was saved securely, but an old Keychain entry could not be removed. EasyTier will retry automatically."
-    }
-
     private static func secretNamespace(for config: NetworkConfig) -> String {
-        let trimmed = config.network_name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? config.network_name : trimmed
+        config.instance_id
     }
 
     private func encodedTOML(for config: NetworkConfig) throws -> String {
@@ -1831,9 +1920,9 @@ public final class EasyTierAppStore {
             .sorted()
     }
 
-    private func selectConfig(offset: Int) {
+    private func selectConfig(offset: Int) async {
         guard !configs.isEmpty else {
-            selectedConfigID = nil
+            await selectConfig(id: nil)
             return
         }
 
@@ -1846,8 +1935,7 @@ public final class EasyTierAppStore {
         let nextID = configs[nextIndex].id
         guard selectedConfigID != nextID else { return }
 
-        selectedConfigID = nextID
-        save()
+        await selectConfig(id: nextID)
     }
 
     @discardableResult
@@ -1955,20 +2043,24 @@ public final class EasyTierAppStore {
                 from: url,
                 using: peerSubscriptionDataLoader
             )
-            peerSubscriptions.append(contentsOf: fetched)
-            saveInBackground()
-            log("Added \(fetched.count) subscription(s) from \(url.absoluteString).")
+            var state = try stateForStorage()
+            state.peerSubscriptions.append(contentsOf: fetched.subscriptions)
+            try await commitPersistenceState(state)
+            log("Added \(fetched.subscriptions.count) subscription(s) from \(url.absoluteString).")
+            logPeerSubscriptionIssues(fetched.issues, source: url.absoluteString)
         } catch {
             setLastError(error)
             log("Failed to fetch subscription from \(url.absoluteString): \(error.localizedDescription)")
         }
     }
 
-    public func addPeerSubscription(json: String) throws {
+    public func addPeerSubscription(json: String) async throws {
         let decoded = try PeerSubscriptionLibrary.decode(json)
-        peerSubscriptions.append(contentsOf: decoded)
-        saveInBackground()
-        log("Added \(decoded.count) subscription(s) from pasted JSON.")
+        var state = try stateForStorage()
+        state.peerSubscriptions.append(contentsOf: decoded.subscriptions)
+        try await commitPersistenceState(state)
+        log("Added \(decoded.subscriptions.count) subscription(s) from pasted JSON.")
+        logPeerSubscriptionIssues(decoded.issues, source: "pasted JSON")
     }
 
     public func refreshPeerSubscriptions() async {
@@ -1980,12 +2072,28 @@ public final class EasyTierAppStore {
             peerSubscriptions,
             using: peerSubscriptionDataLoader
         )
-        peerSubscriptions = result.subscriptions
+        do {
+            var state = try stateForStorage()
+            state.peerSubscriptions = result.subscriptions
+            try await commitPersistenceState(state)
+        } catch {
+            setLastError(error)
+            log("Subscriptions refresh could not be saved: \(error.localizedDescription)")
+            return
+        }
         for failure in result.failures {
             log("Failed to refresh subscription from \(failure.url.absoluteString): \(failure.message)")
         }
-        saveInBackground()
+        for issue in result.issues {
+            log("Skipped subscription outbound \(issue.issue.outboundIndex + 1) from \(issue.url.absoluteString): \(issue.issue.message)")
+        }
         log("Subscriptions refresh complete.")
+    }
+
+    private func logPeerSubscriptionIssues(_ issues: [PeerSubscriptionImportIssue], source: String) {
+        for issue in issues {
+            log("Skipped subscription outbound \(issue.outboundIndex + 1) from \(source): \(issue.message)")
+        }
     }
 
     public func peerCardLatency(for card: PeerCard) -> Int? {

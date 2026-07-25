@@ -1,6 +1,5 @@
 import Foundation
 @preconcurrency import LocalAuthentication
-import OSLog
 import Security
 
 public enum NetworkSecretAccessPurpose: String, Sendable {
@@ -38,50 +37,6 @@ public enum NetworkSecretAccessPurpose: String, Sendable {
         case .delete:
             "Delete the saved secret for network \"\(networkName)\"."
         }
-    }
-}
-
-public enum NetworkSecretCleanupBackend: String, Equatable, Sendable {
-    case dataProtection
-    case legacy
-}
-
-public struct NetworkSecretCleanupIssue: Equatable, Sendable {
-    public var backend: NetworkSecretCleanupBackend
-    public var status: OSStatus
-
-    public init(backend: NetworkSecretCleanupBackend, status: OSStatus) {
-        self.backend = backend
-        self.status = status
-    }
-}
-
-public enum NetworkSecretCleanupState: Equatable, Sendable {
-    case notNeeded
-    case completed
-    case pending([NetworkSecretCleanupIssue])
-
-    public var issues: [NetworkSecretCleanupIssue] {
-        guard case let .pending(issues) = self else { return [] }
-        return issues
-    }
-}
-
-public struct NetworkSecretWriteResult: Equatable, Sendable {
-    public var cleanup: NetworkSecretCleanupState
-
-    public init(cleanup: NetworkSecretCleanupState) {
-        self.cleanup = cleanup
-    }
-}
-
-public struct NetworkSecretReadResult: Equatable, Sendable {
-    public var secret: String
-    public var cleanup: NetworkSecretCleanupState
-
-    public init(secret: String, cleanup: NetworkSecretCleanupState) {
-        self.secret = secret
-        self.cleanup = cleanup
     }
 }
 
@@ -142,13 +97,13 @@ public protocol NetworkSecretStore: Sendable {
         _ secret: String,
         for config: NetworkConfig,
         purpose: NetworkSecretAccessPurpose
-    ) async throws -> NetworkSecretWriteResult
+    ) async throws
 
     func secret(
         for config: NetworkConfig,
         purpose: NetworkSecretAccessPurpose,
         reason: String?
-    ) async throws -> NetworkSecretReadResult?
+    ) async throws -> String?
 
     func deleteSecret(
         for config: NetworkConfig,
@@ -156,12 +111,6 @@ public protocol NetworkSecretStore: Sendable {
     ) async throws
 
     func presence(for config: NetworkConfig) async throws -> NetworkSecretPresence
-
-    func migrateSecret(
-        from oldConfig: NetworkConfig,
-        to newConfig: NetworkConfig,
-        removeSource: Bool
-    ) async throws -> NetworkSecretWriteResult
 
     func authenticate(
         for config: NetworkConfig,
@@ -179,14 +128,14 @@ public protocol NetworkSecretAuthenticationActivityObserver: Sendable {
 }
 
 public extension NetworkSecretStore {
-    func save(_ secret: String, for config: NetworkConfig) async throws -> NetworkSecretWriteResult {
+    func save(_ secret: String, for config: NetworkConfig) async throws {
         try await save(secret, for: config, purpose: .update)
     }
 
     func secret(
         for config: NetworkConfig,
         purpose: NetworkSecretAccessPurpose
-    ) async throws -> NetworkSecretReadResult? {
+    ) async throws -> String? {
         try await secret(for: config, purpose: purpose, reason: nil)
     }
 
@@ -196,13 +145,6 @@ public extension NetworkSecretStore {
 
     func containsSecret(for config: NetworkConfig) async throws -> Bool {
         try await presence(for: config) != .missing
-    }
-
-    func migrateSecret(
-        from oldConfig: NetworkConfig,
-        to newConfig: NetworkConfig
-    ) async throws -> NetworkSecretWriteResult {
-        try await migrateSecret(from: oldConfig, to: newConfig, removeSource: true)
     }
 
     func authenticate(
@@ -233,7 +175,7 @@ public enum NetworkSecretStoreError: LocalizedError, Equatable {
         case .missingEntitlement:
             "EasyTier is not signed with the Data Protection Keychain entitlements required to protect network secrets. Reinstall a correctly signed build."
         case .verificationFailed:
-            "The protected Keychain item could not be verified after it was saved. The legacy item was left untouched."
+            "The protected Keychain item could not be verified after it was saved."
         case let .keychain(status):
             SecCopyErrorMessageString(status, nil) as String? ?? "Keychain error \(status)."
         }
@@ -309,49 +251,19 @@ package struct NetworkSecretKeychainNamespace: Sendable {
         self.accountPrefix = accountPrefix
     }
 
-    fileprivate func accounts(for config: NetworkConfig) -> [String] {
-        let rawName = config.network_name
-        let normalizedName = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let primaryName = normalizedName.isEmpty ? rawName : normalizedName
-        return [primaryName, rawName]
-            .reduce(into: [String]()) { accounts, name in
-                let account = accountPrefix + name
-                if !accounts.contains(account) { accounts.append(account) }
-            }
+    fileprivate func account(for config: NetworkConfig) -> String {
+        accountPrefix + config.instance_id
     }
 }
 
 public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Sendable {
     public static let service = "com.kkrainbow.easytier.mac.network-secret"
 
-    private enum Backend {
-        case dataProtection
-        case legacy
-
-        var publicValue: NetworkSecretCleanupBackend {
-            switch self {
-            case .dataProtection: .dataProtection
-            case .legacy: .legacy
-            }
-        }
-    }
-
-    private struct LocatedSecret {
-        var secret: String
-        var account: String
-        var backend: Backend
-    }
-
     private enum ItemPresence {
         case absent
         case present
         case interactionRequired
     }
-
-    private static let logger = Logger(
-        subsystem: "com.kkrainbow.easytier.mac",
-        category: "NetworkSecretStore"
-    )
 
     private let keychain: any NetworkSecretKeychainClient
     private let authenticator: any NetworkSecretAuthenticating
@@ -407,7 +319,7 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
         _ secret: String,
         for config: NetworkConfig,
         purpose: NetworkSecretAccessPurpose
-    ) async throws -> NetworkSecretWriteResult {
+    ) async throws {
         try await withAuthenticationContext(for: config, purpose: purpose, reason: nil) { context in
             try await self.perform {
                 try self.saveTransaction(secret, for: config, context: context)
@@ -419,7 +331,7 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
         for config: NetworkConfig,
         purpose: NetworkSecretAccessPurpose,
         reason: String?
-    ) async throws -> NetworkSecretReadResult? {
+    ) async throws -> String? {
         try await withAuthenticationContext(for: config, purpose: purpose, reason: reason) { context in
             try await self.perform {
                 try self.resolveSecretTransaction(for: config, context: context)
@@ -446,75 +358,20 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
             }
 
             try await self.perform {
-                try self.deleteAllItems(for: config, context: context)
+                try self.deleteItem(for: config, context: context)
             }
         }
     }
 
     public func presence(for config: NetworkConfig) async throws -> NetworkSecretPresence {
         try await perform {
-            var sawInteractionRequired = false
-            for backend in [Backend.dataProtection, Backend.legacy] {
-                for account in self.namespace.accounts(for: config) {
-                    switch try self.presence(account: account, backend: backend) {
-                    case .present:
-                        return .present
-                    case .interactionRequired:
-                        sawInteractionRequired = true
-                    case .absent:
-                        continue
-                    }
-                }
-            }
-            return sawInteractionRequired ? .interactionRequired : .missing
-        }
-    }
-
-    public func migrateSecret(
-        from oldConfig: NetworkConfig,
-        to newConfig: NetworkConfig,
-        removeSource: Bool
-    ) async throws -> NetworkSecretWriteResult {
-        guard namespace.accounts(for: oldConfig).first != namespace.accounts(for: newConfig).first else {
-            return NetworkSecretWriteResult(cleanup: .notNeeded)
-        }
-        let authenticatesSourceRemoval: Bool
-        if removeSource {
-            authenticatesSourceRemoval = try await presence(for: oldConfig) != .missing
-        } else {
-            authenticatesSourceRemoval = false
-        }
-
-        return try await withAuthenticationContext(for: oldConfig, purpose: .update, reason: nil) { context in
-            if authenticatesSourceRemoval {
-                do {
-                    try await self.authenticator.authenticate(
-                        context: context,
-                        reason: NetworkSecretAccessPurpose.update.defaultReason(for: oldConfig.network_name)
-                    )
-                } catch let error as NetworkSecretStoreError {
-                    throw error
-                } catch {
-                    throw NetworkSecretStoreError.authentication((error as NSError).code)
-                }
-            }
-            return try await self.perform {
-                var cleanupStates: [NetworkSecretCleanupState] = []
-
-                if let destination = try self.resolveSecretTransaction(for: newConfig, context: context) {
-                    cleanupStates.append(destination.cleanup)
-                } else if let source = try self.resolveSecretTransaction(for: oldConfig, context: context) {
-                    cleanupStates.append(source.cleanup)
-                    let write = try self.saveTransaction(source.secret, for: newConfig, context: context)
-                    cleanupStates.append(write.cleanup)
-                } else {
-                    return NetworkSecretWriteResult(cleanup: .notNeeded)
-                }
-
-                if removeSource {
-                    cleanupStates.append(self.cleanupAllItems(for: oldConfig, context: context))
-                }
-                return NetworkSecretWriteResult(cleanup: self.mergeCleanupStates(cleanupStates))
+            switch try self.presence(account: self.namespace.account(for: config)) {
+            case .present:
+                return .present
+            case .interactionRequired:
+                return .interactionRequired
+            case .absent:
+                return .missing
             }
         }
     }
@@ -586,78 +443,29 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
         _ secret: String,
         for config: NetworkConfig,
         context: LAContext
-    ) throws -> NetworkSecretWriteResult {
-        let primaryAccount = namespace.accounts(for: config)[0]
-        try upsertModernItem(secret, account: primaryAccount, displayName: config.network_name, context: context)
-        try verifyModernItem(account: primaryAccount)
-        let cleanup = cleanupSupersededItems(for: config, keepingAccount: primaryAccount, context: context)
-        return NetworkSecretWriteResult(cleanup: cleanup)
+    ) throws {
+        let account = namespace.account(for: config)
+        try upsertItem(secret, account: account, displayName: config.network_name, context: context)
+        try verifyItem(account: account)
     }
 
     private func resolveSecretTransaction(
         for config: NetworkConfig,
         context: LAContext
-    ) throws -> NetworkSecretReadResult? {
-        let accounts = namespace.accounts(for: config)
-        let primaryAccount = accounts[0]
-
-        if let located = try locateSecret(accounts: accounts, backend: .dataProtection, context: context) {
-            var cleanupStates: [NetworkSecretCleanupState] = []
-            if located.account != primaryAccount {
-                try upsertModernItem(
-                    located.secret,
-                    account: primaryAccount,
-                    displayName: config.network_name,
-                    context: context
-                )
-                try verifyModernItem(account: primaryAccount)
-            }
-            cleanupStates.append(cleanupSupersededItems(for: config, keepingAccount: primaryAccount, context: context))
-            return NetworkSecretReadResult(
-                secret: located.secret,
-                cleanup: mergeCleanupStates(cleanupStates)
-            )
-        }
-
-        guard let located = try locateSecret(accounts: accounts, backend: .legacy, context: context) else {
+    ) throws -> String? {
+        let result = read(account: namespace.account(for: config), context: context)
+        switch result.status {
+        case errSecSuccess:
+            return try decodeSecret(result.result)
+        case errSecItemNotFound:
+            return nil
+        default:
+            try requireSuccess(result.status)
             return nil
         }
-
-        try upsertModernItem(
-            located.secret,
-            account: primaryAccount,
-            displayName: config.network_name,
-            context: context
-        )
-        try verifyModernItem(account: primaryAccount)
-        let cleanup = cleanupSupersededItems(for: config, keepingAccount: primaryAccount, context: context)
-        return NetworkSecretReadResult(secret: located.secret, cleanup: cleanup)
     }
 
-    private func locateSecret(
-        accounts: [String],
-        backend: Backend,
-        context: LAContext
-    ) throws -> LocatedSecret? {
-        for account in accounts {
-            let result = read(account: account, backend: backend, context: context)
-            switch result.status {
-            case errSecSuccess:
-                return LocatedSecret(
-                    secret: try decodeSecret(result.result),
-                    account: account,
-                    backend: backend
-                )
-            case errSecItemNotFound:
-                continue
-            default:
-                try requireSuccess(result.status)
-            }
-        }
-        return nil
-    }
-
-    private func upsertModernItem(
+    private func upsertItem(
         _ secret: String,
         account: String,
         displayName: String,
@@ -665,7 +473,7 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
     ) throws {
         let data = Data(secret.utf8)
         let updateAttributes = itemUpdateAttributes(data: data, displayName: displayName)
-        var updateQuery = baseQuery(account: account, backend: .dataProtection)
+        var updateQuery = baseQuery(account: account)
         updateQuery[kSecUseAuthenticationContext as String] = context
 
         let updateStatus = keychain.update(updateQuery, attributes: updateAttributes)
@@ -676,7 +484,7 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
         }
 
         let addAttributes = try itemAddAttributes(data: data, displayName: displayName)
-        var addQuery = baseQuery(account: account, backend: .dataProtection)
+        var addQuery = baseQuery(account: account)
         addAttributes.forEach { addQuery[$0.key] = $0.value }
         let addStatus = keychain.add(addQuery)
         if addStatus == errSecSuccess { return }
@@ -688,8 +496,8 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
         try requireSuccess(keychain.update(updateQuery, attributes: updateAttributes))
     }
 
-    private func verifyModernItem(account: String) throws {
-        switch try presence(account: account, backend: .dataProtection) {
+    private func verifyItem(account: String) throws {
+        switch try presence(account: account) {
         case .present, .interactionRequired:
             return
         case .absent:
@@ -697,99 +505,23 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
         }
     }
 
-    private func cleanupSupersededItems(
-        for config: NetworkConfig,
-        keepingAccount: String,
-        context: LAContext
-    ) -> NetworkSecretCleanupState {
-        var attempts: [(Backend, String)] = namespace.accounts(for: config).map { (.legacy, $0) }
-        attempts.append(contentsOf: namespace.accounts(for: config)
-            .filter { $0 != keepingAccount }
-            .map { (.dataProtection, $0) })
-        return cleanup(attempts: attempts, context: context)
-    }
-
-    private func cleanupAllItems(
-        for config: NetworkConfig,
-        context: LAContext
-    ) -> NetworkSecretCleanupState {
-        let accounts = namespace.accounts(for: config)
-        let legacyCleanup = cleanup(
-            attempts: accounts.map { (Backend.legacy, $0) },
-            context: context
-        )
-        guard legacyCleanup.issues.isEmpty else { return legacyCleanup }
-
-        let modernCleanup = cleanup(
-            attempts: accounts.map { (Backend.dataProtection, $0) },
-            context: context
-        )
-        return mergeCleanupStates([legacyCleanup, modernCleanup])
-    }
-
-    private func cleanup(
-        attempts: [(Backend, String)],
-        context: LAContext
-    ) -> NetworkSecretCleanupState {
-        var deletedAny = false
-        var issues: [NetworkSecretCleanupIssue] = []
-
-        for (backend, account) in attempts {
-            let status = delete(account: account, backend: backend, context: context)
-            switch status {
-            case errSecSuccess:
-                deletedAny = true
-            case errSecItemNotFound:
-                continue
-            default:
-                let issue = NetworkSecretCleanupIssue(
-                    backend: backend.publicValue,
-                    status: status
-                )
-                issues.append(issue)
-                Self.logger.error(
-                    "Keychain cleanup pending backend=\(backend.publicValue.rawValue, privacy: .public) status=\(status, privacy: .public)"
-                )
-            }
-        }
-
-        if !issues.isEmpty { return .pending(issues) }
-        return deletedAny ? .completed : .notNeeded
-    }
-
-    private func deleteAllItems(for config: NetworkConfig, context: LAContext) throws {
-        let accounts = namespace.accounts(for: config)
-        for account in accounts {
-            try requireSuccessOrNotFound(delete(account: account, backend: .legacy, context: context))
-        }
-        for account in accounts {
-            try requireSuccessOrNotFound(delete(account: account, backend: .dataProtection, context: context))
-        }
-    }
-
-    private func mergeCleanupStates(
-        _ states: [NetworkSecretCleanupState]
-    ) -> NetworkSecretCleanupState {
-        let issues = states.flatMap(\.issues)
-        if !issues.isEmpty { return .pending(issues) }
-        if states.contains(.completed) { return .completed }
-        return .notNeeded
+    private func deleteItem(for config: NetworkConfig, context: LAContext) throws {
+        try requireSuccessOrNotFound(delete(account: namespace.account(for: config), context: context))
     }
 
     private func read(
         account: String,
-        backend: Backend,
         context: LAContext
     ) -> (status: OSStatus, result: CFTypeRef?) {
-        var query = baseQuery(account: account, backend: backend)
+        var query = baseQuery(account: account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         query[kSecUseAuthenticationContext as String] = context
         return keychain.copyMatching(query)
     }
 
-    private func presence(account: String, backend: Backend) throws -> ItemPresence {
-        var query = baseQuery(account: account, backend: backend)
+    private func presence(account: String) throws -> ItemPresence {
+        var query = baseQuery(account: account)
         query[kSecReturnAttributes as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUISkip
@@ -801,7 +533,6 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
         case errSecInteractionNotAllowed:
             return .interactionRequired
         case errSecItemNotFound:
-            guard case .dataProtection = backend else { return .absent }
             // macOS can hide ACL-protected items from metadata-only queries when UI is disabled.
             return try protectedItemPresence(account: account)
         default:
@@ -815,7 +546,7 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
         context.interactionNotAllowed = true
         defer { context.invalidate() }
 
-        var query = baseQuery(account: account, backend: .dataProtection)
+        var query = baseQuery(account: account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         query[kSecUseAuthenticationContext as String] = context
@@ -834,13 +565,13 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
         }
     }
 
-    private func baseQuery(account: String, backend: Backend) -> [String: Any] {
+    private func baseQuery(account: String) -> [String: Any] {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: namespace.service,
             kSecAttrAccount as String: account,
             kSecAttrSynchronizable as String: false,
-            kSecUseDataProtectionKeychain as String: backend == .dataProtection,
+            kSecUseDataProtectionKeychain as String: true,
         ]
         if let accessGroup = namespace.accessGroup {
             query[kSecAttrAccessGroup as String] = accessGroup
@@ -874,8 +605,8 @@ public final class SystemNetworkSecretStore: NetworkSecretStore, @unchecked Send
         ]
     }
 
-    private func delete(account: String, backend: Backend, context: LAContext) -> OSStatus {
-        var query = baseQuery(account: account, backend: backend)
+    private func delete(account: String, context: LAContext) -> OSStatus {
+        var query = baseQuery(account: account)
         query[kSecUseAuthenticationContext as String] = context
         return keychain.delete(query)
     }
