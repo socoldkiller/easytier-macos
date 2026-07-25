@@ -74,6 +74,27 @@ signing_authority() {
     | awk '/^Authority=/ && !found {sub(/^Authority=/, ""); print; found=1}'
 }
 
+plist_value() {
+  local path="$1"
+  shift
+  python3 - "$path" "$@" <<'PY'
+import json
+import plistlib
+import sys
+
+with open(sys.argv[1], "rb") as handle:
+    value = plistlib.load(handle)
+for key in sys.argv[2:]:
+    value = value[key]
+if isinstance(value, (dict, list)):
+    print(json.dumps(value, separators=(",", ":")))
+elif isinstance(value, bool):
+    print("true" if value else "false")
+else:
+    print(value)
+PY
+}
+
 verify_keychain_signing() {
   local embedded_profile="$APP_PATH/Contents/embedded.provisionprofile"
   [[ -f "$embedded_profile" ]] || fail "EasyTier.app must embed a Developer ID provisioning profile for the Data Protection Keychain."
@@ -91,15 +112,11 @@ verify_keychain_signing() {
   expected_identifier="$app_team.com.kkrainbow.easytier.mac"
   wildcard_keychain_group="$app_team.*"
   profile_team="$(plutil -extract TeamIdentifier.0 raw -o - "$profile_plist" 2>/dev/null || true)"
-  profile_identifier="$(
-    plutil -extract 'Entitlements.com\.apple\.application-identifier' raw -o - "$profile_plist" 2>/dev/null \
-      || plutil -extract Entitlements.application-identifier raw -o - "$profile_plist" 2>/dev/null \
-      || true
-  )"
-  profile_groups="$(plutil -extract Entitlements.keychain-access-groups json -o - "$profile_plist" 2>/dev/null || true)"
-  signed_identifier="$(plutil -extract 'com\.apple\.application-identifier' raw -o - "$signed_entitlements" 2>/dev/null || true)"
-  signed_groups="$(plutil -extract keychain-access-groups json -o - "$signed_entitlements" 2>/dev/null || true)"
-  biometric="$(plutil -extract 'com\.apple\.security\.device\.biometric' raw -o - "$signed_entitlements" 2>/dev/null || true)"
+  profile_identifier="$(plist_value "$profile_plist" Entitlements com.apple.application-identifier 2>/dev/null || true)"
+  profile_groups="$(plist_value "$profile_plist" Entitlements keychain-access-groups 2>/dev/null || true)"
+  signed_identifier="$(plist_value "$signed_entitlements" com.apple.application-identifier 2>/dev/null || true)"
+  signed_groups="$(plist_value "$signed_entitlements" keychain-access-groups 2>/dev/null || true)"
+  biometric="$(plist_value "$signed_entitlements" com.apple.security.device.biometric 2>/dev/null || true)"
 
   [[ "$profile_team" == "$app_team" ]] || fail "Provisioning profile Team ID does not match the app signature."
   [[ "$profile_identifier" == "$expected_identifier" ]] || fail "Provisioning profile does not target $expected_identifier."
