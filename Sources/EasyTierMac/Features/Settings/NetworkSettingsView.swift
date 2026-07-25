@@ -17,8 +17,16 @@ struct NetworkSettingsView: View {
                 managedDNSSuffix: managedDNSSuffix,
                 commit: commit
             )
-            GatewayTLSSettingsSection(gateway: gateway)
-            GatewayDNSCredentialsSettingsSection(gateway: gateway)
+
+            Section {
+                GatewayTLSSettingsSection(gateway: gateway)
+                GatewayDNSCredentialsSettingsSection(gateway: gateway)
+            } header: {
+                HStack(spacing: 6) {
+                    Text("Gateway")
+                    BetaBadge()
+                }
+            }
         }
     }
 }

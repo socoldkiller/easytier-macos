@@ -14,7 +14,11 @@ struct GatewayDNSCredentialsSettingsSection: View {
     @State private var errorMessage: String?
 
     var body: some View {
-        Section {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Domains")
+                .font(.subheadline)
+                .bold()
+
             if let errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
@@ -40,6 +44,8 @@ struct GatewayDNSCredentialsSettingsSection: View {
                             editAction: { editingBinding = binding },
                             deleteAction: { bindingPendingDeletion = binding }
                         )
+
+                        Divider()
                     }
                 }
             }
@@ -49,10 +55,11 @@ struct GatewayDNSCredentialsSettingsSection: View {
             }
             .buttonStyle(.plain)
             .font(.body)
-        } header: {
-            Text("Domains")
-        } footer: {
+
             Text("The default domain is used for Magic DNS and automatic HTTPS certificates.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .sheet(isPresented: $isAddingDomain) {
             GatewayDNSCredentialEditor(gateway: gateway, binding: nil)

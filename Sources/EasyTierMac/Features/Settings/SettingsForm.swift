@@ -21,17 +21,43 @@ struct SettingsForm<Content: View>: View {
 
 struct SettingsSwitch: View {
     let title: LocalizedStringKey
+    let showsBetaBadge: Bool
     @Binding var isOn: Bool
 
-    init(_ title: LocalizedStringKey, isOn: Binding<Bool>) {
+    init(
+        _ title: LocalizedStringKey,
+        isOn: Binding<Bool>,
+        showsBetaBadge: Bool = false
+    ) {
         self.title = title
+        self.showsBetaBadge = showsBetaBadge
         _isOn = isOn
     }
 
     var body: some View {
-        Toggle(title, isOn: $isOn)
+        Toggle(isOn: $isOn) {
+            HStack(spacing: 6) {
+                Text(title)
+                if showsBetaBadge {
+                    BetaBadge()
+                }
+            }
+        }
             .toggleStyle(.switch)
             .controlSize(.small)
+    }
+}
+
+struct BetaBadge: View {
+    var body: some View {
+        Text("Beta")
+            .font(.caption2)
+            .bold()
+            .foregroundStyle(.orange)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(.orange.opacity(0.12), in: .capsule)
+            .accessibilityLabel("Beta feature")
     }
 }
 

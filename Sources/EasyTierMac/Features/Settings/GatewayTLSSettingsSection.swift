@@ -29,7 +29,11 @@ struct GatewayTLSSettingsSection: View {
     }
 
     var body: some View {
-        Section {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Automatic HTTPS")
+                .font(.subheadline)
+                .bold()
+
             if let errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
@@ -57,10 +61,11 @@ struct GatewayTLSSettingsSection: View {
                     }
                 }
             }
-        } header: {
-            Text("Automatic HTTPS")
-        } footer: {
+
             Text("Certificate authorities use this address for account, security, and renewal notices.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .task(id: configurationID) {
             synchronizeFromGateway()

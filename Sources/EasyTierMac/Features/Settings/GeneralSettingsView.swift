@@ -15,7 +15,11 @@ struct GeneralSettingsView: View {
     var body: some View {
         SettingsForm {
             Section {
-                SettingsSwitch("Use Frosted Glass", isOn: appearance.glassEffectsEnabledBinding)
+                SettingsSwitch(
+                    "Use Frosted Glass",
+                    isOn: appearance.glassEffectsEnabledBinding,
+                    showsBetaBadge: true
+                )
                 SettingsSwitch("Show EasyTier in Dock", isOn: appearance.showsDockIconBinding)
             } header: {
                 Text("Appearance")
