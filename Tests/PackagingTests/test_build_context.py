@@ -83,6 +83,49 @@ class BuildContextTests(unittest.TestCase):
         self.assertEqual(context.gui_revision, "a" * 40)
         self.assertEqual(context.core_revision, "b" * 40)
 
+    def test_nightly_fetches_the_pinned_stable_core(self) -> None:
+        pinned_revision = build_context.NIGHTLY_CORE_REVISION
+
+        def git_result(root: pathlib.Path, *arguments: str, check: bool = True) -> str:
+            del root, check
+            if arguments == ("fetch", "--no-tags", "origin", build_context.NIGHTLY_CORE_REF):
+                return ""
+            if arguments == ("rev-parse", "FETCH_HEAD^{commit}"):
+                return pinned_revision
+            if arguments == ("checkout", "--detach", pinned_revision):
+                return ""
+            self.fail(f"Unexpected git invocation: {arguments}")
+
+        with (
+            mock.patch.object(build_context, "run_git", side_effect=git_result) as run_git,
+            mock.patch.object(
+                build_context,
+                "repository_revision",
+                side_effect=["a" * 40, pinned_revision],
+            ),
+            mock.patch.object(build_context, "core_version", return_value="v2.6.4"),
+            mock.patch.object(build_context, "gateway_version", return_value="0.1.0"),
+            mock.patch.object(build_context, "latest_stable_tag", return_value="v1.4.1"),
+            mock.patch.object(build_context, "nightly_sources_changed", return_value=(True, True)),
+        ):
+            context = build_context.resolve_github(
+                ROOT_DIR,
+                event_name="schedule",
+                ref="refs/heads/main",
+                ref_name="main",
+                dispatch_mode="ci",
+                run_created_at="2026-07-21T18:00:00Z",
+                nightly_releases_enabled=True,
+                update_base_url="https://example.invalid",
+                run_id="123",
+                run_attempt="1",
+                fetch_nightly_core=True,
+            )
+
+        self.assertEqual(context.core_revision, pinned_revision)
+        self.assertEqual(context.core_version, "v2.6.4")
+        self.assertEqual(run_git.call_count, 3)
+
     def test_scheduled_nightly_does_not_publish_unchanged_sources(self) -> None:
         with (
             mock.patch.object(
