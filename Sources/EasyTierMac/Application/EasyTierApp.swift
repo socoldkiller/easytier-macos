@@ -5,7 +5,7 @@ import SwiftUI
 
 enum EasyTierWindowID {
     static let main = EasyTierWindowRole.main.rawValue
-    static let settings = EasyTierWindowRole.settings.rawValue
+    static let about = "about"
 }
 
 @main
@@ -66,7 +66,17 @@ struct EasyTierApp: App {
         }
         .windowToolbarStyle(.unified)
 
-        Window("EasyTier", id: EasyTierWindowID.settings) {
+        Window("About EasyTier", id: EasyTierWindowID.about) {
+            EasyTierAboutView()
+                .easyTierWindowBackground(
+                    glassEffectsEnabled: appearanceSettings.glassEffectsEnabled,
+                    renderCoordinator: appContext.presentation.glassRenderCoordinator
+                )
+                .environment(appContext)
+        }
+        .windowResizability(.contentSize)
+
+        Settings {
             EasyTierSettingsSheet(
                 initialTab: appContext.settings.requestedTab,
                 mode: store.mode,
@@ -74,8 +84,6 @@ struct EasyTierApp: App {
             ) { mode, magicDNSSettings in
                 Task { await store.applyMode(mode, magicDNSSettings: magicDNSSettings) }
             }
-            .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
-            .easyTierScrollEdgeEffect()
             .easyTierWindowBackground(
                 glassEffectsEnabled: appearanceSettings.glassEffectsEnabled,
                 renderCoordinator: appContext.presentation.glassRenderCoordinator
@@ -90,10 +98,12 @@ struct EasyTierApp: App {
             )
             .environment(appContext)
         }
-        .windowToolbarStyle(.unified)
-        .windowResizability(.contentSize)
+        .defaultSize(width: 612, height: 504)
+        .windowResizability(.contentMinSize)
 
         .commands {
+            EasyTierAboutCommands()
+
             CommandGroup(replacing: .newItem) {
                 Button("New Network") { store.addConfig() }
                     .keyboardShortcut("n")
@@ -102,11 +112,6 @@ struct EasyTierApp: App {
             CommandGroup(replacing: .saveItem) {
                 Button("Save") { store.save() }
                     .keyboardShortcut("s")
-            }
-
-            CommandGroup(replacing: .appSettings) {
-                Button("Settings...") { store.isShowingSettings = true }
-                    .keyboardShortcut(",", modifiers: .command)
             }
 
             SoftwareUpdateCommands(appContext: appContext)

@@ -1,4 +1,3 @@
-import EasyTierShared
 import SwiftUI
 
 struct MenuBarNetworkRow: View {
@@ -6,7 +5,6 @@ struct MenuBarNetworkRow: View {
 
     var name: String
     var subtitle: String
-    var state: ConnectionGlyphState
     var canSwitch: Bool
     var open: () -> Void
     var previous: () -> Void
@@ -20,7 +18,7 @@ struct MenuBarNetworkRow: View {
         HStack(spacing: 0) {
             Button(action: open) {
                 HStack(spacing: 8) {
-                    MenuBarNetworkAvatar(state: state)
+                    MenuBarNetworkAvatar()
                     VStack(alignment: .leading, spacing: 2) {
                         Text(name)
                             .font(.body.weight(.medium))

@@ -27,22 +27,22 @@ enum PublishedServiceChallengeMode: String, CaseIterable, Identifiable, Sendable
         }
     }
 
-    func challenge(credentialID: String?) -> GatewayPublishedServiceChallenge? {
+    func challenge(zoneBindingID: String?) -> GatewayPublishedServiceChallenge? {
         switch self {
         case .http01:
             return .http01
         case .dns01:
-            guard let credentialID else { return nil }
-            return .dns01(credentialID: credentialID)
+            guard let zoneBindingID else { return nil }
+            return .dns01(zoneBindingID: zoneBindingID)
         }
     }
 }
 
 extension GatewayPublishedServiceChallenge {
-    var dnsCredentialID: String? {
+    var dnsZoneBindingID: String? {
         switch self {
         case .http01: nil
-        case let .dns01(credentialID): credentialID
+        case let .dns01(zoneBindingID): zoneBindingID
         }
     }
 }

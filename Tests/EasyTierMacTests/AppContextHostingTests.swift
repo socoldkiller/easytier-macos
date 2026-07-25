@@ -42,11 +42,12 @@ import Testing
 }
 
 @MainActor
-@Test func gatewaySettingsRendersWithAppContextEnvironment() {
+@Test(arguments: [EasyTierSettingsTab.network, .advanced, .about])
+func settingsPanesRenderWithAppContextEnvironment(tab: EasyTierSettingsTab) {
     let appContext = AppContext.preview()
     let store = appContext.workspace.store
     let rootView = EasyTierSettingsSheet(
-        initialTab: .gateway,
+        initialTab: tab,
         mode: store.mode,
         magicDNSSettings: store.magicDNSSettings,
         onChange: { _, _ in }
@@ -55,6 +56,20 @@ import Testing
     let hostingView = NSHostingView(rootView: rootView)
 
     hostingView.frame = NSRect(x: 0, y: 0, width: 760, height: 620)
+    hostingView.layoutSubtreeIfNeeded()
+
+    #expect(hostingView.fittingSize.width > 0)
+    #expect(hostingView.fittingSize.height > 0)
+}
+
+@MainActor
+@Test func aboutWindowRendersWithAppContextEnvironment() {
+    let appContext = AppContext.preview()
+    let rootView = EasyTierAboutView()
+        .environment(appContext)
+    let hostingView = NSHostingView(rootView: rootView)
+
+    hostingView.frame = NSRect(x: 0, y: 0, width: 460, height: 520)
     hostingView.layoutSubtreeIfNeeded()
 
     #expect(hostingView.fittingSize.width > 0)

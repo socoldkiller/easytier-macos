@@ -1,15 +1,5 @@
 import SwiftUI
 
-enum SettingsTint {
-    static let magicDNS = Color.indigo
-    static let rpcServer = Color.teal
-}
-
-enum SettingsLayoutMetrics {
-    static let paneSectionSpacing: CGFloat = 14
-    static let paneVerticalPadding: CGFloat = 14
-}
-
 struct SectionIcon: View {
     var systemImage: String
     var tint: Color
@@ -90,73 +80,6 @@ struct CardSection<Content: View>: View {
     }
 }
 
-struct SettingsInlineRow<Content: View>: View {
-    var label: String
-    var alignment: VerticalAlignment
-    @ViewBuilder var content: Content
-
-    init(
-        _ label: String,
-        alignment: VerticalAlignment = .center,
-        @ViewBuilder content: () -> Content
-    ) {
-        self.label = label
-        self.alignment = alignment
-        self.content = content()
-    }
-
-    var body: some View {
-        HStack(alignment: alignment, spacing: 16) {
-            Text(label)
-                .font(.body)
-                .foregroundStyle(.primary)
-                .frame(minWidth: 110, alignment: .leading)
-
-            Spacer(minLength: 12)
-
-            content
-                .frame(maxWidth: .infinity, alignment: .trailing)
-        }
-    }
-}
-
-struct SettingsToggleRow<Label: View>: View {
-    @Binding var isOn: Bool
-    @ViewBuilder var label: Label
-
-    init(isOn: Binding<Bool>, @ViewBuilder label: () -> Label) {
-        _isOn = isOn
-        self.label = label()
-    }
-
-    var body: some View {
-        Toggle(isOn: $isOn) {
-            label
-                .font(.body)
-                .foregroundStyle(.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .toggleStyle(.switch)
-        .controlSize(.small)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-extension SettingsToggleRow where Label == Text {
-    init(_ title: LocalizedStringKey, isOn: Binding<Bool>) {
-        self.init(isOn: isOn) {
-            Text(title)
-        }
-    }
-}
-
-struct SettingsRowDivider: View {
-    var body: some View {
-        Divider()
-            .opacity(0.45)
-    }
-}
-
 struct FieldRow<Content: View>: View {
     var label: String
     var description: String?
@@ -212,67 +135,6 @@ struct FieldRow<Content: View>: View {
             content
                 .frame(maxWidth: 520, alignment: .leading)
         }
-    }
-}
-
-struct StatusPill: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    enum Tone {
-        case neutral, positive, warning
-        var color: Color {
-            switch self {
-            case .neutral: .secondary
-            case .positive: .green
-            case .warning: .orange
-            }
-        }
-    }
-
-    var text: String
-    var tone: Tone = .neutral
-    var showsProgress = false
-
-    init(_ text: String, tone: Tone = .neutral, showsProgress: Bool = false) {
-        self.text = text
-        self.tone = tone
-        self.showsProgress = showsProgress
-    }
-
-    var body: some View {
-        HStack(spacing: 5) {
-            if showsProgress, !reduceMotion {
-                ProgressView()
-                    .controlSize(.mini)
-                    .frame(width: 10, height: 10)
-                    .accessibilityHidden(true)
-            } else {
-                Circle()
-                    .fill(tone.color)
-                    .frame(width: 6, height: 6)
-                    .accessibilityHidden(true)
-            }
-            Text(text)
-                .font(.caption)
-                .foregroundStyle(tone.color == .secondary ? .secondary : .primary)
-                .lineLimit(1)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(Capsule().fill(tone.color.opacity(0.12)))
-        .overlay(Capsule().stroke(tone.color.opacity(0.25), lineWidth: 0.5))
-    }
-}
-
-struct StatusDot: View {
-    var tone: StatusPill.Tone = .neutral
-    var accessibilityLabel: String
-
-    var body: some View {
-        Circle()
-            .fill(tone.color)
-            .frame(width: 8, height: 8)
-            .accessibilityLabel(Text(accessibilityLabel))
     }
 }
 

@@ -4,7 +4,7 @@ import SwiftUI
 
 struct ServicesView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @Environment(\.windowPresentationActivity) private var presentationActivity
     @Environment(AppContext.self) private var appContext
 
@@ -15,6 +15,7 @@ struct ServicesView: View {
     @State private var deletionCandidate: GatewayPublishedService?
     @State private var errorMessage: String?
 
+    var gatewayControlError: String?
     var onPublishService: () -> Void = {}
 
     private var store: EasyTierAppStore { appContext.workspace.store }
@@ -36,7 +37,7 @@ struct ServicesView: View {
     }
 
     private var displayedError: String? {
-        errorMessage ?? gateway.convergence.message ?? gateway.lastError
+        errorMessage ?? gatewayControlError ?? gateway.convergence.message ?? gateway.lastError
             ?? gateway.status.runtimeIssues.last?.message
     }
 
@@ -72,7 +73,7 @@ struct ServicesView: View {
             }
 
             if !gateway.services.isEmpty, !gateway.isAutomaticHTTPSReady {
-                GatewayTLSRequirementBanner(action: openGatewaySettings)
+                GatewayTLSRequirementBanner(action: openNetworkSettings)
                     .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 8))
             }
 
@@ -114,12 +115,13 @@ struct ServicesView: View {
                     currentIPv4: row?.proxyIPv4 ?? "—",
                     members: gateway.topologyMembers
                 ),
+                dnsZoneBindings: gateway.dnsZoneBindings,
                 dnsCredentials: gateway.dnsCredentials,
                 certificate: certificate,
-                defaultDNSCredentialID: gateway.defaultDNSCredentialID,
+                defaultDNSZoneBindingID: gateway.defaultDNSZoneBindingID,
                 sslProvider: row?.sslProvider
                     ?? PublishedServiceSSLProvider(acmeConfiguration: gateway.acmeConfiguration),
-                onManageDNSCredentials: openGatewaySettings
+                onManageDNSCredentials: openNetworkSettings
                 ) { target, port, certificateSelection in
                 try await updateService(
                     target: target,
@@ -292,9 +294,9 @@ struct ServicesView: View {
         }
     }
 
-    private func openGatewaySettings() {
-        appContext.settings.request(.gateway)
-        openWindow(id: EasyTierWindowID.settings)
+    private func openNetworkSettings() {
+        appContext.settings.request(.network)
+        openSettings()
     }
 
     private func perform(

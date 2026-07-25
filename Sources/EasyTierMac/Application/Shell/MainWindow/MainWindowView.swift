@@ -4,6 +4,7 @@ import SwiftUI
 
 struct MainWindowView: View {
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettingsAction
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -27,6 +28,8 @@ struct MainWindowView: View {
     @State private var configEditorScrolledPastTop = false
     @State private var configEditorTitlebarScrollEdgeVisible = false
     @State private var publishServiceRequest: PublishServiceRequest?
+    @State private var isChangingGateway = false
+    @State private var gatewayControlError: String?
 
     private static let tabTransitionDistance: CGFloat = 14
     private static let networkTransitionDistance: CGFloat = 7
@@ -134,7 +137,7 @@ struct MainWindowView: View {
         }
         .onChange(of: store.isShowingAbout) { _, isShowing in
             if isShowing {
-                openSettings(tab: .about)
+                openAboutWindow()
                 store.isShowingAbout = false
             }
         }
@@ -226,7 +229,7 @@ struct MainWindowView: View {
                 }
             )
         case .services:
-            ServicesView {
+            ServicesView(gatewayControlError: gatewayControlError) {
                 beginPublishingService()
             }
         case .view:
@@ -381,7 +384,19 @@ struct MainWindowView: View {
                 .help(publishServiceHelp)
             }
 
-            if let remoteSession = remoteToolbarSession {
+            if store.selectedTab == .services {
+                Button {
+                    toggleGateway()
+                } label: {
+                    Label(
+                        gatewayActionTitle,
+                        systemImage: gatewayActionSystemImage
+                    )
+                    .foregroundStyle(gatewayActionColor)
+                }
+                .disabled(isChangingGateway || gateway.isBusy)
+                .help(gatewayActionHelp)
+            } else if let remoteSession = remoteToolbarSession {
                 Button {
                     Task { await applyRemoteToolbarChanges() }
                 } label: {
@@ -392,14 +407,6 @@ struct MainWindowView: View {
                 .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
             } else {
                 localConfigApplyStatus
-
-                Button {
-                    openSettings(tab: .general)
-                } label: {
-                    Label("Settings", systemImage: "gearshape")
-                }
-                .help("EasyTier Settings")
-                .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
 
                 Button {
                     performSelectedConnectionAction()
@@ -450,24 +457,19 @@ struct MainWindowView: View {
                 Label("More", systemImage: "ellipsis.circle")
             }
             .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
+        }
 
-            Menu {
-                Button("Install on Linux") {
-                    store.isShowingLinuxInstallGuide = true
-                }
-                Link("Online Docs", destination: URL(string: "https://easytier.cn") ?? URL(fileURLWithPath: "/"))
-                Link("Releases", destination: URL(string: "https://github.com/EasyTier/EasyTier/releases") ?? URL(fileURLWithPath: "/"))
-            } label: {
-                Label("Help", systemImage: "questionmark.circle")
-            }
-            .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
+        if #available(macOS 26.0, *) {
+            ToolbarSpacer(.fixed, placement: .primaryAction)
+        }
 
+        ToolbarItem(placement: .primaryAction) {
             Button {
-                store.isShowingAbout = true
+                openSettings(tab: .general)
             } label: {
-                Label("About", systemImage: "info.circle")
+                Label("Settings", systemImage: "gearshape")
             }
-            .help("About EasyTier")
+            .help("EasyTier Settings")
             .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
         }
     }
@@ -510,6 +512,44 @@ struct MainWindowView: View {
 
     private var selectedConfigCanStop: Bool {
         store.selectedConfigCanStop
+    }
+
+    private var gatewayActionTitle: String {
+        if isChangingGateway || gateway.isBusy { return "Working" }
+        return gateway.desiredEnabled ? "Pause Services" : "Run Services"
+    }
+
+    private var gatewayActionSystemImage: String {
+        if isChangingGateway || gateway.isBusy { return "hourglass" }
+        return gateway.desiredEnabled ? "pause.fill" : "play.fill"
+    }
+
+    private var gatewayActionColor: Color {
+        if isChangingGateway || gateway.isBusy {
+            return Color(nsColor: .secondaryLabelColor)
+        }
+        return gateway.desiredEnabled ? EasyTierColors.statusError : .accentColor
+    }
+
+    private var gatewayActionHelp: String {
+        if isChangingGateway || gateway.isBusy { return "Updating published services" }
+        return gateway.desiredEnabled
+            ? "Pause all published services"
+            : "Run published services"
+    }
+
+    private func toggleGateway() {
+        let enabled = !gateway.desiredEnabled
+        Task {
+            isChangingGateway = true
+            gatewayControlError = nil
+            defer { isChangingGateway = false }
+            do {
+                try await gateway.setGatewayEnabled(enabled)
+            } catch {
+                gatewayControlError = error.localizedDescription
+            }
+        }
     }
 
     private var serviceCreationTargets: [PublishedServiceTargetOption] {
@@ -738,7 +778,11 @@ struct MainWindowView: View {
 
     private func openSettings(tab: EasyTierSettingsTab) {
         appContext.settings.request(tab)
-        openWindow(id: EasyTierWindowID.settings)
+        openSettingsAction()
+    }
+
+    private func openAboutWindow() {
+        openWindow(id: EasyTierWindowID.about)
     }
 
     private func highlightSearchResult(peerID: String) {

@@ -2,7 +2,8 @@ import Foundation
 
 package enum GatewaySchema {
     package static let version: UInt32 = 7
-    package static let persistedVersion: UInt32 = 6
+    package static let persistedVersion: UInt32 = 7
+    package static let previousPersistedVersion: UInt32 = 6
     package static let runtimeVersion: UInt32 = version
 }
 
@@ -319,10 +320,11 @@ package struct GatewayPersistedState: Codable, Equatable, Sendable {
     package var revision: UInt64
     package var gatewayEnabled: Bool
     package var acmeAccount: GatewayACMEConfiguration?
-    package var defaultDNSCredentialID: String?
+    package var defaultDNSZoneBindingID: String?
     package var publishingNetworkConfigID: String?
     package var lastKnownNetworkIPv4CIDR: String?
     package var dnsCredentials: [GatewayDNSCredentialDescriptor]
+    package var dnsZoneBindings: [GatewayDNSZoneBinding]
     package var certificates: [GatewayManagedCertificate]
     package var services: [GatewayPublishedService]
 
@@ -332,10 +334,11 @@ package struct GatewayPersistedState: Codable, Equatable, Sendable {
         revision: UInt64 = 0,
         gatewayEnabled: Bool = false,
         acmeAccount: GatewayACMEConfiguration? = nil,
-        defaultDNSCredentialID: String? = nil,
+        defaultDNSZoneBindingID: String? = nil,
         publishingNetworkConfigID: String? = nil,
         lastKnownNetworkIPv4CIDR: String? = nil,
         dnsCredentials: [GatewayDNSCredentialDescriptor] = [],
+        dnsZoneBindings: [GatewayDNSZoneBinding] = [],
         certificates: [GatewayManagedCertificate] = [],
         services: [GatewayPublishedService] = []
     ) {
@@ -344,10 +347,11 @@ package struct GatewayPersistedState: Codable, Equatable, Sendable {
         self.revision = revision
         self.gatewayEnabled = gatewayEnabled
         self.acmeAccount = acmeAccount
-        self.defaultDNSCredentialID = defaultDNSCredentialID
+        self.defaultDNSZoneBindingID = defaultDNSZoneBindingID
         self.publishingNetworkConfigID = publishingNetworkConfigID
         self.lastKnownNetworkIPv4CIDR = lastKnownNetworkIPv4CIDR
         self.dnsCredentials = dnsCredentials
+        self.dnsZoneBindings = dnsZoneBindings
         self.certificates = certificates
         self.services = services
     }
@@ -368,10 +372,12 @@ package struct GatewayPersistedState: Codable, Equatable, Sendable {
         case revision
         case gatewayEnabled = "gateway_enabled"
         case acmeAccount = "acme_account"
-        case defaultDNSCredentialID = "default_dns_credential_id"
+        case defaultDNSZoneBindingID = "default_dns_zone_binding_id"
+        case legacyDefaultDNSCredentialID = "default_dns_credential_id"
         case publishingNetworkConfigID = "publishing_network_config_id"
         case lastKnownNetworkIPv4CIDR = "last_known_network_ipv4_cidr"
         case dnsCredentials = "dns_credentials"
+        case dnsZoneBindings = "dns_zone_bindings"
         case certificates
         case services
     }
@@ -382,7 +388,10 @@ package struct GatewayPersistedState: Codable, Equatable, Sendable {
         configurationID = try container.decode(String.self, forKey: .configurationID)
         revision = try container.decode(UInt64.self, forKey: .revision)
         acmeAccount = try container.decodeIfPresent(GatewayACMEConfiguration.self, forKey: .acmeAccount)
-        defaultDNSCredentialID = try container.decodeIfPresent(String.self, forKey: .defaultDNSCredentialID)
+        defaultDNSZoneBindingID = try container.decodeIfPresent(
+            String.self,
+            forKey: .defaultDNSZoneBindingID
+        ) ?? container.decodeIfPresent(String.self, forKey: .legacyDefaultDNSCredentialID)
         publishingNetworkConfigID = try container.decodeIfPresent(
             String.self,
             forKey: .publishingNetworkConfigID
@@ -394,6 +403,10 @@ package struct GatewayPersistedState: Codable, Equatable, Sendable {
         dnsCredentials = try container.decodeIfPresent(
             [GatewayDNSCredentialDescriptor].self,
             forKey: .dnsCredentials
+        ) ?? []
+        dnsZoneBindings = try container.decodeIfPresent(
+            [GatewayDNSZoneBinding].self,
+            forKey: .dnsZoneBindings
         ) ?? []
         certificates = try container.decodeIfPresent(
             [GatewayManagedCertificate].self,
@@ -411,10 +424,11 @@ package struct GatewayPersistedState: Codable, Equatable, Sendable {
         try container.encode(revision, forKey: .revision)
         try container.encode(gatewayEnabled, forKey: .gatewayEnabled)
         try container.encodeIfPresent(acmeAccount, forKey: .acmeAccount)
-        try container.encodeIfPresent(defaultDNSCredentialID, forKey: .defaultDNSCredentialID)
+        try container.encodeIfPresent(defaultDNSZoneBindingID, forKey: .defaultDNSZoneBindingID)
         try container.encodeIfPresent(publishingNetworkConfigID, forKey: .publishingNetworkConfigID)
         try container.encodeIfPresent(lastKnownNetworkIPv4CIDR, forKey: .lastKnownNetworkIPv4CIDR)
         try container.encode(dnsCredentials, forKey: .dnsCredentials)
+        try container.encode(dnsZoneBindings, forKey: .dnsZoneBindings)
         try container.encode(certificates, forKey: .certificates)
         try container.encode(services, forKey: .services)
     }
@@ -443,13 +457,35 @@ package struct GatewayDNSCredentialDescriptor: Codable, Equatable, Identifiable,
     }
 }
 
+package struct GatewayDNSZoneBinding: Codable, Equatable, Identifiable, Sendable {
+    package var id: String
+    package var dnsSuffix: String
+    package var credentialID: String
+
+    package init(
+        id: String = UUID().uuidString.lowercased(),
+        dnsSuffix: String,
+        credentialID: String
+    ) {
+        self.id = id
+        self.dnsSuffix = dnsSuffix
+        self.credentialID = credentialID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case dnsSuffix = "dns_suffix"
+        case credentialID = "credential_id"
+    }
+}
+
 package enum GatewayPublishedServiceChallenge: Equatable, Sendable {
     case http01
-    case dns01(credentialID: String)
+    case dns01(zoneBindingID: String)
 }
 
 package enum GatewayManagedCertificateStrategy: Equatable, Sendable {
-    case automaticWildcard(credentialID: String)
+    case automaticWildcard(zoneBindingID: String)
     case custom(authority: GatewayCertificateAuthority, challenge: GatewayPublishedServiceChallenge)
 }
 
@@ -461,7 +497,8 @@ package enum GatewayServiceCertificateSelection: Equatable, Sendable {
 extension GatewayManagedCertificateStrategy: Codable {
     private enum CodingKeys: String, CodingKey {
         case type
-        case credentialID = "credential_id"
+        case zoneBindingID = "zone_binding_id"
+        case legacyCredentialID = "credential_id"
         case authority
         case challenge
     }
@@ -476,7 +513,8 @@ extension GatewayManagedCertificateStrategy: Codable {
         switch try container.decode(Kind.self, forKey: .type) {
         case .automaticWildcard:
             self = .automaticWildcard(
-                credentialID: try container.decode(String.self, forKey: .credentialID)
+                zoneBindingID: try container.decodeIfPresent(String.self, forKey: .zoneBindingID)
+                    ?? container.decode(String.self, forKey: .legacyCredentialID)
             )
         case .custom:
             self = .custom(
@@ -489,9 +527,9 @@ extension GatewayManagedCertificateStrategy: Codable {
     package func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case let .automaticWildcard(credentialID):
+        case let .automaticWildcard(zoneBindingID):
             try container.encode(Kind.automaticWildcard, forKey: .type)
-            try container.encode(credentialID, forKey: .credentialID)
+            try container.encode(zoneBindingID, forKey: .zoneBindingID)
         case let .custom(authority, challenge):
             try container.encode(Kind.custom, forKey: .type)
             try container.encode(authority, forKey: .authority)
@@ -519,7 +557,8 @@ package struct GatewayManagedCertificate: Codable, Equatable, Identifiable, Send
 extension GatewayPublishedServiceChallenge: Codable {
     private enum CodingKeys: String, CodingKey {
         case type
-        case credentialID = "credential_id"
+        case zoneBindingID = "zone_binding_id"
+        case legacyCredentialID = "credential_id"
     }
 
     private enum Kind: String, Codable {
@@ -534,7 +573,8 @@ extension GatewayPublishedServiceChallenge: Codable {
             self = .http01
         case .dns01:
             self = .dns01(
-                credentialID: try container.decode(String.self, forKey: .credentialID)
+                zoneBindingID: try container.decodeIfPresent(String.self, forKey: .zoneBindingID)
+                    ?? container.decode(String.self, forKey: .legacyCredentialID)
             )
         }
     }
@@ -544,9 +584,9 @@ extension GatewayPublishedServiceChallenge: Codable {
         switch self {
         case .http01:
             try container.encode(Kind.http01, forKey: .type)
-        case let .dns01(credentialID):
+        case let .dns01(zoneBindingID):
             try container.encode(Kind.dns01, forKey: .type)
-            try container.encode(credentialID, forKey: .credentialID)
+            try container.encode(zoneBindingID, forKey: .zoneBindingID)
         }
     }
 }

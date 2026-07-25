@@ -32,9 +32,14 @@ final class GatewayRuntimeController {
     var publishingNetworkConfigID: String? { persistedState?.publishingNetworkConfigID }
     var acmeConfiguration: GatewayACMEConfiguration? { persistedState?.acmeAccount }
     var dnsCredentials: [GatewayDNSCredentialDescriptor] { persistedState?.dnsCredentials ?? [] }
-    var defaultDNSCredentialID: String? { persistedState?.defaultDNSCredentialID }
+    var dnsZoneBindings: [GatewayDNSZoneBinding] { persistedState?.dnsZoneBindings ?? [] }
+    var defaultDNSZoneBindingID: String? { persistedState?.defaultDNSZoneBindingID }
+    var defaultDNSZoneBinding: GatewayDNSZoneBinding? {
+        guard let defaultDNSZoneBindingID else { return nil }
+        return dnsZoneBindings.first { $0.id == defaultDNSZoneBindingID }
+    }
     var isAutomaticHTTPSReady: Bool {
-        guard defaultDNSCredentialID != nil,
+        guard defaultDNSZoneBindingID != nil,
               Set(acmeConfiguration?.acceptedAuthorities ?? [])
                 .isSuperset(of: GatewayCertificateAuthority.allCases)
         else { return false }
@@ -121,7 +126,10 @@ final class GatewayRuntimeController {
     func load() async {
         await withMutation {
             do {
-                persistedState = try await configurationStore.load() ?? .empty
+                persistedState = try await configurationStore.load(
+                    magicDNSSuffix: store?.magicDNSSettings.dnsSuffix
+                        ?? MagicDNSSettings.defaultDNSSuffix
+                ) ?? .empty
                 lastError = nil
             } catch {
                 persistedState = .empty
@@ -129,6 +137,7 @@ final class GatewayRuntimeController {
                 lastError = error.localizedDescription
             }
         }
+        await synchronizeMagicDNSWithDefaultDomain()
         if let store { environmentDidChange(store: store) }
     }
 
@@ -160,12 +169,18 @@ final class GatewayRuntimeController {
                 "Wait for Magic DNS to become ready before publishing a service."
             )
         }
+        guard let publicDNSSuffix = defaultDNSZoneBinding?.dnsSuffix else {
+            throw GatewayConfigurationValidationError.invalid(
+                "Add a default domain before publishing a service."
+            )
+        }
         var service = try GatewayPublishedServicesValidator.makeService(
             networkConfigID: networkConfigID,
             targetPeerID: targetPeerID,
             targetInstanceID: targetInstanceID,
             targetHostname: targetHostname,
             magicDNSSuffix: magicDNSSuffix,
+            publicDNSSuffix: publicDNSSuffix,
             serviceLabel: serviceLabel,
             targetPort: targetPort,
             desiredEnabled: true,
@@ -393,24 +408,62 @@ final class GatewayRuntimeController {
         }
     }
 
-    func saveDNSCredential(
+    func saveDNSDomain(
+        binding: GatewayDNSZoneBinding,
         descriptor: GatewayDNSCredentialDescriptor,
         secret: GatewayCredentialSecret
     ) async throws {
         try await withMutation {
             var state = persistedState ?? .empty
+            var binding = binding
+            binding.dnsSuffix = try MagicDNSSettings.normalizedDNSSuffix(binding.dnsSuffix)
             var descriptor = descriptor
-            if let index = state.dnsCredentials.firstIndex(where: { $0.id == descriptor.id }) {
-                descriptor.revision = state.dnsCredentials[index].revision &+ 1
-                state.dnsCredentials[index] = descriptor
+            let secretProvider: GatewayDNSProvider = switch secret {
+            case .cloudflare: .cloudflare
+            case .aliyun: .aliyun
+            }
+            guard binding.credentialID == descriptor.id else {
+                throw GatewayConfigurationValidationError.invalid(
+                    "DNS domain and credential IDs do not match."
+                )
+            }
+            guard descriptor.provider == secretProvider else {
+                throw GatewayConfigurationValidationError.invalid(
+                    "DNS credential does not match the selected provider."
+                )
+            }
+            if let bindingIndex = state.dnsZoneBindings.firstIndex(where: { $0.id == binding.id }) {
+                let existingBinding = state.dnsZoneBindings[bindingIndex]
+                guard existingBinding.dnsSuffix == binding.dnsSuffix,
+                      existingBinding.credentialID == binding.credentialID,
+                      let credentialIndex = state.dnsCredentials.firstIndex(where: {
+                          $0.id == existingBinding.credentialID
+                      }),
+                      state.dnsCredentials[credentialIndex].provider == descriptor.provider
+                else {
+                    throw GatewayConfigurationValidationError.invalid(
+                        "Domain and provider cannot change when updating a credential."
+                    )
+                }
+                descriptor = state.dnsCredentials[credentialIndex]
+                descriptor.revision &+= 1
+                state.dnsCredentials[credentialIndex] = descriptor
             } else {
+                guard !state.dnsCredentials.contains(where: { $0.id == descriptor.id }) else {
+                    throw GatewayConfigurationValidationError.invalid(
+                        "DNS credential is already bound to another domain."
+                    )
+                }
+                descriptor.label = String(binding.dnsSuffix.dropLast())
                 state.dnsCredentials.append(descriptor)
-                if state.defaultDNSCredentialID == nil {
-                    state.defaultDNSCredentialID = descriptor.id
+                state.dnsZoneBindings.append(binding)
+                if state.defaultDNSZoneBindingID == nil {
+                    state.defaultDNSZoneBindingID = binding.id
                 }
             }
             try await credentialStore.save(secret, id: descriptor.id)
             try await save(state)
+            await synchronizeMagicDNSWithDefaultDomain()
             await reconcileWithoutLock()
         }
     }
@@ -419,40 +472,54 @@ final class GatewayRuntimeController {
         try await credentialStore.load(id: id)
     }
 
-    func deleteDNSCredential(id: String) async throws {
+    func deleteDNSDomain(id: String) async throws {
         try await withMutation {
             guard var state = persistedState else { return }
+            guard state.defaultDNSZoneBindingID != id else {
+                throw GatewayConfigurationValidationError.invalid(
+                    "Choose another default domain before deleting this one."
+                )
+            }
             let isReferenced = state.certificates.contains { certificate in
                 switch certificate.strategy {
-                case let .automaticWildcard(credentialID):
-                    credentialID == id
+                case let .automaticWildcard(zoneBindingID):
+                    zoneBindingID == id
                 case let .custom(_, challenge):
-                    challenge.dnsCredentialID == id
+                    challenge.dnsZoneBindingID == id
                 }
             }
             guard !isReferenced else {
                 throw GatewayConfigurationValidationError.invalid(
-                    "Change services that use this DNS credential before deleting it."
+                    "Change services that use this domain before deleting it."
                 )
             }
-            state.dnsCredentials.removeAll { $0.id == id }
-            if state.defaultDNSCredentialID == id {
-                state.defaultDNSCredentialID = state.dnsCredentials.first?.id
+            guard let binding = state.dnsZoneBindings.first(where: { $0.id == id }) else {
+                return
             }
-            try await credentialStore.remove(id: id)
+            state.dnsZoneBindings.removeAll { $0.id == id }
+            let credentialIsUsed = state.dnsZoneBindings.contains {
+                $0.credentialID == binding.credentialID
+            }
+            if !credentialIsUsed {
+                state.dnsCredentials.removeAll { $0.id == binding.credentialID }
+            }
             try await save(state)
+            if !credentialIsUsed {
+                try await credentialStore.remove(id: binding.credentialID)
+            }
             await reconcileWithoutLock()
         }
     }
 
-    func setDefaultDNSCredential(id: String?) async throws {
+    func setDefaultDNSDomain(id: String) async throws {
         try await withMutation {
             var state = persistedState ?? .empty
-            if let id, !state.dnsCredentials.contains(where: { $0.id == id }) {
-                throw GatewayConfigurationValidationError.invalid("DNS credential was not found.")
+            guard state.dnsZoneBindings.contains(where: { $0.id == id }) else {
+                throw GatewayConfigurationValidationError.invalid("DNS domain was not found.")
             }
-            state.defaultDNSCredentialID = id
+            state.defaultDNSZoneBindingID = id
             try await save(state)
+            await synchronizeMagicDNSWithDefaultDomain()
         }
     }
 
@@ -812,9 +879,9 @@ final class GatewayRuntimeController {
     ) throws -> GatewayManagedCertificate {
         switch selection {
         case .automatic:
-            guard let credentialID = state.defaultDNSCredentialID else {
+            guard let zoneBindingID = state.defaultDNSZoneBindingID else {
                 throw GatewayConfigurationValidationError.invalid(
-                    "Choose a default DNS credential before using Automatic HTTPS."
+                    "Choose a default domain before using Automatic HTTPS."
                 )
             }
             let suffix = service.publicDNSSuffix.hasSuffix(".")
@@ -833,7 +900,7 @@ final class GatewayRuntimeController {
             }
             let certificate = GatewayManagedCertificate(
                 domains: [automaticDomain],
-                strategy: .automaticWildcard(credentialID: credentialID)
+                strategy: .automaticWildcard(zoneBindingID: zoneBindingID)
             )
             state.certificates.append(certificate)
             return certificate
@@ -845,6 +912,15 @@ final class GatewayRuntimeController {
             state.certificates.append(certificate)
             return certificate
         }
+    }
+
+    private func synchronizeMagicDNSWithDefaultDomain() async {
+        guard let store,
+              let suffix = defaultDNSZoneBinding?.dnsSuffix,
+              store.magicDNSSettings.dnsSuffix != suffix,
+              let settings = try? MagicDNSSettings(dnsSuffix: suffix)
+        else { return }
+        await store.applyMode(store.mode, magicDNSSettings: settings)
     }
 
     private func acceptRequiredAuthorities(

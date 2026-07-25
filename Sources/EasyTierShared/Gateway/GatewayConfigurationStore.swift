@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 
 package protocol GatewayConfigurationStoring: Sendable {
-    func load() async throws -> GatewayPersistedState?
+    func load(magicDNSSuffix: String) async throws -> GatewayPersistedState?
     func save(_ state: GatewayPersistedState) async throws
 }
 
@@ -24,14 +24,22 @@ package actor GatewayConfigurationStore: GatewayConfigurationStoring {
         self.fileURL = fileURL
     }
 
-    package func load() throws -> GatewayPersistedState? {
+    package func load(magicDNSSuffix: String) throws -> GatewayPersistedState? {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
         do {
-            let state = try JSONDecoder().decode(
+            let decoded = try JSONDecoder().decode(
                 GatewayPersistedState.self,
                 from: Data(contentsOf: fileURL)
             )
-            return try GatewayPublishedServicesValidator.validate(state)
+            let state = try GatewayConfigurationMigration.migrate(
+                decoded,
+                magicDNSSuffix: magicDNSSuffix
+            )
+            let validated = try GatewayPublishedServicesValidator.validate(state)
+            if decoded.schemaVersion != state.schemaVersion {
+                try save(validated)
+            }
+            return validated
         } catch {
             let backupURL = try backUpIncompatibleConfiguration()
             throw GatewayConfigurationStoreError.incompatibleConfiguration(

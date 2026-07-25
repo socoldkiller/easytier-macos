@@ -4,14 +4,6 @@ enum GatewayPresentationTone: Equatable, Sendable {
     case neutral
     case positive
     case warning
-
-    var statusPillTone: StatusPill.Tone {
-        switch self {
-        case .neutral: .neutral
-        case .positive: .positive
-        case .warning: .warning
-        }
-    }
 }
 
 struct GatewayRuntimePresentation: Equatable, Sendable {

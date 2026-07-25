@@ -8,6 +8,8 @@ struct GatewayTLSSettingsSection: View {
     @State private var savedContactEmail: String?
     @State private var isSaving = false
     @State private var errorMessage: String?
+    @State private var hasAttemptedCommit = false
+    @FocusState private var contactEmailIsFocused: Bool
 
     private var configurationID: String {
         gateway.acmeConfiguration?.contactEmail ?? ""
@@ -22,41 +24,54 @@ struct GatewayTLSSettingsSection: View {
     }
 
     private var contactEmailIsInvalid: Bool {
-        !contactEmail.isEmpty && normalizedContactEmail == nil
+        normalizedContactEmail == nil
+            && (!contactEmail.isEmpty || (hasAttemptedCommit && hasUnsavedChanges))
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        Section {
             if let errorMessage {
-                ErrorBanner(message: errorMessage)
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
             }
 
-            CardSection(
-                "Certificate Contact",
-                systemImage: "envelope",
-                footer: "This global address is shared by all certificates. Certificate authorities use it for account, security, and renewal notices."
-            ) {
-                SettingsInlineRow("Contact Email") {
-                    HStack(alignment: .top, spacing: 8) {
-                        VStack(alignment: .trailing, spacing: 4) {
-                            TextField("name@example.com", text: $contactEmail)
-                                .textFieldStyle(.glassField)
-                                .frame(minWidth: 180, maxWidth: 260)
-                                .disabled(isSaving)
-                            if contactEmailIsInvalid {
-                                Text("Enter a valid email address.")
-                                    .font(.caption)
-                                    .foregroundStyle(.red)
-                            }
+            LabeledContent("Contact Email") {
+                HStack(alignment: .top, spacing: 6) {
+                    VStack(alignment: .trailing, spacing: 4) {
+                        TextField("name@example.com", text: $contactEmail)
+                            .labelsHidden()
+                            .frame(width: 240)
+                            .focused($contactEmailIsFocused)
+                            .onSubmit(saveIfNeeded)
+                            .disabled(isSaving)
+                        if contactEmailIsInvalid {
+                            Text("Enter a valid email address.")
+                                .font(.caption)
+                                .foregroundStyle(.red)
                         }
-                        Button("Save", systemImage: "checkmark", action: save)
-                            .disabled(isSaving || !hasUnsavedChanges || normalizedContactEmail == nil)
+                    }
+                    if isSaving {
+                        ProgressView()
+                            .controlSize(.small)
+                            .accessibilityLabel("Saving contact email")
                     }
                 }
             }
+        } header: {
+            Text("Automatic HTTPS")
+        } footer: {
+            Text("Certificate authorities use this address for account, security, and renewal notices.")
         }
         .task(id: configurationID) {
             synchronizeFromGateway()
+        }
+        .onChange(of: contactEmailIsFocused) { wasFocused, isFocused in
+            if wasFocused, !isFocused {
+                saveIfNeeded()
+            }
+        }
+        .onChange(of: contactEmail) { _, _ in
+            errorMessage = nil
         }
     }
 
@@ -64,9 +79,13 @@ struct GatewayTLSSettingsSection: View {
         let configuration = gateway.acmeConfiguration
         contactEmail = configuration?.contactEmail ?? ""
         savedContactEmail = configuration?.contactEmail
+        hasAttemptedCommit = false
     }
 
-    private func save() {
+    private func saveIfNeeded() {
+        guard hasUnsavedChanges, !isSaving else { return }
+        hasAttemptedCommit = true
+        guard normalizedContactEmail != nil else { return }
         Task {
             isSaving = true
             errorMessage = nil
@@ -79,6 +98,7 @@ struct GatewayTLSSettingsSection: View {
                 }
                 try await gateway.configureAutomaticHTTPS(contactEmail: normalizedContactEmail)
                 savedContactEmail = normalizedContactEmail
+                hasAttemptedCommit = false
             } catch {
                 errorMessage = error.localizedDescription
             }

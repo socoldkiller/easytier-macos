@@ -9,6 +9,7 @@ package enum GatewayPublishedServicesValidator {
         targetInstanceID: String? = nil,
         targetHostname: String,
         magicDNSSuffix: String,
+        publicDNSSuffix: String,
         serviceLabel: String,
         targetPort: Int,
         desiredEnabled: Bool,
@@ -16,21 +17,22 @@ package enum GatewayPublishedServicesValidator {
     ) throws -> GatewayPublishedService {
         let serviceLabel = try normalizeServiceLabel(serviceLabel)
         let nodeLabel = try normalizeLabel(targetHostname, field: "Target hostname")
-        let suffix = try MagicDNSSettings.normalizedDNSSuffix(magicDNSSuffix)
+        let magicDNSSuffix = try MagicDNSSettings.normalizedDNSSuffix(magicDNSSuffix)
+        let publicDNSSuffix = try MagicDNSSettings.normalizedDNSSuffix(publicDNSSuffix)
         try validatePort(targetPort)
         return GatewayPublishedService(
             networkConfigID: try required(networkConfigID, field: "Network ID"),
             targetPeerID: try required(targetPeerID, field: "Target Peer ID"),
             targetInstanceID: targetInstanceID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
             publicNodeLabel: nodeLabel,
-            publicDNSSuffix: suffix,
+            publicDNSSuffix: publicDNSSuffix,
             lastKnownTargetHostname: nodeLabel,
-            lastKnownMagicDNSSuffix: suffix,
+            lastKnownMagicDNSSuffix: magicDNSSuffix,
             serviceLabel: serviceLabel,
             publicHostname: makePublicHostname(
                 serviceLabel: serviceLabel,
                 nodeLabel: nodeLabel,
-                suffix: suffix
+                suffix: publicDNSSuffix
             ),
             targetPort: targetPort,
             desiredEnabled: desiredEnabled,
@@ -64,12 +66,31 @@ package enum GatewayPublishedServicesValidator {
             return credential
         }.sorted { $0.label.localizedStandardCompare($1.label) == .orderedAscending }
 
-        if let defaultDNSCredentialID = state.defaultDNSCredentialID {
-            let defaultID = try required(defaultDNSCredentialID, field: "Default DNS credential ID")
-            guard credentialIDs.contains(defaultID) else {
-                throw invalid("Default DNS credential does not exist.")
+        var zoneBindingIDs = Set<String>()
+        normalized.dnsZoneBindings = try state.dnsZoneBindings.map { binding in
+            var binding = binding
+            binding.id = try required(binding.id, field: "DNS domain ID")
+            guard zoneBindingIDs.insert(binding.id).inserted else {
+                throw invalid("Duplicate DNS domain ID \(binding.id).")
             }
-            normalized.defaultDNSCredentialID = defaultID
+            guard credentialIDs.contains(binding.credentialID) else {
+                throw invalid("DNS domain references an unknown credential.")
+            }
+            binding.dnsSuffix = try MagicDNSSettings.normalizedDNSSuffix(binding.dnsSuffix)
+            return binding
+        }.sorted { $0.dnsSuffix.localizedStandardCompare($1.dnsSuffix) == .orderedAscending }
+
+        if zoneBindingIDs.isEmpty {
+            normalized.defaultDNSZoneBindingID = nil
+        } else {
+            guard let defaultDNSZoneBindingID = state.defaultDNSZoneBindingID else {
+                throw invalid("Choose a default DNS domain.")
+            }
+            let defaultID = try required(defaultDNSZoneBindingID, field: "Default DNS domain ID")
+            guard zoneBindingIDs.contains(defaultID) else {
+                throw invalid("Default DNS domain does not exist.")
+            }
+            normalized.defaultDNSZoneBindingID = defaultID
         }
 
         var certificateIDs = Set<String>()
@@ -85,20 +106,22 @@ package enum GatewayPublishedServicesValidator {
             }
 
             switch certificate.strategy {
-            case let .automaticWildcard(credentialID):
-                let credentialID = try required(credentialID, field: "DNS credential ID")
-                guard credentialIDs.contains(credentialID) else {
-                    throw invalid("Automatic certificate references an unknown DNS credential.")
+            case let .automaticWildcard(zoneBindingID):
+                let zoneBindingID = try required(zoneBindingID, field: "DNS domain ID")
+                guard zoneBindingIDs.contains(zoneBindingID) else {
+                    throw invalid("Automatic certificate references an unknown DNS domain.")
                 }
                 let domain = try normalizeAutomaticDomain(certificate.domains[0])
                 guard automaticDomains.insert(domain).inserted else {
                     throw invalid("Only one automatic certificate may use \(domain).")
                 }
                 certificate.domains = [domain]
-                certificate.strategy = .automaticWildcard(credentialID: credentialID)
+                certificate.strategy = .automaticWildcard(zoneBindingID: zoneBindingID)
             case let .custom(authority, challenge):
-                if case let .dns01(credentialID) = challenge, !credentialIDs.contains(credentialID) {
-                    throw invalid("Custom certificate references an unknown DNS credential.")
+                if case let .dns01(zoneBindingID) = challenge,
+                   !zoneBindingIDs.contains(zoneBindingID)
+                {
+                    throw invalid("Custom certificate references an unknown DNS domain.")
                 }
                 certificate.domains = [try normalizeDomain(
                     certificate.domains[0],
@@ -378,6 +401,7 @@ package enum GatewayConfigurationFactory {
                         domains: certificate.domains,
                         strategy: try runtimeStrategy(
                             certificate.strategy,
+                            zoneBindings: state.dnsZoneBindings,
                             credentials: state.dnsCredentials
                         ),
                         renewalEnabled: enabledCertificateIDs.contains(certificate.id)
@@ -430,11 +454,16 @@ package enum GatewayConfigurationFactory {
 
     private static func runtimeStrategy(
         _ strategy: GatewayManagedCertificateStrategy,
+        zoneBindings: [GatewayDNSZoneBinding],
         credentials: [GatewayDNSCredentialDescriptor]
     ) throws -> GatewayCertificateStrategyConfiguration {
         switch strategy {
-        case let .automaticWildcard(credentialID):
-            let credential = try credential(id: credentialID, in: credentials)
+        case let .automaticWildcard(zoneBindingID):
+            let credential = try credential(
+                for: zoneBindingID,
+                zoneBindings: zoneBindings,
+                credentials: credentials
+            )
             return .automaticWildcard(
                 GatewayDNS01Configuration(
                     provider: credential.provider,
@@ -445,27 +474,50 @@ package enum GatewayConfigurationFactory {
         case let .custom(authority, challenge):
             return .custom(
                 authority: authority,
-                challenge: try runtimeChallenge(challenge, credentials: credentials)
+                challenge: try runtimeChallenge(
+                    challenge,
+                    zoneBindings: zoneBindings,
+                    credentials: credentials
+                )
             )
         }
     }
 
     private static func runtimeChallenge(
         _ challenge: GatewayPublishedServiceChallenge,
+        zoneBindings: [GatewayDNSZoneBinding],
         credentials: [GatewayDNSCredentialDescriptor]
     ) throws -> GatewayChallengeConfiguration {
         switch challenge {
         case .http01:
-            .http01
-        case let .dns01(credentialID):
-            .dns01(
+            return .http01
+        case let .dns01(zoneBindingID):
+            let credential = try credential(
+                for: zoneBindingID,
+                zoneBindings: zoneBindings,
+                credentials: credentials
+            )
+            return .dns01(
                 GatewayDNS01Configuration(
-                    provider: try credential(id: credentialID, in: credentials).provider,
-                    credentialID: credentialID,
-                    credentialRevision: try credential(id: credentialID, in: credentials).revision
+                    provider: credential.provider,
+                    credentialID: credential.id,
+                    credentialRevision: credential.revision
                 )
             )
         }
+    }
+
+    private static func credential(
+        for zoneBindingID: String,
+        zoneBindings: [GatewayDNSZoneBinding],
+        credentials: [GatewayDNSCredentialDescriptor]
+    ) throws -> GatewayDNSCredentialDescriptor {
+        guard let binding = zoneBindings.first(where: { $0.id == zoneBindingID }) else {
+            throw GatewayConfigurationValidationError.invalid(
+                "Published service references an unknown DNS domain."
+            )
+        }
+        return try credential(id: binding.credentialID, in: credentials)
     }
 
     private static func credential(
