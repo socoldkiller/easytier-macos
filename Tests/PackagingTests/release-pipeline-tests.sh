@@ -193,6 +193,25 @@ EOF
 
 chmod +x "$FAKE_BIN"/* "$FAKE_HELPERS"/*
 
+test_nonversion_exact_tag_is_not_a_stable_release() (
+  source "$ROOT_DIR/scripts/release-artifact.sh"
+
+  git() {
+    if [[ "$1" == "-C" && "$2" == "$ROOT_DIR" && "$3" == "describe" ]]; then
+      printf 'nightly-20260715020000\n'
+      return
+    fi
+    command git "$@"
+  }
+
+  unset EASYTIER_RELEASE_TAG GITHUB_REF_TYPE GITHUB_REF_NAME
+  EASYTIER_APP_VERSION=1.4.0
+  EASYTIER_BUILD_NUMBER=20260715020000
+  configure_release_version
+)
+
+test_nonversion_exact_tag_is_not_a_stable_release
+
 execute_artifact() {
   if [[ "${USE_BUILD_ENTRYPOINT:-0}" == "1" ]]; then
     "$ROOT_DIR/scripts/build.sh" package

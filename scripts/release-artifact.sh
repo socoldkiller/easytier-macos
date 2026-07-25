@@ -53,7 +53,9 @@ configure_release_version() {
     release_tag="${GITHUB_REF_NAME:-}"
   elif [[ -z "$release_tag" ]]; then
     exact_tag="$(git -C "$ROOT_DIR" describe --tags --exact-match HEAD 2>/dev/null || true)"
-    release_tag="$exact_tag"
+    if [[ "$exact_tag" =~ ^[vV]?[0-9]+(\.[0-9]+){1,2}$ ]]; then
+      release_tag="$exact_tag"
+    fi
   fi
 
   if [[ -n "$release_tag" ]]; then
@@ -276,4 +278,6 @@ main() {
   build_artifact
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
