@@ -302,7 +302,7 @@ def write_nightly_release_notes(
     core_commit = metadata["coreCommit"]
     notes = (
         f"# EasyTier Nightly {build_date}\n\n"
-        "This build packages the latest tested GUI and EasyTier Core revisions captured by the nightly workflow.\n\n"
+        "This build packages the latest tested GUI revision with the Core revision pinned by the nightly workflow.\n\n"
         f"- GUI: [`{gui_commit[:8]}`](https://github.com/{repository}/commit/{gui_commit})\n"
         f"- Core: [`{core_commit[:8]}`](https://github.com/{core_repository}/commit/{core_commit})\n"
         f"- Core version: `{metadata['coreVersion']}`\n"

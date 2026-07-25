@@ -90,7 +90,7 @@ test-swift:
 	swift test --scratch-path "$(SWIFT_BUILD_DIR)" --configuration release
 
 lint:
-	swiftlint lint --strict --config .swiftlint.yml
+	./scripts/run-swiftlint.sh
 
 test-rust: rust-toolchain-shims
 	PATH="$(RUST_TOOLS_DIR):$$PATH" \

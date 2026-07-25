@@ -13,8 +13,6 @@ excluded:
   - website-prototype
   - Sources/EasyTierMac/Resources
 
-baseline: .swiftlint-baseline.json
-
 only_rules:
   # Correctness and safety
   - async_without_await

@@ -21,6 +21,8 @@ BUILD_PATTERN = re.compile(r"^[0-9]{14}$")
 BUILD_TIME_PATTERN = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}(?:-dirty)?$")
 VERSION_PATTERN = re.compile(r"^[0-9]+(?:\.[0-9]+){1,2}$")
+NIGHTLY_CORE_REF = "v2.6.4"
+NIGHTLY_CORE_REVISION = "8428a89d2dabc94c97d370ec607c6ca142473626"
 
 
 class BuildContextError(ValueError):
@@ -324,9 +326,14 @@ def resolve_github(
     elif event_name == "schedule" or (event_name == "workflow_dispatch" and dispatch_mode == "nightly"):
         release_channel = "nightly"
         if fetch_nightly_core:
-            run_git(core_root, "fetch", "--no-tags", "origin", "main")
-            fetched = run_git(core_root, "rev-parse", "FETCH_HEAD")
-            run_git(core_root, "checkout", "--detach", fetched)
+            run_git(core_root, "fetch", "--no-tags", "origin", NIGHTLY_CORE_REF)
+            fetched = run_git(core_root, "rev-parse", "FETCH_HEAD^{commit}")
+            if fetched != NIGHTLY_CORE_REVISION:
+                raise BuildContextError(
+                    f"Nightly Core {NIGHTLY_CORE_REF} resolved to {fetched}, "
+                    f"expected {NIGHTLY_CORE_REVISION}."
+                )
+            run_git(core_root, "checkout", "--detach", NIGHTLY_CORE_REVISION)
         stable_tag = latest_stable_tag(root)
         app_version = stable_tag.removeprefix("v")
         build_time, build_number = format_time(parse_time(run_created_at))
