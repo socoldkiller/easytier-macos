@@ -7,12 +7,15 @@ extension AppContext {
         let gatewayHelperRegistration = HelperRegistrationService(kind: .gateway)
         let authenticationPresentation = NetworkSecretAuthenticationPresentationCoordinator()
         let privilegedClient = PrivilegedEasyTierClient()
+        let networkSecretStore = SystemNetworkSecretStore(
+            authenticationActivityObserver: authenticationPresentation
+        )
+        let database = ApplicationDatabase(networkSecretStore: networkSecretStore)
         let store = EasyTierAppStore(
             runtimeClient: privilegedClient,
             helperRegistration: helperRegistration,
-            networkSecretStore: SystemNetworkSecretStore(
-                authenticationActivityObserver: authenticationPresentation
-            ),
+            database: database,
+            networkSecretStore: networkSecretStore,
             peerSubscriptionDataLoader: URLSessionPeerSubscriptionDataLoader(
                 session: URLSession(configuration: .default)
             )
@@ -20,7 +23,7 @@ extension AppContext {
         let gatewayClient = PrivilegedGatewayClient()
         let gateway = GatewayRuntimeController(
             client: gatewayClient,
-            configurationStore: GatewayConfigurationStore(),
+            configurationStore: GatewayDatabaseConfigurationStore(database: database),
             helperRegistration: gatewayHelperRegistration,
             connectionMonitor: gatewayClient
         )
@@ -41,21 +44,26 @@ extension AppContext {
         let suiteName = "com.kkrainbow.easytier.preview.\(UUID().uuidString)"
         let userDefaults = UserDefaults(suiteName: suiteName) ?? UserDefaults()
         let client = PreviewEasyTierCoreClient()
+        let storage = EasyTierStorage.isolatedForTesting()
+        let networkSecretStore = SystemNetworkSecretStore()
+        let database = ApplicationDatabase(
+            baseDirectory: storage.baseDirectory,
+            gatewayFileURL: storage.baseDirectory.appending(path: "gateway/config.json"),
+            networkSecretStore: networkSecretStore
+        )
         let store = EasyTierAppStore(
             runtimeClient: client,
             helperRegistration: nil,
-            storage: .isolatedForTesting(),
+            storage: storage,
+            database: database,
+            networkSecretStore: networkSecretStore,
             peerSubscriptionDataLoader: URLSessionPeerSubscriptionDataLoader(
                 session: URLSession(configuration: .ephemeral)
             )
         )
-        let gatewayConfigurationURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("easytier-gateway-preview", isDirectory: true)
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-            .appendingPathComponent("config.json", isDirectory: false)
         let gateway = GatewayRuntimeController(
             client: DisabledGatewayClient(),
-            configurationStore: GatewayConfigurationStore(fileURL: gatewayConfigurationURL),
+            configurationStore: GatewayDatabaseConfigurationStore(database: database),
             helperRegistration: nil
         )
         let runtime = ApplicationRuntimeCoordinator(store: store, gateway: gateway)

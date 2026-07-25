@@ -54,14 +54,19 @@ struct StatusView: View {
             if let conflict = runtimeIntentConflict(for: display) {
                 RuntimeIntentConflictBanner(
                     intent: conflict,
-                    useRemoteAction: { store.useRemoteValue(forRuntimeIntent: conflict.id) },
+                    useRemoteAction: {
+                        Task { await store.useRemoteValue(forRuntimeIntent: conflict.id) }
+                    },
                     reapplyAction: {
                         Task {
                             await store.reapplyRuntimeIntent(conflict.id)
                         }
                     },
-                    keepPendingAction: { store.keepRuntimeIntentPending(conflict.id) }
+                    keepPendingAction: {
+                        Task { await store.keepRuntimeIntentPending(conflict.id) }
+                    }
                 )
+                .disabled(!store.persistenceIsReady)
                 .transition(reduceMotion ? .opacity : .easyTierSlideFade(edge: .top, distance: 8))
             }
 
@@ -241,6 +246,7 @@ struct StatusView: View {
     }
 
     private func beginRenamingHostname(_ member: NetworkMemberStatus) {
+        guard store.persistenceIsReady else { return }
         let configuredHostname = store.selectedConfig?.hostname?.trimmingCharacters(in: .whitespacesAndNewlines)
         let initialHostname: String
         if member.isLocal, let configuredHostname, !configuredHostname.isEmpty {

@@ -32,7 +32,7 @@ RUST_OPT_LEVEL ?= z
 RUST_LTO ?= fat
 RUST_CODEGEN_UNITS ?= 1
 
-.PHONY: help bootstrap rust-toolchain-shims ffi test-swift test-rust test-packaging test-xcode-project test test-keychain-integration smoke clean clean-cache \
+.PHONY: help bootstrap rust-toolchain-shims ffi lint test-swift test-rust test-packaging test-xcode-project test test-keychain-integration smoke clean clean-cache \
 	require-codesign-identity \
 	app-debug app-release-signed \
 	debug-install dmg release-dmg verify-app install-helper
@@ -46,6 +46,7 @@ help:
 	@printf '%-24s %s\n' 'make test-rust' 'Run Rust FFI tests.'
 	@printf '%-24s %s\n' 'make test-packaging' 'Run credential-free release pipeline tests.'
 	@printf '%-24s %s\n' 'make test-xcode-project' 'Resolve and validate the native Xcode project.'
+	@printf '%-24s %s\n' 'make lint' 'Run SwiftLint against project-owned Swift sources.'
 	@printf '%-24s %s\n' 'make test' 'Run all automated tests.'
 	@printf '%-24s %s\n' 'make test-keychain-integration' 'Run the signed Data Protection Keychain integration harness.'
 	@printf '%-24s %s\n' 'make smoke' 'Run tests and package a Developer ID app with the required profile/Sparkle key.'
@@ -88,6 +89,9 @@ ffi: rust-toolchain-shims
 test-swift:
 	swift test --scratch-path "$(SWIFT_BUILD_DIR)" --configuration release
 
+lint:
+	swiftlint lint --strict --config .swiftlint.yml
+
 test-rust: rust-toolchain-shims
 	PATH="$(RUST_TOOLS_DIR):$$PATH" \
 		./scripts/test-rust.sh
@@ -102,7 +106,7 @@ test-xcode-project:
 		-disableAutomaticPackageResolution \
 		-onlyUsePackageVersionsFromResolvedFile
 
-test: test-swift test-rust test-packaging test-xcode-project
+test: lint test-swift test-rust test-packaging test-xcode-project
 
 test-keychain-integration: require-codesign-identity
 	EASYTIER_CODESIGN_IDENTITY="$(CODESIGN_IDENTITY)" \

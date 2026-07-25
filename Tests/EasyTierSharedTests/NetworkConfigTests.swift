@@ -646,17 +646,18 @@ import Testing
     persistedConfig.network_secret = nil
     store.configs = [persistedConfig]
     store.selectedConfigID = config.instance_id
-    store.save()
+    await store.save()
 
-    let toml = try String(contentsOf: directory.appendingPathComponent("configs/secret-id.toml"), encoding: .utf8)
+    let databaseData = try Data(contentsOf: directory.appending(path: "easytier.sqlite3"))
 
     #expect(secrets.secrets["lab"] == "super-secret")
-    #expect(!toml.contains("super-secret"))
+    #expect(databaseData.range(of: Data("super-secret".utf8)) == nil)
+    #expect(!FileManager.default.fileExists(atPath: directory.appending(path: "configs/secret-id.toml").path))
     #expect(store.configs.first?.network_secret?.nilIfEmpty == nil)
 }
 
 @MainActor
-@Test func genericConfigPersistenceNeverImplicitlyWritesKeychain() throws {
+@Test func genericConfigPersistenceNeverImplicitlyWritesKeychain() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let storage = EasyTierStorage(baseDirectory: directory)
     let secrets = MemoryNetworkSecretStore()
@@ -673,14 +674,12 @@ import Testing
     store.configs = [config]
     store.selectedConfigID = config.id
 
-    store.save()
+    await store.save()
 
-    let toml = try String(
-        contentsOf: directory.appendingPathComponent("configs/sanitized-save-id.toml"),
-        encoding: .utf8
-    )
+    let databaseData = try Data(contentsOf: directory.appending(path: "easytier.sqlite3"))
     #expect(secrets.secrets.isEmpty)
-    #expect(!toml.contains("must-not-be-written-implicitly"))
+    #expect(databaseData.range(of: Data("must-not-be-written-implicitly".utf8)) == nil)
+    #expect(!FileManager.default.fileExists(atPath: directory.appending(path: "configs/sanitized-save-id.toml").path))
     #expect(store.configs.first?.network_secret?.nilIfEmpty == nil)
 }
 
@@ -1862,10 +1861,11 @@ import Testing
 
     await store.importTOML(try NetworkConfigTOMLCodec.encode(config))
 
-    let toml = try String(contentsOf: directory.appendingPathComponent("configs/import-id.toml"), encoding: .utf8)
+    let databaseData = try Data(contentsOf: directory.appending(path: "easytier.sqlite3"))
 
     #expect(secrets.secrets["office"] == "import-secret")
-    #expect(!toml.contains("import-secret"))
+    #expect(databaseData.range(of: Data("import-secret".utf8)) == nil)
+    #expect(!FileManager.default.fileExists(atPath: directory.appending(path: "configs/import-id.toml").path))
     #expect(store.configs.first?.network_secret?.nilIfEmpty == nil)
 }
 
@@ -1953,7 +1953,7 @@ import Testing
         config.network_secret = nil
         return config
     }
-    store.save()
+    await store.save()
 
     #expect(secrets.secrets["office"] == "office-secret")
     #expect(secrets.secrets["lab"] == "lab-secret")
@@ -2092,7 +2092,7 @@ import Testing
 }
 
 @MainActor
-@Test func selectNextConfigCyclesThroughConfigsAndPersistsSelection() throws {
+@Test func selectNextConfigCyclesThroughConfigsAndPersistsSelection() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let storage = EasyTierStorage(baseDirectory: directory)
     let first = NetworkConfig(instance_id: "first-id", network_name: "first-network")
@@ -2102,18 +2102,23 @@ import Testing
     store.configs = [first, second]
     store.selectedConfigID = first.instance_id
 
-    store.selectNextConfig()
+    await store.selectNextConfig()
 
     #expect(store.selectedConfigID == second.instance_id)
-    #expect(try storage.load().snapshot.lastSelectedConfigID == second.instance_id)
+    let persisted = try await ApplicationDatabase(
+        baseDirectory: directory,
+        gatewayFileURL: directory.appending(path: "gateway/config.json"),
+        networkSecretStore: MemoryNetworkSecretStore()
+    ).loadWorkspace()
+    #expect(persisted.selectedConfigID == second.instance_id)
 
-    store.selectNextConfig()
+    await store.selectNextConfig()
 
     #expect(store.selectedConfigID == first.instance_id)
 }
 
 @MainActor
-@Test func selectPreviousConfigWrapsToLastConfig() throws {
+@Test func selectPreviousConfigWrapsToLastConfig() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let storage = EasyTierStorage(baseDirectory: directory)
     let first = NetworkConfig(instance_id: "first-id", network_name: "first-network")
@@ -2123,13 +2128,13 @@ import Testing
     store.configs = [first, second]
     store.selectedConfigID = first.instance_id
 
-    store.selectPreviousConfig()
+    await store.selectPreviousConfig()
 
     #expect(store.selectedConfigID == second.instance_id)
 }
 
 @MainActor
-@Test func adjacentConfigSelectionStartsAtDirectionalEdgeWhenSelectionIsMissing() throws {
+@Test func adjacentConfigSelectionStartsAtDirectionalEdgeWhenSelectionIsMissing() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let storage = EasyTierStorage(baseDirectory: directory)
     let first = NetworkConfig(instance_id: "first-id", network_name: "first-network")
@@ -2139,18 +2144,18 @@ import Testing
     store.configs = [first, second]
     store.selectedConfigID = nil
 
-    store.selectNextConfig()
+    await store.selectNextConfig()
 
     #expect(store.selectedConfigID == first.instance_id)
 
     store.selectedConfigID = nil
-    store.selectPreviousConfig()
+    await store.selectPreviousConfig()
 
     #expect(store.selectedConfigID == second.instance_id)
 }
 
 @MainActor
-@Test func loadFallsBackToFirstConfigWhenSavedSelectionIsMissing() async throws {
+@Test func invalidLegacySelectionEntersRestrictedRecoveryMode() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let storage = EasyTierStorage(baseDirectory: directory)
     let config = NetworkConfig(instance_id: "current-id", network_name: "current-network")
@@ -2162,8 +2167,9 @@ import Testing
     await store.load()
     store.stopPolling()
 
-    #expect(store.selectedConfigID == config.instance_id)
-    #expect(store.selectedConfig?.network_name == config.network_name)
+    #expect(!store.persistenceIsReady)
+    #expect(FileManager.default.fileExists(atPath: storage.configURL(forID: config.id).path))
+    #expect(FileManager.default.fileExists(atPath: directory.appending(path: "state.json").path))
 }
 
 @MainActor
@@ -2359,7 +2365,12 @@ import Testing
     await store.stopSelectedConfig()
 
     #expect(store.configs.first?.hostname == "new-host")
-    #expect(try storage.load().configs.first?.hostname == "new-host")
+    let persisted = try await ApplicationDatabase(
+        baseDirectory: directory,
+        gatewayFileURL: directory.appending(path: "gateway/config.json"),
+        networkSecretStore: MemoryNetworkSecretStore()
+    ).loadWorkspace()
+    #expect(persisted.configs.first?.hostname == "new-host")
     #expect(client.stoppedInstanceNames == [[config.network_name]])
 }
 
@@ -2455,7 +2466,12 @@ import Testing
     #expect(client.stoppedInstanceNames.isEmpty)
     #expect(client.jsonRPCCalls.map(\.method) == ["patch_config"])
     #expect(store.runtimeIntents.first?.status == .unreachable)
-    #expect(try storage.load().configs.first?.hostname == "desired")
+    let persisted = try await ApplicationDatabase(
+        baseDirectory: directory,
+        gatewayFileURL: directory.appending(path: "gateway/config.json"),
+        networkSecretStore: MemoryNetworkSecretStore()
+    ).loadWorkspace()
+    #expect(persisted.configs.first?.hostname == "desired")
 }
 
 @MainActor

@@ -129,12 +129,14 @@ struct PeersView: View {
                 pasteJSONError = "Paste subscription JSON first."
                 return
             }
-            do {
-                try store.addPeerSubscription(json: trimmed)
-                resetAddSheet()
-                showTransientNotice("Added subscription from pasted JSON.")
-            } catch {
-                pasteJSONError = error.localizedDescription
+            Task {
+                do {
+                    try await store.addPeerSubscription(json: trimmed)
+                    resetAddSheet()
+                    showTransientNotice("Added subscription from pasted JSON.")
+                } catch {
+                    pasteJSONError = error.localizedDescription
+                }
             }
         }
     }

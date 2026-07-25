@@ -21,6 +21,20 @@ final class ApplicationRuntimeCoordinator: SoftwareUpdateRuntimeManaging {
         await gateway.reconcile()
     }
 
+    @discardableResult
+    func retryPersistence() async -> Bool {
+        guard await store.retryPersistence() else { return false }
+        await gateway.load()
+        return true
+    }
+
+    @discardableResult
+    func rebuildPersistence() async -> Bool {
+        guard await store.rebuildPersistence() else { return false }
+        await gateway.load()
+        return true
+    }
+
     func prepareForAppQuit() async {
         await gateway.stopForLifecycle(retainRuntime: store.vpnOnDemandEnabled)
         await store.prepareForAppQuit()

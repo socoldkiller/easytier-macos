@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_PRODUCTS_DIR="${EASYTIER_APP_PRODUCTS_DIR:-$ROOT_DIR/.build/AppProducts}"
+SWIFT_BUILD_DIR="${EASYTIER_SWIFT_BUILD_DIR:-$APP_PRODUCTS_DIR/SwiftBuild}"
 INSTALL_APP_PATH="${EASYTIER_INSTALL_APP_PATH:-/Applications/EasyTier.app}"
 CODE_SIGN_KEYCHAIN="${EASYTIER_CODESIGN_KEYCHAIN:-}"
 
@@ -23,6 +24,9 @@ EASYTIER_CODESIGN_KEYCHAIN="$CODE_SIGN_KEYCHAIN" \
   -configuration Debug \
   -destination 'platform=macOS,arch=arm64' \
   -derivedDataPath "$APP_PRODUCTS_DIR/DebugDerivedData" \
+  -clonedSourcePackagesDirPath "$SWIFT_BUILD_DIR" \
+  -disableAutomaticPackageResolution \
+  -onlyUsePackageVersionsFromResolvedFile \
   "${EASYTIER_XCODE_METADATA_ARGS[@]}" \
   build
 

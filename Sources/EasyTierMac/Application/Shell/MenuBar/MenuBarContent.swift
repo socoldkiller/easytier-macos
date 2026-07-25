@@ -154,7 +154,7 @@ struct MenuBarContent: View {
     }
 
     private var canSwitchNetworks: Bool {
-        store.configs.count > 1
+        store.persistenceIsReady && store.configs.count > 1
     }
 
     private var currentNetworkName: String {
@@ -215,7 +215,7 @@ struct MenuBarContent: View {
     }
 
     private var isConnectionRowDisabled: Bool {
-        store.isBusy || store.isQuitting || store.selectedConfig == nil
+        !store.persistenceIsReady || store.isBusy || store.isQuitting || store.selectedConfig == nil
     }
 
     private var isConnectionRowActive: Bool {
@@ -287,11 +287,11 @@ struct MenuBarContent: View {
     }
 
     private func selectPreviousNetwork() {
-        store.selectPreviousConfig()
+        Task { await store.selectPreviousConfig() }
     }
 
     private func selectNextNetwork() {
-        store.selectNextConfig()
+        Task { await store.selectNextConfig() }
     }
 
     private func copyDeviceAddress() {

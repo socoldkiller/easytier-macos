@@ -105,13 +105,19 @@ struct EasyTierApp: App {
             EasyTierAboutCommands()
 
             CommandGroup(replacing: .newItem) {
-                Button("New Network") { store.addConfig() }
-                    .keyboardShortcut("n")
+                Button("New Network") {
+                    Task { await store.addConfig() }
+                }
+                .keyboardShortcut("n")
+                .disabled(!store.persistenceIsReady)
             }
 
             CommandGroup(replacing: .saveItem) {
-                Button("Save") { store.save() }
-                    .keyboardShortcut("s")
+                Button("Save") {
+                    Task { await store.save() }
+                }
+                .keyboardShortcut("s")
+                .disabled(!store.persistenceIsReady)
             }
 
             SoftwareUpdateCommands(appContext: appContext)

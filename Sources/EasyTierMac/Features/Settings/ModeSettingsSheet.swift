@@ -96,6 +96,7 @@ struct EasyTierSettingsSheet: View {
                     managedDNSSuffix: appContext.runtime.gateway.defaultDNSZoneBinding?.dnsSuffix,
                     commit: commitMagicDNSSettings
                 )
+                .disabled(!appContext.workspace.store.persistenceIsReady)
             }
 
             Tab(
@@ -109,6 +110,7 @@ struct EasyTierSettingsSheet: View {
                     rpcPortalWhitelist: $rpcPortalWhitelist,
                     commit: applyModeSettings
                 )
+                .disabled(!appContext.workspace.store.persistenceIsReady)
             }
 
             Tab(
@@ -165,10 +167,12 @@ struct EasyTierSettingsSheet: View {
     }
 
     private func applyModeSettings() {
+        guard appContext.workspace.store.persistenceIsReady else { return }
         onChange(buildMode(), committedMagicDNSSettings)
     }
 
     private func commitMagicDNSSettings(_ settings: MagicDNSSettings) {
+        guard appContext.workspace.store.persistenceIsReady else { return }
         committedMagicDNSSettings = settings
         onChange(buildMode(), settings)
     }

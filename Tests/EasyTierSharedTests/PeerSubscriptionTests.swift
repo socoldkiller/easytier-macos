@@ -240,11 +240,11 @@ func peerCardRejectsHistoricalLooseStorage(_ json: String) throws {
       ]
     }
     """#
-    try store.addPeerSubscription(json: json)
+    try await store.addPeerSubscription(json: json)
     #expect(store.peerSubscriptions.count == 1)
     #expect(store.peerSubscriptions[0].cards.count == 1)
 
-    store.save()
+    await store.save()
 
     let reloaded = EasyTierAppStore(storage: storage)
     await reloaded.load()

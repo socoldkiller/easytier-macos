@@ -62,9 +62,22 @@ incomplete.
 - The deployment target remains macOS 15. System API availability branches,
   including newer macOS UI treatments, are platform support rather than data
   compatibility and must remain.
-- Generated `state.json`, Gateway configuration, and software-update recovery
-  payloads accept only their current schemas. Incompatible generated state is
-  deleted and rebuilt without a backup; user-authored TOML files remain intact.
+- `ApplicationDatabase` is the GUI's single-writer source of truth for network
+  configurations, Workspace settings, runtime intents, peer subscriptions, and
+  the desired Gateway state. GRDB maps private persistence records to the public
+  domain models; GRDB and SQL types do not leak into feature or XPC interfaces.
+- On first launch after upgrading, the database imports only the TOML files
+  referenced by legacy `state.json`, plus the current legacy Gateway state. The
+  import is one-way and transactional. All legacy files, including unreferenced
+  TOML files, remain byte-for-byte untouched and the app performs no dual-write.
+- Database schema migration creates an online SQLite backup first and retains
+  the latest three backups. Migration, integrity, or legacy-import failures put
+  the GUI into restricted recovery mode instead of overwriting data. Recovery
+  supports retrying, revealing the data directory, or explicitly moving the
+  database aside and creating a new empty database.
+- TOML is an explicit CLI-compatible import/export format, not live GUI
+  persistence. Software-update recovery payloads remain separate lifecycle
+  state and accept only their current schema.
 - Network secrets use one Data Protection Keychain item per
   `NetworkConfig.instance_id`. Network-name accounts and legacy Keychain
   backends are not read or migrated, so upgrading from an older build may
