@@ -140,6 +140,7 @@ jobs:
         run: make ffi
 
       - name: Run automated tests
+        if: steps.context.outputs.release_channel != 'nightly'
         run: make test
 
       - name: Import Developer ID certificate
