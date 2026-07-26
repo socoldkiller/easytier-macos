@@ -2513,15 +2513,17 @@ import Testing
 }
 
 @MainActor
-@Test func deleteSelectedConfigCanRemoveLastStoppedConfig() async {
+@Test func deleteSelectedConfigStopsByPersistedNameWhenRuntimeSnapshotIsEmpty() async {
     let config = NetworkConfig(instance_id: "last-id", network_name: "last-network")
-    let store = EasyTierAppStore(client: RecordingToggleClient())
+    let client = RecordingToggleClient()
+    let store = EasyTierAppStore(client: client)
 
     store.configs = [config]
     store.selectedConfigID = config.instance_id
 
     await store.deleteSelectedConfig()
 
+    #expect(client.stoppedInstanceNames == [[config.network_name]])
     #expect(store.configs.isEmpty)
     #expect(store.selectedConfigID == nil)
 }

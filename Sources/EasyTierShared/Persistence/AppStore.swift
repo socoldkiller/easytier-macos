@@ -514,16 +514,21 @@ public final class EasyTierAppStore {
         await withRuntimeMutation {
             guard let selectedConfigID, let index = configs.firstIndex(where: { $0.id == selectedConfigID }) else { return }
             let config = configs[index]
-            if let runningInstance = runningInstance(matching: config) {
-                setRuntimeTransition(.stopping, for: config.instance_id)
-                do {
-                    try await runtimeClient.stop(instanceNames: [runningInstance.name])
-                    runtimeSession.clearTrafficTracking(instanceName: runningInstance.name)
-                } catch {
-                    setLastError(error)
-                    log("Delete canceled because \(config.network_name) could not be stopped: \(error.localizedDescription)")
-                    return
+            let runningInstanceName = runningInstance(matching: config)?.name
+            var instanceNames = [config.network_name]
+            if let runningInstanceName, runningInstanceName != config.network_name {
+                instanceNames.insert(runningInstanceName, at: 0)
+            }
+            setRuntimeTransition(.stopping, for: config.instance_id)
+            do {
+                try await runtimeClient.stop(instanceNames: instanceNames)
+                for instanceName in instanceNames {
+                    runtimeSession.clearTrafficTracking(instanceName: instanceName)
                 }
+            } catch {
+                setLastError(error)
+                log("Delete canceled because \(config.network_name) could not be stopped: \(error.localizedDescription)")
+                return
             }
             do {
                 try await networkSecretStore.deleteSecret(for: config, purpose: .delete)
