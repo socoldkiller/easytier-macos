@@ -333,6 +333,7 @@ mkdir -p "$ARTIFACTS_DIR"
 : > "$TRACE_FILE"
 : > "$ARGS_TRACE"
 TEST_BUILD_NUMBER=20260715020000 \
+USE_BUILD_ENTRYPOINT=1 \
 EASYTIER_RELEASE_CHANNEL=nightly \
 EASYTIER_BUILD_TIME=2026-07-15T02:00:00Z \
 EASYTIER_GUI_REVISION=dddddddddddddddddddddddddddddddddddddddd \
@@ -355,6 +356,36 @@ assert metadata["channel"] == "nightly"
 assert metadata["build"] == "20260715020000"
 assert metadata["guiCommit"] == "d" * 40
 assert metadata["coreCommit"] == "c" * 40
+PY
+
+rm -rf "$ARTIFACTS_DIR"
+mkdir -p "$ARTIFACTS_DIR"
+: > "$TRACE_FILE"
+: > "$ARGS_TRACE"
+TEST_BUILD_NUMBER=20260726030405 \
+USE_BUILD_ENTRYPOINT=1 \
+EASYTIER_RELEASE_CHANNEL=dev \
+EASYTIER_BUILD_TIME=2026-07-26T03:04:05Z \
+EASYTIER_GUI_REVISION=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee \
+EASYTIER_CORE_REVISION=ffffffffffffffffffffffffffffffffffffffff \
+EASYTIER_CORE_VERSION=v2.6.4 \
+EASYTIER_NOTARY_KEYCHAIN_PROFILE=easytier-notary \
+EASYTIER_NOTARY_KEYCHAIN="$KEYCHAIN_PATH" \
+run_artifact > "$TEST_ROOT/dev-artifact.log"
+
+DEV_ARTIFACT="$ARTIFACTS_DIR/EasyTier-macOS-ARM64-dev-20260726030405.dmg"
+DEV_METADATA="${DEV_ARTIFACT%.dmg}.metadata.json"
+test -s "$DEV_ARTIFACT"
+python3 - "$DEV_METADATA" <<'PY'
+import json
+import pathlib
+import sys
+
+metadata = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert metadata["channel"] == "dev"
+assert metadata["build"] == "20260726030405"
+assert metadata["guiCommit"] == "e" * 40
+assert metadata["coreCommit"] == "f" * 40
 PY
 
 PUBLISH_ARTIFACTS="$TEST_ROOT/publish-artifacts"
