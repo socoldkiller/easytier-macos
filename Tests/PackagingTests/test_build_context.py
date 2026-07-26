@@ -280,6 +280,7 @@ class BuildContextTests(unittest.TestCase):
         )
         self.assertIn("      - dev\n", workflow)
         self.assertIn("inputs.mode == 'dev'", workflow)
+        self.assertIn("brew install cmake protobuf swiftlint", workflow)
         self.assertIn("run: ./scripts/build.sh prune-devs", workflow)
 
     def test_release_fixtures_do_not_inherit_build_context(self) -> None:

@@ -90,7 +90,7 @@ jobs:
             --json "$RUNNER_TEMP/easytier-build-context.json"
 
       - name: Install native build dependencies
-        run: brew install cmake protobuf
+        run: brew install cmake protobuf swiftlint
 
       - name: Select Xcode 16
         env:
