@@ -831,7 +831,7 @@ public final class EasyTierAppStore {
         return clean
     }
 
-    private static func configWithoutNetworkSecret(_ config: NetworkConfig) -> NetworkConfig {
+    nonisolated private static func configWithoutNetworkSecret(_ config: NetworkConfig) -> NetworkConfig {
         var config = config
         config.network_secret = nil
         return config
