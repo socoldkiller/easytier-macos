@@ -149,7 +149,7 @@ def normalized_time(build_time: str | None, build_number: str | None) -> tuple[s
 
 
 def validate_context(context: BuildContext) -> BuildContext:
-    if context.release_channel not in {"none", "stable", "nightly"}:
+    if context.release_channel not in {"none", "stable", "nightly", "dev"}:
         raise BuildContextError(f"Invalid release channel: {context.release_channel}")
     if context.app_version and not VERSION_PATTERN.fullmatch(context.app_version):
         raise BuildContextError(f"Invalid app version: {context.app_version}")
@@ -338,6 +338,14 @@ def resolve_github(
         app_version = stable_tag.removeprefix("v")
         build_time, build_number = format_time(parse_time(run_created_at))
         tag_name = f"nightly-{build_number}"
+    elif (event_name == "push" and ref == "refs/heads/dev") or (
+        event_name == "workflow_dispatch" and dispatch_mode == "dev"
+    ):
+        release_channel = "dev"
+        stable_tag = latest_stable_tag(root)
+        app_version = stable_tag.removeprefix("v")
+        build_time, build_number = format_time(parse_time(run_created_at))
+        tag_name = f"dev-{build_number}"
 
     core_revision = repository_revision(core_root, allow_dirty=False)
     resolved_core_version = core_version(core_root, allow_dirty=False)
@@ -351,6 +359,8 @@ def resolve_github(
         )
         publish_enabled = event_name == "workflow_dispatch" or nightly_releases_enabled
         should_publish = publish_enabled and source_state_available and sources_changed
+    elif release_channel == "dev":
+        should_publish = True
 
     return validate_context(
         BuildContext(
@@ -418,7 +428,7 @@ def build_parser() -> argparse.ArgumentParser:
     github.add_argument("--event-name", default=os.environ.get("GITHUB_EVENT_NAME", ""))
     github.add_argument("--ref", default=os.environ.get("GITHUB_REF", ""))
     github.add_argument("--ref-name", default=os.environ.get("GITHUB_REF_NAME", ""))
-    github.add_argument("--dispatch-mode", choices=("ci", "nightly"), default="ci")
+    github.add_argument("--dispatch-mode", choices=("ci", "nightly", "dev"), default="ci")
     github.add_argument("--run-created-at")
     github.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID", "local"))
     github.add_argument("--run-attempt", default=os.environ.get("GITHUB_RUN_ATTEMPT", "1"))

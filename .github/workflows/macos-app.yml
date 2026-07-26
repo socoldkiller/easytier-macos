@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - master
+      - dev
     tags:
       - "v*"
   pull_request:
@@ -21,6 +22,7 @@ on:
         options:
           - ci
           - nightly
+          - dev
       runner:
         description: "Runner to use for manual CI builds"
         required: true
@@ -37,15 +39,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: macos-app-${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'nightly')) && 'nightly' || github.ref }}
+  group: macos-app-${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'nightly')) && 'nightly' || ((github.ref == 'refs/heads/dev' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'dev')) && 'dev' || github.ref) }}
   # Release-capable runs are state machines and must finish or queue behind an
   # earlier run. Ordinary branch and PR validation may be superseded.
-  cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/') || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'nightly')) }}
+  cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/dev' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'nightly' || inputs.mode == 'dev'))) }}
 
 jobs:
   build:
     name: Build and test EasyTier
-    runs-on: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.runner == 'self-hosted' || inputs.mode == 'nightly'))) && fromJSON('["self-hosted","macOS","ARM64","easytier-macos"]') || 'macos-14' }}
+    runs-on: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.runner == 'self-hosted' || inputs.mode == 'nightly' || inputs.mode == 'dev'))) && fromJSON('["self-hosted","macOS","ARM64","easytier-macos"]') || 'macos-14' }}
     timeout-minutes: 120
     permissions:
       actions: read
@@ -92,7 +94,7 @@ jobs:
 
       - name: Select Xcode 16
         env:
-          EASYTIER_RUNNER_KIND: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.runner == 'self-hosted' || inputs.mode == 'nightly'))) && 'self-hosted' || 'github-hosted' }}
+          EASYTIER_RUNNER_KIND: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.runner == 'self-hosted' || inputs.mode == 'nightly' || inputs.mode == 'dev'))) && 'self-hosted' || 'github-hosted' }}
         run: |
           XCODE_APP="$(python3 - <<'PY'
           import glob
@@ -203,7 +205,7 @@ jobs:
     env:
       EASYTIER_ARTIFACTS_DIR: ${{ github.workspace }}/.build/release-artifacts
       EASYTIER_PAGES_DIR: ${{ github.workspace }}/.build/pages
-      EASYTIER_ALLOW_MISSING_CHANNEL_FEED: ${{ needs.build.outputs.release_channel == 'nightly' && '1' || '0' }}
+      EASYTIER_ALLOW_MISSING_CHANNEL_FEED: ${{ (needs.build.outputs.release_channel == 'nightly' || needs.build.outputs.release_channel == 'dev') && '1' || '0' }}
       EASYTIER_ALLOW_MISSING_CURRENT_FEED: ${{ needs.build.outputs.tag_name == 'v1.4.0' && '1' || '0' }}
 
     steps:
@@ -265,3 +267,11 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           EASYTIER_NIGHTLY_RELEASES_TO_KEEP: 14
         run: ./scripts/build.sh prune-nightlies
+
+      - name: Prune expired Dev releases
+        if: needs.build.outputs.release_channel == 'dev'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          EASYTIER_DEV_RELEASES_TO_KEEP: 14
+        run: ./scripts/build.sh prune-devs

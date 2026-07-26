@@ -18,6 +18,7 @@ Commands:
   install-helper              Package and validate the privileged helpers.
   verify-deployed-feeds       Verify the deployed Sparkle/update feed state.
   prune-nightlies             Remove expired Nightly releases.
+  prune-devs                  Remove expired Dev releases.
 EOF
 }
 
@@ -125,6 +126,9 @@ case "$command_name" in
     ;;
   prune-nightlies)
     exec "$ROOT_DIR/scripts/release-publish.sh" prune-nightlies
+    ;;
+  prune-devs)
+    exec "$ROOT_DIR/scripts/release-publish.sh" prune-devs
     ;;
   -h|--help|help)
     usage

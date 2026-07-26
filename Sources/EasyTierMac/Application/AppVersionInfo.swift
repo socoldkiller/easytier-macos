@@ -8,11 +8,29 @@ struct AppVersionInfo: Equatable {
     var buildChannel: SoftwareUpdateTrack
 
     var displayVersion: String {
-        buildChannel == .nightly ? "\(version) Nightly" : version
+        switch buildChannel {
+        case .stable: version
+        case .nightly: "\(version) Nightly"
+        case .dev: "\(version) Dev"
+        }
     }
 
     static var current: AppVersionInfo {
         AppVersionInfo(bundle: .main)
+    }
+
+    init(
+        version: String,
+        build: String,
+        rawBuild: String,
+        bundleIdentifier: String,
+        buildChannel: SoftwareUpdateTrack
+    ) {
+        self.version = version
+        self.build = build
+        self.rawBuild = rawBuild
+        self.bundleIdentifier = bundleIdentifier
+        self.buildChannel = buildChannel
     }
 
     init(bundle: Bundle) {

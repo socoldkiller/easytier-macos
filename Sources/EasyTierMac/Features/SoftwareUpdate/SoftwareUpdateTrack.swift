@@ -1,6 +1,7 @@
 enum SoftwareUpdateTrack: String, CaseIterable, Identifiable, Sendable {
     case stable
     case nightly
+    case dev
 
     var id: String { rawValue }
 
@@ -8,6 +9,7 @@ enum SoftwareUpdateTrack: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .stable: "Latest Stable"
         case .nightly: "Nightly"
+        case .dev: "Dev"
         }
     }
 
@@ -15,6 +17,7 @@ enum SoftwareUpdateTrack: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .stable: "Stable"
         case .nightly: "Nightly"
+        case .dev: "Dev"
         }
     }
 
@@ -22,6 +25,7 @@ enum SoftwareUpdateTrack: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .stable: []
         case .nightly: ["nightly"]
+        case .dev: ["dev"]
         }
     }
 }
