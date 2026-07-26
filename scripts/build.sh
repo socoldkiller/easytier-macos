@@ -18,6 +18,7 @@ Commands:
   install-helper              Package and validate the privileged helpers.
   verify-deployed-feeds       Verify the deployed Sparkle/update feed state.
   prune-nightlies             Remove expired Nightly releases.
+  prune-devs                  Remove expired Dev releases.
 EOF
 }
 
@@ -27,7 +28,11 @@ inherit_public_environment() {
   export EASYTIER_SWIFT_BUILD_DIR="${EASYTIER_SWIFT_BUILD_DIR:-${SWIFT_BUILD_DIR:-$EASYTIER_APP_PRODUCTS_DIR/SwiftBuild}}"
   export EASYTIER_EXPORT_APP_DIR="${EASYTIER_EXPORT_APP_DIR:-${APP_PATH:-$EASYTIER_ARTIFACTS_DIR/EasyTier.app}}"
   export EASYTIER_INSTALL_APP_PATH="${EASYTIER_INSTALL_APP_PATH:-${INSTALL_APP_PATH:-/Applications/EasyTier.app}}"
-  export EASYTIER_DMG_PATH="${EASYTIER_DMG_PATH:-${DMG_PATH:-$EASYTIER_ARTIFACTS_DIR/EasyTier-macOS-ARM64.dmg}}"
+  if [[ -n "${EASYTIER_DMG_PATH:-}" ]]; then
+    export EASYTIER_DMG_PATH
+  elif [[ -n "${DMG_PATH:-}" ]]; then
+    export EASYTIER_DMG_PATH="$DMG_PATH"
+  fi
   export EASYTIER_CODESIGN_IDENTITY="${EASYTIER_CODESIGN_IDENTITY:-${CODESIGN_IDENTITY:-}}"
   export EASYTIER_CODESIGN_KEYCHAIN="${EASYTIER_CODESIGN_KEYCHAIN:-${CODESIGN_KEYCHAIN:-}}"
   export EASYTIER_PROVISIONING_PROFILE="${EASYTIER_PROVISIONING_PROFILE:-${PROVISIONING_PROFILE:-}}"
@@ -125,6 +130,9 @@ case "$command_name" in
     ;;
   prune-nightlies)
     exec "$ROOT_DIR/scripts/release-publish.sh" prune-nightlies
+    ;;
+  prune-devs)
+    exec "$ROOT_DIR/scripts/release-publish.sh" prune-devs
     ;;
   -h|--help|help)
     usage

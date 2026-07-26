@@ -100,6 +100,58 @@ import Testing
 }
 
 @MainActor
+@Test func devTrackPersistsAndResetsSparkleUpdateCycle() {
+    let fixture = makeUserDefaults()
+    defer { fixture.clear() }
+
+    let client = TestSoftwareUpdateClient()
+    let controller = SoftwareUpdateController(
+        userDefaults: fixture.defaults,
+        clientFactory: { _ in client }
+    )
+
+    controller.updateTrack = .dev
+
+    #expect(controller.allowedChannels == ["dev"])
+    #expect(fixture.defaults.string(forKey: updateTrackKey) == SoftwareUpdateTrack.dev.rawValue)
+    #expect(client.resetUpdateCycleCount == 1)
+
+    controller.updateTrack = .dev
+    #expect(client.resetUpdateCycleCount == 1)
+}
+
+@MainActor
+@Test func storedDevTrackLoadsBeforeSparkleStarts() {
+    let fixture = makeUserDefaults()
+    defer { fixture.clear() }
+
+    fixture.defaults.set(SoftwareUpdateTrack.dev.rawValue, forKey: updateTrackKey)
+    let client = TestSoftwareUpdateClient()
+    let controller = SoftwareUpdateController(
+        userDefaults: fixture.defaults,
+        clientFactory: { _ in client }
+    )
+
+    #expect(controller.updateTrack == .dev)
+    #expect(controller.allowedChannels == ["dev"])
+    #expect(client.resetUpdateCycleCount == 0)
+}
+
+@Test func devBuildUsesDevVersionLabel() {
+    let info = AppVersionInfo(
+        version: "1.4.1",
+        build: "2026-07-26 10:00:00",
+        rawBuild: "20260726100000",
+        bundleIdentifier: "com.kkrainbow.easytier.mac",
+        buildChannel: .dev
+    )
+
+    #expect(info.displayVersion == "1.4.1 Dev")
+    #expect(SoftwareUpdateTrack.dev.displayName == "Dev")
+    #expect(SoftwareUpdateTrack.dev.buildDisplayName == "Dev")
+}
+
+@MainActor
 @Test func controllerTracksSparkleStateAndForwardsUserActions() {
     let fixture = makeUserDefaults()
     defer { fixture.clear() }

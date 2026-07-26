@@ -182,6 +182,46 @@ class ReleaseFeedTests(unittest.TestCase):
                 "nightly-20260715020000",
             )
 
+    def test_enforces_dev_tag_and_generates_dev_release_notes(self) -> None:
+        dev_metadata = self.root / "dev.metadata.json"
+        metadata = json.loads(self.metadata.read_text(encoding="utf-8"))
+        metadata.update(
+            {
+                "build": "20260726030405",
+                "buildTime": "2026-07-26T03:04:05Z",
+                "channel": "dev",
+            }
+        )
+        dev_metadata.write_text(json.dumps(metadata), encoding="utf-8")
+        current = self.root / "dev.json"
+        current.write_text(
+            json.dumps(
+                {
+                    "build": "20260725030405",
+                    "channel": "dev",
+                    "tag": "dev-20260725030405",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        release_feed.validate_feed_order(dev_metadata, current, "dev-20260726030405")
+        with self.assertRaisesRegex(release_feed.ReleaseError, "Dev tag must match"):
+            release_feed.validate_feed_order(dev_metadata, current, "nightly-20260726030405")
+
+        output = self.root / "DEV_NOTES.md"
+        release_feed.write_dev_release_notes(
+            dev_metadata,
+            "socoldkiller/easytier-macos",
+            "EasyTier/EasyTier",
+            output,
+        )
+        notes = output.read_text(encoding="utf-8")
+        self.assertIn("EasyTier Dev 2026-07-26", notes)
+        self.assertIn(GUI_COMMIT, notes)
+        self.assertIn(CORE_COMMIT, notes)
+        self.assertIn("Dev builds may be unstable", notes)
+
     def test_generates_legacy_feed_from_the_canonical_dmg(self) -> None:
         output = self.root / "pages" / "update.json"
         release_feed.write_channel_feed(
@@ -330,6 +370,60 @@ class ReleaseFeedTests(unittest.TestCase):
                 "15.0",
                 "ARM64",
             )
+
+    def test_validates_combined_stable_nightly_and_dev_appcast(self) -> None:
+        dev_metadata = self.root / "dev.metadata.json"
+        dev_value = json.loads(self.metadata.read_text(encoding="utf-8"))
+        dev_value.update(
+            {
+                "build": "20260726030405",
+                "buildTime": "2026-07-26T03:04:05Z",
+                "channel": "dev",
+                "coreCommit": "c" * 40,
+                "guiCommit": "d" * 40,
+            }
+        )
+        dev_metadata.write_text(json.dumps(dev_value), encoding="utf-8")
+        dev_dmg = self.root / "EasyTier-macOS-ARM64-dev-20260726030405.dmg"
+        dev_dmg.write_bytes(b"dev-dmg-bytes")
+        appcast = self.root / "three-channel-appcast.xml"
+        appcast.write_text(
+            f"""<?xml version="1.0" encoding="utf-8"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <item>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <enclosure url="https://github.com/socoldkiller/easytier-macos/releases/download/v1.4.0/{self.dmg.name}" length="{self.dmg.stat().st_size}" sparkle:version="20260714010203" sparkle:shortVersionString="1.4.0" sparkle:edSignature="stable-signature" />
+    </item>
+    <item>
+      <sparkle:channel>nightly</sparkle:channel>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <enclosure url="https://example.invalid/nightly.dmg" length="1" sparkle:version="20260725020000" sparkle:shortVersionString="1.4.0" sparkle:edSignature="nightly-signature" />
+    </item>
+    <item>
+      <sparkle:channel>dev</sparkle:channel>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <enclosure url="https://github.com/socoldkiller/easytier-macos/releases/download/dev-20260726030405/{dev_dmg.name}" length="{dev_dmg.stat().st_size}" sparkle:version="20260726030405" sparkle:shortVersionString="1.4.0" sparkle:edSignature="dev-signature" />
+    </item>
+  </channel>
+</rss>
+""",
+            encoding="utf-8",
+        )
+
+        signature = release_feed.validate_appcast(
+            appcast,
+            dev_metadata,
+            dev_dmg,
+            "dev-20260726030405",
+            "socoldkiller/easytier-macos",
+            "15.0",
+            "ARM64",
+        )
+        self.assertEqual(signature, "dev-signature")
 
     def test_generates_nightly_release_notes_from_exact_sources(self) -> None:
         nightly_metadata = self.root / "nightly.metadata.json"

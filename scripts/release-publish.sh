@@ -53,13 +53,21 @@ release_tag() {
   printf '%s\n' "$value"
 }
 
+channel_feed_name() {
+  case "$RELEASE_CHANNEL" in
+    stable) printf '%s\n' "update.json" ;;
+    nightly) printf '%s\n' "nightly.json" ;;
+    dev) printf '%s\n' "dev.json" ;;
+  esac
+}
+
 validate_published_order() {
   local metadata_path="$1"
   local tag="$2"
   local current_feed="${EASYTIER_CURRENT_FEED_PATH:-}"
-  local feed_name="update.json"
+  local feed_name
   local allow_missing_channel="${EASYTIER_ALLOW_MISSING_CHANNEL_FEED:-${EASYTIER_ALLOW_MISSING_CURRENT_FEED:-0}}"
-  [[ "$RELEASE_CHANNEL" == "nightly" ]] && feed_name="nightly.json"
+  feed_name="$(channel_feed_name)"
   if [[ -z "$current_feed" ]]; then
     current_feed="$TEMP_ROOT/current-$feed_name"
     local cache_bust="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$(date +%s)"
@@ -68,14 +76,14 @@ validate_published_order() {
       "$UPDATE_BASE_URL/$feed_name?ordering=$cache_bust" \
       -o "$current_feed"; then
       if [[ "$allow_missing_channel" == "1" ]]; then
-        if [[ "$RELEASE_CHANNEL" == "nightly" ]]; then
+        if [[ "$RELEASE_CHANNEL" != "stable" ]]; then
           local current_appcast="$TEMP_ROOT/current-ordering-appcast.xml"
           curl -fsSL -H 'Cache-Control: no-cache' \
             "$UPDATE_BASE_URL/appcast.xml?ordering=$cache_bust" \
             -o "$current_appcast" \
-            || die "Could not load the existing appcast while bootstrapping Nightly."
-          if grep -q '<sparkle:channel>nightly</sparkle:channel>' "$current_appcast"; then
-            die "nightly.json is missing even though the appcast already contains Nightly."
+            || die "Could not load the existing appcast while bootstrapping $RELEASE_CHANNEL."
+          if grep -q "<sparkle:channel>$RELEASE_CHANNEL</sparkle:channel>" "$current_appcast"; then
+            die "$feed_name is missing even though the appcast already contains $RELEASE_CHANNEL."
           fi
         fi
         log "No current update feed was found; initial-feed override is enabled"
@@ -199,13 +207,13 @@ bootstrap_pages_state() {
 
   if [[ -n "$source_dir" ]]; then
     [[ -d "$source_dir" ]] || die "Current Pages directory does not exist: $source_dir"
-    for name in appcast.xml update.json nightly.json; do
+    for name in appcast.xml update.json nightly.json dev.json; do
       if [[ -f "$source_dir/$name" ]]; then
         cp "$source_dir/$name" "$PAGES_DIR/$name"
       fi
     done
   else
-    for name in appcast.xml update.json nightly.json; do
+    for name in appcast.xml update.json nightly.json dev.json; do
       curl -fsSL -H 'Cache-Control: no-cache' \
         "$UPDATE_BASE_URL/$name?state=$cache_bust" \
         -o "$PAGES_DIR/$name" 2>/dev/null || rm -f "$PAGES_DIR/$name"
@@ -215,13 +223,18 @@ bootstrap_pages_state() {
   if [[ ! -s "$PAGES_DIR/appcast.xml" && "$allow_missing" != "1" ]]; then
     die "Could not load the existing appcast; refusing to replace another update channel."
   fi
-  if [[ "$RELEASE_CHANNEL" == "nightly" && ! -s "$PAGES_DIR/update.json" && "$allow_missing" != "1" ]]; then
-    die "Could not load the Stable update manifest before publishing Nightly."
+  if [[ "$RELEASE_CHANNEL" != "stable" && ! -s "$PAGES_DIR/update.json" && "$allow_missing" != "1" ]]; then
+    die "Could not load the Stable update manifest before publishing $RELEASE_CHANNEL."
   fi
   if [[ -s "$PAGES_DIR/appcast.xml" ]] && \
     grep -q '<sparkle:channel>nightly</sparkle:channel>' "$PAGES_DIR/appcast.xml" && \
     [[ ! -s "$PAGES_DIR/nightly.json" ]]; then
     die "The appcast contains Nightly but nightly.json could not be preserved."
+  fi
+  if [[ -s "$PAGES_DIR/appcast.xml" ]] && \
+    grep -q '<sparkle:channel>dev</sparkle:channel>' "$PAGES_DIR/appcast.xml" && \
+    [[ ! -s "$PAGES_DIR/dev.json" ]]; then
+    die "The appcast contains Dev but dev.json could not be preserved."
   fi
 }
 
@@ -232,12 +245,12 @@ generate_and_validate_feeds() {
   local notes_path="$4"
   local appcast_input="$TEMP_ROOT/appcast-input"
   local appcast_path="$PAGES_DIR/appcast.xml"
-  local channel_feed_path="$PAGES_DIR/update.json"
+  local channel_feed_path
   local notes_name="$(basename "${dmg_path%.dmg}.md")"
   local generate_output signature
   local generate_args
 
-  [[ "$RELEASE_CHANNEL" == "nightly" ]] && channel_feed_path="$PAGES_DIR/nightly.json"
+  channel_feed_path="$PAGES_DIR/$(channel_feed_name)"
   bootstrap_pages_state
   rm -rf "$appcast_input"
   mkdir -p "$appcast_input"
@@ -254,8 +267,8 @@ generate_and_validate_feeds() {
     --maximum-versions 1
     -o "$appcast_path"
   )
-  if [[ "$RELEASE_CHANNEL" == "nightly" ]]; then
-    generate_args+=(--channel nightly)
+  if [[ "$RELEASE_CHANNEL" != "stable" ]]; then
+    generate_args+=(--channel "$RELEASE_CHANNEL")
   fi
   if ! generate_output="$(
     "$SPARKLE_TOOLS_DIR/generate_appcast" "${generate_args[@]}" "$appcast_input" 2>&1
@@ -304,27 +317,32 @@ publish_github_release() {
   local title="$tag"
   local release_args=()
 
-  if [[ "$RELEASE_CHANNEL" == "nightly" ]]; then
-    nightly_date="$(
+  if [[ "$RELEASE_CHANNEL" != "stable" ]]; then
+    local release_date
+    release_date="$(
       "$PYTHON_BIN" -c \
         'from datetime import datetime, timedelta; import sys; value = datetime.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ") + timedelta(hours=8); print(value.strftime("%Y-%m-%d"))' \
         "$PUBLISH_BUILD_TIME"
     )"
-    title="Nightly $nightly_date"
+    if [[ "$RELEASE_CHANNEL" == "nightly" ]]; then
+      title="Nightly $release_date"
+    else
+      title="Dev $release_date (${PUBLISH_GUI_REVISION:0:8})"
+    fi
     release_args=(--prerelease --target "$PUBLISH_GUI_REVISION")
   fi
 
   if [[ "$RELEASE_EXISTS" == "0" ]]; then
     log "Creating GitHub Release $tag"
     local create_args=(--repo "$REPOSITORY" --title "$title" --notes-file "$notes_path")
-    if [[ "$RELEASE_CHANNEL" == "nightly" ]]; then
+    if [[ "$RELEASE_CHANNEL" != "stable" ]]; then
       create_args+=("${release_args[@]}")
     fi
     gh release create "$tag" "${create_args[@]}"
     RELEASE_EXISTS=1
   else
     local edit_args=(--repo "$REPOSITORY" --title "$title" --notes-file "$notes_path")
-    [[ "$RELEASE_CHANNEL" == "nightly" ]] && edit_args+=(--prerelease)
+    [[ "$RELEASE_CHANNEL" != "stable" ]] && edit_args+=(--prerelease)
     gh release edit "$tag" "${edit_args[@]}"
   fi
 
@@ -360,6 +378,12 @@ publish_release() {
       --repository "$REPOSITORY" \
       --core-repository "$CORE_REPOSITORY" \
       --output "$notes_path"
+  elif [[ "$RELEASE_CHANNEL" == "dev" ]]; then
+    "$PYTHON_BIN" "$RELEASE_FEED_HELPER" dev-release-notes \
+      --metadata "$FOUND_METADATA" \
+      --repository "$REPOSITORY" \
+      --core-repository "$CORE_REPOSITORY" \
+      --output "$notes_path"
   else
     "$PYTHON_BIN" "$RELEASE_FEED_HELPER" release-notes \
       --changelog "$ROOT_DIR/CHANGELOG.md" \
@@ -384,12 +408,16 @@ verify_deployed_feeds() {
   if [[ "$RELEASE_CHANNEL" == "nightly" && ! -s "$PAGES_DIR/nightly.json" ]]; then
     die "Nightly publication did not generate nightly.json."
   fi
+  if [[ "$RELEASE_CHANNEL" == "dev" && ! -s "$PAGES_DIR/dev.json" ]]; then
+    die "Dev publication did not generate dev.json."
+  fi
 
   local attempts="${EASYTIER_DEPLOY_VERIFY_ATTEMPTS:-12}"
   local delay="${EASYTIER_DEPLOY_VERIFY_DELAY_SECONDS:-5}"
   local deployed_appcast="$TEMP_ROOT/deployed-appcast.xml"
   local deployed_legacy="$TEMP_ROOT/deployed-update.json"
   local deployed_nightly="$TEMP_ROOT/deployed-nightly.json"
+  local deployed_dev="$TEMP_ROOT/deployed-dev.json"
   local attempt cache_bust feeds_match
   [[ "$attempts" =~ ^[1-9][0-9]*$ ]] || die "EASYTIER_DEPLOY_VERIFY_ATTEMPTS must be positive."
   [[ "$delay" =~ ^[0-9]+$ ]] || die "EASYTIER_DEPLOY_VERIFY_DELAY_SECONDS must be non-negative."
@@ -412,6 +440,14 @@ verify_deployed_feeds() {
             "$UPDATE_BASE_URL/nightly.json?deploy=$cache_bust" \
             -o "$deployed_nightly" || \
           ! cmp "$PAGES_DIR/nightly.json" "$deployed_nightly"; then
+          feeds_match=0
+        fi
+      fi
+      if [[ -s "$PAGES_DIR/dev.json" ]]; then
+        if ! curl -fsSL -H 'Cache-Control: no-cache' \
+            "$UPDATE_BASE_URL/dev.json?deploy=$cache_bust" \
+            -o "$deployed_dev" || \
+          ! cmp "$PAGES_DIR/dev.json" "$deployed_dev"; then
           feeds_match=0
         fi
       fi
@@ -455,6 +491,33 @@ prune_nightly_releases() {
   done
 }
 
+prune_dev_releases() {
+  require_command gh
+  local keep="${EASYTIER_DEV_RELEASES_TO_KEEP:-14}"
+  local index tag
+  local tags=()
+  [[ "$keep" =~ ^[1-9][0-9]*$ ]] || die "EASYTIER_DEV_RELEASES_TO_KEEP must be positive."
+
+  while IFS= read -r tag; do
+    [[ -n "$tag" ]] && tags+=("$tag")
+  done < <(
+    gh release list \
+      --repo "$REPOSITORY" \
+      --limit 100 \
+      --json tagName,isPrerelease \
+      --jq '.[] | select(.isPrerelease and (.tagName | startswith("dev-"))) | .tagName' \
+      | sort -r
+  )
+
+  index="$keep"
+  while [[ "$index" -lt "${#tags[@]}" ]]; do
+    tag="${tags[$index]}"
+    log "Deleting expired Dev release $tag"
+    gh release delete "$tag" --repo "$REPOSITORY" --cleanup-tag --yes
+    index=$((index + 1))
+  done
+}
+
 
 usage() {
   cat >&2 <<'EOF'
@@ -464,6 +527,7 @@ Commands:
   publish                Publish a prepared DMG and update feeds.
   verify-deployed-feeds  Verify the deployed Pages feed payloads.
   prune-nightlies        Remove expired Nightly releases and tags.
+  prune-devs             Remove expired Dev releases and tags.
 EOF
 }
 
@@ -478,6 +542,9 @@ main() {
       ;;
     prune-nightlies)
       prune_nightly_releases
+      ;;
+    prune-devs)
+      prune_dev_releases
       ;;
     *)
       usage

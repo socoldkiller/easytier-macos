@@ -333,6 +333,7 @@ mkdir -p "$ARTIFACTS_DIR"
 : > "$TRACE_FILE"
 : > "$ARGS_TRACE"
 TEST_BUILD_NUMBER=20260715020000 \
+USE_BUILD_ENTRYPOINT=1 \
 EASYTIER_RELEASE_CHANNEL=nightly \
 EASYTIER_BUILD_TIME=2026-07-15T02:00:00Z \
 EASYTIER_GUI_REVISION=dddddddddddddddddddddddddddddddddddddddd \
@@ -355,6 +356,36 @@ assert metadata["channel"] == "nightly"
 assert metadata["build"] == "20260715020000"
 assert metadata["guiCommit"] == "d" * 40
 assert metadata["coreCommit"] == "c" * 40
+PY
+
+rm -rf "$ARTIFACTS_DIR"
+mkdir -p "$ARTIFACTS_DIR"
+: > "$TRACE_FILE"
+: > "$ARGS_TRACE"
+TEST_BUILD_NUMBER=20260726030405 \
+USE_BUILD_ENTRYPOINT=1 \
+EASYTIER_RELEASE_CHANNEL=dev \
+EASYTIER_BUILD_TIME=2026-07-26T03:04:05Z \
+EASYTIER_GUI_REVISION=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee \
+EASYTIER_CORE_REVISION=ffffffffffffffffffffffffffffffffffffffff \
+EASYTIER_CORE_VERSION=v2.6.4 \
+EASYTIER_NOTARY_KEYCHAIN_PROFILE=easytier-notary \
+EASYTIER_NOTARY_KEYCHAIN="$KEYCHAIN_PATH" \
+run_artifact > "$TEST_ROOT/dev-artifact.log"
+
+DEV_ARTIFACT="$ARTIFACTS_DIR/EasyTier-macOS-ARM64-dev-20260726030405.dmg"
+DEV_METADATA="${DEV_ARTIFACT%.dmg}.metadata.json"
+test -s "$DEV_ARTIFACT"
+python3 - "$DEV_METADATA" <<'PY'
+import json
+import pathlib
+import sys
+
+metadata = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert metadata["channel"] == "dev"
+assert metadata["build"] == "20260726030405"
+assert metadata["guiCommit"] == "e" * 40
+assert metadata["coreCommit"] == "f" * 40
 PY
 
 PUBLISH_ARTIFACTS="$TEST_ROOT/publish-artifacts"
@@ -839,6 +870,198 @@ assert nightly["guiCommit"] == "dddddddddddddddddddddddddddddddddddddddd"
 assert nightly["coreCommit"] == "cccccccccccccccccccccccccccccccccccccccc"
 PY
 
+DEV_ARTIFACTS="$TEST_ROOT/dev-artifacts"
+DEV_PAGES="$TEST_ROOT/dev-pages"
+DEV_CURRENT_PAGES="$TEST_ROOT/dev-current-pages"
+DEV_CURRENT_FEED="$TEST_ROOT/current-dev.json"
+DEV_DMG="$DEV_ARTIFACTS/EasyTier-macOS-ARM64-dev-20260726030405.dmg"
+DEV_TRACE="$TEST_ROOT/dev-trace.txt"
+DEV_GUI_REVISION="1111111111111111111111111111111111111111"
+DEV_CORE_REVISION="2222222222222222222222222222222222222222"
+mkdir -p "$DEV_ARTIFACTS" "$DEV_CURRENT_PAGES"
+cp -R "$NIGHTLY_PAGES/." "$DEV_CURRENT_PAGES/"
+cp "$DEV_CURRENT_PAGES/update.json" "$TEST_ROOT/stable-feed-before-dev.json"
+cp "$DEV_CURRENT_PAGES/nightly.json" "$TEST_ROOT/nightly-feed-before-dev.json"
+printf 'dev dmg bytes\n' > "$DEV_DMG"
+cat > "$DEV_ARTIFACTS/EasyTier-macOS-ARM64-dev-20260726030405.metadata.json" <<EOF
+{
+  "architecture": "ARM64",
+  "build": "20260726030405",
+  "buildTime": "2026-07-26T03:04:05Z",
+  "channel": "dev",
+  "coreCommit": "$DEV_CORE_REVISION",
+  "coreVersion": "v2.6.4-dev",
+  "guiCommit": "$DEV_GUI_REVISION",
+  "notarized": true,
+  "schemaVersion": 2,
+  "signing": "developer-id",
+  "version": "1.4.0"
+}
+EOF
+cat > "$DEV_CURRENT_FEED" <<'EOF'
+{
+  "build": "20260725030405",
+  "channel": "dev",
+  "coreCommit": "3333333333333333333333333333333333333333",
+  "guiCommit": "4444444444444444444444444444444444444444",
+  "tag": "dev-20260725030405"
+}
+EOF
+: > "$DEV_TRACE"
+
+cat > "$FAKE_HELPERS/verify-dev-dmg" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cmp -s "$1" "$DEV_DMG"
+printf 'verify-dev-dmg\n' >> "$DEV_TRACE"
+EOF
+
+cat > "$FAKE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "release" && "$2" == "view" ]]; then
+  printf 'gh-view-dev\n' >> "$DEV_TRACE"
+  exit 1
+fi
+if [[ "$1" == "release" && "$2" == "create" ]]; then
+  [[ " $* " == *" --prerelease "* ]]
+  [[ " $* " == *" --target $DEV_GUI_REVISION "* ]]
+  [[ " $* " == *" --title Dev 2026-07-26 (11111111) "* ]]
+  printf 'gh-create-dev\n' >> "$DEV_TRACE"
+  exit 0
+fi
+if [[ "$1" == "release" && "$2" == "upload" ]]; then
+  printf 'gh-upload-dev\n' >> "$DEV_TRACE"
+  exit 0
+fi
+echo "Unexpected dev gh invocation: $*" >&2
+exit 1
+EOF
+
+cat > "$SPARKLE_TOOLS/generate_appcast" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+output=""
+prefix=""
+input=""
+channel=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    -o) output="$2"; shift 2 ;;
+    --download-url-prefix) prefix="$2"; shift 2 ;;
+    --channel) channel="$2"; shift 2 ;;
+    --ed-key-file|--maximum-versions) shift 2 ;;
+    --embed-release-notes) shift ;;
+    *) input="$1"; shift ;;
+  esac
+done
+[[ "$channel" == "dev" ]]
+dmg="$input/EasyTier-macOS-ARM64-dev-20260726030405.dmg"
+cmp -s "$dmg" "$DEV_DMG"
+size="$(wc -c < "$dmg" | tr -d ' ')"
+stable_dmg_size="$(wc -c < "$REMOTE_STABLE_DMG" | tr -d ' ')"
+nightly_dmg_size="$(wc -c < "$NIGHTLY_DMG" | tr -d ' ')"
+printf 'generate-dev-appcast\n' >> "$DEV_TRACE"
+cat > "$output" <<XML
+<?xml version="1.0" encoding="utf-8"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0" sparkle:signature="three-channel-feed-signature">
+  <channel>
+    <item>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <enclosure url="https://github.com/socoldkiller/easytier-macos/releases/download/v1.4.0/EasyTier-macOS-ARM64.dmg" length="$stable_dmg_size" sparkle:version="20260714010203" sparkle:shortVersionString="1.4.0" sparkle:edSignature="stable-signature" />
+    </item>
+    <item>
+      <sparkle:channel>nightly</sparkle:channel>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <enclosure url="https://github.com/socoldkiller/easytier-macos/releases/download/nightly-20260715020000/EasyTier-macOS-ARM64-nightly-20260715020000.dmg" length="$nightly_dmg_size" sparkle:version="20260715020000" sparkle:shortVersionString="1.4.0" sparkle:edSignature="nightly-signature" />
+    </item>
+    <item>
+      <sparkle:channel>dev</sparkle:channel>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <enclosure url="${prefix}EasyTier-macOS-ARM64-dev-20260726030405.dmg" length="$size" sparkle:version="20260726030405" sparkle:shortVersionString="1.4.0" sparkle:edSignature="dev-signature" />
+    </item>
+  </channel>
+</rss>
+XML
+EOF
+
+cat > "$SPARKLE_TOOLS/sign_update" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+file_path=""
+for argument in "$@"; do
+  if [[ "$argument" == *.dmg || "$argument" == *.xml ]]; then
+    file_path="$argument"
+    break
+  fi
+done
+if [[ "$file_path" == *.dmg ]]; then
+  cmp -s "$file_path" "$DEV_DMG"
+  printf 'verify-dev-signature\n' >> "$DEV_TRACE"
+elif [[ "$file_path" == *.xml ]]; then
+  printf 'verify-three-channel-appcast-signature\n' >> "$DEV_TRACE"
+else
+  exit 1
+fi
+EOF
+
+chmod +x "$FAKE_BIN/gh" "$FAKE_HELPERS/verify-dev-dmg" "$SPARKLE_TOOLS"/*
+
+PATH="$FAKE_BIN:$PATH" \
+DEV_DMG="$DEV_DMG" \
+DEV_TRACE="$DEV_TRACE" \
+NIGHTLY_DMG="$NIGHTLY_DMG" \
+REMOTE_STABLE_DMG="$REMOTE_DMG_SOURCE" \
+DEV_GUI_REVISION="$DEV_GUI_REVISION" \
+EASYTIER_ARTIFACTS_DIR="$DEV_ARTIFACTS" \
+EASYTIER_PAGES_DIR="$DEV_PAGES" \
+EASYTIER_CURRENT_PAGES_DIR="$DEV_CURRENT_PAGES" \
+EASYTIER_CURRENT_FEED_PATH="$DEV_CURRENT_FEED" \
+EASYTIER_RELEASE_TEMP_PARENT="$TEMP_PARENT" \
+EASYTIER_RELEASE_VERIFY_DMG_SCRIPT="$FAKE_HELPERS/verify-dev-dmg" \
+EASYTIER_SPARKLE_TOOLS_DIR="$SPARKLE_TOOLS" \
+SPARKLE_EDDSA_PRIVATE_KEY=fake-sparkle-private-key \
+TAG_NAME=dev-20260726030405 \
+REPOSITORY=socoldkiller/easytier-macos \
+GH_TOKEN=fake-token \
+"$ROOT_DIR/scripts/release.sh" publish > "$TEST_ROOT/dev-publish.log"
+
+cat > "$TEST_ROOT/expected-dev-trace.txt" <<'EOF'
+verify-dev-dmg
+gh-view-dev
+generate-dev-appcast
+verify-dev-signature
+verify-three-channel-appcast-signature
+gh-create-dev
+gh-upload-dev
+EOF
+diff -u "$TEST_ROOT/expected-dev-trace.txt" "$DEV_TRACE"
+cmp "$TEST_ROOT/stable-feed-before-dev.json" "$DEV_PAGES/update.json"
+cmp "$TEST_ROOT/nightly-feed-before-dev.json" "$DEV_PAGES/nightly.json"
+
+python3 - "$DEV_PAGES/appcast.xml" "$DEV_PAGES/dev.json" <<'PY'
+import json
+import pathlib
+import sys
+import xml.etree.ElementTree as ET
+
+appcast = ET.parse(sys.argv[1]).getroot()
+channels = []
+for item in appcast.findall("./channel/item"):
+    channel = next((child.text for child in item if child.tag.endswith("channel")), None)
+    channels.append(channel or "stable")
+assert sorted(channels) == ["dev", "nightly", "stable"]
+
+dev = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+assert dev["channel"] == "dev"
+assert dev["tag"] == "dev-20260726030405"
+assert dev["guiCommit"] == "1111111111111111111111111111111111111111"
+assert dev["coreCommit"] == "2222222222222222222222222222222222222222"
+PY
+
 PRUNE_TRACE="$TEST_ROOT/prune-trace.txt"
 : > "$PRUNE_TRACE"
 cat > "$FAKE_BIN/gh" <<'EOF'
@@ -872,4 +1095,37 @@ nightly-20260701020000
 EOF
 diff -u "$TEST_ROOT/expected-prune-trace.txt" "$PRUNE_TRACE"
 
-echo "Stable, Nightly, feed-preservation, and retention state-machine tests passed."
+DEV_PRUNE_TRACE="$TEST_ROOT/dev-prune-trace.txt"
+: > "$DEV_PRUNE_TRACE"
+cat > "$FAKE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "release" && "$2" == "list" ]]; then
+  index=16
+  while [[ "$index" -ge 1 ]]; do
+    printf 'dev-202607%02d030405\n' "$index"
+    index=$((index - 1))
+  done
+  exit 0
+fi
+if [[ "$1" == "release" && "$2" == "delete" ]]; then
+  printf '%s\n' "$3" >> "$DEV_PRUNE_TRACE"
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "$FAKE_BIN/gh"
+
+PATH="$FAKE_BIN:$PATH" \
+DEV_PRUNE_TRACE="$DEV_PRUNE_TRACE" \
+REPOSITORY=socoldkiller/easytier-macos \
+EASYTIER_DEV_RELEASES_TO_KEEP=14 \
+"$ROOT_DIR/scripts/release.sh" prune-devs > "$TEST_ROOT/dev-prune.log"
+
+cat > "$TEST_ROOT/expected-dev-prune-trace.txt" <<'EOF'
+dev-20260702030405
+dev-20260701030405
+EOF
+diff -u "$TEST_ROOT/expected-dev-prune-trace.txt" "$DEV_PRUNE_TRACE"
+
+echo "Stable, Nightly, Dev, feed-preservation, and retention state-machine tests passed."

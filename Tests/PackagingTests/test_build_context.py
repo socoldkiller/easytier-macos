@@ -126,6 +126,70 @@ class BuildContextTests(unittest.TestCase):
         self.assertEqual(context.core_version, "v2.6.4")
         self.assertEqual(run_git.call_count, 3)
 
+    def test_dev_push_publishes_exact_checked_out_sources(self) -> None:
+        with (
+            mock.patch.object(
+                build_context,
+                "repository_revision",
+                side_effect=["d" * 40, "c" * 40],
+            ),
+            mock.patch.object(build_context, "core_version", return_value="v2.6.4-dev"),
+            mock.patch.object(build_context, "gateway_version", return_value="0.1.0"),
+            mock.patch.object(build_context, "latest_stable_tag", return_value="v1.4.1"),
+            mock.patch.object(build_context, "run_git") as run_git,
+        ):
+            context = build_context.resolve_github(
+                ROOT_DIR,
+                event_name="push",
+                ref="refs/heads/dev",
+                ref_name="dev",
+                dispatch_mode="ci",
+                run_created_at="2026-07-26T03:04:05Z",
+                nightly_releases_enabled=False,
+                update_base_url="https://example.invalid",
+                run_id="456",
+                run_attempt="1",
+                fetch_nightly_core=True,
+            )
+
+        self.assertEqual(context.release_channel, "dev")
+        self.assertTrue(context.should_publish)
+        self.assertEqual(context.app_version, "1.4.1")
+        self.assertEqual(context.build_number, "20260726030405")
+        self.assertEqual(context.tag_name, "dev-20260726030405")
+        self.assertEqual(context.gui_revision, "d" * 40)
+        self.assertEqual(context.core_revision, "c" * 40)
+        run_git.assert_not_called()
+
+    def test_manual_dev_dispatch_uses_dev_release_identity(self) -> None:
+        with (
+            mock.patch.object(
+                build_context,
+                "repository_revision",
+                side_effect=["a" * 40, "b" * 40],
+            ),
+            mock.patch.object(build_context, "core_version", return_value="v2.6.4"),
+            mock.patch.object(build_context, "gateway_version", return_value="0.1.0"),
+            mock.patch.object(build_context, "latest_stable_tag", return_value="v1.4.1"),
+        ):
+            context = build_context.resolve_github(
+                ROOT_DIR,
+                event_name="workflow_dispatch",
+                ref="refs/heads/dev",
+                ref_name="dev",
+                dispatch_mode="dev",
+                run_created_at="2026-07-26T03:04:05Z",
+                nightly_releases_enabled=False,
+                update_base_url="https://example.invalid",
+                run_id="456",
+                run_attempt="2",
+                fetch_nightly_core=False,
+            )
+
+        self.assertEqual(context.release_channel, "dev")
+        self.assertTrue(context.should_publish)
+        self.assertEqual(context.tag_name, "dev-20260726030405")
+
     def test_scheduled_nightly_does_not_publish_unchanged_sources(self) -> None:
         with (
             mock.patch.object(
@@ -214,6 +278,10 @@ class BuildContextTests(unittest.TestCase):
             "        run: make test",
             workflow,
         )
+        self.assertIn("      - dev\n", workflow)
+        self.assertIn("inputs.mode == 'dev'", workflow)
+        self.assertIn("brew install cmake protobuf swiftlint", workflow)
+        self.assertIn("run: ./scripts/build.sh prune-devs", workflow)
 
     def test_release_fixtures_do_not_inherit_build_context(self) -> None:
         fixture = (

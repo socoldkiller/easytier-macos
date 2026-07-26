@@ -70,7 +70,7 @@ require_executable() {
 }
 
 configure_release_channel() {
-  [[ "$RELEASE_CHANNEL" == "stable" || "$RELEASE_CHANNEL" == "nightly" ]] \
-    || die "EASYTIER_RELEASE_CHANNEL must be stable or nightly: $RELEASE_CHANNEL"
+  [[ "$RELEASE_CHANNEL" == "stable" || "$RELEASE_CHANNEL" == "nightly" || "$RELEASE_CHANNEL" == "dev" ]] \
+    || die "EASYTIER_RELEASE_CHANNEL must be stable, nightly, or dev: $RELEASE_CHANNEL"
   export EASYTIER_BUILD_CHANNEL="$RELEASE_CHANNEL"
 }

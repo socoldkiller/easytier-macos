@@ -144,8 +144,8 @@ configure_version() {
   BUILD_TIME_UTC="${BUILD_TIME_UTC:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
   [[ "$BUILD_TIME_UTC" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
     || die "EASYTIER_BUILD_TIME must be an ISO-8601 UTC timestamp; got '$BUILD_TIME_UTC'."
-  [[ "$BUILD_CHANNEL" == "stable" || "$BUILD_CHANNEL" == "nightly" ]] \
-    || die "EASYTIER_BUILD_CHANNEL must be stable or nightly; got '$BUILD_CHANNEL'."
+  [[ "$BUILD_CHANNEL" == "stable" || "$BUILD_CHANNEL" == "nightly" || "$BUILD_CHANNEL" == "dev" ]] \
+    || die "EASYTIER_BUILD_CHANNEL must be stable, nightly, or dev; got '$BUILD_CHANNEL'."
 }
 
 configure_source_packages_dir() {

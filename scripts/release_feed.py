@@ -19,7 +19,7 @@ BUILD_PATTERN = re.compile(r"^[0-9]{14}$")
 VERSION_PATTERN = re.compile(r"^[0-9]+(?:\.[0-9]+){1,2}$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 BUILD_TIME_PATTERN = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
-RELEASE_CHANNELS = {"stable", "nightly"}
+RELEASE_CHANNELS = {"stable", "nightly", "dev"}
 
 
 class ReleaseError(ValueError):
@@ -83,9 +83,11 @@ def validate_release_tag(tag: str, metadata: dict[str, Any]) -> None:
             )
         return
 
-    expected = f"nightly-{metadata['build']}"
+    expected = f"{channel}-{metadata['build']}"
     if tag != expected:
-        raise ReleaseError(f"Nightly tag must match the packaged build: {tag} != {expected}")
+        raise ReleaseError(
+            f"{channel.capitalize()} tag must match the packaged build: {tag} != {expected}"
+        )
 
 
 def validated_metadata(
@@ -314,6 +316,35 @@ def write_nightly_release_notes(
     output_path.write_text(notes, encoding="utf-8")
 
 
+def write_dev_release_notes(
+    metadata_path: pathlib.Path,
+    repository: str,
+    core_repository: str,
+    output_path: pathlib.Path,
+) -> None:
+    metadata = validated_metadata(metadata_path)
+    if metadata["channel"] != "dev":
+        raise ReleaseError("Dev release notes require dev artifact metadata.")
+    build_time = datetime.strptime(metadata["buildTime"], "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=timezone.utc
+    )
+    build_date = (build_time + timedelta(hours=8)).strftime("%Y-%m-%d")
+    gui_commit = metadata["guiCommit"]
+    core_commit = metadata["coreCommit"]
+    notes = (
+        f"# EasyTier Dev {build_date} ({gui_commit[:8]})\n\n"
+        "This build packages the exact EasyTier GUI and Core revisions pinned by the dev branch commit.\n\n"
+        f"- GUI: [`{gui_commit[:8]}`](https://github.com/{repository}/commit/{gui_commit})\n"
+        f"- Core: [`{core_commit[:8]}`](https://github.com/{core_repository}/commit/{core_commit})\n"
+        f"- Core version: `{metadata['coreVersion']}`\n"
+        f"- Build: `{metadata['build']}`\n\n"
+        "Dev builds may be unstable. This DMG is Developer ID signed, Apple-notarized, "
+        "stapled, and verified with Gatekeeper.\n"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(notes, encoding="utf-8")
+
+
 def sha256(path: pathlib.Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -381,8 +412,8 @@ def validate_appcast(
         raise ReleaseError(f"Could not parse generated appcast {appcast_path}: {error}") from error
 
     items = root.findall("./channel/item")
-    if not 1 <= len(items) <= 2:
-        raise ReleaseError(f"Generated appcast must contain one or two items; found {len(items)}")
+    if not 1 <= len(items) <= 3:
+        raise ReleaseError(f"Generated appcast must contain one to three items; found {len(items)}")
 
     items_by_channel: dict[str, ET.Element] = {}
     for candidate in items:
@@ -391,9 +422,9 @@ def validate_appcast(
         }
         raw_channel = candidate_elements.get("channel")
         if raw_channel:
-            if raw_channel != "nightly":
+            if raw_channel not in {"nightly", "dev"}:
                 raise ReleaseError(f"Generated appcast has an unsupported channel: {raw_channel}")
-            candidate_channel = "nightly"
+            candidate_channel = raw_channel
         else:
             candidate_channel = "stable"
         if candidate_channel in items_by_channel:
@@ -498,6 +529,12 @@ def build_parser() -> argparse.ArgumentParser:
     nightly_notes.add_argument("--core-repository", default="EasyTier/EasyTier")
     nightly_notes.add_argument("--output", required=True, type=pathlib.Path)
 
+    dev_notes = subparsers.add_parser("dev-release-notes")
+    dev_notes.add_argument("--metadata", required=True, type=pathlib.Path)
+    dev_notes.add_argument("--repository", required=True)
+    dev_notes.add_argument("--core-repository", default="EasyTier/EasyTier")
+    dev_notes.add_argument("--output", required=True, type=pathlib.Path)
+
     channel_feed = subparsers.add_parser("channel-feed")
     channel_feed.add_argument("--metadata", required=True, type=pathlib.Path)
     channel_feed.add_argument("--dmg", required=True, type=pathlib.Path)
@@ -535,6 +572,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             write_release_notes(args.changelog, args.tag, args.output)
         elif args.command == "nightly-release-notes":
             write_nightly_release_notes(
+                args.metadata,
+                args.repository,
+                args.core_repository,
+                args.output,
+            )
+        elif args.command == "dev-release-notes":
+            write_dev_release_notes(
                 args.metadata,
                 args.repository,
                 args.core_repository,

@@ -109,11 +109,12 @@ are:
 ./scripts/build.sh publish
 ./scripts/build.sh verify-deployed-feeds
 ./scripts/build.sh prune-nightlies
+./scripts/build.sh prune-devs
 ```
 
 Internally, `scripts/release-artifact.sh` owns the Apple artifact state machine,
 and `scripts/release-publish.sh` owns GitHub Release, Sparkle feed, deployment
-verification, and Nightly retention. `scripts/release-common.sh` contains only
+verification, and prerelease retention. `scripts/release-common.sh` contains only
 their shared configuration and lifecycle helpers. Do not call those internal
 modules from new automation; use `scripts/build.sh`.
 
@@ -124,13 +125,15 @@ enforces monotonic build numbers, generates release notes, updates only the
 selected branch in the signed Sparkle appcast, and creates the GitHub Release.
 Stable publication updates the legacy-compatible `update.json`; Nightly
 publication updates `nightly.json` and preserves `update.json` byte-for-byte.
+Dev publication updates `dev.json` while preserving both Stable and Nightly
+manifests.
 
 Tag reruns are recoverable. If an immutable DMG already exists on the GitHub
 Release, the pipeline downloads and verifies that exact asset and generates the
 feeds from its original bytes. It does not compare it with or replace a newly
 built DMG, whose signing timestamps and notarization tickets may differ.
 
-## Stable and Nightly channels
+## Stable, Nightly, and Dev channels
 
 Numeric `v*` tags publish Stable releases from the GUI repository's pinned
 EasyTier submodule. The appcast item has no explicit Sparkle channel.
@@ -151,11 +154,34 @@ Nightly validation. Scheduled runs always build and test, but only publish when
 that variable is enabled. A `workflow_dispatch` run with mode `nightly` may
 publish before the schedule is enabled.
 
-Both channels share one signed `appcast.xml`. Publication downloads the current
+All channels share one signed `appcast.xml`. Publication downloads the current
 Pages state after acquiring the global feed concurrency lock, retains one
 latest item per channel, and fails closed if an existing channel cannot be
 preserved. `prune-nightlies` runs only after Pages verification and keeps the
 newest 14 Nightly prereleases and tags.
+
+Every push to the GUI repository's `dev` branch publishes a Dev build after the
+full automated test suite succeeds. It uses the exact GUI revision and the Core
+submodule revision pinned by that commit; unlike Nightly, it never replaces the
+Core checkout. Dev identity is deterministic for a workflow run:
+
+- Version: the most recent reachable numeric Stable tag.
+- Build: the workflow run creation time as UTC `YYYYMMDDHHMMSS`.
+- Tag: `dev-YYYYMMDDHHMMSS`.
+- Asset: `EasyTier-macOS-ARM64-dev-YYYYMMDDHHMMSS.dmg`.
+- Release: a GitHub prerelease targeting the exact GUI SHA.
+
+The manual workflow includes a `dev` mode for initial channel setup and release
+recovery. A rerun reuses the original workflow creation time and therefore the
+same immutable tag and asset identity. Dev publication adds a
+`<sparkle:channel>dev</sparkle:channel>` item to the shared appcast and updates
+`dev.json`. Publishing fails closed if an existing Dev appcast item cannot be
+paired with its manifest. After Pages deployment is verified, `prune-devs`
+keeps the newest 14 Dev prereleases and tags.
+
+The application exposes all three tracks. Stable users receive only Stable;
+Nightly users receive Stable and Nightly; Dev users receive Stable and Dev.
+Nightly and Dev never implicitly cross over into each other.
 
 ## Credential handling
 
@@ -205,7 +231,7 @@ Publishing CI runs this gate after importing the Developer ID certificate and
 before building, notarizing, or uploading the release artifact. Ordinary pull
 requests continue to run the credential-free query-construction tests.
 
-Those tests exercise metadata, per-channel version ordering, Stable/Nightly
-release notes, combined appcast fields, feed preservation, the App/DMG
-notarization order, cleanup on failure, immutable-asset reuse, and Nightly
-retention.
+Those tests exercise metadata, per-channel version ordering,
+Stable/Nightly/Dev release notes, three-channel appcast fields, feed
+preservation, the App/DMG notarization order, cleanup on failure,
+immutable-asset reuse, and prerelease retention.

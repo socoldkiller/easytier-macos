@@ -113,11 +113,22 @@ struct GeneralSettingsView: View {
     }
 
     private var softwareUpdateFooterText: String {
+        if updater.updateTrack == .dev {
+            return "Dev updates are built from the latest dev branch commit that passes the release pipeline. "
+                + "Dev builds may be unstable."
+        }
         if updater.updateTrack == .nightly {
+            if appInfo.buildChannel == .dev {
+                return "Nightly updates are selected. This Dev build remains installed until a newer Stable or "
+                    + "Nightly release is available."
+            }
             return "Built nightly from the latest EasyTier GUI and Core. Nightly builds may be unstable."
         }
         if appInfo.buildChannel == .nightly {
             return "Stable updates are selected. This Nightly build remains installed until a newer Stable release is available."
+        }
+        if appInfo.buildChannel == .dev {
+            return "Stable updates are selected. This Dev build remains installed until a newer Stable release is available."
         }
         return "EasyTier checks signed Stable releases at most once every 24 hours."
     }

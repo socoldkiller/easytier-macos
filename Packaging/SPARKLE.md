@@ -5,11 +5,13 @@ and feed generation requires the matching private key. The signing and appcast
 commands themselves are owned by `scripts/release.sh`; this document only
 describes durable key provisioning.
 
-Stable and Nightly use the same signed `appcast.xml` and the same EdDSA key.
-Stable items use Sparkle's default channel; Nightly items contain
-`<sparkle:channel>nightly</sparkle:channel>`. Stable clients therefore ignore
-Nightly, while users who opt into Nightly can receive either channel's newer
-build. Do not create a second key or unsigned feed for Nightly.
+Stable, Nightly, and Dev use the same signed `appcast.xml` and the same EdDSA
+key. Stable items use Sparkle's default channel; Nightly and Dev items contain
+`<sparkle:channel>nightly</sparkle:channel>` and
+`<sparkle:channel>dev</sparkle:channel>` respectively. Stable clients ignore
+both prerelease channels. Nightly users receive Stable and Nightly, while Dev
+users receive Stable and Dev. Do not create separate keys or unsigned feeds for
+either prerelease channel.
 
 Generate the production key once on a trusted Mac:
 
@@ -44,4 +46,5 @@ For a final local DMG, use `make dmg` as documented in
 [`Packaging/RELEASE.md`](RELEASE.md). The release module resolves the Sparkle
 tools from the pinned Swift package, signs the final notarized DMG and appcast,
 and rejects a private key that does not match the public key embedded in the
-app.
+app. The deployed channel manifests are `update.json`, `nightly.json`, and
+`dev.json`; `appcast.xml` remains the only feed URL embedded in the application.

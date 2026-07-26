@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - master
+      - dev
     tags:
       - "v*"
   pull_request:
@@ -21,6 +22,7 @@ on:
         options:
           - ci
           - nightly
+          - dev
       runner:
         description: "Runner to use for manual CI builds"
         required: true
@@ -37,15 +39,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: macos-app-${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'nightly')) && 'nightly' || github.ref }}
+  group: macos-app-${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'nightly')) && 'nightly' || ((github.ref == 'refs/heads/dev' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'dev')) && 'dev' || github.ref) }}
   # Release-capable runs are state machines and must finish or queue behind an
   # earlier run. Ordinary branch and PR validation may be superseded.
-  cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/') || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'nightly')) }}
+  cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/dev' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'nightly' || inputs.mode == 'dev'))) }}
 
 jobs:
   build:
     name: Build and test EasyTier
-    runs-on: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.runner == 'self-hosted' || inputs.mode == 'nightly'))) && fromJSON('["self-hosted","macOS","ARM64","easytier-macos"]') || 'macos-14' }}
+    runs-on: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.runner == 'self-hosted' || inputs.mode == 'nightly' || inputs.mode == 'dev'))) && fromJSON('["self-hosted","macOS","ARM64","easytier-macos"]') || 'macos-26' }}
     timeout-minutes: 120
     permissions:
       actions: read
@@ -88,11 +90,11 @@ jobs:
             --json "$RUNNER_TEMP/easytier-build-context.json"
 
       - name: Install native build dependencies
-        run: brew install cmake protobuf
+        run: brew install cmake protobuf swiftlint
 
-      - name: Select Xcode 16
+      - name: Select Xcode 26
         env:
-          EASYTIER_RUNNER_KIND: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.runner == 'self-hosted' || inputs.mode == 'nightly'))) && 'self-hosted' || 'github-hosted' }}
+          EASYTIER_RUNNER_KIND: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.runner == 'self-hosted' || inputs.mode == 'nightly' || inputs.mode == 'dev'))) && 'self-hosted' || 'github-hosted' }}
         run: |
           XCODE_APP="$(python3 - <<'PY'
           import glob
@@ -105,7 +107,7 @@ jobs:
                   return ()
               return tuple(int(part) for part in match.group(1).split('.'))
 
-          candidates = glob.glob('/Applications/Xcode_16*.app')
+          candidates = glob.glob('/Applications/Xcode_26*.app')
           if candidates:
               print(max(candidates, key=version))
           elif os.path.isdir('/Applications/Xcode.app'):
@@ -113,10 +115,15 @@ jobs:
           PY
           )"
           if [[ -z "$XCODE_APP" ]]; then
-            echo "Xcode 16 is required but was not found." >&2
+            echo "Xcode 26 is required but was not found." >&2
             exit 1
           fi
           TARGET_DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
+          XCODE_VERSION="$(DEVELOPER_DIR="$TARGET_DEVELOPER_DIR" xcodebuild -version | awk '/^Xcode / { print $2 }')"
+          if [[ "${XCODE_VERSION%%.*}" != "26" ]]; then
+            echo "Xcode 26 is required, but $XCODE_APP contains Xcode $XCODE_VERSION." >&2
+            exit 1
+          fi
           CURRENT_DEVELOPER_DIR="$(xcode-select -p 2>/dev/null || true)"
           if [[ "$CURRENT_DEVELOPER_DIR" != "$TARGET_DEVELOPER_DIR" ]]; then
             if [[ "$EASYTIER_RUNNER_KIND" == "self-hosted" ]] && ! sudo -n true 2>/dev/null; then
@@ -203,7 +210,7 @@ jobs:
     env:
       EASYTIER_ARTIFACTS_DIR: ${{ github.workspace }}/.build/release-artifacts
       EASYTIER_PAGES_DIR: ${{ github.workspace }}/.build/pages
-      EASYTIER_ALLOW_MISSING_CHANNEL_FEED: ${{ needs.build.outputs.release_channel == 'nightly' && '1' || '0' }}
+      EASYTIER_ALLOW_MISSING_CHANNEL_FEED: ${{ (needs.build.outputs.release_channel == 'nightly' || needs.build.outputs.release_channel == 'dev') && '1' || '0' }}
       EASYTIER_ALLOW_MISSING_CURRENT_FEED: ${{ needs.build.outputs.tag_name == 'v1.4.0' && '1' || '0' }}
 
     steps:
@@ -265,3 +272,11 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           EASYTIER_NIGHTLY_RELEASES_TO_KEEP: 14
         run: ./scripts/build.sh prune-nightlies
+
+      - name: Prune expired Dev releases
+        if: needs.build.outputs.release_channel == 'dev'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          EASYTIER_DEV_RELEASES_TO_KEEP: 14
+        run: ./scripts/build.sh prune-devs

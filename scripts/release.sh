@@ -8,7 +8,7 @@ case "$command_name" in
   artifact)
     exec "$ROOT_DIR/scripts/release-artifact.sh" "$@"
     ;;
-  publish|verify-deployed-feeds|prune-nightlies)
+  publish|verify-deployed-feeds|prune-nightlies|prune-devs)
     exec "$ROOT_DIR/scripts/release-publish.sh" "$@"
     ;;
   *)
@@ -20,6 +20,7 @@ Commands:
   publish                Publish a prepared DMG and update feeds.
   verify-deployed-feeds  Verify the deployed Pages feed payloads.
   prune-nightlies        Remove expired Nightly releases and tags.
+  prune-devs             Remove expired Dev releases and tags.
 EOF
     exit 64
     ;;

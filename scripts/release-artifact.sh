@@ -16,11 +16,10 @@ configure_paths() {
   esac
 
   local default_dmg_name="EasyTier-macOS-$RELEASE_ARCHITECTURE.dmg"
-  if [[ "$RELEASE_CHANNEL" == "nightly" ]]; then
-    local nightly_date
+  if [[ "$RELEASE_CHANNEL" == "nightly" || "$RELEASE_CHANNEL" == "dev" ]]; then
     [[ "${EASYTIER_BUILD_NUMBER:-}" =~ ^[0-9]{14}$ ]] \
-      || die "Nightly artifacts require a 14-digit EASYTIER_BUILD_NUMBER before path configuration."
-    default_dmg_name="EasyTier-macOS-$RELEASE_ARCHITECTURE-nightly-${EASYTIER_BUILD_NUMBER}.dmg"
+      || die "Pre-release artifacts require a 14-digit EASYTIER_BUILD_NUMBER before path configuration."
+    default_dmg_name="EasyTier-macOS-$RELEASE_ARCHITECTURE-$RELEASE_CHANNEL-${EASYTIER_BUILD_NUMBER}.dmg"
   fi
   APP_PATH="${EASYTIER_EXPORT_APP_DIR:-$ARTIFACTS_DIR/EasyTier.app}"
   DMG_PATH="${EASYTIER_DMG_PATH:-$ARTIFACTS_DIR/$default_dmg_name}"
@@ -35,17 +34,17 @@ configure_release_version() {
   local tag_commit_epoch=""
 
   configure_release_channel
-  if [[ "$RELEASE_CHANNEL" == "nightly" ]]; then
+  if [[ "$RELEASE_CHANNEL" == "nightly" || "$RELEASE_CHANNEL" == "dev" ]]; then
     [[ "${EASYTIER_APP_VERSION:-}" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] \
-      || die "Nightly artifacts require a numeric EASYTIER_APP_VERSION."
+      || die "Pre-release artifacts require a numeric EASYTIER_APP_VERSION."
     [[ "${EASYTIER_BUILD_NUMBER:-}" =~ ^[0-9]{14}$ ]] \
-      || die "Nightly artifacts require a 14-digit EASYTIER_BUILD_NUMBER."
+      || die "Pre-release artifacts require a 14-digit EASYTIER_BUILD_NUMBER."
     [[ "${EASYTIER_BUILD_TIME:-}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
-      || die "Nightly artifacts require EASYTIER_BUILD_TIME in UTC ISO-8601 format."
+      || die "Pre-release artifacts require EASYTIER_BUILD_TIME in UTC ISO-8601 format."
     [[ "${EASYTIER_GUI_REVISION:-}" =~ ^[0-9a-f]{40}$ ]] \
-      || die "Nightly artifacts require a full EASYTIER_GUI_REVISION."
+      || die "Pre-release artifacts require a full EASYTIER_GUI_REVISION."
     [[ "${EASYTIER_CORE_REVISION:-}" =~ ^[0-9a-f]{40}$ ]] \
-      || die "Nightly artifacts require a full EASYTIER_CORE_REVISION."
+      || die "Pre-release artifacts require a full EASYTIER_CORE_REVISION."
     return
   fi
 
