@@ -42,7 +42,7 @@ import Testing
 }
 
 @MainActor
-@Test(arguments: [EasyTierSettingsTab.network, .advanced, .about])
+@Test(arguments: [EasyTierSettingsTab.account, .network, .advanced, .about])
 func settingsPanesRenderWithAppContextEnvironment(tab: EasyTierSettingsTab) {
     let appContext = AppContext.preview()
     let store = appContext.workspace.store

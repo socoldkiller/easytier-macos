@@ -19,6 +19,7 @@ enum MagicDNSDisplay {
 }
 
 enum EasyTierSettingsTab: String, CaseIterable, Identifiable, Hashable {
+    case account = "Account"
     case general = "General"
     case network = "Network"
     case advanced = "Advanced"
@@ -28,6 +29,7 @@ enum EasyTierSettingsTab: String, CaseIterable, Identifiable, Hashable {
 
     var title: String {
         switch self {
+        case .account: "Accounts"
         case .general: "General"
         case .network: "Network"
         case .advanced: "Advanced"
@@ -37,6 +39,7 @@ enum EasyTierSettingsTab: String, CaseIterable, Identifiable, Hashable {
 
     var systemImage: String {
         switch self {
+        case .account: "person.crop.circle"
         case .general: "gearshape"
         case .network: "globe"
         case .advanced: "slider.horizontal.3"
@@ -58,6 +61,9 @@ struct EasyTierSettingsSheet: View {
     @State private var magicDNSSuffix: String
     @State private var committedMagicDNSSettings: MagicDNSSettings
     @State private var showingDisableRPCListenWarning = false
+    @State private var tabTransitionEdge: Edge = .trailing
+
+    private static let tabTransitionDistance: CGFloat = 14
 
     init(
         initialTab: EasyTierSettingsTab = .general,
@@ -77,51 +83,71 @@ struct EasyTierSettingsSheet: View {
     }
 
     var body: some View {
-        TabView(selection: $selection) {
-            Tab(
-                EasyTierSettingsTab.general.title,
-                systemImage: EasyTierSettingsTab.general.systemImage,
-                value: EasyTierSettingsTab.general
-            ) {
-                GeneralSettingsView()
+        ZStack {
+            TabView(selection: selectionBinding) {
+                Tab(
+                    EasyTierSettingsTab.account.title,
+                    systemImage: EasyTierSettingsTab.account.systemImage,
+                    value: EasyTierSettingsTab.account
+                ) {
+                    Color.clear
+                        .accessibilityHidden(true)
+                }
+
+                Tab(
+                    EasyTierSettingsTab.general.title,
+                    systemImage: EasyTierSettingsTab.general.systemImage,
+                    value: EasyTierSettingsTab.general
+                ) {
+                    Color.clear
+                        .accessibilityHidden(true)
+                }
+
+                Tab(
+                    EasyTierSettingsTab.network.title,
+                    systemImage: EasyTierSettingsTab.network.systemImage,
+                    value: EasyTierSettingsTab.network
+                ) {
+                    Color.clear
+                        .accessibilityHidden(true)
+                }
+
+                Tab(
+                    EasyTierSettingsTab.advanced.title,
+                    systemImage: EasyTierSettingsTab.advanced.systemImage,
+                    value: EasyTierSettingsTab.advanced
+                ) {
+                    Color.clear
+                        .accessibilityHidden(true)
+                }
+
+                Tab(
+                    EasyTierSettingsTab.about.title,
+                    systemImage: EasyTierSettingsTab.about.systemImage,
+                    value: EasyTierSettingsTab.about
+                ) {
+                    Color.clear
+                        .accessibilityHidden(true)
+                }
             }
 
-            Tab(
-                EasyTierSettingsTab.network.title,
-                systemImage: EasyTierSettingsTab.network.systemImage,
-                value: EasyTierSettingsTab.network
+            MotionSwitch(
+                id: selection,
+                insertionEdge: tabTransitionEdge,
+                distance: Self.tabTransitionDistance
             ) {
-                NetworkSettingsView(
-                    dnsSuffix: $magicDNSSuffix,
-                    managedDNSSuffix: appContext.runtime.gateway.defaultDNSZoneBinding?.dnsSuffix,
-                    commit: commitMagicDNSSettings
-                )
-                .disabled(!appContext.workspace.store.persistenceIsReady)
-            }
-
-            Tab(
-                EasyTierSettingsTab.advanced.title,
-                systemImage: EasyTierSettingsTab.advanced.systemImage,
-                value: EasyTierSettingsTab.advanced
-            ) {
-                AdvancedSettingsView(
+                SettingsTabContent(
+                    selection: selection,
                     rpcListenEnabled: rpcListenBinding,
                     rpcListenPort: $rpcListenPort,
                     rpcPortalWhitelist: $rpcPortalWhitelist,
-                    commit: applyModeSettings
+                    magicDNSSuffix: $magicDNSSuffix,
+                    commitModeSettings: applyModeSettings,
+                    commitMagicDNSSettings: commitMagicDNSSettings
                 )
-                .disabled(!appContext.workspace.store.persistenceIsReady)
-            }
-
-            Tab(
-                EasyTierSettingsTab.about.title,
-                systemImage: EasyTierSettingsTab.about.systemImage,
-                value: EasyTierSettingsTab.about
-            ) {
-                EasyTierAboutView()
             }
         }
-        .frame(minWidth: 576, idealWidth: 612, minHeight: 468, idealHeight: 504)
+        .frame(width: 612, height: 504)
         .onChange(of: appContext.settings.requestedTab) { _, tab in
             selectSettingsTab(tab)
         }
@@ -159,6 +185,15 @@ struct EasyTierSettingsSheet: View {
         )
     }
 
+    private var selectionBinding: Binding<EasyTierSettingsTab> {
+        Binding(
+            get: { selection },
+            set: { newSelection in
+                selectSettingsTab(newSelection)
+            }
+        )
+    }
+
     private var normalizedRPCPortalWhitelist: [String]? {
         let values = rpcPortalWhitelist
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -187,9 +222,14 @@ struct EasyTierSettingsSheet: View {
 
     private func selectSettingsTab(_ tab: EasyTierSettingsTab) {
         guard tab != selection else { return }
+        tabTransitionEdge = tabIndex(tab) > tabIndex(selection) ? .trailing : .leading
         withAnimation(EasyTierMotion.selection(reduceMotion: reduceMotion)) {
             selection = tab
         }
+    }
+
+    private func tabIndex(_ tab: EasyTierSettingsTab) -> Int {
+        EasyTierSettingsTab.allCases.firstIndex(of: tab) ?? 0
     }
 
     private static func initialRPCPortalWhitelist(from whitelist: [String]?) -> [String] {

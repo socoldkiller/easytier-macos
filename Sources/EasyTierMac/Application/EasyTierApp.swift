@@ -99,7 +99,7 @@ struct EasyTierApp: App {
             .environment(appContext)
         }
         .defaultSize(width: 612, height: 504)
-        .windowResizability(.contentMinSize)
+        .windowResizability(.contentSize)
 
         .commands {
             EasyTierAboutCommands()

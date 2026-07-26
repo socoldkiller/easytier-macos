@@ -14,6 +14,7 @@ import Testing
 
     let restored = makeSettingsFeature(userDefaults: fixture.defaults)
     #expect(restored.requestedTab == .network)
+    #expect(EasyTierSettingsTab.allCases.contains(.account))
     #expect(EasyTierSettingsTab.allCases.contains(.network))
     #expect(EasyTierSettingsTab.allCases.contains(.advanced))
     #expect(EasyTierSettingsTab.allCases.contains(.about))

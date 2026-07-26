@@ -67,7 +67,7 @@ struct EasyTierAboutView: View {
             }
         }
         .padding(20)
-        .frame(minWidth: 460, maxWidth: .infinity, minHeight: 500, maxHeight: .infinity)
+        .frame(minWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var buildTime: String {

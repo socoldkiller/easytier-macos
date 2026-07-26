@@ -21,7 +21,7 @@ struct GatewayDNSCredentialSettingsRow: View {
         HStack(spacing: 12) {
             Image(systemName: "globe")
                 .frame(width: 20)
-                .foregroundStyle(isDefault ? Color.accentColor : .secondary)
+                .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(displayDomain)
@@ -32,17 +32,26 @@ struct GatewayDNSCredentialSettingsRow: View {
 
             Spacer(minLength: 12)
 
-            if isChangingDefault {
-                ProgressView()
-                    .controlSize(.small)
-                    .accessibilityLabel("Changing default domain")
-            } else if isDefault {
-                Label("Default", systemImage: "checkmark.circle.fill")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .symbolRenderingMode(.palette)
-                    .foregroundStyle(.secondary, Color.accentColor)
+            Group {
+                if isChangingDefault {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Changing default domain")
+                        .transition(.opacity)
+                } else if isDefault {
+                    Label("Default", systemImage: "checkmark")
+                        .font(.caption)
+                        .bold()
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.accentColor.opacity(0.12), in: .capsule)
+                        .transition(.scale(scale: 0.86).combined(with: .opacity))
+                        .accessibilityLabel("Default domain")
+                }
             }
+            .animation(.snappy(duration: 0.24), value: isChangingDefault)
+            .animation(.snappy(duration: 0.24), value: isDefault)
 
             Menu {
                 Button("Make Default", systemImage: "checkmark.circle", action: setDefaultAction)
