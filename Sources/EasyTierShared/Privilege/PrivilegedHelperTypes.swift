@@ -5,7 +5,7 @@ package enum EasyTierPrivilegedHelperConstants {
     package static let bundleIdentifier = "com.kkrainbow.easytier.mac.helper"
     package static let machServiceName = "com.kkrainbow.easytier.mac.helper"
     package static let launchDaemonPlistName = "com.kkrainbow.easytier.mac.helper.plist"
-    package static let protocolVersion = "17"
+    package static let protocolVersion = "18"
     package static let pingPayload = "pong:\(protocolVersion)"
 }
 
@@ -103,6 +103,9 @@ package protocol EasyTierPrivilegedServiceProtocol {
     func collectNetworkInfos(reply: @escaping (String?, String?) -> Void)
     func configureRPCPortal(rpcPortal: String?, whitelist: [String]?, reply: @escaping (String?, String?) -> Void)
     func callJSONRPC(clientID: String, url: String, service: String, method: String, domain: String?, payload: String, reply: @escaping (String?, String?) -> Void)
+    func configureRemoteAccount(credentialJSON: String, reply: @escaping (String?, String?) -> Void)
+    func removeRemoteAccount(reply: @escaping (String?, String?) -> Void)
+    func remoteAccountStatus(reply: @escaping (String?, String?) -> Void)
     func shutdown(reply: @escaping (String?, String?) -> Void)
 }
 

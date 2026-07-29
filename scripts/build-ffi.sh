@@ -104,6 +104,10 @@ verify_archive_symbols() {
     connect_rpc_client
     call_json_rpc
     configure_rpc_portal
+    start_config_server_client
+    stop_config_server_client
+    is_config_server_client_active
+    is_config_server_client_connected
   )
   local gateway_symbols=(
     gateway_start

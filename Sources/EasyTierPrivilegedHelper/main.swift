@@ -34,9 +34,11 @@ private final class XPCReplyBox: @unchecked Sendable {
 
 final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unchecked Sendable {
     private let runtime: PrivilegedRuntime
+    private let remoteAccount: RemoteAccountRuntimeController
 
-    init(runtime: PrivilegedRuntime) {
+    init(runtime: PrivilegedRuntime, remoteAccount: RemoteAccountRuntimeController) {
         self.runtime = runtime
+        self.remoteAccount = remoteAccount
     }
 
     func ping(reply: @escaping (String?, String?) -> Void) {
@@ -149,6 +151,49 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
             reply(response, nil)
         } catch {
             replyFailure(error, code: "callJSONRPCFailed", reply: reply)
+        }
+    }
+
+    func configureRemoteAccount(
+        credentialJSON: String,
+        reply: @escaping (String?, String?) -> Void
+    ) {
+        let replyBox = XPCReplyBox(reply)
+        Task { @concurrent in
+            do {
+                let credential = try JSONDecoder().decode(
+                    RemoteAccountCredential.self,
+                    from: Data(credentialJSON.utf8)
+                )
+                try await remoteAccount.configure(credential)
+                replyBox.call("ok", nil)
+            } catch {
+                replyBox.call(nil, try? Self.errorPayload(error, code: "remoteAccountFailed").encodedString())
+            }
+        }
+    }
+
+    func removeRemoteAccount(reply: @escaping (String?, String?) -> Void) {
+        let replyBox = XPCReplyBox(reply)
+        Task { @concurrent in
+            do {
+                try await remoteAccount.remove()
+                replyBox.call("ok", nil)
+            } catch {
+                replyBox.call(nil, try? Self.errorPayload(error, code: "remoteAccountRemovalFailed").encodedString())
+            }
+        }
+    }
+
+    func remoteAccountStatus(reply: @escaping (String?, String?) -> Void) {
+        let replyBox = XPCReplyBox(reply)
+        Task { @concurrent in
+            do {
+                let status = await remoteAccount.status()
+                replyBox.call(String(decoding: try JSONEncoder().encode(status), as: UTF8.self), nil)
+            } catch {
+                replyBox.call(nil, try? Self.errorPayload(error, code: "remoteAccountStatusFailed").encodedString())
+            }
         }
     }
 
@@ -296,13 +341,22 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
 }
 
 final class HelperDelegate: NSObject, NSXPCListenerDelegate, @unchecked Sendable {
-    private let runtime = PrivilegedRuntime()
+    private let runtime: PrivilegedRuntime
+    private let remoteAccount: RemoteAccountRuntimeController
+
+    override init() {
+        let runtime = PrivilegedRuntime()
+        self.runtime = runtime
+        remoteAccount = RemoteAccountRuntimeController(client: runtime.client)
+        super.init()
+        Task { @concurrent in await remoteAccount.restoreAfterLaunch() }
+    }
 
     func listener(
         _ listener: NSXPCListener,
         shouldAcceptNewConnection connection: NSXPCConnection
     ) -> Bool {
-        let service = PrivilegedService(runtime: runtime)
+        let service = PrivilegedService(runtime: runtime, remoteAccount: remoteAccount)
 
         connection.setCodeSigningRequirement(PrivilegedHelperClientRequirement.current)
         connection.exportedInterface = NSXPCInterface(with: EasyTierPrivilegedServiceProtocol.self)
