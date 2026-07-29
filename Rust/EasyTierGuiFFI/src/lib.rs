@@ -38,6 +38,9 @@ use tokio::{
 #[cfg(feature = "core")]
 use url::{Host, Url};
 
+#[cfg(feature = "core")]
+mod config_server;
+
 #[cfg(feature = "gateway")]
 mod gateway;
 
@@ -49,6 +52,8 @@ static INSTANCE_NAME_ID_MAP: LazyLock<DashMap<String, uuid::Uuid>> = LazyLock::n
 #[cfg(feature = "core")]
 static INSTANCE_MANAGER: LazyLock<Arc<NetworkInstanceManager>> =
     LazyLock::new(|| Arc::new(NetworkInstanceManager::new()));
+#[cfg(feature = "core")]
+static INSTANCE_MUTATION_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 #[cfg(feature = "core")]
 static RPC_CLIENTS: LazyLock<DashMap<String, Arc<RpcEndpoint>>> = LazyLock::new(DashMap::new);
 #[cfg(feature = "core")]
@@ -689,6 +694,12 @@ pub unsafe extern "C" fn parse_config(
     // SAFETY: `out_error` is caller-owned storage or null.
     unsafe {
         ffi_result_with_error(out_error, || {
+            let _mutation = INSTANCE_MUTATION_LOCK
+                .lock()
+                .map_err(|_| "instance mutation lock is poisoned".to_string())?;
+            if config_server::is_active() {
+                return Err("local instances cannot start while remote mode is active".to_string());
+            }
             // SAFETY: The C ABI caller owns pointer validity; null/UTF-8 are checked here.
             let cfg_str = cstr_arg(cfg_str, "cfg_str")?;
             TomlConfigLoader::new_from_str(&cfg_str)
@@ -749,6 +760,14 @@ pub unsafe extern "C" fn retain_network_instance(
     // SAFETY: `out_error` is caller-owned storage or null.
     unsafe {
         ffi_result_with_error(out_error, || {
+            let _mutation = INSTANCE_MUTATION_LOCK
+                .lock()
+                .map_err(|_| "instance mutation lock is poisoned".to_string())?;
+            if config_server::is_active() {
+                return Err(
+                    "local instances cannot be retained while remote mode is active".to_string(),
+                );
+            }
             // SAFETY: The C ABI caller owns the array and C string pointer validity.
             let (inst_names, inst_ids) = instance_names_and_ids(inst_names, length)?;
             if inst_names.is_empty() {
@@ -781,6 +800,12 @@ pub unsafe extern "C" fn stop_network_instance(
     // SAFETY: `out_error` is caller-owned storage or null.
     unsafe {
         ffi_result_with_error(out_error, || {
+            let _mutation = INSTANCE_MUTATION_LOCK
+                .lock()
+                .map_err(|_| "instance mutation lock is poisoned".to_string())?;
+            if config_server::is_active() {
+                return Err("local instances cannot be stopped through the local API while remote mode is active".to_string());
+            }
             // SAFETY: The C ABI caller owns the array and C string pointer validity.
             let (inst_names, inst_ids) = instance_names_and_ids(inst_names, length)?;
             if inst_names.is_empty() {
@@ -794,6 +819,56 @@ pub unsafe extern "C" fn stop_network_instance(
             Ok(())
         })
     }
+}
+
+/// # Safety
+/// All string pointers must be valid NUL-terminated UTF-8 strings. `user_data`
+/// must remain valid until `stop_config_server_client` returns.
+#[unsafe(no_mangle)]
+#[cfg(feature = "core")]
+pub unsafe extern "C" fn start_config_server_client(
+    endpoint: *const c_char,
+    token: *const c_char,
+    device_name: *const c_char,
+    machine_id: *const c_char,
+    secure_required: c_int,
+    callback: config_server::ConfigServerEventCallback,
+    user_data: *mut std::ffi::c_void,
+    out_error: *mut *const c_char,
+) -> c_int {
+    unsafe {
+        ffi_result_with_error(out_error, || {
+            config_server::start(
+                endpoint,
+                token,
+                device_name,
+                machine_id,
+                secure_required,
+                callback,
+                user_data,
+            )
+        })
+    }
+}
+
+/// # Safety
+/// `out_error` must point to caller-owned storage for one C string pointer, or be null.
+#[unsafe(no_mangle)]
+#[cfg(feature = "core")]
+pub unsafe extern "C" fn stop_config_server_client(out_error: *mut *const c_char) -> c_int {
+    unsafe { config_server::stop_ffi(out_error) }
+}
+
+#[unsafe(no_mangle)]
+#[cfg(feature = "core")]
+pub extern "C" fn is_config_server_client_active() -> c_int {
+    c_int::from(config_server::is_active())
+}
+
+#[unsafe(no_mangle)]
+#[cfg(feature = "core")]
+pub extern "C" fn is_config_server_client_connected() -> c_int {
+    c_int::from(config_server::is_connected())
 }
 
 /// # Safety
