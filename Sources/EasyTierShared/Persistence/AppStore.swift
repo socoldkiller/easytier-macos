@@ -32,6 +32,7 @@ public final class EasyTierAppStore {
     public var instances: [NetworkInstance] = [] {
         didSet {
             instancesWriteCount += 1
+            reconcileSelectedConfigWithRuntimeManagedConfigs()
             refreshSelectedRuntimeSnapshotsIfNeeded()
             notifyRuntimeEnvironmentDidChange()
         }
@@ -110,6 +111,7 @@ public final class EasyTierAppStore {
     @ObservationIgnored private var runtimeMutationWaiters: [CheckedContinuation<Void, Never>] = []
     @ObservationIgnored private var busyOperationCount = 0
     @ObservationIgnored private var runtimeServiceConfigured = false
+    @ObservationIgnored private var persistedSelectedConfigID: String?
     @ObservationIgnored package var runtimeEnvironmentDidChange: (@MainActor @Sendable () -> Void)?
 
     @ObservationIgnored public private(set) var runtimeDetailsWriteCount = 0
@@ -247,7 +249,7 @@ public final class EasyTierAppStore {
     public var selectedConfig: NetworkConfig? {
         get {
             guard let selectedConfigID else { return nil }
-            return configs.first { $0.id == selectedConfigID }
+            return presentedConfigs.first { $0.id == selectedConfigID }
         }
         set {
             guard let newValue else { return }
@@ -255,6 +257,34 @@ public final class EasyTierAppStore {
                 configs[index] = newValue
             }
         }
+    }
+
+    /// Runtime-managed configs are presentation-only projections of networks
+    /// started by Config Server. They never enter workspace persistence.
+    public var runtimeManagedConfigs: [NetworkConfig] {
+        instances.compactMap { instance in
+            guard localConfig(matching: instance) == nil else { return nil }
+            let detail = runtimeDetails[instance.name] ?? instance.detail
+            return NetworkConfig(
+                instance_id: instance.instance_id,
+                hostname: detail?.my_node_info?.hostname,
+                network_name: instance.name,
+                network_secret: nil,
+                credential_file: nil,
+                listener_urls: [],
+                dev_name: detail?.dev_name ?? "",
+                no_tun: false
+            )
+        }
+    }
+
+    public var presentedConfigs: [NetworkConfig] {
+        configs + runtimeManagedConfigs
+    }
+
+    public var selectedConfigIsRuntimeManaged: Bool {
+        guard let selectedConfigID else { return false }
+        return runtimeManagedConfigs.contains { $0.id == selectedConfigID }
     }
 
     public var selectedRunningInstance: NetworkInstance? {
@@ -294,11 +324,13 @@ public final class EasyTierAppStore {
     }
 
     public func config(matching instance: NetworkInstance) -> NetworkConfig? {
+        if let local = localConfig(matching: instance) { return local }
         let instanceID = instance.instance_id
         let networkName = instance.name
 
-        if let byID = configs.first(where: { $0.instance_id == instanceID }) { return byID }
-        return uniquelyMatchedConfig(named: networkName)
+        if let byID = runtimeManagedConfigs.first(where: { $0.instance_id == instanceID }) { return byID }
+        let matches = runtimeManagedConfigs.filter { $0.network_name == networkName }
+        return matches.count == 1 ? matches[0] : nil
     }
 
     public func runtimeReadinessPhase(matching config: NetworkConfig) -> RuntimeReadinessPhase {
@@ -586,7 +618,11 @@ public final class EasyTierAppStore {
 
     public func selectConfig(id: String?) async {
         guard selectedConfigID != id else { return }
-        guard id == nil || configs.contains(where: { $0.id == id }) else { return }
+        guard id == nil || presentedConfigs.contains(where: { $0.id == id }) else { return }
+        if let id, runtimeManagedConfigs.contains(where: { $0.id == id }) {
+            selectedConfigID = id
+            return
+        }
         do {
             var state = try stateForStorage()
             state.selectedConfigID = id
@@ -609,6 +645,7 @@ public final class EasyTierAppStore {
     public func runSelectedConfig(
         networkSecretInput: NetworkSecretInput? = nil
     ) async -> NetworkSecretOperationOutcome {
+        guard !selectedConfigIsRuntimeManaged else { return .none }
         var outcome = NetworkSecretOperationOutcome.none
         await withRuntimeMutation {
             outcome = await runSelectedConfigWithoutMutationLock(
@@ -707,6 +744,7 @@ public final class EasyTierAppStore {
     }
 
     public func stopSelectedConfig() async {
+        guard !selectedConfigIsRuntimeManaged else { return }
         await withRuntimeMutation {
             await stopSelectedConfigWithoutMutationLock()
         }
@@ -736,7 +774,8 @@ public final class EasyTierAppStore {
         configID targetConfigID: String? = nil,
         networkSecretInput: NetworkSecretInput? = nil
     ) async -> NetworkSecretOperationOutcome {
-        await restartConfig(
+        guard !selectedConfigIsRuntimeManaged else { return .none }
+        return await restartConfig(
             replacing: instance,
             configID: targetConfigID,
             networkSecretInput: networkSecretInput
@@ -838,6 +877,7 @@ public final class EasyTierAppStore {
     }
 
     public func toggleSelectedConfigConnection() async {
+        guard !selectedConfigIsRuntimeManaged else { return }
         await withRuntimeMutation {
             if selectedConfigCanStop {
                 await stopSelectedConfigWithoutMutationLock()
@@ -1291,6 +1331,9 @@ public final class EasyTierAppStore {
         options: TOMLExportOptions = TOMLExportOptions(),
         networkSecretInput: NetworkSecretInput? = nil
     ) async throws -> String {
+        guard !selectedConfigIsRuntimeManaged else {
+            throw EasyTierCoreError.operationFailed("Config Server-managed networks cannot be exported locally.")
+        }
         guard let selectedConfig else { return "" }
         guard options.includeNetworkSecret else {
             return try NetworkConfigTOMLCodec.encode(
@@ -1745,9 +1788,15 @@ public final class EasyTierAppStore {
 
     private func stateForStorage() throws -> WorkspacePersistenceState {
         let configs = configs.map(Self.configWithoutNetworkSecret)
+        let selectedLocalConfigID = selectedConfigID.flatMap { selectedID in
+            configs.contains(where: { $0.id == selectedID }) ? selectedID : nil
+        }
+        let persistedLocalConfigID = persistedSelectedConfigID.flatMap { selectedID in
+            configs.contains(where: { $0.id == selectedID }) ? selectedID : nil
+        }
         return WorkspacePersistenceState(
             configs: configs,
-            selectedConfigID: selectedConfigID,
+            selectedConfigID: selectedLocalConfigID ?? persistedLocalConfigID,
             mode: mode,
             vpnOnDemandEnabled: vpnOnDemandEnabled,
             runtimeIntents: runtimeIntents,
@@ -1772,8 +1821,13 @@ public final class EasyTierAppStore {
     }
 
     private func applyPersistenceState(_ state: WorkspacePersistenceState) {
+        let transientRuntimeSelection = selectedConfigIsRuntimeManaged
+            && state.selectedConfigID == persistedSelectedConfigID
+            ? selectedConfigID
+            : nil
         configs = state.configs
-        selectedConfigID = state.selectedConfigID
+        persistedSelectedConfigID = state.selectedConfigID
+        selectedConfigID = transientRuntimeSelection ?? state.selectedConfigID
         mode = state.mode
         vpnOnDemandEnabled = state.vpnOnDemandEnabled
         runtimeIntents = state.runtimeIntents
@@ -1925,7 +1979,23 @@ public final class EasyTierAppStore {
             .sorted()
     }
 
+    private func localConfig(matching instance: NetworkInstance) -> NetworkConfig? {
+        if let byID = configs.first(where: { $0.instance_id == instance.instance_id }) { return byID }
+        let matches = configs.filter { $0.network_name == instance.name }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    private func reconcileSelectedConfigWithRuntimeManagedConfigs() {
+        let presented = presentedConfigs
+        if let selectedConfigID, presented.contains(where: { $0.id == selectedConfigID }) { return }
+        let persistedLocalConfigID = persistedSelectedConfigID.flatMap { selectedID in
+            configs.contains(where: { $0.id == selectedID }) ? selectedID : nil
+        }
+        selectedConfigID = persistedLocalConfigID ?? configs.first?.id ?? runtimeManagedConfigs.first?.id
+    }
+
     private func selectConfig(offset: Int) async {
+        let configs = presentedConfigs
         guard !configs.isEmpty else {
             await selectConfig(id: nil)
             return

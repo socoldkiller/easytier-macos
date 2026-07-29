@@ -3757,6 +3757,99 @@ import Testing
 }
 
 @MainActor
+@Test func appStoreProjectsConfigServerRuntimeIntoExistingStatusPresentation() async {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let client = RecordingToggleClient()
+    let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+    client.networkInfos = [
+        "managed-network": NetworkInstanceRunningInfo(
+            dev_name: "utun-managed",
+            my_node_info: NodeInfo(
+                ipv4_addr: "10.0.64.1/24",
+                hostname: "managed-mac",
+                peer_id: 7
+            ),
+            running: true,
+            instance_id: "managed-id"
+        ),
+    ]
+
+    await store.refreshRuntime()
+
+    #expect(store.configs.isEmpty)
+    #expect(store.runtimeManagedConfigs.map(\.id) == ["managed-id"])
+    #expect(store.presentedConfigs.map(\.network_name) == ["managed-network"])
+    #expect(store.selectedConfigID == "managed-id")
+    #expect(store.selectedConfigIsRuntimeManaged)
+    #expect(store.selectedStatusSnapshot.hasRunningInstance)
+    #expect(store.selectedStatusSnapshot.networkName == "managed-network")
+    #expect(store.selectedStatusSnapshot.deviceName == "utun-managed")
+}
+
+@MainActor
+@Test func runtimeManagedSelectionIsNotPersistedAndDisappearsWithRuntime() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let client = RecordingToggleClient()
+    let storage = EasyTierStorage(baseDirectory: directory)
+    let store = EasyTierAppStore(client: client, storage: storage)
+    let local = NetworkConfig(instance_id: "local-id", network_name: "local-network")
+    store.configs = [local]
+    await store.selectConfig(id: local.id)
+
+    client.networkInfos = [
+        "managed-network": NetworkInstanceRunningInfo(
+            my_node_info: NodeInfo(ipv4_addr: "10.0.64.1/24", hostname: "managed-mac", peer_id: 7),
+            running: true,
+            instance_id: "managed-id"
+        ),
+    ]
+    await store.refreshRuntime()
+    await store.selectConfig(id: "managed-id")
+    await store.setVPNOnDemandEnabled(true)
+
+    let persisted = try await ApplicationDatabase(
+        baseDirectory: directory,
+        gatewayFileURL: directory.appending(path: "gateway/config.json"),
+        networkSecretStore: MemoryNetworkSecretStore()
+    ).loadWorkspace()
+    #expect(persisted.configs.map(\.id) == [local.id])
+    #expect(persisted.selectedConfigID == local.id)
+    #expect(store.selectedConfigID == "managed-id")
+
+    client.networkInfos = [:]
+    await store.refreshRuntime()
+
+    #expect(store.runtimeManagedConfigs.isEmpty)
+    #expect(store.selectedConfigID == local.id)
+}
+
+@MainActor
+@Test func runtimeManagedNetworkRejectsLocalRuntimeAndExportActions() async {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let client = RecordingToggleClient()
+    let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+    client.networkInfos = [
+        "managed-network": NetworkInstanceRunningInfo(
+            my_node_info: NodeInfo(ipv4_addr: "10.0.64.1/24", hostname: "managed-mac", peer_id: 7),
+            running: true,
+            instance_id: "managed-id"
+        ),
+    ]
+    await store.refreshRuntime()
+
+    await store.toggleSelectedConfigConnection()
+    let runOutcome = await store.runSelectedConfig()
+    await store.stopSelectedConfig()
+
+    #expect(runOutcome == .none)
+    #expect(client.runConfigs.isEmpty)
+    #expect(client.stoppedInstanceNames.isEmpty)
+    await #expect(throws: EasyTierCoreError.self) {
+        _ = try await store.exportSelectedTOML()
+    }
+}
+
+@MainActor
 @Test func helperPermissionErrorsDoNotBecomeModalLastError() async throws {
     let client = HelperRunErrorClient(
         payload: PrivilegedHelperErrorPayload(
