@@ -1,0 +1,12 @@
+@easytierClientBootstrap path /.well-known/easytier-client
+handle @easytierClientBootstrap {
+	header Content-Type "application/json; charset=utf-8"
+	header Cache-Control "no-store"
+	header X-Content-Type-Options "nosniff"
+	respond `{
+		"protocol_version": 1,
+		"config_endpoint": "tcp://iw.windy-rain.cn:22020",
+		"login_path": "/#/auth",
+		"console_path": "/#/console"
+	}` 200
+}
