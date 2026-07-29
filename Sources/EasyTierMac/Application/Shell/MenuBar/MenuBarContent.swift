@@ -154,7 +154,7 @@ struct MenuBarContent: View {
     }
 
     private var canSwitchNetworks: Bool {
-        store.persistenceIsReady && store.configs.count > 1
+        store.persistenceIsReady && store.presentedConfigs.count > 1
     }
 
     private var currentNetworkName: String {
@@ -215,7 +215,11 @@ struct MenuBarContent: View {
     }
 
     private var isConnectionRowDisabled: Bool {
-        !store.persistenceIsReady || store.isBusy || store.isQuitting || store.selectedConfig == nil
+        !store.persistenceIsReady
+            || store.isBusy
+            || store.isQuitting
+            || store.selectedConfig == nil
+            || store.selectedConfigIsRuntimeManaged
     }
 
     private var isConnectionRowActive: Bool {
@@ -254,7 +258,10 @@ struct MenuBarContent: View {
     }
 
     private var connectionSwitchAccessibilityHint: String {
-        store.selectedConfigCanStop
+        if store.selectedConfigIsRuntimeManaged {
+            return "This network is managed by Config Server"
+        }
+        return store.selectedConfigCanStop
             ? "Stops the selected network"
             : "Starts the selected network"
     }
@@ -281,6 +288,7 @@ struct MenuBarContent: View {
     }
 
     private func toggleConnection() {
+        guard !store.selectedConfigIsRuntimeManaged else { return }
         Task {
             await store.toggleSelectedConfigConnection()
         }
