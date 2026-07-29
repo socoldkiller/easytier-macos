@@ -3850,6 +3850,41 @@ import Testing
 }
 
 @MainActor
+@Test func configServerRuntimeFeedsExistingTrafficSnapshot() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let client = RecordingToggleClient()
+    let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+    store.selectedTab = .view
+
+    func runtimeInfo(txBytes: Int, rxBytes: Int) -> NetworkInstanceRunningInfo {
+        NetworkInstanceRunningInfo(
+            my_node_info: NodeInfo(ipv4_addr: "10.0.64.1/24", hostname: "managed-mac", peer_id: 7),
+            peers: [
+                PeerInfo(
+                    peer_id: 8,
+                    conns: [PeerConnInfo(stats: PeerConnStats(rx_bytes: rxBytes, tx_bytes: txBytes))]
+                ),
+            ],
+            running: true,
+            instance_id: "managed-id"
+        )
+    }
+
+    client.networkInfos = ["managed-network": runtimeInfo(txBytes: 1_000, rxBytes: 2_000)]
+    await store.refreshRuntime()
+    try await Task.sleep(for: .milliseconds(10))
+    client.networkInfos = ["managed-network": runtimeInfo(txBytes: 2_000, rxBytes: 4_000)]
+    await store.refreshRuntime()
+
+    #expect(store.selectedConfigIsRuntimeManaged)
+    #expect(store.selectedTrafficSnapshot.hasRunningInstance)
+    #expect(store.selectedTrafficSnapshot.networkName == "managed-network")
+    #expect(store.selectedTrafficSnapshot.samplingPhase == .live)
+    #expect(store.selectedTrafficSnapshot.latest?.txBytesPerSecond ?? 0 > 0)
+    #expect(store.selectedTrafficSnapshot.latest?.rxBytesPerSecond ?? 0 > 0)
+}
+
+@MainActor
 @Test func helperPermissionErrorsDoNotBecomeModalLastError() async throws {
     let client = HelperRunErrorClient(
         payload: PrivilegedHelperErrorPayload(
