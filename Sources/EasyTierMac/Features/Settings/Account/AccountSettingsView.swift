@@ -33,6 +33,7 @@ struct AccountSettingsView: View {
                     )
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .sheet(isPresented: $model.showsAddAccount) {
             AddAccountSheet(model: model)
