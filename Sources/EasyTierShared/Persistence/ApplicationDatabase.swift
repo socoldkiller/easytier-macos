@@ -95,6 +95,36 @@ package actor ApplicationDatabase {
         repairDatabaseFilePermissions()
     }
 
+    package func loadRemoteAccount() async throws -> RemoteAccountProfile? {
+        let queue = try await preparedQueue()
+        guard let record = try await queue.read({ db in
+            try RemoteAccountRecord.fetchOne(db, key: 1)
+        }) else { return nil }
+        guard record.payloadVersion == 1 else {
+            throw ApplicationDatabaseError.unsupportedPayloadVersion(
+                table: RemoteAccountRecord.databaseTableName,
+                version: record.payloadVersion
+            )
+        }
+        return try PersistenceCoding.decode(RemoteAccountProfile.self, from: record.jsonPayload)
+    }
+
+    package func saveRemoteAccount(_ account: RemoteAccountProfile) async throws {
+        let record = RemoteAccountRecord(jsonPayload: try PersistenceCoding.encode(account))
+        let queue = try await preparedQueue()
+        try await queue.write { db in
+            try RemoteAccountRecord.deleteAll(db)
+            try record.insert(db)
+        }
+        repairDatabaseFilePermissions()
+    }
+
+    package func removeRemoteAccount() async throws {
+        let queue = try await preparedQueue()
+        _ = try await queue.write { db in try RemoteAccountRecord.deleteAll(db) }
+        repairDatabaseFilePermissions()
+    }
+
     package func retryPreparation() async throws {
         isPrepared = false
         _ = try await preparedQueue()
@@ -342,6 +372,13 @@ package actor ApplicationDatabase {
                 table.column("id", .integer).primaryKey().check { $0 == 1 }
                 table.column("configurationID", .text).notNull()
                 table.column("revision", .integer).notNull()
+                table.column("payloadVersion", .integer).notNull()
+                table.column("jsonPayload", .text).notNull()
+            }
+        }
+        migrator.registerMigration("createRemoteAccountV2") { db in
+            try db.create(table: RemoteAccountRecord.databaseTableName) { table in
+                table.column("id", .integer).primaryKey().check { $0 == 1 }
                 table.column("payloadVersion", .integer).notNull()
                 table.column("jsonPayload", .text).notNull()
             }
