@@ -1,0 +1,22 @@
+services:
+  easytier-native-sso-sidecar:
+    build:
+      context: ./sidecar
+    restart: unless-stopped
+    environment:
+      SIDECAR_LISTEN_ADDRESS: 0.0.0.0:11212
+      SIDECAR_PUBLIC_ORIGIN: ${EASYTIER_PUBLIC_ORIGIN}
+      SIDECAR_CONFIG_ENDPOINT: ${EASYTIER_CONFIG_ENDPOINT}
+      SIDECAR_OIDC_ISSUER: ${EASYTIER_OIDC_ISSUER}
+      SIDECAR_OIDC_CLIENT_ID: ${EASYTIER_OIDC_CLIENT_ID}
+      SIDECAR_OIDC_CLIENT_SECRET: ${EASYTIER_OIDC_CLIENT_SECRET}
+      SIDECAR_OIDC_USERNAME_CLAIM: ${EASYTIER_OIDC_USERNAME_CLAIM:-preferred_username}
+      SIDECAR_TICKET_KEY_BASE64: ${EASYTIER_NATIVE_TICKET_KEY_BASE64}
+      RUST_LOG: info
+    expose:
+      - "11212"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:11212/native/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 20
