@@ -49,7 +49,7 @@ struct AccountSidebarView: View {
             .controlSize(.regular)
             .padding(8)
         }
-        .frame(minWidth: 190, idealWidth: 200, maxWidth: 220)
+        .frame(minWidth: 190, idealWidth: 200, maxWidth: 220, maxHeight: .infinity)
         .background(.primary.opacity(0.025))
     }
 }

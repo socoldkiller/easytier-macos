@@ -31,6 +31,7 @@ struct AccountSettingsView: View {
                         systemImage: "person.crop.circle",
                         description: Text("Add an EasyTier account to sign in through your browser.")
                     )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

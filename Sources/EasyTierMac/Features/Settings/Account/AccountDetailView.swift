@@ -69,5 +69,6 @@ struct AccountDetailView: View {
             .frame(maxWidth: .infinity)
         }
         .scrollIndicators(.hidden)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
