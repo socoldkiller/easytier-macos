@@ -126,7 +126,7 @@ private struct BrowserSSOStub: BrowserSSOAuthenticating {
         self.error = error
     }
 
-    func signIn(serverAddress _: String) async throws -> BrowserSSOSignIn {
+    func signIn(serverAddress _: String) throws -> BrowserSSOSignIn {
         if let error { throw error }
         return try #require(result)
     }
@@ -145,17 +145,17 @@ private actor AccountRuntimeStub: RemoteAccountRuntimeClient {
         self.removeError = removeError
     }
 
-    func configureRemoteAccount(_ credential: RemoteAccountCredential) async throws {
+    func configureRemoteAccount(_ credential: RemoteAccountCredential) throws {
         if let configureError { throw configureError }
         configuredCredential = credential
     }
 
-    func removeRemoteAccount() async throws {
+    func removeRemoteAccount() throws {
         if let removeError { throw removeError }
         configuredCredential = nil
     }
 
-    func remoteAccountStatus() async throws -> RemoteRuntimeStatus {
+    func remoteAccountStatus() throws -> RemoteRuntimeStatus {
         RemoteRuntimeStatus(active: configuredCredential != nil, connected: configuredCredential != nil)
     }
 }
@@ -212,14 +212,14 @@ private final class AccountModelFixture: @unchecked Sendable {
 }
 
 private struct AccountModelNetworkSecretStore: NetworkSecretStore {
-    func save(_: String, for _: NetworkConfig, purpose _: NetworkSecretAccessPurpose) async throws {}
+    func save(_: String, for _: NetworkConfig, purpose _: NetworkSecretAccessPurpose) throws {}
     func secret(
         for _: NetworkConfig,
         purpose _: NetworkSecretAccessPurpose,
         reason _: String?
-    ) async throws -> String? { nil }
-    func deleteSecret(for _: NetworkConfig, purpose _: NetworkSecretAccessPurpose) async throws {}
-    func presence(for _: NetworkConfig) async throws -> NetworkSecretPresence { .missing }
+    ) throws -> String? { nil }
+    func deleteSecret(for _: NetworkConfig, purpose _: NetworkSecretAccessPurpose) throws {}
+    func presence(for _: NetworkConfig) throws -> NetworkSecretPresence { .missing }
     func authenticationCapability() -> NetworkSecretAuthenticationCapability { .unknown }
     func invalidateAuthenticationSession() {}
 }
