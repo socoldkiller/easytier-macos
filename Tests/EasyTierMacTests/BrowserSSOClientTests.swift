@@ -21,17 +21,19 @@ import Testing
     let valid = EasyTierClientBootstrap(
         protocolVersion: 1,
         configEndpoint: "tcp://config.example.com:22020",
-        loginPath: "/#/auth",
-        consolePath: "/#/console"
+        loginPath: "/native/login",
+        exchangePath: "/native/exchange",
+        consolePath: "/native/console"
     )
     let result = try valid.validate(for: origin)
-    #expect(result.consoleURL.absoluteString == "https://iw.example.com/#/console")
+    #expect(result.consoleURL.absoluteString == "https://iw.example.com/native/console")
 
     #expect(throws: BrowserSSOError.unsupportedProtocolVersion) {
         try EasyTierClientBootstrap(
             protocolVersion: 2,
             configEndpoint: valid.configEndpoint,
             loginPath: valid.loginPath,
+            exchangePath: valid.exchangePath,
             consolePath: valid.consolePath
         ).validate(for: origin)
     }
@@ -40,6 +42,7 @@ import Testing
             protocolVersion: 1,
             configEndpoint: "wss://config.example.com:443",
             loginPath: valid.loginPath,
+            exchangePath: valid.exchangePath,
             consolePath: valid.consolePath
         ).validate(for: origin)
     }
@@ -48,14 +51,15 @@ import Testing
             protocolVersion: 1,
             configEndpoint: valid.configEndpoint,
             loginPath: "https://evil.example/auth",
+            exchangePath: valid.exchangePath,
             consolePath: valid.consolePath
         ).validate(for: origin)
     }
 }
 
 @Test func loopbackCallbackRequiresExactPathStateAndSingleTicket() {
-    let request = Data("GET /easytier/callback?state=abc&ticket=etn1.ticket HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".utf8)
-    #expect(LoopbackSSOCallbackServer.ticket(from: request, expectedState: "abc") == "etn1.ticket")
+    let request = Data("GET /easytier/callback?state=abc&ticket=ets1.ticket HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".utf8)
+    #expect(LoopbackSSOCallbackServer.ticket(from: request, expectedState: "abc") == "ets1.ticket")
     #expect(LoopbackSSOCallbackServer.ticket(from: request, expectedState: "wrong") == nil)
 
     let duplicate = Data("GET /easytier/callback?state=abc&ticket=one&ticket=two HTTP/1.1\r\n\r\n".utf8)

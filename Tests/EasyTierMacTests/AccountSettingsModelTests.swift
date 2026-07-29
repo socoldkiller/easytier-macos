@@ -9,10 +9,10 @@ import Testing
     defer { fixture.removeFiles() }
     let result = BrowserSSOSignIn(
         username: "oidc-admin",
-        configToken: "etu1.3.signature",
+        configToken: "oidc-admin",
         configEndpoint: "tcp://iw.example.com:22020",
         controlOrigin: try #require(URL(string: "https://iw.example.com")),
-        consoleURL: try #require(URL(string: "https://iw.example.com/#/console"))
+        consoleURL: try #require(URL(string: "https://iw.example.com/native/console"))
     )
     let runtime = AccountRuntimeStub()
     let model = fixture.makeModel(browserSSO: BrowserSSOStub(result: result), runtime: runtime)
@@ -34,10 +34,10 @@ import Testing
     defer { fixture.removeFiles() }
     let result = BrowserSSOSignIn(
         username: "oidc-admin",
-        configToken: "etu1.3.signature",
+        configToken: "oidc-admin",
         configEndpoint: "tcp://iw.example.com:22020",
         controlOrigin: try #require(URL(string: "https://iw.example.com")),
-        consoleURL: try #require(URL(string: "https://iw.example.com/#/console"))
+        consoleURL: try #require(URL(string: "https://iw.example.com/native/console"))
     )
     let runtime = AccountRuntimeStub(configureError: AccountModelTestError.expected)
     let model = fixture.makeModel(browserSSO: BrowserSSOStub(result: result), runtime: runtime)
@@ -73,10 +73,10 @@ import Testing
     defer { fixture.removeFiles() }
     let result = BrowserSSOSignIn(
         username: "oidc-admin",
-        configToken: "etu1.3.signature",
+        configToken: "oidc-admin",
         configEndpoint: "tcp://iw.example.com:22020",
         controlOrigin: try #require(URL(string: "https://iw.example.com")),
-        consoleURL: try #require(URL(string: "https://iw.example.com/#/console"))
+        consoleURL: try #require(URL(string: "https://iw.example.com/native/console"))
     )
     let firstRuntime = AccountRuntimeStub()
     let first = fixture.makeModel(browserSSO: BrowserSSOStub(result: result), runtime: firstRuntime)
@@ -198,7 +198,7 @@ private final class AccountModelFixture: @unchecked Sendable {
         RemoteAccountProfile(
             controlOrigin: try #require(URL(string: "https://iw.example.com")),
             configEndpoint: "tcp://iw.example.com:22020",
-            consoleURL: try #require(URL(string: "https://iw.example.com/#/console")),
+            consoleURL: try #require(URL(string: "https://iw.example.com/native/console")),
             username: "oidc-admin",
             machineID: UUID()
         )

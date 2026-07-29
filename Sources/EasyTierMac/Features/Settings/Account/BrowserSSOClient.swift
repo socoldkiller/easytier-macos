@@ -18,7 +18,10 @@ actor BrowserSSOClient {
         let port = try await callback.start(expectedState: state)
 
         var loginComponents = URLComponents(url: bootstrap.loginURL, resolvingAgainstBaseURL: false)
-        loginComponents?.percentEncodedFragment = "/auth?native_port=\(port)&native_state=\(state)"
+        loginComponents?.queryItems = [
+            URLQueryItem(name: "native_port", value: String(port)),
+            URLQueryItem(name: "native_state", value: state),
+        ]
         guard let loginURL = loginComponents?.url else {
             callback.cancel()
             throw BrowserSSOError.invalidBootstrap
@@ -80,8 +83,10 @@ actor BrowserSSOClient {
         origin: ControlServerOrigin,
         bootstrap: ValidatedClientBootstrap
     ) async throws -> BrowserSSOSignIn {
-        let url = try origin.appending(path: "/api/v1/auth/native/exchange")
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData)
+        var request = URLRequest(
+            url: bootstrap.exchangeURL,
+            cachePolicy: .reloadIgnoringLocalAndRemoteCacheData
+        )
         request.httpMethod = "POST"
         request.timeoutInterval = 10
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -93,14 +98,18 @@ actor BrowserSSOClient {
         else {
             throw BrowserSSOError.invalidResponse
         }
-        guard http.statusCode == 200 else {
+        guard http.statusCode == 200,
+              http.value(forHTTPHeaderField: "Content-Type")?.lowercased().contains("application/json") == true
+        else {
             throw BrowserSSOError.signInRejected
         }
         let exchange = try JSONDecoder().decode(NativeExchangeResponse.self, from: data)
         guard exchange.configEndpoint == bootstrap.configEndpoint,
-              exchange.consolePath == "/#/console",
+              exchange.consolePath == bootstrap.consoleURL.path,
+              exchange.username == exchange.configToken,
               !exchange.username.isEmpty,
-              exchange.configToken.hasPrefix("etu1.")
+              exchange.username.count <= 128,
+              !exchange.username.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
         else {
             throw BrowserSSOError.invalidResponse
         }

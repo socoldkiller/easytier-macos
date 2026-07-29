@@ -4,12 +4,14 @@ struct EasyTierClientBootstrap: Decodable, Equatable, Sendable {
     let protocolVersion: Int
     let configEndpoint: String
     let loginPath: String
+    let exchangePath: String
     let consolePath: String
 
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol_version"
         case configEndpoint = "config_endpoint"
         case loginPath = "login_path"
+        case exchangePath = "exchange_path"
         case consolePath = "console_path"
     }
 
@@ -19,10 +21,12 @@ struct EasyTierClientBootstrap: Decodable, Equatable, Sendable {
         }
         let endpoint = try Self.validatedConfigEndpoint(configEndpoint)
         let loginURL = try Self.validatedSameOriginPath(loginPath, origin: origin)
+        let exchangeURL = try Self.validatedSameOriginPath(exchangePath, origin: origin)
         let consoleURL = try Self.validatedSameOriginPath(consolePath, origin: origin)
         return ValidatedClientBootstrap(
             configEndpoint: endpoint,
             loginURL: loginURL,
+            exchangeURL: exchangeURL,
             consoleURL: consoleURL
         )
     }
@@ -31,9 +35,19 @@ struct EasyTierClientBootstrap: Decodable, Equatable, Sendable {
         _ path: String,
         origin: ControlServerOrigin
     ) throws -> URL {
-        guard path.hasPrefix("/#/"),
+        guard path.hasPrefix("/"),
+              !path.hasPrefix("//"),
               !path.contains("?"),
-              !path.contains("\\")
+              !path.contains("#"),
+              !path.contains("\\"),
+              let components = URLComponents(string: path),
+              components.scheme == nil,
+              components.host == nil,
+              components.user == nil,
+              components.password == nil,
+              components.query == nil,
+              components.fragment == nil,
+              components.path == path
         else {
             throw BrowserSSOError.invalidBootstrap
         }
@@ -60,5 +74,6 @@ struct EasyTierClientBootstrap: Decodable, Equatable, Sendable {
 struct ValidatedClientBootstrap: Equatable, Sendable {
     let configEndpoint: String
     let loginURL: URL
+    let exchangeURL: URL
     let consoleURL: URL
 }
