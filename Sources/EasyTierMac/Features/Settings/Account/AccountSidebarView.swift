@@ -3,6 +3,8 @@ import SwiftUI
 struct AccountSidebarView: View {
     let accounts: [SettingsAccount]
     @Binding var selection: SettingsAccount.ID?
+    let addAccount: () -> Void
+    let logOut: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -15,9 +17,7 @@ struct AccountSidebarView: View {
                             action: { selection = account.id }
                         )
                         .contextMenu {
-                            Button("Log Out", action: {})
-                            Divider()
-                            Button("Remove Account", role: .destructive, action: {})
+                            Button("Log Out", action: logOut)
                         }
                     }
                 }
@@ -28,15 +28,16 @@ struct AccountSidebarView: View {
             Divider()
 
             HStack(spacing: 8) {
-                Button(action: {}) {
+                Button(action: addAccount) {
                     Text("Add Account…")
                         .frame(maxWidth: .infinity)
                 }
 
                 Menu {
-                    Button("Add Account…", action: {})
+                    Button("Add Account…", action: addAccount)
                     Divider()
-                    Button("Remove Account", role: .destructive, action: {})
+                    Button("Log Out", role: .destructive, action: logOut)
+                        .disabled(accounts.isEmpty)
                 } label: {
                     Label("Account Actions", systemImage: "chevron.down")
                         .labelStyle(.iconOnly)
