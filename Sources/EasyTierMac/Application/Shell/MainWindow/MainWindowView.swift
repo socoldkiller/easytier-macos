@@ -236,6 +236,13 @@ struct MainWindowView: View {
                 persistenceUnavailableContent
             } else if let session = store.remoteConfigSession {
                 remoteConfigContent(session: session)
+            } else if store.selectedConfigIsRuntimeManaged {
+                ContentUnavailableView(
+                    "Managed by Config Server",
+                    systemImage: "server.rack",
+                    description: Text("Open Admin Console to edit this network configuration.")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let config = draftConfigBinding() {
                 ConfigEditorView(
                     config: config,
@@ -291,7 +298,7 @@ struct MainWindowView: View {
             if networkSearchQuery.isEmpty {
                 List(selection: $selectedConfigIDLocal) {
                     Section {
-                        ForEach(store.configs) { stored in
+                        ForEach(store.presentedConfigs) { stored in
                             NetworkRow(stored: stored, state: connectionState(for: stored))
                                 .tag(stored.id as String?)
                         }
@@ -364,7 +371,13 @@ struct MainWindowView: View {
                 }
                 .help("Delete selected network")
                 .accessibilityLabel(Text("Delete selected network"))
-                .disabled(!store.persistenceIsReady || store.selectedConfigID == nil || store.isBusy || store.isQuitting)
+                .disabled(
+                    !store.persistenceIsReady
+                        || store.selectedConfigID == nil
+                        || store.selectedConfigIsRuntimeManaged
+                        || store.isBusy
+                        || store.isQuitting
+                )
                 Spacer()
                 Button {
                     Task { await store.refreshRuntime() }
@@ -430,7 +443,12 @@ struct MainWindowView: View {
                     )
                     .foregroundStyle(connectionActionColor)
                 }
-                .disabled(!store.persistenceIsReady || store.selectedConfig == nil || store.isBusy)
+                .disabled(
+                    !store.persistenceIsReady
+                        || store.selectedConfig == nil
+                        || store.selectedConfigIsRuntimeManaged
+                        || store.isBusy
+                )
                 .help(connectionActionHelp)
                 .toolbarAutoHidden(toolbarControlsHidden, reduceMotion: reduceMotion)
             }
@@ -450,7 +468,12 @@ struct MainWindowView: View {
                     Button("Restart Network") {
                         restartSelectedNetworkManually()
                     }
-                    .disabled(!store.persistenceIsReady || !selectedConfigCanStop || store.isBusy)
+                    .disabled(
+                        !store.persistenceIsReady
+                            || !selectedConfigCanStop
+                            || store.selectedConfigIsRuntimeManaged
+                            || store.isBusy
+                    )
 
                     Divider()
 
@@ -465,7 +488,11 @@ struct MainWindowView: View {
                             await openExportTOML()
                         }
                     }
-                    .disabled(!store.persistenceIsReady || store.selectedConfig == nil)
+                    .disabled(
+                        !store.persistenceIsReady
+                            || store.selectedConfig == nil
+                            || store.selectedConfigIsRuntimeManaged
+                    )
                 }
             } label: {
                 Label("More", systemImage: "ellipsis.circle")
@@ -723,7 +750,7 @@ struct MainWindowView: View {
     private var networkSearchResults: [NetworkSearchResult] {
         NetworkSearchIndex.results(
             matching: networkSearchQuery,
-            configs: store.configs,
+            configs: store.presentedConfigs,
             instanceForConfig: store.runningInstance(matching:),
             connectionStateForConfig: connectionState(for:)
         )
@@ -869,6 +896,7 @@ struct MainWindowView: View {
     }
 
     private func requestDeleteSelectedConfig() {
+        guard !store.selectedConfigIsRuntimeManaged else { return }
         if selectedConfigCanStop {
             showingDeleteRunningNetworkConfirmation = true
         } else {
@@ -1054,7 +1082,7 @@ struct MainWindowView: View {
 
     private func configIndex(for id: String?) -> Int? {
         guard let id else { return nil }
-        return store.configs.firstIndex { $0.id == id }
+        return store.presentedConfigs.firstIndex { $0.id == id }
     }
 
     private func draftConfigBinding() -> Binding<NetworkConfig>? {
@@ -1112,6 +1140,7 @@ struct MainWindowView: View {
     }
 
     private func performSelectedConnectionAction() {
+        guard !store.selectedConfigIsRuntimeManaged else { return }
         let shouldStop = selectedConfigCanStop
         let pendingDraft: LocalConfigApplyRequest?
         if draftIsDirty, let draftConfigID {
@@ -1170,6 +1199,7 @@ struct MainWindowView: View {
     }
 
     private func restartSelectedNetworkManually() {
+        guard !store.selectedConfigIsRuntimeManaged else { return }
         guard let config = store.selectedConfig,
               let instance = store.runningInstance(matching: config)
         else { return }
@@ -1257,6 +1287,7 @@ struct MainWindowView: View {
     }
 
     private func openExportTOML() async {
+        guard !store.selectedConfigIsRuntimeManaged else { return }
         do {
             tomlPresentation = TOMLPresentation(
                 mode: .export,

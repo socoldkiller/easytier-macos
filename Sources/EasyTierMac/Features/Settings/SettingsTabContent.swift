@@ -15,7 +15,11 @@ struct SettingsTabContent: View {
     var body: some View {
         switch selection {
         case .account:
-            AccountSettingsView()
+            if let account = appContext.settings.account {
+                AccountSettingsView(model: account)
+            } else {
+                ContentUnavailableView("Account Unavailable", systemImage: "person.crop.circle.badge.exclamationmark")
+            }
         case .general:
             GeneralSettingsView()
         case .network:

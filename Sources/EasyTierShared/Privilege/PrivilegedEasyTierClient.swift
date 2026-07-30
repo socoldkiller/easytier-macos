@@ -137,6 +137,26 @@ package final class PrivilegedEasyTierClient: EasyTierCoreClient, EasyTierHelper
         }
     }
 
+    package func configureRemoteAccount(_ credential: RemoteAccountCredential) async throws {
+        let payload = String(decoding: try JSONEncoder().encode(credential), as: UTF8.self)
+        try await callHelper { service, reply in
+            service.configureRemoteAccount(credentialJSON: payload, reply: reply)
+        }
+    }
+
+    package func removeRemoteAccount() async throws {
+        try await callHelper { service, reply in
+            service.removeRemoteAccount(reply: reply)
+        }
+    }
+
+    package func remoteAccountStatus() async throws -> RemoteRuntimeStatus {
+        let payload = try await callHelperReturningPayload { service, reply in
+            service.remoteAccountStatus(reply: reply)
+        }
+        return try JSONDecoder().decode(RemoteRuntimeStatus.self, from: Data(payload.utf8))
+    }
+
     package func helperPingPayload() async throws -> String {
         try await helperPingPayload(
             timeout: Self.defaultCallTimeout,

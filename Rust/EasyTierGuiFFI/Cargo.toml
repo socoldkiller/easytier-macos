@@ -10,7 +10,15 @@ crate-type = ["staticlib"]
 
 [features]
 default = ["core", "gateway"]
-core = ["dep:dashmap", "dep:easytier", "dep:serde_json", "dep:tokio", "dep:url", "dep:uuid"]
+core = [
+    "dep:async-trait",
+    "dep:dashmap",
+    "dep:easytier",
+    "dep:serde_json",
+    "dep:tokio",
+    "dep:url",
+    "dep:uuid",
+]
 gateway = [
     "dep:arc-swap",
     "dep:async-trait",

@@ -2,6 +2,10 @@ import SwiftUI
 
 struct AccountDetailView: View {
     let account: SettingsAccount
+    let errorMessage: String?
+    let openConsole: () -> Void
+    let signInAgain: () -> Void
+    let logOut: () -> Void
 
     var body: some View {
         ScrollView {
@@ -14,13 +18,13 @@ struct AccountDetailView: View {
 
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 14) {
                     GridRow {
-                        AccountDetailLabel(title: "Network")
+                        AccountDetailLabel(title: "Server")
                         AccountDetailValue(value: account.networkName)
                     }
 
                     GridRow {
-                        AccountDetailLabel(title: "Email")
-                        AccountDetailValue(value: account.email)
+                        AccountDetailLabel(title: "Username")
+                        AccountDetailValue(value: account.username)
                     }
 
                     GridRow(alignment: .top) {
@@ -31,21 +35,30 @@ struct AccountDetailView: View {
                                     .fill(account.isConnected ? EasyTierColors.statusConnected : .secondary)
                                     .frame(width: 14, height: 14)
 
-                                Text(account.isConnected ? "Logged In" : "Logged Out")
+                                Text(account.statusSummary)
                             }
 
                             HStack {
-                                Button("Log Out", action: {})
-                                Button("Admin Console…", action: {})
+                                Button("Log Out", action: logOut)
+                                Button("Admin Console…", action: openConsole)
                             }
                         }
                     }
 
                     GridRow(alignment: .top) {
-                        AccountDetailLabel(title: "Expiry")
+                        AccountDetailLabel(title: "Config")
                         VStack(alignment: .leading, spacing: 8) {
-                            AccountDetailValue(value: account.expirationSummary)
-                            Button("Renew…", action: {})
+                            AccountDetailValue(value: account.configEndpoint)
+                            Button("Sign In Again…", action: signInAgain)
+                        }
+                    }
+
+                    if let errorMessage {
+                        GridRow(alignment: .top) {
+                            AccountDetailLabel(title: "Error")
+                            Text(errorMessage)
+                                .foregroundStyle(.red)
+                                .frame(minWidth: 170, alignment: .leading)
                         }
                     }
                 }
@@ -56,5 +69,6 @@ struct AccountDetailView: View {
             .frame(maxWidth: .infinity)
         }
         .scrollIndicators(.hidden)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

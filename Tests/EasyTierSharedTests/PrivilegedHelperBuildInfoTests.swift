@@ -14,7 +14,7 @@ import Testing
     )
 
     #expect(info.easyTierHelperDisplay == "v2.4.5 · fedcba98")
-    #expect(info.binaryDisplay == "1.4.0 (20260718124530) · protocol 17")
+    #expect(info.binaryDisplay == "1.4.0 (20260718124530) · protocol 18")
     #expect(info.buildTime == "2026-07-18T12:45:30Z")
 }
 

@@ -2,7 +2,30 @@ import CEasyTierCoreFFI
 import EasyTierShared
 import Foundation
 
+private final class ConfigServerEventBox: @unchecked Sendable {
+    let handler: @Sendable (RemoteConfigServerEvent) -> Void
+
+    init(handler: @escaping @Sendable (RemoteConfigServerEvent) -> Void) {
+        self.handler = handler
+    }
+}
+
+private func receiveConfigServerEvent(
+    _ eventJSON: UnsafePointer<CChar>?,
+    _ context: UnsafeMutableRawPointer?
+) {
+    guard let eventJSON, let context else { return }
+    let box = Unmanaged<ConfigServerEventBox>.fromOpaque(context).takeUnretainedValue()
+    guard let event = try? JSONDecoder().decode(
+        RemoteConfigServerEvent.self,
+        from: Data(String(cString: eventJSON).utf8)
+    ) else { return }
+    box.handler(event)
+}
+
 package final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Sendable {
+    private let configServerLock = NSLock()
+    private var configServerEventContext: UnsafeMutableRawPointer?
     package init() {}
 
     package func validate(toml: String) async throws {
@@ -95,6 +118,64 @@ package final class StaticEasyTierFFIClient: EasyTierCoreClient, @unchecked Send
             result = configure_rpc_portal(0, nil, nil, 0, &error)
         }
         try Self.throwOnError(result, error: error)
+    }
+
+    package func startConfigServerSync(
+        credential: RemoteAccountCredential,
+        eventHandler: @escaping @Sendable (RemoteConfigServerEvent) -> Void
+    ) throws {
+        let box = ConfigServerEventBox(handler: eventHandler)
+        let context = Unmanaged.passRetained(box).toOpaque()
+        configServerLock.lock()
+        guard configServerEventContext == nil else {
+            configServerLock.unlock()
+            Unmanaged<ConfigServerEventBox>.fromOpaque(context).release()
+            throw EasyTierCoreError.operationFailed("Config Server client is already active.")
+        }
+        configServerEventContext = context
+        configServerLock.unlock()
+
+        var error: UnsafePointer<CChar>?
+        let result = credential.endpoint.withCString { endpoint in
+            credential.token.withCString { token in
+                credential.deviceName.withCString { deviceName in
+                    credential.machineID.uuidString.lowercased().withCString { machineID in
+                        start_config_server_client(
+                            endpoint, token, deviceName, machineID, 1,
+                            receiveConfigServerEvent, context, &error
+                        )
+                    }
+                }
+            }
+        }
+        do {
+            try Self.throwOnError(result, error: error)
+        } catch {
+            releaseConfigServerEventContext(expected: context)
+            throw error
+        }
+    }
+
+    package func stopConfigServerSync() throws {
+        var error: UnsafePointer<CChar>?
+        let result = stop_config_server_client(&error)
+        if !configServerIsActive { releaseConfigServerEventContext() }
+        try Self.throwOnError(result, error: error)
+    }
+
+    package var configServerIsActive: Bool { is_config_server_client_active() != 0 }
+    package var configServerIsConnected: Bool { is_config_server_client_connected() != 0 }
+
+    private func releaseConfigServerEventContext(expected: UnsafeMutableRawPointer? = nil) {
+        configServerLock.lock()
+        if let expected, configServerEventContext != expected {
+            configServerLock.unlock()
+            return
+        }
+        let context = configServerEventContext
+        configServerEventContext = nil
+        configServerLock.unlock()
+        if let context { Unmanaged<ConfigServerEventBox>.fromOpaque(context).release() }
     }
 
     private static func withCStringBuffer<Result>(

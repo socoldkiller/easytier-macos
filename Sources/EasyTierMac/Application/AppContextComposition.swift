@@ -28,8 +28,14 @@ extension AppContext {
             connectionMonitor: gatewayClient
         )
         let runtime = ApplicationRuntimeCoordinator(store: store, gateway: gateway)
+        let account = AccountSettingsModel(
+            database: database,
+            runtime: privilegedClient,
+            userDefaults: userDefaults
+        )
         return make(
             runtime: runtime,
+            account: account,
             userDefaults: userDefaults,
             loginItemService: SystemLoginItemService(),
             privilegedHelper: SystemPrivilegedHelperLifecycle(),
@@ -79,6 +85,7 @@ extension AppContext {
 
     private static func make(
         runtime: ApplicationRuntimeCoordinator,
+        account: AccountSettingsModel? = nil,
         userDefaults: UserDefaults,
         loginItemService: any LoginItemService,
         privilegedHelper: any PrivilegedHelperLifecycle,
@@ -96,6 +103,7 @@ extension AppContext {
                 userDefaults: userDefaults,
                 service: loginItemService
             ),
+            account: account,
             userDefaults: userDefaults
         )
         let softwareUpdate = SoftwareUpdateFeature(

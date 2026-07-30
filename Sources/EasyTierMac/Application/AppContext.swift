@@ -31,6 +31,7 @@ final class AppContext {
         hasStarted = true
 
         await runtime.load()
+        await settings.account?.load()
         await prepareRuntimeService()
         softwareUpdate.controller.start()
     }
