@@ -11,6 +11,7 @@ struct AccountSettingsView: View {
 
             HSplitView {
                 AccountSidebarView(
+                    model: model,
                     accounts: accounts,
                     selection: $selection,
                     addAccount: showAddAccount,
