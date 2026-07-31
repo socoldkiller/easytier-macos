@@ -33,7 +33,6 @@ final class AccountSettingsModel {
     private(set) var phase: Phase = .signedOut
     private(set) var errorMessage: String?
     var serverAddress = ""
-    var showsAddAccount = false
 
     @ObservationIgnored private let database: ApplicationDatabase
     @ObservationIgnored private let browserSSO: any BrowserSSOAuthenticating
@@ -106,7 +105,6 @@ final class AccountSettingsModel {
                 )
                 try await database.saveRemoteAccount(profile)
                 account = profile
-                showsAddAccount = false
                 serverAddress = ""
                 await refreshStatus()
                 startStatusMonitoring()
@@ -148,7 +146,7 @@ final class AccountSettingsModel {
     func signInAgain() {
         guard let account else { return }
         serverAddress = account.controlOrigin.absoluteString
-        showsAddAccount = true
+        beginSignIn()
     }
 
     private var stableMachineID: UUID {
