@@ -108,6 +108,48 @@ import Testing
 }
 
 @MainActor
+@Test func runtimeManagedSelectionFollowsNetworkNameWhenInstanceIDIsReissued() async {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let client = RecordingToggleClient()
+    let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+
+    client.networkInfos = [
+        "managed-a": NetworkInstanceRunningInfo(
+            my_node_info: NodeInfo(ipv4_addr: "10.0.1.1/24", hostname: "a-mac", peer_id: 1),
+            running: true,
+            instance_id: "a-v1"
+        ),
+        "managed-b": NetworkInstanceRunningInfo(
+            my_node_info: NodeInfo(ipv4_addr: "10.0.2.1/24", hostname: "b-mac", peer_id: 2),
+            running: true,
+            instance_id: "b-v1"
+        ),
+    ]
+    await store.refreshRuntime()
+    await store.selectConfig(id: "b-v1")
+    #expect(store.selectedConfigID == "b-v1")
+
+    // Config Server reissues the same networks with new instance ids. The
+    // selection must follow the network name instead of jumping elsewhere.
+    client.networkInfos = [
+        "managed-a": NetworkInstanceRunningInfo(
+            my_node_info: NodeInfo(ipv4_addr: "10.0.1.1/24", hostname: "a-mac", peer_id: 1),
+            running: true,
+            instance_id: "a-v2"
+        ),
+        "managed-b": NetworkInstanceRunningInfo(
+            my_node_info: NodeInfo(ipv4_addr: "10.0.2.1/24", hostname: "b-mac", peer_id: 2),
+            running: true,
+            instance_id: "b-v2"
+        ),
+    ]
+    await store.refreshRuntime()
+
+    #expect(store.selectedConfigID == "b-v2")
+    #expect(store.selectedStatusSnapshot.networkName == "managed-b")
+}
+
+@MainActor
 @Test func runtimeManagedNetworkRejectsLocalRuntimeAndExportActions() async {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let client = RecordingToggleClient()

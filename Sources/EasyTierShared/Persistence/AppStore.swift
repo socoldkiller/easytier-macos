@@ -32,7 +32,7 @@ public final class EasyTierAppStore {
     public var instances: [NetworkInstance] = [] {
         didSet {
             instancesWriteCount += 1
-            reconcileSelectedConfigWithRuntimeManagedConfigs()
+            reconcileSelectedConfigWithRuntimeManagedConfigs(previousInstances: oldValue)
             refreshSelectedRuntimeSnapshotsIfNeeded()
             notifyRuntimeEnvironmentDidChange()
         }

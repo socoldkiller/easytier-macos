@@ -202,7 +202,9 @@ extension EasyTierAppStore {
         return matches.count == 1 ? matches[0] : nil
     }
 
-    func reconcileSelectedConfigWithRuntimeManagedConfigs() {
+    func reconcileSelectedConfigWithRuntimeManagedConfigs(
+        previousInstances: [NetworkInstance] = []
+    ) {
         let presented = presentedConfigs
         if let selectedConfigID {
             // A valid selection stays untouched.
@@ -213,6 +215,15 @@ extension EasyTierAppStore {
             // local configuration to own the workspace selection.
             guard configs.isEmpty, let firstManaged = runtimeManagedConfigs.first else { return }
             selectedConfigID = firstManaged.id
+            return
+        }
+        // A previously selected runtime-managed network may have been reissued
+        // with a new instance id (Config Server re-delivery, re-approval, or a
+        // server-side instance id rotation). Prefer following the same network
+        // by name instead of falling back to an unrelated first config.
+        if let previousName = previousInstances.first(where: { $0.instance_id == selectedConfigID })?.name,
+           let sameNetwork = runtimeManagedConfigs.first(where: { $0.network_name == previousName }) {
+            selectedConfigID = sameNetwork.id
             return
         }
         // A previously selected configuration disappeared: restore the
