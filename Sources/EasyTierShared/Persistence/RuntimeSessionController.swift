@@ -149,13 +149,15 @@ final class RuntimeSessionController {
         refresh: @escaping @MainActor () async -> Void,
         handleWillSleep: @escaping @MainActor () -> Void,
         handleSessionResign: @escaping @MainActor () -> Void,
-        handleDidWake: @escaping @MainActor () async -> Void
+        handleDidWake: @escaping @MainActor () async -> Void,
+        pollingIntervalProvider: (@MainActor () -> Duration)? = nil
     ) {
         wakeRecoveryHandler = handleDidWake
         pollingTask?.cancel()
         pollingTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(1))
+                let interval = pollingIntervalProvider?() ?? .seconds(1)
+                try? await Task.sleep(for: interval)
                 guard let self, self.pollingEnabled else { continue }
                 await refresh()
             }
