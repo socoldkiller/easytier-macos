@@ -1,10 +1,12 @@
 .DS_Store
 .build/
+.swiftpm/
 DerivedData/
-Vendor/Frameworks/static/
+Vendor/Frameworks/
 Configurations/Signing.local.xcconfig
 *.xcuserstate
-*.xcuserdata/
+xcuserdata/
 .idea/
 __pycache__/
 *.py[cod]
+err.png
