@@ -1,10 +1,11 @@
 import SwiftUI
 
 struct AccountSidebarView: View {
+    @Bindable var model: AccountSettingsModel
     let accounts: [SettingsAccount]
     @Binding var selection: SettingsAccount.ID?
-    let addAccount: () -> Void
     let logOut: () -> Void
+    @State private var showsAlternateServer = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -27,25 +28,23 @@ struct AccountSidebarView: View {
 
             Divider()
 
-            HStack(spacing: 8) {
-                Button(action: addAccount) {
+            Button {
+                model.serverAddress = ""
+                showsAlternateServer = true
+            } label: {
+                HStack(spacing: 6) {
                     Text("Add Account…")
                         .frame(maxWidth: .infinity)
+                    Image(systemName: "chevron.down")
                 }
-
-                Menu {
-                    Button("Add Account…", action: addAccount)
-                    Divider()
-                    Button("Log Out", role: .destructive, action: logOut)
-                        .disabled(accounts.isEmpty)
-                } label: {
-                    Label("Account Actions", systemImage: "chevron.down")
-                        .labelStyle(.iconOnly)
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
             }
+            .popover(isPresented: $showsAlternateServer, arrowEdge: .top) {
+                AlternateServerAccountPopover(
+                    model: model,
+                    isPresented: $showsAlternateServer
+                )
+            }
+            .help("Add an account using another server")
             .controlSize(.regular)
             .padding(8)
         }

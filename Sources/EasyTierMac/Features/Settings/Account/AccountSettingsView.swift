@@ -11,9 +11,9 @@ struct AccountSettingsView: View {
 
             HSplitView {
                 AccountSidebarView(
+                    model: model,
                     accounts: accounts,
                     selection: $selection,
-                    addAccount: showAddAccount,
                     logOut: logOut
                 )
 
@@ -35,9 +35,6 @@ struct AccountSettingsView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .sheet(isPresented: $model.showsAddAccount) {
-            AddAccountSheet(model: model)
         }
         .onAppear { synchronizeSelection() }
         .onChange(of: model.account?.machineID) { _, _ in synchronizeSelection() }
@@ -75,11 +72,6 @@ struct AccountSettingsView: View {
 
     private func synchronizeSelection() {
         selection = accounts.first?.id
-    }
-
-    private func showAddAccount() {
-        model.serverAddress = ""
-        model.showsAddAccount = true
     }
 
     private func logOut() {
