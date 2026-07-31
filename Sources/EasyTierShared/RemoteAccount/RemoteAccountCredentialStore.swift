@@ -1,6 +1,19 @@
 import Darwin
 import Foundation
 
+/// Persists the Config Server bootstrap credential for the root privileged
+/// helper.
+///
+/// Design note: unlike user-facing network secrets (which live in the macOS
+/// Keychain via `SystemNetworkSecretStore`), this store uses a root-owned
+/// `0600` file. The helper runs as root under `SMAppService`; sharing the
+/// user Keychain from that context requires a Keychain access group in both
+/// the app and helper entitlements plus signed release-gate coverage. Until
+/// that exists, a root-owned directory (`0700`) and file (`0600`) with
+/// atomic writes and fsync provides equivalent confidentiality against other
+/// local users while keeping the helper self-contained. Revisit if the
+/// account token ever needs to survive helper reinstall or be readable by
+/// the app outside the helper.
 package enum RemoteAccountCredentialStoreError: LocalizedError, Equatable {
     case unsafePath(String)
     case invalidPermissions(String)

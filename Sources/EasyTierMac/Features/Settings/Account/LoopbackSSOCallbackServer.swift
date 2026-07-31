@@ -7,16 +7,15 @@ final class LoopbackSSOCallbackServer: @unchecked Sendable {
     private var listener: NWListener?
     private var callbackContinuation: CheckedContinuation<String, Error>?
     private var bufferedResult: Result<String, Error>?
-    private var expectedState = ""
 
     func start(expectedState: String) async throws -> UInt16 {
-        self.expectedState = expectedState
+        let expectedState = expectedState
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
         let listener = try NWListener(using: parameters)
         self.listener = listener
         listener.newConnectionHandler = { [weak self] connection in
-            self?.accept(connection)
+            self?.accept(connection, expectedState: expectedState)
         }
         return try await withCheckedThrowingContinuation { continuation in
             listener.stateUpdateHandler = { [weak self] state in
@@ -62,7 +61,7 @@ final class LoopbackSSOCallbackServer: @unchecked Sendable {
         finish(.failure(CancellationError()))
     }
 
-    private func accept(_ connection: NWConnection) {
+    private func accept(_ connection: NWConnection, expectedState: String) {
         connection.start(queue: queue)
         connection.receive(minimumIncompleteLength: 1, maximumLength: 16_384) { [weak self] data, _, _, _ in
             guard let self else { return }
