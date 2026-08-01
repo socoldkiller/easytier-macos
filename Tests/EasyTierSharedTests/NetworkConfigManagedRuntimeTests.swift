@@ -45,6 +45,7 @@ import Testing
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let client = RecordingToggleClient()
     let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+    store.setConfigurationAuthority(.configServer)
     client.networkInfos = [
         "managed-network": NetworkInstanceRunningInfo(
             dev_name: "utun-managed",
@@ -71,7 +72,128 @@ import Testing
 }
 
 @MainActor
-@Test func runtimeManagedSelectionIsNotPersistedAndDisappearsWithRuntime() async throws {
+@Test func configServerManagedWorkspaceRejectsAddingALocalNetwork() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let client = RecordingToggleClient()
+    let secretStore = MemoryNetworkSecretStore()
+    let database = ApplicationDatabase(
+        baseDirectory: directory,
+        gatewayFileURL: directory.appending(path: "gateway/config.json"),
+        networkSecretStore: secretStore
+    )
+    try await database.saveWorkspace(WorkspacePersistenceState(configs: [], selectedConfigID: nil))
+    let store = EasyTierAppStore(
+        runtimeClient: client,
+        storage: EasyTierStorage(baseDirectory: directory),
+        database: database,
+        networkSecretStore: secretStore
+    )
+    store.setConfigurationAuthority(.configServer)
+    client.networkInfos = [
+        "easytier": NetworkInstanceRunningInfo(
+            running: true,
+            instance_id: "managed-id"
+        ),
+    ]
+
+    await store.refreshRuntime()
+    #expect(store.selectedConfigID == "managed-id")
+
+    await store.addConfig()
+
+    #expect(store.configs.isEmpty)
+    #expect(store.runtimeManagedConfigs.map(\.id) == ["managed-id"])
+    #expect(store.selectedConfigID == "managed-id")
+    let persisted = try await database.loadWorkspace()
+    #expect(persisted.configs.isEmpty)
+}
+
+@MainActor
+@Test func sameNamedLocalConfigDoesNotClaimAConfigServerInstance() {
+    let local = NetworkConfig(instance_id: "local-id", network_name: "easytier")
+    let managed = NetworkInstance(instance_id: "managed-id", name: "easytier", running: true)
+    let store = EasyTierAppStore(client: RecordingToggleClient())
+    store.configs = [local]
+    store.instances = [managed]
+
+    #expect(store.localConfig(matching: managed) == nil)
+    #expect(store.runtimeManagedConfigs.map(\.id) == [managed.instance_id])
+    #expect(store.runningInstance(matching: local) == nil)
+}
+
+@MainActor
+@Test func configServerRuntimeLoadsItsConfigurationForReadOnlyPresentation() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let client = RecordingToggleClient()
+    let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+    store.setConfigurationAuthority(.configServer)
+    let instanceID = "11111111-2222-3333-4444-555555555555"
+    let remoteConfig = NetworkConfig(
+        instance_id: instanceID,
+        hostname: "managed-mac",
+        network_name: "managed-network",
+        network_secret: "not-for-presentation",
+        peer_urls: ["tcp://peer.example.com:11010"],
+        listener_urls: ["tcp://0.0.0.0:11010"],
+        no_tun: true
+    )
+    let configObject = try #require(
+        JSONSerialization.jsonObject(with: JSONEncoder().encode(remoteConfig)) as? [String: Any]
+    )
+    let responseData = try JSONSerialization.data(withJSONObject: ["config": configObject])
+    client.jsonRPCResponsesByMethod["get_config"] = String(decoding: responseData, as: UTF8.self)
+    client.networkInfos = [
+        "managed-instance": NetworkInstanceRunningInfo(
+            my_node_info: NodeInfo(ipv4_addr: nil, hostname: "managed-mac", peer_id: 7),
+            running: true,
+            instance_id: instanceID
+        ),
+    ]
+
+    await store.refreshRuntime()
+
+    #expect(client.jsonRPCCalls.map(\.method) == ["get_config"])
+    #expect(store.selectedConfigIsRuntimeManaged)
+    #expect(store.selectedConfig?.network_name == remoteConfig.network_name)
+    #expect(store.selectedConfig?.peer_urls == remoteConfig.peer_urls)
+    #expect(store.selectedConfig?.listener_urls == remoteConfig.listener_urls)
+    #expect(store.selectedConfig?.no_tun == remoteConfig.no_tun)
+    #expect(store.selectedConfig?.network_secret == nil)
+}
+
+@MainActor
+@Test func failedConfigServerConfigurationLoadCanBeRetried() async throws {
+    let client = RecordingToggleClient()
+    let store = EasyTierAppStore(client: client)
+    store.setConfigurationAuthority(.configServer)
+    let instanceID = "11111111-2222-3333-4444-555555555555"
+    client.networkInfos = [
+        "managed-instance": NetworkInstanceRunningInfo(running: true, instance_id: instanceID),
+    ]
+    client.jsonRPCError = EasyTierCoreError.operationFailed("RPC unavailable")
+
+    await store.refreshRuntime()
+
+    #expect(store.selectedRuntimeManagedConfiguration == nil)
+    #expect(store.selectedRuntimeManagedConfigurationLoadError?.contains("RPC unavailable") == true)
+
+    let recovered = NetworkConfig(instance_id: instanceID, network_name: "managed-network", no_tun: true)
+    let configObject = try #require(
+        JSONSerialization.jsonObject(with: JSONEncoder().encode(recovered)) as? [String: Any]
+    )
+    let responseData = try JSONSerialization.data(withJSONObject: ["config": configObject])
+    client.jsonRPCError = nil
+    client.jsonRPCResponsesByMethod["get_config"] = String(decoding: responseData, as: UTF8.self)
+
+    await store.reloadSelectedRuntimeManagedConfiguration()
+
+    #expect(client.jsonRPCCalls.map(\.method) == ["get_config", "get_config"])
+    #expect(store.selectedRuntimeManagedConfiguration?.network_name == "managed-network")
+    #expect(store.selectedRuntimeManagedConfigurationLoadError == nil)
+}
+
+@MainActor
+@Test func configurationAuthoritySeparatesManagedSelectionFromPersistedLocalSelection() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let client = RecordingToggleClient()
     let storage = EasyTierStorage(baseDirectory: directory)
@@ -79,6 +201,7 @@ import Testing
     let local = NetworkConfig(instance_id: "local-id", network_name: "local-network")
     store.configs = [local]
     await store.selectConfig(id: local.id)
+    store.setConfigurationAuthority(.configServer)
 
     client.networkInfos = [
         "managed-network": NetworkInstanceRunningInfo(
@@ -99,12 +222,18 @@ import Testing
     #expect(persisted.configs.map(\.id) == [local.id])
     #expect(persisted.selectedConfigID == local.id)
     #expect(store.selectedConfigID == "managed-id")
+    #expect(store.presentedConfigs.map(\.id) == ["managed-id"])
 
     client.networkInfos = [:]
     await store.refreshRuntime()
 
     #expect(store.runtimeManagedConfigs.isEmpty)
+    #expect(store.selectedConfigID == nil)
+
+    store.setConfigurationAuthority(.local)
+
     #expect(store.selectedConfigID == local.id)
+    #expect(store.presentedConfigs.map(\.id) == [local.id])
 }
 
 @MainActor
@@ -112,6 +241,7 @@ import Testing
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let client = RecordingToggleClient()
     let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+    store.setConfigurationAuthority(.configServer)
 
     client.networkInfos = [
         "managed-a": NetworkInstanceRunningInfo(
@@ -154,6 +284,7 @@ import Testing
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let client = RecordingToggleClient()
     let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+    store.setConfigurationAuthority(.configServer)
     client.networkInfos = [
         "managed-network": NetworkInstanceRunningInfo(
             my_node_info: NodeInfo(ipv4_addr: "10.0.64.1/24", hostname: "managed-mac", peer_id: 7),
@@ -180,6 +311,7 @@ import Testing
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let client = RecordingToggleClient()
     let store = EasyTierAppStore(client: client, storage: EasyTierStorage(baseDirectory: directory))
+    store.setConfigurationAuthority(.configServer)
     store.selectedTab = .view
 
     func runtimeInfo(txBytes: Int, rxBytes: Int) -> NetworkInstanceRunningInfo {

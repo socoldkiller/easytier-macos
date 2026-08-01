@@ -1,4 +1,5 @@
 import AppKit
+import EasyTierShared
 import SwiftUI
 import Testing
 @testable import EasyTierMac
@@ -70,6 +71,28 @@ func settingsPanesRenderWithAppContextEnvironment(tab: EasyTierSettingsTab) {
     let hostingView = NSHostingView(rootView: rootView)
 
     hostingView.frame = NSRect(x: 0, y: 0, width: 460, height: 520)
+    hostingView.layoutSubtreeIfNeeded()
+
+    #expect(hostingView.fittingSize.width > 0)
+    #expect(hostingView.fittingSize.height > 0)
+}
+
+@MainActor
+@Test func configServerManagedConfigurationRendersInReadOnlyEditor() {
+    let appContext = AppContext.preview()
+    let config = NetworkConfig(
+        instance_id: "11111111-2222-3333-4444-555555555555",
+        hostname: "managed-mac",
+        network_name: "managed-network",
+        peer_urls: ["tcp://peer.example.com:11010"],
+        listener_urls: ["tcp://0.0.0.0:11010"],
+        no_tun: true
+    )
+    let rootView = ConfigEditorView(config: .constant(config), isReadOnly: true)
+        .environment(appContext)
+    let hostingView = NSHostingView(rootView: rootView)
+
+    hostingView.frame = NSRect(x: 0, y: 0, width: 820, height: 720)
     hostingView.layoutSubtreeIfNeeded()
 
     #expect(hostingView.fittingSize.width > 0)

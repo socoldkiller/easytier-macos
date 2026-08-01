@@ -4,6 +4,10 @@ import TOML
 
 extension EasyTierAppStore {
     public func addConfig() async {
+        guard allowsLocalConfigurationMutation else {
+            recordNotice("Config Server manages this workspace. Log out before creating a local network.")
+            return
+        }
         // The first network takes the fixed-port listener defaults
         // (tcp/udp 11010, wg/ws 11011, ...). Any later network reuses the
         // same schemes with port 0 so the OS picks non-conflicting ports
@@ -29,6 +33,7 @@ extension EasyTierAppStore {
     }
 
     public func deleteSelectedConfig() async {
+        guard allowsLocalConfigurationMutation else { return }
         await withRuntimeMutation {
             guard let selectedConfigID, let index = configs.firstIndex(where: { $0.id == selectedConfigID }) else { return }
             let config = configs[index]
@@ -93,6 +98,7 @@ extension EasyTierAppStore {
         with config: NetworkConfig,
         saveImmediately: Bool = false
     ) async throws {
+        guard allowsLocalConfigurationMutation else { return }
         guard let index = configs.firstIndex(where: { $0.id == id }) else { return }
         let sanitized = Self.configWithoutNetworkSecret(config)
         if saveImmediately {
@@ -107,7 +113,7 @@ extension EasyTierAppStore {
     public func selectConfig(id: String?) async {
         guard selectedConfigID != id else { return }
         guard id == nil || presentedConfigs.contains(where: { $0.id == id }) else { return }
-        if let id, runtimeManagedConfigs.contains(where: { $0.id == id }) {
+        if isConfigServerManaged {
             selectedConfigID = id
             return
         }
@@ -133,7 +139,7 @@ extension EasyTierAppStore {
     public func runSelectedConfig(
         networkSecretInput: NetworkSecretInput? = nil
     ) async -> NetworkSecretOperationOutcome {
-        guard !selectedConfigIsRuntimeManaged else { return .none }
+        guard allowsLocalConfigurationMutation, !selectedConfigIsRuntimeManaged else { return .none }
         var outcome = NetworkSecretOperationOutcome.none
         await withRuntimeMutation {
             outcome = await runSelectedConfigWithoutMutationLock(
@@ -196,6 +202,7 @@ extension EasyTierAppStore {
 
     /// Retry the most recent start after the user approved the privileged helper.
     public func retryStartAfterHelperApproval() async {
+        guard allowsLocalConfigurationMutation else { return }
         guard !isQuitting else { return }
         guard let config = runtimeSession.takePendingStartAfterApproval() else { return }
         if let helperRegistration {
@@ -236,7 +243,7 @@ extension EasyTierAppStore {
     }
 
     public func stopSelectedConfig() async {
-        guard !selectedConfigIsRuntimeManaged else { return }
+        guard allowsLocalConfigurationMutation, !selectedConfigIsRuntimeManaged else { return }
         await withRuntimeMutation {
             await stopSelectedConfigWithoutMutationLock()
         }
@@ -266,7 +273,7 @@ extension EasyTierAppStore {
         configID targetConfigID: String? = nil,
         networkSecretInput: NetworkSecretInput? = nil
     ) async -> NetworkSecretOperationOutcome {
-        guard !selectedConfigIsRuntimeManaged else { return .none }
+        guard allowsLocalConfigurationMutation, !selectedConfigIsRuntimeManaged else { return .none }
         return await restartConfig(
             replacing: instance,
             configID: targetConfigID,
@@ -279,6 +286,9 @@ extension EasyTierAppStore {
         draft: NetworkConfig,
         replacing instance: NetworkInstance?
     ) async -> ConfigApplyResult {
+        guard allowsLocalConfigurationMutation else {
+            return .failed("Config Server manages this workspace.")
+        }
         guard configs.contains(where: { $0.id == configID }) else {
             return .failed("The network configuration no longer exists.")
         }
@@ -369,7 +379,7 @@ extension EasyTierAppStore {
     }
 
     public func toggleSelectedConfigConnection() async {
-        guard !selectedConfigIsRuntimeManaged else { return }
+        guard allowsLocalConfigurationMutation, !selectedConfigIsRuntimeManaged else { return }
         await withRuntimeMutation {
             if selectedConfigCanStop {
                 await stopSelectedConfigWithoutMutationLock()

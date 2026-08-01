@@ -237,12 +237,7 @@ struct MainWindowView: View {
             } else if let session = store.remoteConfigSession {
                 remoteConfigContent(session: session)
             } else if store.selectedConfigIsRuntimeManaged {
-                ContentUnavailableView(
-                    "Managed by Config Server",
-                    systemImage: "server.rack",
-                    description: Text("Open Admin Console to edit this network configuration.")
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                runtimeManagedConfigContent
             } else if let config = draftConfigBinding() {
                 ConfigEditorView(
                     config: config,
@@ -271,6 +266,34 @@ struct MainWindowView: View {
             } else {
                 persistenceUnavailableContent
             }
+        }
+    }
+
+    @ViewBuilder
+    var runtimeManagedConfigContent: some View {
+        if let config = store.selectedRuntimeManagedConfiguration {
+            ConfigEditorView(
+                config: .constant(config),
+                members: store.selectedLiveMemberStatuses,
+                isReadOnly: true,
+                onScrolledPastTopChange: { configEditorTitlebarScrollEdgeVisible = $0 }
+            )
+        } else if let error = store.selectedRuntimeManagedConfigurationLoadError {
+            VStack(spacing: 16) {
+                ContentUnavailableView(
+                    "Configuration Unavailable",
+                    systemImage: "server.rack",
+                    description: Text(error)
+                )
+                Button("Retry") {
+                    Task { await store.reloadSelectedRuntimeManagedConfiguration() }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ProgressView("Loading Config Server configuration...")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 

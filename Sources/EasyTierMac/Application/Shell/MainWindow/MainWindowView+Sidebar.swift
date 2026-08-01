@@ -74,7 +74,12 @@ extension MainWindowView {
                 }
                 .help("Add network")
                 .accessibilityLabel(Text("Add network"))
-                .disabled(!store.persistenceIsReady || store.isBusy || store.isQuitting)
+                .disabled(
+                    !store.persistenceIsReady
+                        || !store.allowsLocalConfigurationMutation
+                        || store.isBusy
+                        || store.isQuitting
+                )
                 Button(role: .destructive) {
                     requestDeleteSelectedConfig()
                 } label: {
@@ -84,6 +89,7 @@ extension MainWindowView {
                 .accessibilityLabel(Text("Delete selected network"))
                 .disabled(
                     !store.persistenceIsReady
+                        || !store.allowsLocalConfigurationMutation
                         || store.selectedConfigID == nil
                         || store.selectedConfigIsRuntimeManaged
                         || store.isBusy
@@ -192,7 +198,7 @@ extension MainWindowView {
                         flushPendingLocalDraft()
                         openImportTOML()
                     }
-                    .disabled(!store.persistenceIsReady)
+                    .disabled(!store.persistenceIsReady || !store.allowsLocalConfigurationMutation)
                     Button("Export TOML") {
                         Task {
                             await configApplyCoordinator.flush()

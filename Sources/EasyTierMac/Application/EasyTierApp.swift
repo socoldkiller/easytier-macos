@@ -109,7 +109,7 @@ struct EasyTierApp: App {
                     Task { await store.addConfig() }
                 }
                 .keyboardShortcut("n")
-                .disabled(!store.persistenceIsReady)
+                .disabled(!store.persistenceIsReady || !store.allowsLocalConfigurationMutation)
             }
 
             CommandGroup(replacing: .saveItem) {
@@ -117,7 +117,7 @@ struct EasyTierApp: App {
                     Task { await store.save() }
                 }
                 .keyboardShortcut("s")
-                .disabled(!store.persistenceIsReady)
+                .disabled(!store.persistenceIsReady || !store.allowsLocalConfigurationMutation)
             }
 
             SoftwareUpdateCommands(appContext: appContext)

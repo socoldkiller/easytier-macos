@@ -38,6 +38,7 @@ final class AccountSettingsModel {
     @ObservationIgnored private let browserSSO: any BrowserSSOAuthenticating
     @ObservationIgnored private let runtime: any RemoteAccountRuntimeClient
     @ObservationIgnored private let userDefaults: UserDefaults
+    @ObservationIgnored private let configurationAuthorityDidChange: @MainActor (NetworkConfigurationAuthority) -> Void
     @ObservationIgnored private var signInTask: Task<Void, Never>?
     @ObservationIgnored private var statusTask: Task<Void, Never>?
 
@@ -45,12 +46,14 @@ final class AccountSettingsModel {
         database: ApplicationDatabase,
         browserSSO: any BrowserSSOAuthenticating = BrowserSSOClient(),
         runtime: any RemoteAccountRuntimeClient,
-        userDefaults: UserDefaults = .standard
+        userDefaults: UserDefaults = .standard,
+        configurationAuthorityDidChange: @escaping @MainActor (NetworkConfigurationAuthority) -> Void = { _ in }
     ) {
         self.database = database
         self.browserSSO = browserSSO
         self.runtime = runtime
         self.userDefaults = userDefaults
+        self.configurationAuthorityDidChange = configurationAuthorityDidChange
     }
 
     deinit {
@@ -63,8 +66,10 @@ final class AccountSettingsModel {
             account = try await database.loadRemoteAccount()
             guard account != nil else {
                 phase = .signedOut
+                configurationAuthorityDidChange(.local)
                 return
             }
+            configurationAuthorityDidChange(.configServer)
             await refreshStatus()
             startStatusMonitoring()
         } catch {
@@ -94,6 +99,7 @@ final class AccountSettingsModel {
                     deviceName: Host.current().localizedName ?? "Mac"
                 )
                 try await runtime.configureRemoteAccount(credential)
+                configurationAuthorityDidChange(.configServer)
                 let profile = RemoteAccountProfile(
                     controlOrigin: result.controlOrigin,
                     configEndpoint: result.configEndpoint,
@@ -127,11 +133,10 @@ final class AccountSettingsModel {
         errorMessage = nil
         do {
             try await runtime.removeRemoteAccount()
-            try await database.removeRemoteAccount()
             statusTask?.cancel()
             statusTask = nil
-            account = nil
             phase = .signedOut
+            configurationAuthorityDidChange(.local)
         } catch {
             phase = .failed
             errorMessage = error.localizedDescription
@@ -173,6 +178,7 @@ final class AccountSettingsModel {
         do {
             let status = try await runtime.remoteAccountStatus()
             errorMessage = status.lastError
+            configurationAuthorityDidChange(status.active || status.connected ? .configServer : .local)
             if status.connected {
                 phase = .connected
             } else if status.active {

@@ -15,7 +15,12 @@ import Testing
         consoleURL: try #require(URL(string: "https://iw.example.com/native/console"))
     )
     let runtime = AccountRuntimeStub()
-    let model = fixture.makeModel(browserSSO: BrowserSSOStub(result: result), runtime: runtime)
+    var authority = NetworkConfigurationAuthority.local
+    let model = fixture.makeModel(
+        browserSSO: BrowserSSOStub(result: result),
+        runtime: runtime,
+        configurationAuthorityDidChange: { authority = $0 }
+    )
 
     model.serverAddress = "https://iw.example.com"
     model.beginSignIn()
@@ -26,6 +31,7 @@ import Testing
     #expect(credential?.endpoint == result.configEndpoint)
     #expect(model.account?.username == "oidc-admin")
     #expect(try await fixture.database.loadRemoteAccount() == model.account)
+    #expect(authority == .configServer)
 }
 
 @MainActor
@@ -65,6 +71,37 @@ import Testing
     #expect(model.account == profile)
     #expect(try await fixture.database.loadRemoteAccount() == profile)
     #expect(model.phase == .failed)
+}
+
+@MainActor
+@Test func successfulLogOutDisconnectsRuntimeWithoutDeletingAccount() async throws {
+    let fixture = try AccountModelFixture()
+    defer { fixture.removeFiles() }
+    let profile = try fixture.profile()
+    try await fixture.database.saveRemoteAccount(profile)
+    let runtime = AccountRuntimeStub()
+    try await runtime.configureRemoteAccount(RemoteAccountCredential(
+        endpoint: profile.configEndpoint,
+        token: "saved-token",
+        machineID: profile.machineID,
+        deviceName: "Test Mac"
+    ))
+    var authority = NetworkConfigurationAuthority.local
+    let model = fixture.makeModel(
+        browserSSO: BrowserSSOStub(error: AccountModelTestError.expected),
+        runtime: runtime,
+        configurationAuthorityDidChange: { authority = $0 }
+    )
+    await model.load()
+    #expect(authority == .configServer)
+
+    await model.logOut()
+
+    #expect(await runtime.removeCallCount == 1)
+    #expect(model.account == profile)
+    #expect(try await fixture.database.loadRemoteAccount() == profile)
+    #expect(model.phase == .signedOut)
+    #expect(authority == .local)
 }
 
 @MainActor
@@ -134,6 +171,7 @@ private struct BrowserSSOStub: BrowserSSOAuthenticating {
 
 private actor AccountRuntimeStub: RemoteAccountRuntimeClient {
     private(set) var configuredCredential: RemoteAccountCredential?
+    private(set) var removeCallCount = 0
     private let configureError: (any Error & Sendable)?
     private let removeError: (any Error & Sendable)?
 
@@ -152,6 +190,7 @@ private actor AccountRuntimeStub: RemoteAccountRuntimeClient {
 
     func removeRemoteAccount() throws {
         if let removeError { throw removeError }
+        removeCallCount += 1
         configuredCredential = nil
     }
 
@@ -184,13 +223,15 @@ private final class AccountModelFixture: @unchecked Sendable {
     @MainActor
     func makeModel(
         browserSSO: any BrowserSSOAuthenticating,
-        runtime: any RemoteAccountRuntimeClient
+        runtime: any RemoteAccountRuntimeClient,
+        configurationAuthorityDidChange: @escaping @MainActor (NetworkConfigurationAuthority) -> Void = { _ in }
     ) -> AccountSettingsModel {
         AccountSettingsModel(
             database: database,
             browserSSO: browserSSO,
             runtime: runtime,
-            userDefaults: userDefaults
+            userDefaults: userDefaults,
+            configurationAuthorityDidChange: configurationAuthorityDidChange
         )
     }
 

@@ -8,6 +8,7 @@ struct ConfigEditorView: View {
     @Binding private var networkSecretDraft: NetworkSecretInput?
     var members: [NetworkMemberStatus] = []
     var remoteSession: RemoteConfigSession? = nil
+    var isReadOnly = false
     var onScrolledPastTopChange: (Bool) -> Void = { _ in }
     var onTextEditingChange: (Bool) -> Void = { _ in }
     var onTextEditingCommit: () -> Void = {}
@@ -29,6 +30,7 @@ struct ConfigEditorView: View {
         networkSecretDraft: Binding<NetworkSecretInput?>? = nil,
         members: [NetworkMemberStatus] = [],
         remoteSession: RemoteConfigSession? = nil,
+        isReadOnly: Bool = false,
         onScrolledPastTopChange: @escaping (Bool) -> Void = { _ in },
         onTextEditingChange: @escaping (Bool) -> Void = { _ in },
         onTextEditingCommit: @escaping () -> Void = {}
@@ -44,38 +46,16 @@ struct ConfigEditorView: View {
         )
         self.members = members
         self.remoteSession = remoteSession
+        self.isReadOnly = isReadOnly
         self.onScrolledPastTopChange = onScrolledPastTopChange
         self.onTextEditingChange = onTextEditingChange
         self.onTextEditingCommit = onTextEditingCommit
     }
+}
 
+extension ConfigEditorView {
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 14) {
-                CardSection("Network") {
-                    networkNameRow
-                    FieldRow("Network secret") {
-                        NetworkSecretField(
-                            config: config,
-                            secret: $networkSecretDraft,
-                            keychainEnabled: !isRemote
-                        )
-                    }
-                }
-                .disabled(isRemote)
-                .help(isRemote ? "Network identity cannot be changed remotely because doing so can disconnect this device." : "")
-
-                CardSection("Peers") {
-                    StringListEditor(title: "Initial nodes", placeholder: "tcp://host:11010", values: $config.peer_urls)
-                }
-
-                advancedDisclosure
-            }
-            .padding(18)
-        }
-        .easyTierTitlebarScrollEdgeStyle(isEnabled: titlebarScrollEdgeEffectsEnabled)
-        .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
-        .hideScrollViewScrollers()
+        configurationScrollView
         .textFieldStyle(.glassField)
         .environment(
             \.configTextEditingActions,
@@ -87,17 +67,6 @@ struct ConfigEditorView: View {
                 }
             )
         )
-        .onScrollPhaseChange { _, phase in
-            store.isAnyViewScrolling = phase.isScrolling
-        }
-        .onScrollGeometryChange(for: Bool.self) { geometry in
-            TitlebarScrollEdgeVisibilityResolver.isVisible(
-                contentOffsetY: geometry.contentOffset.y,
-                topInset: geometry.contentInsets.top
-            )
-        } action: { _, isVisible in
-            onScrolledPastTopChange(isVisible)
-        }
         .onDisappear {
             store.isAnyViewScrolling = false
             onScrolledPastTopChange(false)
@@ -105,7 +74,7 @@ struct ConfigEditorView: View {
         }
         .onAppear {
             syncDisplayMode()
-            if !isRemote {
+            if !isRemote && !isReadOnly {
                 Task { await refreshReverseStatus() }
             }
         }
@@ -124,6 +93,47 @@ struct ConfigEditorView: View {
                     }
                 }
             }
+        }
+    }
+
+    private var configurationScrollView: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 14) {
+                CardSection("Network") {
+                    networkNameRow
+                    FieldRow("Network secret") {
+                        NetworkSecretField(
+                            config: config,
+                            secret: $networkSecretDraft,
+                            keychainEnabled: !isRemote && !isReadOnly
+                        )
+                    }
+                }
+                .disabled(isRemote || isReadOnly)
+                .help(networkIdentityHelp)
+
+                CardSection("Peers") {
+                    StringListEditor(title: "Initial nodes", placeholder: "tcp://host:11010", values: $config.peer_urls)
+                }
+                .disabled(isReadOnly)
+
+                advancedDisclosure
+            }
+            .padding(18)
+        }
+        .easyTierTitlebarScrollEdgeStyle(isEnabled: titlebarScrollEdgeEffectsEnabled)
+        .scrollIndicators(.hidden, axes: [.vertical, .horizontal])
+        .hideScrollViewScrollers()
+        .onScrollPhaseChange { _, phase in
+            store.isAnyViewScrolling = phase.isScrolling
+        }
+        .onScrollGeometryChange(for: Bool.self) { geometry in
+            TitlebarScrollEdgeVisibilityResolver.isVisible(
+                contentOffsetY: geometry.contentOffset.y,
+                topInset: geometry.contentInsets.top
+            )
+        } action: { _, isVisible in
+            onScrolledPastTopChange(isVisible)
         }
     }
 
@@ -217,6 +227,7 @@ struct ConfigEditorView: View {
                     .commitsConfigTextOnFocusLoss()
             }
         }
+        .disabled(isReadOnly)
 
         CardSection("Routing & Portal") {
             ExpandableSettingsGroup("Network routing") {
@@ -242,6 +253,7 @@ struct ConfigEditorView: View {
                     StringListEditor(title: "Allowed networks", placeholder: "*", values: $config.relay_network_whitelist)
                         .disabled(config.enable_relay_network_whitelist != true)
                 }
+                .disabled(isReadOnly)
             }
 
             Divider()
@@ -280,6 +292,7 @@ struct ConfigEditorView: View {
                             .disabled(!config.enable_vpn_portal)
                     }
                 }
+                .disabled(isReadOnly)
             }
         }
 
@@ -337,6 +350,7 @@ struct ConfigEditorView: View {
             }
             .padding(.bottom, 2)
         }
+        .disabled(isReadOnly)
 
         CardSection("Port Forwarding") {
             PortForwardEditor(
@@ -344,12 +358,13 @@ struct ConfigEditorView: View {
                 members: members,
                 reverseStatus: reversePortForwardStatus,
                 reversePending: reversePortForwardPending,
-                allowsReverse: !isRemote,
+                allowsReverse: !isRemote && !isReadOnly,
                 onToggleReverse: { rule in
                     Task { await toggleReverse(for: rule) }
                 }
             )
         }
+        .disabled(isReadOnly)
     }
 
     @ViewBuilder
@@ -365,7 +380,7 @@ struct ConfigEditorView: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
-                        if !isRemote {
+                        if !isRemote && !isReadOnly {
                             Button("Change in Settings") {
                                 appContext.settings.request(.network)
                                 openSettings()
@@ -381,7 +396,7 @@ struct ConfigEditorView: View {
 
     private var magicDNSPreview: String {
         let hostname = config.hostname?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if isRemote {
+        if isRemote || isReadOnly {
             return hostname.isEmpty
                 ? "Uses the remote runtime hostname and DNS zone"
                 : "\(hostname) in the remote runtime's DNS zone"
@@ -451,12 +466,22 @@ struct ConfigEditorView: View {
     private static let defaultListenerURLs = NetworkConfig().listener_urls
 
     private var networkNameHasDuplicate: Bool {
-        guard !isRemote else { return false }
+        guard !isRemote, !isReadOnly else { return false }
         let name = config.network_name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return false }
         return store.configs.contains { other in
             other.id != config.instance_id && other.network_name == name
         }
+    }
+
+    private var networkIdentityHelp: String {
+        if isReadOnly {
+            return "This configuration is managed by Config Server and cannot be changed on this Mac."
+        }
+        if isRemote {
+            return "Network identity cannot be changed remotely because doing so can disconnect this device."
+        }
+        return ""
     }
 
     private var portForwardKeys: [UUID: RuleKey] {

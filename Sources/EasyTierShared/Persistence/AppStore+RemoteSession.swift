@@ -383,6 +383,10 @@ extension EasyTierAppStore {
     }
 
     public func importTOML(_ toml: String) async {
+        guard allowsLocalConfigurationMutation else {
+            recordNotice("Config Server manages this workspace. Log out before importing a local network.")
+            return
+        }
         do {
             let metadata = try NetworkConfigTOMLCodec.metadata(from: toml)
             var config = try NetworkConfigTOMLCodec.decode(toml)

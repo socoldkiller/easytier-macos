@@ -31,7 +31,10 @@ extension AppContext {
         let account = AccountSettingsModel(
             database: database,
             runtime: privilegedClient,
-            userDefaults: userDefaults
+            userDefaults: userDefaults,
+            configurationAuthorityDidChange: { authority in
+                store.setConfigurationAuthority(authority)
+            }
         )
         return make(
             runtime: runtime,

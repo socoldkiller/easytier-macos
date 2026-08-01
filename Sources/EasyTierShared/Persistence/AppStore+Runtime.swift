@@ -193,12 +193,66 @@ extension EasyTierAppStore {
         if let publishSignpostID {
             EasyTierPerformanceSignposts.endRuntimePublish(publishSignpostID)
         }
+        await refreshRuntimeManagedConfigurations()
         // A mutation's authoritative collect must not hold the control-plane
         // FIFO while hostname intent RPCs are retried. Normal polling performs
         // that reconciliation on the next refresh.
         if !allowDuringRuntimeMutation {
             await reconcileRuntimeIntents()
         }
+    }
+
+    public func reloadSelectedRuntimeManagedConfiguration() async {
+        guard let selectedConfigID, selectedConfigIsRuntimeManaged else { return }
+        runtimeManagedConfigDetails.removeValue(forKey: selectedConfigID)
+        runtimeManagedConfigLoadErrors.removeValue(forKey: selectedConfigID)
+        await refreshRuntimeManagedConfigurations()
+    }
+
+    private func refreshRuntimeManagedConfigurations() async {
+        let managedInstances = instances.filter { localConfig(matching: $0) == nil }
+        let managedIDs = Set(managedInstances.map(\.instance_id))
+        var loaded = runtimeManagedConfigDetails.filter { managedIDs.contains($0.key) }
+        var errors = runtimeManagedConfigLoadErrors.filter { managedIDs.contains($0.key) }
+
+        guard !managedInstances.isEmpty else {
+            runtimeManagedConfigDetails = [:]
+            runtimeManagedConfigLoadErrors = [:]
+            return
+        }
+
+        guard let rpcURL = mode.localRPCURL else {
+            for instance in managedInstances where loaded[instance.instance_id] == nil {
+                errors[instance.instance_id] =
+                    "Local RPC is disabled. Enable RPC Listen to read this Config Server-managed configuration."
+            }
+            runtimeManagedConfigDetails = loaded
+            runtimeManagedConfigLoadErrors = errors
+            return
+        }
+
+        let rpcClient = EasyTierRemoteRPCClient(rpcURL: rpcURL, client: runtimeClient)
+        for instance in managedInstances where loaded[instance.instance_id] == nil {
+            do {
+                var config = try await rpcClient.getConfigParsed(instanceID: instance.instance_id)
+                config.instance_id = instance.instance_id
+                if config.network_name.isEmpty {
+                    config.network_name = instance.name
+                }
+                loaded[instance.instance_id] = Self.configWithoutNetworkSecret(config)
+                errors.removeValue(forKey: instance.instance_id)
+            } catch {
+                errors[instance.instance_id] = error.localizedDescription
+            }
+        }
+
+        let currentManagedIDs = Set(
+            instances.lazy
+                .filter { self.localConfig(matching: $0) == nil }
+                .map(\.instance_id)
+        )
+        runtimeManagedConfigDetails = loaded.filter { currentManagedIDs.contains($0.key) }
+        runtimeManagedConfigLoadErrors = errors.filter { currentManagedIDs.contains($0.key) }
     }
 
     func reconcileRuntimeIntents() async {

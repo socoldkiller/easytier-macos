@@ -10,6 +10,11 @@ public struct TOMLExportOptions: Equatable, Sendable {
     }
 }
 
+public enum NetworkConfigurationAuthority: Equatable, Sendable {
+    case local
+    case configServer
+}
+
 @MainActor
 @Observable
 public final class EasyTierAppStore {
@@ -74,11 +79,20 @@ public final class EasyTierAppStore {
     public var magicDNSSettings: MagicDNSSettings = .default {
         didSet { notifyRuntimeEnvironmentDidChange() }
     }
+    public private(set) var configurationAuthority: NetworkConfigurationAuthority = .local
     public var remoteConfigSession: RemoteConfigSession?
     public var peerSubscriptions: [PeerSubscription] = []
     public var isRefreshingPeerSubscriptions = false
     public var pendingPeerCardMerge: PeerCard?
     public internal(set) var runtimeTransitionsByConfigID: [String: NetworkRuntimeTransition] = [:]
+    var runtimeManagedConfigDetails: [String: NetworkConfig] = [:] {
+        didSet {
+            guard runtimeManagedConfigDetails != oldValue else { return }
+            refreshSelectedRuntimeSnapshotsIfNeeded()
+            notifyRuntimeEnvironmentDidChange()
+        }
+    }
+    var runtimeManagedConfigLoadErrors: [String: String] = [:]
 
     /// Presentation-only scroll state. Runtime collection must continue while
     /// this is true so topology changes are not hidden behind a stale gesture.
@@ -144,6 +158,23 @@ public final class EasyTierAppStore {
         runtimeDetailsWriteCount = 0
         instancesWriteCount = 0
         trafficSamplesByInstanceWriteCount = 0
+    }
+
+    public func setConfigurationAuthority(_ authority: NetworkConfigurationAuthority) {
+        guard configurationAuthority != authority else { return }
+        configurationAuthority = authority
+        remoteConfigSession = nil
+        switch authority {
+        case .local:
+            let persistedLocalConfigID = persistedSelectedConfigID.flatMap { selectedID in
+                configs.contains(where: { $0.id == selectedID }) ? selectedID : nil
+            }
+            selectedConfigID = persistedLocalConfigID ?? configs.first?.id
+        case .configServer:
+            selectedConfigID = runtimeManagedConfigs.first?.id
+        }
+        refreshSelectedRuntimeSnapshotsIfNeeded()
+        notifyRuntimeEnvironmentDidChange()
     }
 
     package init(
@@ -252,6 +283,7 @@ public final class EasyTierAppStore {
             return presentedConfigs.first { $0.id == selectedConfigID }
         }
         set {
+            guard allowsLocalConfigurationMutation else { return }
             guard let newValue else { return }
             if let index = configs.firstIndex(where: { $0.id == newValue.instance_id }) {
                 configs[index] = newValue
@@ -264,6 +296,13 @@ public final class EasyTierAppStore {
     public var runtimeManagedConfigs: [NetworkConfig] {
         instances.compactMap { instance in
             guard localConfig(matching: instance) == nil else { return nil }
+            if var config = runtimeManagedConfigDetails[instance.instance_id] {
+                config.instance_id = instance.instance_id
+                if config.network_name.isEmpty {
+                    config.network_name = instance.name
+                }
+                return config
+            }
             let detail = runtimeDetails[instance.name] ?? instance.detail
             return NetworkConfig(
                 instance_id: instance.instance_id,
@@ -279,12 +318,28 @@ public final class EasyTierAppStore {
     }
 
     public var presentedConfigs: [NetworkConfig] {
-        configs + runtimeManagedConfigs
+        switch configurationAuthority {
+        case .local:
+            configs
+        case .configServer:
+            runtimeManagedConfigs
+        }
     }
 
     public var selectedConfigIsRuntimeManaged: Bool {
+        guard isConfigServerManaged else { return false }
         guard let selectedConfigID else { return false }
         return runtimeManagedConfigs.contains { $0.id == selectedConfigID }
+    }
+
+    public var selectedRuntimeManagedConfiguration: NetworkConfig? {
+        guard let selectedConfigID, selectedConfigIsRuntimeManaged else { return nil }
+        return runtimeManagedConfigDetails[selectedConfigID]
+    }
+
+    public var selectedRuntimeManagedConfigurationLoadError: String? {
+        guard let selectedConfigID, selectedConfigIsRuntimeManaged else { return nil }
+        return runtimeManagedConfigLoadErrors[selectedConfigID]
     }
 
     public var selectedRunningInstance: NetworkInstance? {
@@ -413,10 +468,14 @@ public final class EasyTierAppStore {
             magicDNSSettings = state.magicDNSSettings
             mode = state.mode
             peerSubscriptions = state.peerSubscriptions
+            persistedSelectedConfigID = state.selectedConfigID
             if let selectedConfigID = state.selectedConfigID,
+               configurationAuthority == .local,
                configs.contains(where: { $0.id == selectedConfigID })
             {
                 self.selectedConfigID = selectedConfigID
+            } else if configurationAuthority == .configServer {
+                selectedConfigID = runtimeManagedConfigs.first?.id
             } else {
                 selectedConfigID = configs.first?.id
             }
@@ -425,7 +484,7 @@ public final class EasyTierAppStore {
         } catch {
             if configs.isEmpty {
                 configs = [NetworkConfig()]
-                selectedConfigID = configs.first?.id
+                selectedConfigID = configurationAuthority == .local ? configs.first?.id : nil
             }
             persistenceHealth = .unavailable(PersistenceFailure(
                 message: error.localizedDescription,
@@ -515,5 +574,15 @@ public final class EasyTierAppStore {
             setLastError(error)
             log("Save failed: \(error.localizedDescription)")
         }
+    }
+}
+
+public extension EasyTierAppStore {
+    var allowsLocalConfigurationMutation: Bool {
+        configurationAuthority == .local
+    }
+
+    var isConfigServerManaged: Bool {
+        configurationAuthority == .configServer
     }
 }

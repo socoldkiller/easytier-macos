@@ -38,13 +38,10 @@ extension EasyTierAppStore {
     }
 
     func applyPersistenceState(_ state: WorkspacePersistenceState) {
-        let transientRuntimeSelection = selectedConfigIsRuntimeManaged
-            && state.selectedConfigID == persistedSelectedConfigID
-            ? selectedConfigID
-            : nil
+        let transientRuntimeSelection = isConfigServerManaged ? selectedConfigID : nil
         configs = state.configs
         persistedSelectedConfigID = state.selectedConfigID
-        selectedConfigID = transientRuntimeSelection ?? state.selectedConfigID
+        selectedConfigID = isConfigServerManaged ? transientRuntimeSelection : state.selectedConfigID
         mode = state.mode
         vpnOnDemandEnabled = state.vpnOnDemandEnabled
         runtimeIntents = state.runtimeIntents
@@ -179,7 +176,7 @@ extension EasyTierAppStore {
         guard matchingConfigs.count <= 1 else { return nil }
 
         let matches = instances.filter { instance in
-            instance.name == networkName || instance.instance_id == networkName
+            instance.instance_id == networkName
         }
         return matches.count == 1 ? matches[0] : nil
     }
@@ -198,6 +195,7 @@ extension EasyTierAppStore {
 
     func localConfig(matching instance: NetworkInstance) -> NetworkConfig? {
         if let byID = configs.first(where: { $0.instance_id == instance.instance_id }) { return byID }
+        guard instance.instance_id == instance.name else { return nil }
         let matches = configs.filter { $0.network_name == instance.name }
         return matches.count == 1 ? matches[0] : nil
     }
@@ -205,33 +203,29 @@ extension EasyTierAppStore {
     func reconcileSelectedConfigWithRuntimeManagedConfigs(
         previousInstances: [NetworkInstance] = []
     ) {
-        let presented = presentedConfigs
-        if let selectedConfigID {
-            // A valid selection stays untouched.
-            guard !presented.contains(where: { $0.id == selectedConfigID }) else { return }
-        } else {
-            // An explicitly cleared selection must survive runtime refreshes.
-            // Only auto-select a runtime-managed network when there is no
-            // local configuration to own the workspace selection.
-            guard configs.isEmpty, let firstManaged = runtimeManagedConfigs.first else { return }
-            selectedConfigID = firstManaged.id
-            return
+        switch configurationAuthority {
+        case .local:
+            guard let selectedConfigID else { return }
+            guard !configs.contains(where: { $0.id == selectedConfigID }) else { return }
+            let persistedLocalConfigID = persistedSelectedConfigID.flatMap { selectedID in
+                configs.contains(where: { $0.id == selectedID }) ? selectedID : nil
+            }
+            self.selectedConfigID = persistedLocalConfigID ?? configs.first?.id
+
+        case .configServer:
+            let managedConfigs = runtimeManagedConfigs
+            if let selectedConfigID,
+               managedConfigs.contains(where: { $0.id == selectedConfigID }) {
+                return
+            }
+            if let selectedConfigID,
+               let previousName = previousInstances.first(where: { $0.instance_id == selectedConfigID })?.name,
+               let sameNetwork = managedConfigs.first(where: { $0.network_name == previousName }) {
+                self.selectedConfigID = sameNetwork.id
+                return
+            }
+            selectedConfigID = managedConfigs.first?.id
         }
-        // A previously selected runtime-managed network may have been reissued
-        // with a new instance id (Config Server re-delivery, re-approval, or a
-        // server-side instance id rotation). Prefer following the same network
-        // by name instead of falling back to an unrelated first config.
-        if let previousName = previousInstances.first(where: { $0.instance_id == selectedConfigID })?.name,
-           let sameNetwork = runtimeManagedConfigs.first(where: { $0.network_name == previousName }) {
-            selectedConfigID = sameNetwork.id
-            return
-        }
-        // A previously selected configuration disappeared: restore the
-        // persisted local selection, or fall back to the first available config.
-        let persistedLocalConfigID = persistedSelectedConfigID.flatMap { selectedID in
-            configs.contains(where: { $0.id == selectedID }) ? selectedID : nil
-        }
-        selectedConfigID = persistedLocalConfigID ?? configs.first?.id ?? runtimeManagedConfigs.first?.id
     }
 
     func selectConfig(offset: Int) async {
