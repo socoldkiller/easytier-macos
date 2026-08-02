@@ -3,9 +3,13 @@ import SwiftUI
 struct AccountDetailView: View {
     let account: SettingsAccount
     let errorMessage: String?
+    let isBusy: Bool
     let openConsole: () -> Void
+    let useAccount: () -> Void
     let signInAgain: () -> Void
     let logOut: () -> Void
+    let forgetAccount: () -> Void
+    @State private var confirmsForget = false
 
     var body: some View {
         ScrollView {
@@ -19,7 +23,7 @@ struct AccountDetailView: View {
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 14) {
                     GridRow {
                         AccountDetailLabel(title: "Server")
-                        AccountDetailValue(value: account.networkName)
+                        AccountDetailValue(value: account.serverName)
                     }
 
                     GridRow {
@@ -39,18 +43,39 @@ struct AccountDetailView: View {
                             }
 
                             HStack {
-                                Button("Log Out", action: logOut)
+                                if account.isActive, account.hasCredential {
+                                    Button("Log Out", action: logOut)
+                                } else if account.hasCredential {
+                                    Button("Use This Account", action: useAccount)
+                                        .buttonStyle(.borderedProminent)
+                                } else {
+                                    Button("Sign In Again…", action: signInAgain)
+                                        .buttonStyle(.borderedProminent)
+                                }
                                 Button("Admin Console…", action: openConsole)
+                            }
+                            .disabled(isBusy)
+
+                            if account.hasCredential {
+                                Button("Sign In Again…", action: signInAgain)
+                                    .disabled(isBusy)
                             }
                         }
                     }
 
-                    GridRow(alignment: .top) {
-                        AccountDetailLabel(title: "Config")
-                        VStack(alignment: .leading, spacing: 8) {
-                            AccountDetailValue(value: account.configEndpoint)
-                            Button("Sign In Again…", action: signInAgain)
-                        }
+                    GridRow {
+                        AccountDetailLabel(title: "Version")
+                        AccountDetailValue(value: account.version)
+                    }
+
+                    GridRow {
+                        AccountDetailLabel(title: "Public IP")
+                        AccountDetailValue(value: account.publicIPAddress)
+                    }
+
+                    GridRow {
+                        AccountDetailLabel(title: "Hostname")
+                        AccountDetailValue(value: account.hostname)
                     }
 
                     if let errorMessage {
@@ -62,6 +87,14 @@ struct AccountDetailView: View {
                         }
                     }
                 }
+
+                Divider()
+                    .padding(.top, 8)
+
+                Button("Forget Account…", role: .destructive) {
+                    confirmsForget = true
+                }
+                .disabled(isBusy)
             }
             .padding(.top, 28)
             .padding(.horizontal, 20)
@@ -70,5 +103,14 @@ struct AccountDetailView: View {
         }
         .scrollIndicators(.hidden)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .confirmationDialog(
+            "Forget \(account.displayName)?",
+            isPresented: $confirmsForget,
+            titleVisibility: .visible
+        ) {
+            Button("Forget Account", role: .destructive, action: forgetAccount)
+        } message: {
+            Text("This removes the saved sign-in and account details from this Mac.")
+        }
     }
 }

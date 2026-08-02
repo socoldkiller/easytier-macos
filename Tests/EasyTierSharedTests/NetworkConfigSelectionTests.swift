@@ -3,6 +3,27 @@ import Testing
 @testable import EasyTierShared
 
 @MainActor
+@Test func preparingForRemoteAccountChangeClearsManagedSelectionAndCaches() {
+    let store = EasyTierAppStore(client: RecordingToggleClient())
+    let managed = NetworkInstance(instance_id: "managed-id", name: "managed-network", running: true)
+    store.instances = [managed]
+    store.setConfigurationAuthority(.configServer)
+    store.runtimeManagedConfigDetails[managed.instance_id] = NetworkConfig(
+        instance_id: managed.instance_id,
+        network_name: managed.name
+    )
+    store.runtimeManagedConfigLoadErrors[managed.instance_id] = "stale"
+
+    store.prepareForRemoteAccountChange()
+
+    #expect(store.configurationAuthority == .configServer)
+    #expect(store.selectedConfigID == nil)
+    #expect(store.runtimeManagedConfigDetails.isEmpty)
+    #expect(store.runtimeManagedConfigLoadErrors.isEmpty)
+    #expect(store.remoteConfigSession == nil)
+}
+
+@MainActor
 @Test func selectNextConfigCyclesThroughConfigsAndPersistsSelection() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let storage = EasyTierStorage(baseDirectory: directory)
@@ -253,6 +274,60 @@ import Testing
     #expect(client.stoppedInstanceNames == [[second.network_name]])
     #expect(client.retainedInstanceNames.isEmpty)
     #expect(client.runConfigs.isEmpty)
+}
+
+@MainActor
+@Test func toggleConfigConnectionTargetsRequestedNetworkWithoutChangingSelection() async {
+    let first = NetworkConfig(instance_id: "first-explicit-id", network_name: "first-network")
+    var second = NetworkConfig(instance_id: "second-explicit-id", network_name: "second-network")
+    second.listener_urls = ["tcp://0.0.0.0:12020", "udp://0.0.0.0:12020", "wg://0.0.0.0:12021"]
+    let client = RecordingToggleClient()
+    let store = EasyTierAppStore(client: client)
+
+    store.configs = [first, second]
+    store.selectedConfigID = first.id
+
+    await store.toggleConfigConnection(id: second.id)
+
+    #expect(store.selectedConfigID == first.id)
+    #expect(client.runConfigs.map(\.instance_id) == [second.id])
+}
+
+@MainActor
+@Test func toggleConfigConnectionStopsOnlyRequestedNetworkWithoutChangingSelection() async {
+    let first = NetworkConfig(instance_id: "first-running-id", network_name: "first-network")
+    let second = NetworkConfig(instance_id: "second-running-id", network_name: "second-network")
+    let client = RecordingToggleClient()
+    let store = EasyTierAppStore(client: client)
+
+    store.configs = [first, second]
+    store.selectedConfigID = first.id
+    store.instances = [
+        NetworkInstance(instance_id: first.id, name: first.network_name, running: true),
+        NetworkInstance(instance_id: second.id, name: second.network_name, running: true),
+    ]
+
+    await store.toggleConfigConnection(id: second.id)
+
+    #expect(store.selectedConfigID == first.id)
+    #expect(client.stoppedInstanceNames == [[second.network_name]])
+    #expect(client.runConfigs.isEmpty)
+}
+
+@MainActor
+@Test func toggleConfigConnectionIgnoresMissingAndManagedNetworks() async {
+    let local = NetworkConfig(instance_id: "local-id", network_name: "local-network")
+    let client = RecordingToggleClient()
+    let store = EasyTierAppStore(client: client)
+    store.configs = [local]
+    store.selectedConfigID = local.id
+
+    await store.toggleConfigConnection(id: "missing-id")
+    store.setConfigurationAuthority(.configServer)
+    await store.toggleConfigConnection(id: local.id)
+
+    #expect(client.runConfigs.isEmpty)
+    #expect(client.stoppedInstanceNames.isEmpty)
 }
 
 @MainActor

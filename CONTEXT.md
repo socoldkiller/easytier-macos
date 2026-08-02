@@ -2,6 +2,36 @@
 
 EasyTier macOS publishes private-network applications through a local Gateway while keeping certificate policy, runtime deployment, and public serving behavior explicit.
 
+## Account And Network Language
+
+**Account Profile**:
+The remote control-plane identity metadata associated with a signed-in person.
+_Avoid_: Network account, device account
+
+**Saved Account**:
+An Account Profile and Device Binding retained on this Mac for later use.
+_Avoid_: Logged-in account, account session
+
+**Account Credential**:
+The secret Config Server bootstrap credential retained for one Saved Account.
+_Avoid_: Account Profile, login state
+
+**Active Account**:
+The only Saved Account, if any, whose Account Credential currently drives the Config Server connection.
+_Avoid_: Selected account, current profile
+
+**Device Binding**:
+The association between one Account Profile and this Mac's enrollment with Config Server.
+_Avoid_: Account identity, network identity
+
+**Managed Network**:
+A network assigned by Config Server to the current Device Binding.
+_Avoid_: Account Network, saved network
+
+**Local Network**:
+A network configured and owned on this Mac without an Account Profile.
+_Avoid_: Offline account network, unmanaged account network
+
 ## Gateway Language
 
 **Published Service**:

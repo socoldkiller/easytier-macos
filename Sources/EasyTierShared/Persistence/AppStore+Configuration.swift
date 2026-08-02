@@ -251,6 +251,10 @@ extension EasyTierAppStore {
 
     func stopSelectedConfigWithoutMutationLock() async {
         guard let config = selectedConfig else { return }
+        await stopConfigWithoutMutationLock(config)
+    }
+
+    func stopConfigWithoutMutationLock(_ config: NetworkConfig) async {
         setRuntimeTransition(.stopping, for: config.instance_id)
         await busy {
             log("Stopping \(config.network_name)...")
@@ -378,15 +382,26 @@ extension EasyTierAppStore {
         return config
     }
 
-    public func toggleSelectedConfigConnection() async {
-        guard allowsLocalConfigurationMutation, !selectedConfigIsRuntimeManaged else { return }
+    @discardableResult
+    public func toggleConfigConnection(id: String) async -> NetworkSecretOperationOutcome {
+        guard allowsLocalConfigurationMutation, !isQuitting,
+              let config = configs.first(where: { $0.id == id })
+        else { return .none }
+
+        var outcome = NetworkSecretOperationOutcome.none
         await withRuntimeMutation {
-            if selectedConfigCanStop {
-                await stopSelectedConfigWithoutMutationLock()
+            if runningInstance(matching: config) != nil {
+                await stopConfigWithoutMutationLock(config)
             } else {
-                _ = await runSelectedConfigWithoutMutationLock()
+                outcome = await runConfigWithoutMutationLock(config).secretOutcome
             }
         }
+        return outcome
+    }
+
+    public func toggleSelectedConfigConnection() async {
+        guard let selectedConfigID, !selectedConfigIsRuntimeManaged else { return }
+        _ = await toggleConfigConnection(id: selectedConfigID)
     }
 
     func validateConfigForCurrentRuntime(_ config: NetworkConfig, replacing instance: NetworkInstance? = nil) throws {

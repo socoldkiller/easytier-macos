@@ -7,7 +7,15 @@ import SwiftUI
 final class MenuBarStatusItemController: NSObject {
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
+    private let networkPopover = NSPopover()
+    private let presentationState = MenuBarPresentationState()
     private var hostingController: NSHostingController<MenuBarRootView>?
+    private var networkHostingController: NSHostingController<MenuBarNetworkPopoverRootView>?
+    private weak var networkMenuAnchorView: NSView?
+    private var isClosingNetworkPopover = false
+    private var networkPopoverPresentationTask: Task<Void, Never>?
+    private var networkPopoverDismissalTask: Task<Void, Never>?
+    private var networkMenuHoverState = MenuBarNetworkMenuHoverState()
     private var connectionState: ConnectionGlyphState = .idle
     private var activeNodeIndex = 0
     private var animationTask: Task<Void, Never>?
@@ -22,16 +30,23 @@ final class MenuBarStatusItemController: NSObject {
     private var screenAvailable = true
     private var sessionActive = true
 
-    private static let popoverSize = NSSize(width: 280, height: 340)
+    private var preferredPopoverSize = NSSize(width: 300, height: 340)
+    private var preferredNetworkPopoverSize = MenuBarPopoverLayout.networkSize(itemCount: 1)
+
     private static let counterclockwiseNodeIndexes = [0, 1, 2]
     private static let stepDuration: Duration = .milliseconds(340)
+    private static let networkMenuDismissalDelay: Duration = .milliseconds(180)
 
     override init() {
         super.init()
         popover.delegate = self
-        popover.behavior = .transient
+        popover.behavior = .applicationDefined
         popover.animates = true
-        popover.contentSize = Self.popoverSize
+        popover.contentSize = preferredPopoverSize
+        networkPopover.delegate = self
+        networkPopover.behavior = .applicationDefined
+        networkPopover.animates = true
+        networkPopover.contentSize = preferredNetworkPopoverSize
         installRenderAvailabilityObservers()
     }
 
@@ -50,6 +65,7 @@ final class MenuBarStatusItemController: NSObject {
         if self.reduceMotion != reduceMotion {
             self.reduceMotion = reduceMotion
             popover.animates = !reduceMotion
+            networkPopover.animates = !reduceMotion
             activeNodeIndex = 0
             updateAnimation()
         }
@@ -63,6 +79,7 @@ final class MenuBarStatusItemController: NSObject {
     }
 
     func closePopover() {
+        closeNetworkPopover()
         popover.performClose(nil)
         removeDismissHandlers()
     }
@@ -83,23 +100,143 @@ final class MenuBarStatusItemController: NSObject {
 
     private func installPopoverContentIfNeeded() {
         guard hostingController == nil else {
-            popover.contentSize = Self.popoverSize
+            popover.contentSize = preferredPopoverSize
             return
         }
         guard let appContext = currentAppContext else { return }
 
         let content = MenuBarRootView(
             appContext: appContext,
+            presentationState: presentationState,
             openMainWindowAction: { [weak self] in self?.openMainWindowAction?() },
             quitApplicationAction: { [weak self] in self?.quitApplicationAction?() },
-            dismissMenuBarAction: { [weak self] in self?.closePopover() }
+            dismissMenuBarAction: { [weak self] in self?.closePopover() },
+            networkMenuAnchorAvailabilityDidChange: { [weak self] view, available in
+                self?.networkMenuAnchorAvailabilityDidChange(view, available: available)
+            },
+            networkMenuPresentationDidChange: { [weak self] presented in
+                self?.networkMenuPresentationDidChange(presented)
+            },
+            networkMenuTriggerHoverDidChange: { [weak self] hovering in
+                self?.networkMenuHoverDidChange(hovering, in: .trigger)
+            },
+            preferredSizeDidChange: { [weak self] size in self?.updatePopoverSize(size) }
         )
 
         let controller = NSHostingController(rootView: content)
-        controller.view.frame = NSRect(origin: .zero, size: Self.popoverSize)
+        controller.view.frame = NSRect(origin: .zero, size: preferredPopoverSize)
         hostingController = controller
         popover.contentViewController = controller
-        popover.contentSize = Self.popoverSize
+        popover.contentSize = preferredPopoverSize
+    }
+
+    private func updatePopoverSize(_ requestedSize: NSSize) {
+        let size = MenuBarPopoverLayout.primarySize(for: requestedSize)
+        guard size != preferredPopoverSize else { return }
+        preferredPopoverSize = size
+        hostingController?.view.frame.size = size
+        popover.contentSize = size
+    }
+
+    private func networkMenuAnchorAvailabilityDidChange(_ view: NSView, available: Bool) {
+        if available {
+            networkMenuAnchorView = view
+            if presentationState.isNetworkMenuPresented {
+                scheduleNetworkPopoverPresentation()
+            }
+            return
+        }
+        guard networkMenuAnchorView === view else { return }
+        networkMenuAnchorView = nil
+        closeNetworkPopover()
+    }
+
+    private func networkMenuPresentationDidChange(_ presented: Bool) {
+        if presented {
+            scheduleNetworkPopoverPresentation()
+        } else {
+            closeNetworkPopover()
+        }
+    }
+
+    private func showNetworkPopover() {
+        guard !networkPopover.isShown else { return }
+        guard popover.isShown else {
+            presentationState.isNetworkMenuPresented = false
+            return
+        }
+        guard let anchorView = networkMenuAnchorView,
+              anchorView.window === popover.contentViewController?.view.window
+        else { return }
+
+        if let appContext = currentAppContext {
+            let itemCount = NetworkPresentationResolver.items(for: appContext.workspace.store).count
+            preferredNetworkPopoverSize = MenuBarPopoverLayout.networkSize(itemCount: itemCount)
+        }
+        installNetworkPopoverContentIfNeeded()
+        networkPopover.show(
+            relativeTo: anchorView.bounds,
+            of: anchorView,
+            preferredEdge: MenuBarPopoverLayout.networkPreferredEdge
+        )
+    }
+
+    private func installNetworkPopoverContentIfNeeded() {
+        guard networkHostingController == nil else {
+            networkPopover.contentSize = preferredNetworkPopoverSize
+            return
+        }
+        guard let appContext = currentAppContext else { return }
+
+        let content = MenuBarNetworkPopoverRootView(
+            appContext: appContext,
+            dismissAction: { [weak self] in self?.closeNetworkPopover() },
+            hoverDidChange: { [weak self] hovering in
+                self?.networkMenuHoverDidChange(hovering, in: .popover)
+            },
+            preferredSizeDidChange: { [weak self] size in self?.updateNetworkPopoverSize(size) }
+        )
+        let controller = NSHostingController(rootView: content)
+        controller.view.frame = NSRect(origin: .zero, size: preferredNetworkPopoverSize)
+        networkHostingController = controller
+        networkPopover.contentViewController = controller
+        networkPopover.contentSize = preferredNetworkPopoverSize
+    }
+
+    private func updateNetworkPopoverSize(_ requestedSize: NSSize) {
+        let maximumHeight = MenuBarPopoverLayout.networkSize(itemCount: 5).height
+        let size = NSSize(
+            width: MenuBarPopoverLayout.networkWidth,
+            height: min(max(requestedSize.height, MenuBarPopoverLayout.networkHeaderHeight), maximumHeight)
+        )
+        guard size != preferredNetworkPopoverSize else { return }
+        preferredNetworkPopoverSize = size
+        networkHostingController?.view.frame.size = size
+        networkPopover.contentSize = size
+    }
+
+    private func closeNetworkPopover() {
+        networkPopoverPresentationTask?.cancel()
+        networkPopoverPresentationTask = nil
+        networkPopoverDismissalTask?.cancel()
+        networkPopoverDismissalTask = nil
+        networkMenuHoverState.reset()
+        presentationState.isNetworkMenuPresented = false
+        guard !isClosingNetworkPopover else { return }
+        guard networkPopover.isShown else {
+            resetNetworkPopoverContent()
+            return
+        }
+
+        isClosingNetworkPopover = true
+        networkPopover.performClose(nil)
+    }
+
+    private func resetNetworkPopoverContent() {
+        networkPopover.contentViewController = nil
+        networkHostingController = nil
+        preferredNetworkPopoverSize = MenuBarPopoverLayout.networkSize(itemCount: 1)
+        networkPopover.contentSize = preferredNetworkPopoverSize
     }
 
     private func refreshStatusImage() {
@@ -151,6 +288,39 @@ final class MenuBarStatusItemController: NSObject {
             installPopoverContentIfNeeded()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             installDismissHandlers()
+        }
+    }
+
+    private func scheduleNetworkPopoverPresentation() {
+        networkPopoverPresentationTask?.cancel()
+        networkPopoverPresentationTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard !Task.isCancelled,
+                  let self,
+                  self.presentationState.isNetworkMenuPresented
+            else { return }
+            self.showNetworkPopover()
+            self.networkPopoverPresentationTask = nil
+        }
+    }
+
+    private func networkMenuHoverDidChange(
+        _ hovering: Bool,
+        in region: MenuBarNetworkMenuHoverState.Region
+    ) {
+        networkMenuHoverState.setHovering(hovering, in: region)
+        networkPopoverDismissalTask?.cancel()
+        networkPopoverDismissalTask = nil
+        guard !networkMenuHoverState.shouldRemainPresented else { return }
+
+        networkPopoverDismissalTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: Self.networkMenuDismissalDelay)
+            } catch {
+                return
+            }
+            guard let self, !self.networkMenuHoverState.shouldRemainPresented else { return }
+            self.closeNetworkPopover()
         }
     }
 
@@ -207,7 +377,13 @@ final class MenuBarStatusItemController: NSObject {
     private func installDismissHandlers() {
         removeDismissHandlers()
 
-        localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+        localEventMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .keyDown]
+        ) { [weak self] event in
+            if event.type == .keyDown, event.keyCode == 53 {
+                self?.closePopover()
+                return nil
+            }
             self?.closePopoverIfClickIsOutside(event)
             return event
         }
@@ -250,8 +426,9 @@ final class MenuBarStatusItemController: NSObject {
     }
 
     private func eventIsInsidePopover(_ event: NSEvent) -> Bool {
-        guard let popoverWindow = popover.contentViewController?.view.window else { return false }
-        return event.window === popoverWindow
+        let primaryWindow = popover.contentViewController?.view.window
+        let networkWindow = networkPopover.contentViewController?.view.window
+        return event.window === primaryWindow || event.window === networkWindow
     }
 
     private func eventIsInsideStatusItem(_ event: NSEvent) -> Bool {
@@ -262,6 +439,8 @@ final class MenuBarStatusItemController: NSObject {
 
     deinit {
         animationTask?.cancel()
+        networkPopoverPresentationTask?.cancel()
+        networkPopoverDismissalTask?.cancel()
         resignActiveTask?.cancel()
         for task in renderAvailabilityTasks {
             task.cancel()
@@ -277,8 +456,21 @@ final class MenuBarStatusItemController: NSObject {
 
 extension MenuBarStatusItemController: NSPopoverDelegate {
     func popoverDidClose(_ notification: Notification) {
+        if let closedPopover = notification.object as? NSPopover,
+           closedPopover === networkPopover {
+            isClosingNetworkPopover = false
+            presentationState.isNetworkMenuPresented = false
+            resetNetworkPopoverContent()
+            return
+        }
+
+        closeNetworkPopover()
         removeDismissHandlers()
         popover.contentViewController = nil
         hostingController = nil
+        networkMenuAnchorView = nil
+        presentationState.isNetworkMenuPresented = false
+        preferredPopoverSize = NSSize(width: 300, height: 340)
+        popover.contentSize = preferredPopoverSize
     }
 }

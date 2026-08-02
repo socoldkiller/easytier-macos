@@ -1,7 +1,7 @@
 import EasyTierShared
 import SwiftUI
 
-enum ConnectionGlyphState: Equatable {
+enum ConnectionGlyphState: Equatable, Sendable {
     case idle
     case connecting
     case connected

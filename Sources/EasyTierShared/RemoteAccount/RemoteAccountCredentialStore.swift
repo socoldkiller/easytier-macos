@@ -17,12 +17,14 @@ import Foundation
 package enum RemoteAccountCredentialStoreError: LocalizedError, Equatable {
     case unsafePath(String)
     case invalidPermissions(String)
+    case invalidLibrary(String)
     case posix(Int32)
 
     package var errorDescription: String? {
         switch self {
         case let .unsafePath(path): "Unsafe remote account credential path: \(path)"
         case let .invalidPermissions(path): "Invalid remote account credential permissions: \(path)"
+        case let .invalidLibrary(message): "Invalid remote account credential library: \(message)"
         case let .posix(code): String(cString: strerror(code))
         }
     }
@@ -42,18 +44,26 @@ package struct RemoteAccountCredentialStore: Sendable {
         self.requiresRootOwnership = requiresRootOwnership
     }
 
-    package func save(_ credential: RemoteAccountCredential) throws {
+    package func save(_ library: RemoteAccountCredentialLibrary) throws {
+        try validateLibrary(library)
         try prepareDirectory()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        try atomicWrite(encoder.encode(credential), to: credentialURL)
+        try atomicWrite(encoder.encode(library), to: credentialURL)
     }
 
-    package func load() throws -> RemoteAccountCredential? {
+    package func load() throws -> RemoteAccountCredentialLibrary {
         try prepareDirectory()
-        guard FileManager.default.fileExists(atPath: credentialURL.path) else { return nil }
+        guard FileManager.default.fileExists(atPath: credentialURL.path) else {
+            return RemoteAccountCredentialLibrary()
+        }
         try validateFile(credentialURL)
-        return try JSONDecoder().decode(RemoteAccountCredential.self, from: Data(contentsOf: credentialURL))
+        let library = try JSONDecoder().decode(
+            RemoteAccountCredentialLibrary.self,
+            from: Data(contentsOf: credentialURL)
+        )
+        try validateLibrary(library)
+        return library
     }
 
     package func remove() throws {
@@ -63,7 +73,25 @@ package struct RemoteAccountCredentialStore: Sendable {
         try syncDirectory()
     }
 
-    private var credentialURL: URL { baseDirectory.appending(path: "credential.json") }
+    private var credentialURL: URL { baseDirectory.appending(path: "credential-library.json") }
+    private var deprecatedCredentialURL: URL { baseDirectory.appending(path: "credential.json") }
+
+    private func validateLibrary(_ library: RemoteAccountCredentialLibrary) throws {
+        guard library.formatVersion == RemoteAccountCredentialLibrary.currentFormatVersion else {
+            throw RemoteAccountCredentialStoreError.invalidLibrary(
+                "unsupported format version \(library.formatVersion)"
+            )
+        }
+        let ids = library.records.map(\.accountID)
+        guard Set(ids).count == ids.count else {
+            throw RemoteAccountCredentialStoreError.invalidLibrary("duplicate account identifiers")
+        }
+        if let activeAccountID = library.activeAccountID,
+           !ids.contains(activeAccountID)
+        {
+            throw RemoteAccountCredentialStoreError.invalidLibrary("active account has no credential")
+        }
+    }
 
     private func prepareDirectory() throws {
         var info = stat()
@@ -72,6 +100,7 @@ package struct RemoteAccountCredentialStore: Sendable {
                 throw RemoteAccountCredentialStoreError.unsafePath(baseDirectory.path)
             }
             try validate(info, path: baseDirectory.path, maximumPermissions: 0o700)
+            try removeDeprecatedCredentialFile()
             return
         }
         guard errno == ENOENT else { throw RemoteAccountCredentialStoreError.posix(errno) }
@@ -80,6 +109,15 @@ package struct RemoteAccountCredentialStore: Sendable {
         if requiresRootOwnership, chown(baseDirectory.path, 0, 0) != 0 {
             throw RemoteAccountCredentialStoreError.posix(errno)
         }
+    }
+
+    private func removeDeprecatedCredentialFile() throws {
+        guard FileManager.default.fileExists(atPath: deprecatedCredentialURL.path) else { return }
+        try validateFile(deprecatedCredentialURL)
+        guard unlink(deprecatedCredentialURL.path) == 0 else {
+            throw RemoteAccountCredentialStoreError.posix(errno)
+        }
+        try syncDirectory()
     }
 
     private func validateFile(_ url: URL) throws {

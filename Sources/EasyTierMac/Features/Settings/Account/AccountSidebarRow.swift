@@ -19,7 +19,7 @@ struct AccountSidebarRow: View {
                         .foregroundStyle(.primary)
                         .lineLimit(1)
 
-                    Text(account.networkName)
+                    Text(account.serverName)
                         .font(.body)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

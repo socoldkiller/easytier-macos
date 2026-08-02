@@ -103,8 +103,9 @@ package protocol EasyTierPrivilegedServiceProtocol {
     func collectNetworkInfos(reply: @escaping (String?, String?) -> Void)
     func configureRPCPortal(rpcPortal: String?, whitelist: [String]?, reply: @escaping (String?, String?) -> Void)
     func callJSONRPC(clientID: String, url: String, service: String, method: String, domain: String?, payload: String, reply: @escaping (String?, String?) -> Void)
-    func configureRemoteAccount(credentialJSON: String, reply: @escaping (String?, String?) -> Void)
-    func removeRemoteAccount(reply: @escaping (String?, String?) -> Void)
+    func configureRemoteAccount(accountID: String, credentialJSON: String, reply: @escaping (String?, String?) -> Void)
+    func activateRemoteAccount(accountID: String, reply: @escaping (String?, String?) -> Void)
+    func removeRemoteAccount(accountID: String, reply: @escaping (String?, String?) -> Void)
     func remoteAccountStatus(reply: @escaping (String?, String?) -> Void)
     func shutdown(reply: @escaping (String?, String?) -> Void)
 }

@@ -177,6 +177,17 @@ public final class EasyTierAppStore {
         notifyRuntimeEnvironmentDidChange()
     }
 
+    public func prepareForRemoteAccountChange() {
+        remoteConfigSession = nil
+        if selectedConfigIsRuntimeManaged {
+            selectedConfigID = nil
+        }
+        runtimeManagedConfigDetails = [:]
+        runtimeManagedConfigLoadErrors = [:]
+        refreshSelectedRuntimeSnapshotsIfNeeded()
+        notifyRuntimeEnvironmentDidChange()
+    }
+
     package init(
         runtimeClient: any EasyTierCoreClient = PrivilegedEasyTierClient(),
         helperRegistration: HelperRegistrationService? = nil,

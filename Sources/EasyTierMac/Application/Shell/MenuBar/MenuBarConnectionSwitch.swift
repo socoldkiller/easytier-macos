@@ -2,50 +2,31 @@ import EasyTierShared
 import SwiftUI
 
 struct MenuBarConnectionSwitch: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
     var phase: RuntimeReadinessPhase
-    var isBusy: Bool
+    var isDisabled: Bool
+    var toggleConnection: () -> Void
 
     var body: some View {
-        ZStack(alignment: isOn ? .trailing : .leading) {
-            Capsule()
-                .fill(trackColor)
-                .overlay {
-                    Capsule()
-                        .stroke(MenuBarPalette.divider, lineWidth: 0.6)
+        Toggle(
+            accessibilityLabel,
+            isOn: Binding(
+                get: { isOn },
+                set: { requestedValue in
+                    guard requestedValue != isOn else { return }
+                    toggleConnection()
                 }
-
-            Circle()
-                .fill(knobColor)
-                .overlay {
-                    Circle()
-                        .stroke(Color.black.opacity(0.16), lineWidth: 0.5)
-                }
-                .shadow(color: .black.opacity(0.16), radius: 1, x: 0, y: 1)
-                .padding(2)
-        }
-        .frame(width: 36, height: 20)
-        .opacity(isBusy ? 0.58 : 1)
-        .animation(EasyTierMotion.selection(reduceMotion: reduceMotion), value: phase)
-        .accessibilityLabel(Text(accessibilityLabel))
+            )
+        )
+        .labelsHidden()
+        .toggleStyle(.switch)
+        .disabled(isDisabled)
     }
 
     private var isOn: Bool {
-        phase == .ready
-    }
-
-    private var trackColor: Color {
         switch phase {
-        case .stopped: MenuBarPalette.rowHighlight
-        case .starting: Color.yellow.opacity(0.42)
-        case .ready: MenuBarPalette.connected.opacity(0.82)
-        case .failed: Color.orange.opacity(0.46)
+        case .stopped: false
+        case .starting, .ready, .failed: true
         }
-    }
-
-    private var knobColor: Color {
-        Color.white.opacity(0.92)
     }
 
     private var accessibilityLabel: String {

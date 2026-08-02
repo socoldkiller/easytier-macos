@@ -155,17 +155,24 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
     }
 
     func configureRemoteAccount(
+        accountID: String,
         credentialJSON: String,
         reply: @escaping (String?, String?) -> Void
     ) {
         let replyBox = XPCReplyBox(reply)
         Task { @concurrent in
             do {
+                guard let rawAccountID = UUID(uuidString: accountID) else {
+                    throw EasyTierCoreError.operationFailed("Invalid remote account identifier.")
+                }
                 let credential = try JSONDecoder().decode(
                     RemoteAccountCredential.self,
                     from: Data(credentialJSON.utf8)
                 )
-                try await remoteAccount.configure(credential)
+                try await remoteAccount.configure(
+                    accountID: RemoteAccountID(rawAccountID),
+                    credential: credential
+                )
                 replyBox.call("ok", nil)
             } catch {
                 replyBox.call(nil, try? Self.errorPayload(error, code: "remoteAccountFailed").encodedString())
@@ -173,11 +180,29 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
         }
     }
 
-    func removeRemoteAccount(reply: @escaping (String?, String?) -> Void) {
+    func activateRemoteAccount(accountID: String, reply: @escaping (String?, String?) -> Void) {
         let replyBox = XPCReplyBox(reply)
         Task { @concurrent in
             do {
-                try await remoteAccount.remove()
+                guard let rawAccountID = UUID(uuidString: accountID) else {
+                    throw EasyTierCoreError.operationFailed("Invalid remote account identifier.")
+                }
+                try await remoteAccount.activate(accountID: RemoteAccountID(rawAccountID))
+                replyBox.call("ok", nil)
+            } catch {
+                replyBox.call(nil, try? Self.errorPayload(error, code: "remoteAccountActivationFailed").encodedString())
+            }
+        }
+    }
+
+    func removeRemoteAccount(accountID: String, reply: @escaping (String?, String?) -> Void) {
+        let replyBox = XPCReplyBox(reply)
+        Task { @concurrent in
+            do {
+                guard let rawAccountID = UUID(uuidString: accountID) else {
+                    throw EasyTierCoreError.operationFailed("Invalid remote account identifier.")
+                }
+                try await remoteAccount.remove(accountID: RemoteAccountID(rawAccountID))
                 replyBox.call("ok", nil)
             } catch {
                 replyBox.call(nil, try? Self.errorPayload(error, code: "remoteAccountRemovalFailed").encodedString())
@@ -189,7 +214,7 @@ final class PrivilegedService: NSObject, EasyTierPrivilegedServiceProtocol, @unc
         let replyBox = XPCReplyBox(reply)
         Task { @concurrent in
             do {
-                let status = await remoteAccount.status()
+                let status = try await remoteAccount.status()
                 replyBox.call(String(decoding: try JSONEncoder().encode(status), as: UTF8.self), nil)
             } catch {
                 replyBox.call(nil, try? Self.errorPayload(error, code: "remoteAccountStatusFailed").encodedString())

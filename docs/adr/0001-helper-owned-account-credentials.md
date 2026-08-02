@@ -1,0 +1,3 @@
+# Keep Config Server account credentials in the privileged helper
+
+EasyTier stores Saved Account metadata in the application database, but keeps every Account Credential in the root LaunchDaemon's `0700` directory and `0600` atomically-written credential library. The helper has no shared Keychain entitlement and must restore the Active Account independently of the GUI, so moving these credentials into the user's data-protection Keychain would require a separate signing, entitlement, installation, and launch-availability redesign; SQLite, UserDefaults, logs, and UI state must never contain the credential token.

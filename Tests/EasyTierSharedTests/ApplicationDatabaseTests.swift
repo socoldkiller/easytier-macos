@@ -167,6 +167,120 @@ import Testing
     #expect(FileManager.default.fileExists(atPath: recoveredDatabase.path))
 }
 
+@Test func remoteAccountsRoundTripWithoutOverwritingEachOther() async throws {
+    let directory = try temporaryDatabaseDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let database = ApplicationDatabase(
+        baseDirectory: directory,
+        gatewayFileURL: directory.appending(path: "gateway/config.json"),
+        networkSecretStore: DatabaseTestNetworkSecretStore()
+    )
+    let first = StoredRemoteAccount(
+        profile: RemoteAccountProfile(
+            controlOrigin: try #require(URL(string: "https://control.example.com")),
+            consoleURL: try #require(URL(string: "https://control.example.com/console")),
+            username: "operator"
+        ),
+        deviceBinding: RemoteDeviceBinding(
+            configEndpoint: "tcp://control.example.com:22020",
+            machineID: try #require(UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
+        ),
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+        updatedAt: Date(timeIntervalSince1970: 1_700_000_100)
+    )
+
+    let second = StoredRemoteAccount(
+        profile: RemoteAccountProfile(
+            controlOrigin: try #require(URL(string: "https://second.example.com")),
+            consoleURL: try #require(URL(string: "https://second.example.com/console")),
+            username: "second-user"
+        ),
+        deviceBinding: RemoteDeviceBinding(
+            configEndpoint: "tcp://second.example.com:22020",
+            machineID: first.deviceBinding.machineID
+        )
+    )
+
+    _ = try await database.upsertRemoteAccount(first)
+    _ = try await database.upsertRemoteAccount(second)
+
+    let loaded = try await database.loadRemoteAccounts()
+    #expect(Set(loaded.map(\.id)) == Set([first.id, second.id]))
+}
+
+@Test func remoteAccountDuplicateIdentityUpdatesExistingIDAndCanRemoveOne() async throws {
+    let directory = try temporaryDatabaseDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let database = ApplicationDatabase(
+        baseDirectory: directory,
+        gatewayFileURL: directory.appending(path: "gateway/config.json"),
+        networkSecretStore: DatabaseTestNetworkSecretStore()
+    )
+    let original = StoredRemoteAccount(
+        profile: RemoteAccountProfile(
+            controlOrigin: try #require(URL(string: "https://control.example.com")),
+            consoleURL: try #require(URL(string: "https://control.example.com/old")),
+            username: "operator"
+        ),
+        deviceBinding: RemoteDeviceBinding(configEndpoint: "tcp://old", machineID: UUID())
+    )
+    var update = StoredRemoteAccount(
+        profile: RemoteAccountProfile(
+            controlOrigin: original.profile.controlOrigin,
+            consoleURL: try #require(URL(string: "https://control.example.com/new")),
+            username: original.profile.username
+        ),
+        deviceBinding: RemoteDeviceBinding(
+            configEndpoint: "tcp://new",
+            machineID: original.deviceBinding.machineID
+        )
+    )
+    _ = try await database.upsertRemoteAccount(original)
+    update = try await database.upsertRemoteAccount(update)
+
+    #expect(update.id == original.id)
+    #expect(try await database.loadRemoteAccounts() == [update])
+
+    try await database.removeRemoteAccount(id: original.id)
+    #expect(try await database.loadRemoteAccounts().isEmpty)
+}
+
+@Test func remoteAccountRecordRequiresIdentityColumnsToMatchPayload() throws {
+    let account = StoredRemoteAccount(
+        profile: RemoteAccountProfile(
+            controlOrigin: try #require(URL(string: "https://control.example.com")),
+            consoleURL: try #require(URL(string: "https://control.example.com/console")),
+            username: "operator"
+        ),
+        deviceBinding: RemoteDeviceBinding(configEndpoint: "tcp://control.example.com:22020", machineID: UUID())
+    )
+    let record = RemoteAccountRecord(
+        id: account.id.rawValue.uuidString.lowercased(),
+        controlOrigin: account.profile.controlOrigin.absoluteString,
+        username: "different-user",
+        payloadVersion: 1,
+        jsonPayload: try PersistenceCoding.encode(account)
+    )
+
+    #expect(throws: ApplicationDatabaseError.self) {
+        try ApplicationDatabase.decodeRemoteAccountRecord(record)
+    }
+}
+
+@Test func remoteAccountRejectsUnknownPayloadVersion() throws {
+    let record = RemoteAccountRecord(
+        id: UUID().uuidString.lowercased(),
+        controlOrigin: "https://example.com",
+        username: "user",
+        payloadVersion: 99,
+        jsonPayload: "{}"
+    )
+
+    #expect(throws: ApplicationDatabaseError.self) {
+        try ApplicationDatabase.decodeRemoteAccountRecord(record)
+    }
+}
+
 private func temporaryDatabaseDirectory() throws -> URL {
     let directory = FileManager.default.temporaryDirectory
         .appending(path: "application-database-tests-\(UUID().uuidString)", directoryHint: .isDirectory)

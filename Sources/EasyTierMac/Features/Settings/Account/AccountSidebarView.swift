@@ -4,7 +4,6 @@ struct AccountSidebarView: View {
     @Bindable var model: AccountSettingsModel
     let accounts: [SettingsAccount]
     @Binding var selection: SettingsAccount.ID?
-    let logOut: () -> Void
     @State private var showsAlternateServer = false
 
     var body: some View {
@@ -18,7 +17,11 @@ struct AccountSidebarView: View {
                             action: { selection = account.id }
                         )
                         .contextMenu {
-                            Button("Log Out", action: logOut)
+                            if account.hasCredential {
+                                Button("Log Out") {
+                                    Task { await model.logOut(accountID: account.id) }
+                                }
+                            }
                         }
                     }
                 }
@@ -46,6 +49,7 @@ struct AccountSidebarView: View {
             }
             .help("Add an account using another server")
             .controlSize(.regular)
+            .disabled(model.isOperationInFlight)
             .padding(8)
         }
         .frame(minWidth: 190, idealWidth: 200, maxWidth: 220, maxHeight: .infinity)

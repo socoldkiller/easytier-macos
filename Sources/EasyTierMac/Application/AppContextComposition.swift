@@ -34,6 +34,12 @@ extension AppContext {
             userDefaults: userDefaults,
             configurationAuthorityDidChange: { authority in
                 store.setConfigurationAuthority(authority)
+            },
+            remoteAccountWillChange: {
+                store.prepareForRemoteAccountChange()
+            },
+            remoteAccountDidChange: {
+                await store.refreshRuntime()
             }
         )
         return make(

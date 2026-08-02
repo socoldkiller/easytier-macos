@@ -2,8 +2,10 @@ import EasyTierShared
 import SwiftUI
 
 struct AccountSettingsView: View {
+    @Environment(AppContext.self) private var appContext
     @Bindable var model: AccountSettingsModel
     @State private var selection: SettingsAccount.ID?
+    @State private var publicIPAddress = PublicIPAddressResolver.loadingPlaceholder
 
     var body: some View {
         VStack(spacing: 0) {
@@ -13,17 +15,19 @@ struct AccountSettingsView: View {
                 AccountSidebarView(
                     model: model,
                     accounts: accounts,
-                    selection: $selection,
-                    logOut: logOut
+                    selection: $selection
                 )
 
                 if let account = selectedAccount {
                     AccountDetailView(
                         account: account,
                         errorMessage: model.errorMessage,
-                        openConsole: model.openConsole,
-                        signInAgain: model.signInAgain,
-                        logOut: logOut
+                        isBusy: model.isOperationInFlight,
+                        openConsole: { model.openConsole(accountID: account.id) },
+                        useAccount: { Task { await model.activate(accountID: account.id) } },
+                        signInAgain: { model.signInAgain(accountID: account.id) },
+                        logOut: { Task { await model.logOut(accountID: account.id) } },
+                        forgetAccount: { Task { await model.forgetAccount(accountID: account.id) } }
                     )
                 } else {
                     ContentUnavailableView(
@@ -37,44 +41,51 @@ struct AccountSettingsView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .onAppear { synchronizeSelection() }
-        .onChange(of: model.account?.machineID) { _, _ in synchronizeSelection() }
+        .task {
+            guard publicIPAddress == PublicIPAddressResolver.loadingPlaceholder else { return }
+            publicIPAddress = await PublicIPAddressResolver.resolve()
+                ?? PublicIPAddressResolver.unavailablePlaceholder
+        }
+        .onChange(of: model.accounts.map(\.id)) { _, _ in synchronizeSelection() }
+        .onChange(of: model.activeAccountID) { _, activeID in
+            if let activeID { selection = activeID }
+        }
     }
 
     private var accounts: [SettingsAccount] {
-        guard let account = model.account else { return [] }
-        return [
-            SettingsAccount(
-                id: account.machineID.uuidString.lowercased(),
-                displayName: account.username,
-                networkName: account.controlOrigin.host() ?? account.controlOrigin.absoluteString,
-                username: account.username,
-                configEndpoint: account.configEndpoint,
-                statusSummary: statusSummary,
-                isConnected: model.phase == .connected
+        model.sortedAccounts.map { account in
+            let status = model.status(for: account.id)
+            return SettingsAccount(
+                id: account.id,
+                displayName: account.profile.username,
+                serverName: account.profile.controlOrigin.host() ?? account.profile.controlOrigin.absoluteString,
+                username: account.profile.username,
+                version: easyTierVersion,
+                publicIPAddress: publicIPAddress,
+                hostname: NetworkConfig.defaultHostname,
+                statusSummary: status.summary,
+                isConnected: status == .connected,
+                isActive: model.activeAccountID == account.id,
+                hasCredential: model.credentialAccountIDs.contains(account.id)
             )
-        ]
+        }
     }
 
     private var selectedAccount: SettingsAccount? {
         accounts.first { $0.id == selection }
     }
 
-    private var statusSummary: String {
-        switch model.phase {
-        case .signedOut: "Signed Out"
-        case .waitingForBrowser: "Waiting for Browser"
-        case .connecting: "Connecting"
-        case .connected: "Connected"
-        case .retrying: "Retrying"
-        case .failed: "Connection Failed"
-        }
+    private var easyTierVersion: String {
+        let store = appContext.workspace.store
+        let runtimeVersion = store.selectedRuntimeDetail?.my_node_info?.version
+            ?? store.runtimeDetails.values.lazy.compactMap { $0.my_node_info?.version }.first
+            ?? store.instances.lazy.compactMap { $0.detail?.my_node_info?.version }.first
+        return runtimeVersion?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            ?? SettingsSourceRevisionInfo.current.coreVersion
     }
 
     private func synchronizeSelection() {
-        selection = accounts.first?.id
-    }
-
-    private func logOut() {
-        Task { await model.logOut() }
+        if let selection, accounts.contains(where: { $0.id == selection }) { return }
+        selection = model.activeAccountID ?? accounts.first?.id
     }
 }

@@ -4,16 +4,10 @@ import Foundation
 import Testing
 
 @MainActor
-@Test func accountSignInConfiguresHelperBeforeSavingMetadata() async throws {
+@Test func addingAccountPersistsAndImmediatelyActivatesIt() async throws {
     let fixture = try AccountModelFixture()
     defer { fixture.removeFiles() }
-    let result = BrowserSSOSignIn(
-        username: "oidc-admin",
-        configToken: "oidc-admin",
-        configEndpoint: "tcp://iw.example.com:22020",
-        controlOrigin: try #require(URL(string: "https://iw.example.com")),
-        consoleURL: try #require(URL(string: "https://iw.example.com/native/console"))
-    )
+    let result = try fixture.signIn(username: "oidc-admin", host: "iw.example.com")
     let runtime = AccountRuntimeStub()
     var authority = NetworkConfigurationAuthority.local
     let model = fixture.makeModel(
@@ -22,113 +16,147 @@ import Testing
         configurationAuthorityDidChange: { authority = $0 }
     )
 
-    model.serverAddress = "https://iw.example.com"
-    model.beginSignIn()
-    try await waitUntil { model.account != nil }
+    model.beginSignIn(serverAddress: result.controlOrigin.absoluteString)
+    try await waitUntil { model.operation == nil && model.activeAccount != nil }
 
-    let credential = await runtime.configuredCredential
-    #expect(credential?.token == result.configToken)
-    #expect(credential?.endpoint == result.configEndpoint)
-    #expect(model.account?.username == "oidc-admin")
-    #expect(try await fixture.database.loadRemoteAccount() == model.account)
+    let account = try #require(model.activeAccount)
+    #expect(account.profile.username == result.username)
+    #expect(await runtime.activeAccountID == account.id)
+    #expect(await runtime.credential(for: account.id)?.token == result.configToken)
+    #expect(try await fixture.database.loadRemoteAccounts() == [account])
     #expect(authority == .configServer)
 }
 
 @MainActor
-@Test func failedHelperConfigurationDoesNotCreateAccount() async throws {
+@Test func duplicateIdentityUpdatesExistingAccountInsteadOfAddingAnother() async throws {
     let fixture = try AccountModelFixture()
     defer { fixture.removeFiles() }
+    let original = try fixture.account(username: "operator", host: "control.example.com")
+    _ = try await fixture.database.upsertRemoteAccount(original)
     let result = BrowserSSOSignIn(
-        username: "oidc-admin",
-        configToken: "oidc-admin",
-        configEndpoint: "tcp://iw.example.com:22020",
-        controlOrigin: try #require(URL(string: "https://iw.example.com")),
-        consoleURL: try #require(URL(string: "https://iw.example.com/native/console"))
+        username: original.profile.username,
+        configToken: "new-token",
+        configEndpoint: "tcp://control.example.com:33030",
+        controlOrigin: original.profile.controlOrigin,
+        consoleURL: try #require(URL(string: "https://control.example.com/new-console"))
     )
-    let runtime = AccountRuntimeStub(configureError: AccountModelTestError.expected)
+    let runtime = AccountRuntimeStub()
     let model = fixture.makeModel(browserSSO: BrowserSSOStub(result: result), runtime: runtime)
-
-    model.serverAddress = "https://iw.example.com"
-    model.beginSignIn()
-    try await waitUntil { model.phase == .failed }
-
-    #expect(model.account == nil)
-    #expect(try await fixture.database.loadRemoteAccount() == nil)
-}
-
-@MainActor
-@Test func failedHelperRemovalPreservesAccountMetadata() async throws {
-    let fixture = try AccountModelFixture()
-    defer { fixture.removeFiles() }
-    let profile = try fixture.profile()
-    try await fixture.database.saveRemoteAccount(profile)
-    let runtime = AccountRuntimeStub(removeError: AccountModelTestError.expected)
-    let model = fixture.makeModel(browserSSO: BrowserSSOStub(error: AccountModelTestError.expected), runtime: runtime)
     await model.load()
 
-    await model.logOut()
+    model.beginSignIn(serverAddress: result.controlOrigin.absoluteString)
+    try await waitUntil { model.operation == nil && model.activeAccountID != nil }
 
-    #expect(model.account == profile)
-    #expect(try await fixture.database.loadRemoteAccount() == profile)
-    #expect(model.phase == .failed)
+    let accounts = try await fixture.database.loadRemoteAccounts()
+    #expect(accounts.count == 1)
+    #expect(accounts[0].id == original.id)
+    #expect(accounts[0].deviceBinding.configEndpoint == result.configEndpoint)
 }
 
 @MainActor
-@Test func successfulLogOutDisconnectsRuntimeWithoutDeletingAccount() async throws {
+@Test func selectingDoesNotActivateAndExplicitActivationSwitchesAccount() async throws {
     let fixture = try AccountModelFixture()
     defer { fixture.removeFiles() }
-    let profile = try fixture.profile()
-    try await fixture.database.saveRemoteAccount(profile)
-    let runtime = AccountRuntimeStub()
-    try await runtime.configureRemoteAccount(RemoteAccountCredential(
-        endpoint: profile.configEndpoint,
-        token: "saved-token",
-        machineID: profile.machineID,
-        deviceName: "Test Mac"
-    ))
-    var authority = NetworkConfigurationAuthority.local
+    let first = try fixture.account(username: "first", host: "first.example.com")
+    let second = try fixture.account(username: "second", host: "second.example.com")
+    _ = try await fixture.database.upsertRemoteAccount(first)
+    _ = try await fixture.database.upsertRemoteAccount(second)
+    let runtime = AccountRuntimeStub(credentials: [
+        first.id: fixture.credential(for: first, token: "first-token"),
+        second.id: fixture.credential(for: second, token: "second-token"),
+    ], activeAccountID: first.id)
     let model = fixture.makeModel(
         browserSSO: BrowserSSOStub(error: AccountModelTestError.expected),
-        runtime: runtime,
-        configurationAuthorityDidChange: { authority = $0 }
+        runtime: runtime
     )
     await model.load()
-    #expect(authority == .configServer)
 
-    await model.logOut()
+    #expect(model.activeAccountID == first.id)
+    await model.activate(accountID: second.id)
 
-    #expect(await runtime.removeCallCount == 1)
-    #expect(model.account == profile)
-    #expect(try await fixture.database.loadRemoteAccount() == profile)
-    #expect(model.phase == .signedOut)
-    #expect(authority == .local)
+    #expect(model.activeAccountID == second.id)
+    #expect(await runtime.activeAccountID == second.id)
+    #expect(model.accounts.count == 2)
 }
 
 @MainActor
-@Test func machineIDIsStableAcrossSignIns() async throws {
+@Test func failedActivationPreservesPreviousAccountAndSession() async throws {
     let fixture = try AccountModelFixture()
     defer { fixture.removeFiles() }
-    let result = BrowserSSOSignIn(
-        username: "oidc-admin",
-        configToken: "oidc-admin",
-        configEndpoint: "tcp://iw.example.com:22020",
-        controlOrigin: try #require(URL(string: "https://iw.example.com")),
-        consoleURL: try #require(URL(string: "https://iw.example.com/native/console"))
+    let first = try fixture.account(username: "first", host: "first.example.com")
+    let second = try fixture.account(username: "second", host: "second.example.com")
+    _ = try await fixture.database.upsertRemoteAccount(first)
+    _ = try await fixture.database.upsertRemoteAccount(second)
+    let runtime = AccountRuntimeStub(
+        credentials: [
+            first.id: fixture.credential(for: first, token: "first-token"),
+            second.id: fixture.credential(for: second, token: "second-token"),
+        ],
+        activeAccountID: first.id,
+        activateError: AccountModelTestError.expected
     )
-    let firstRuntime = AccountRuntimeStub()
-    let first = fixture.makeModel(browserSSO: BrowserSSOStub(result: result), runtime: firstRuntime)
-    first.serverAddress = "https://iw.example.com"
-    first.beginSignIn()
-    try await waitUntil { first.account != nil }
-    let firstID = try #require(first.account?.machineID)
+    let model = fixture.makeModel(
+        browserSSO: BrowserSSOStub(error: AccountModelTestError.expected),
+        runtime: runtime
+    )
+    await model.load()
 
-    let secondRuntime = AccountRuntimeStub()
-    let second = fixture.makeModel(browserSSO: BrowserSSOStub(result: result), runtime: secondRuntime)
-    second.serverAddress = "https://iw.example.com"
-    second.beginSignIn()
-    try await waitUntil { second.account != nil }
+    await model.activate(accountID: second.id)
 
-    #expect(second.account?.machineID == firstID)
+    #expect(model.activeAccountID == first.id)
+    #expect(await runtime.activeAccountID == first.id)
+    #expect(model.errorMessage != nil)
+}
+
+@MainActor
+@Test func logoutRemovesOnlyCredentialAndKeepsMetadata() async throws {
+    let fixture = try AccountModelFixture()
+    defer { fixture.removeFiles() }
+    let first = try fixture.account(username: "first", host: "first.example.com")
+    let second = try fixture.account(username: "second", host: "second.example.com")
+    _ = try await fixture.database.upsertRemoteAccount(first)
+    _ = try await fixture.database.upsertRemoteAccount(second)
+    let runtime = AccountRuntimeStub(credentials: [
+        first.id: fixture.credential(for: first, token: "first-token"),
+        second.id: fixture.credential(for: second, token: "second-token"),
+    ], activeAccountID: first.id)
+    let model = fixture.makeModel(
+        browserSSO: BrowserSSOStub(error: AccountModelTestError.expected),
+        runtime: runtime
+    )
+    await model.load()
+
+    await model.logOut(accountID: first.id)
+
+    #expect(model.activeAccountID == nil)
+    #expect(!model.credentialAccountIDs.contains(first.id))
+    #expect(model.credentialAccountIDs.contains(second.id))
+    #expect(try await fixture.database.loadRemoteAccounts().count == 2)
+}
+
+@MainActor
+@Test func forgettingInactiveAccountLeavesActiveAccountUntouched() async throws {
+    let fixture = try AccountModelFixture()
+    defer { fixture.removeFiles() }
+    let first = try fixture.account(username: "first", host: "first.example.com")
+    let second = try fixture.account(username: "second", host: "second.example.com")
+    _ = try await fixture.database.upsertRemoteAccount(first)
+    _ = try await fixture.database.upsertRemoteAccount(second)
+    let runtime = AccountRuntimeStub(credentials: [
+        first.id: fixture.credential(for: first, token: "first-token"),
+        second.id: fixture.credential(for: second, token: "second-token"),
+    ], activeAccountID: first.id)
+    let model = fixture.makeModel(
+        browserSSO: BrowserSSOStub(error: AccountModelTestError.expected),
+        runtime: runtime
+    )
+    await model.load()
+
+    await model.forgetAccount(accountID: second.id)
+
+    #expect(model.activeAccountID == first.id)
+    #expect(await runtime.activeAccountID == first.id)
+    #expect(try await fixture.database.loadRemoteAccounts().map(\.id) == [first.id])
 }
 
 @MainActor
@@ -170,32 +198,58 @@ private struct BrowserSSOStub: BrowserSSOAuthenticating {
 }
 
 private actor AccountRuntimeStub: RemoteAccountRuntimeClient {
-    private(set) var configuredCredential: RemoteAccountCredential?
-    private(set) var removeCallCount = 0
+    private var credentials: [RemoteAccountID: RemoteAccountCredential]
+    private(set) var activeAccountID: RemoteAccountID?
     private let configureError: (any Error & Sendable)?
+    private let activateError: (any Error & Sendable)?
     private let removeError: (any Error & Sendable)?
 
     init(
+        credentials: [RemoteAccountID: RemoteAccountCredential] = [:],
+        activeAccountID: RemoteAccountID? = nil,
         configureError: (any Error & Sendable)? = nil,
+        activateError: (any Error & Sendable)? = nil,
         removeError: (any Error & Sendable)? = nil
     ) {
+        self.credentials = credentials
+        self.activeAccountID = activeAccountID
         self.configureError = configureError
+        self.activateError = activateError
         self.removeError = removeError
     }
 
-    func configureRemoteAccount(_ credential: RemoteAccountCredential) throws {
+    func configureRemoteAccount(
+        accountID: RemoteAccountID,
+        credential: RemoteAccountCredential
+    ) throws {
         if let configureError { throw configureError }
-        configuredCredential = credential
+        credentials[accountID] = credential
+        activeAccountID = accountID
     }
 
-    func removeRemoteAccount() throws {
+    func activateRemoteAccount(accountID: RemoteAccountID) throws {
+        if let activateError { throw activateError }
+        guard credentials[accountID] != nil else { throw AccountModelTestError.expected }
+        activeAccountID = accountID
+    }
+
+    func removeRemoteAccount(accountID: RemoteAccountID) throws {
         if let removeError { throw removeError }
-        removeCallCount += 1
-        configuredCredential = nil
+        credentials.removeValue(forKey: accountID)
+        if activeAccountID == accountID { activeAccountID = nil }
     }
 
-    func remoteAccountStatus() throws -> RemoteRuntimeStatus {
-        RemoteRuntimeStatus(active: configuredCredential != nil, connected: configuredCredential != nil)
+    func remoteAccountStatus() -> RemoteRuntimeStatus {
+        RemoteRuntimeStatus(
+            activeAccountID: activeAccountID,
+            credentialAccountIDs: Array(credentials.keys),
+            active: activeAccountID != nil,
+            connected: activeAccountID != nil
+        )
+    }
+
+    func credential(for accountID: RemoteAccountID) -> RemoteAccountCredential? {
+        credentials[accountID]
     }
 }
 
@@ -235,13 +289,34 @@ private final class AccountModelFixture: @unchecked Sendable {
         )
     }
 
-    func profile() throws -> RemoteAccountProfile {
-        RemoteAccountProfile(
-            controlOrigin: try #require(URL(string: "https://iw.example.com")),
-            configEndpoint: "tcp://iw.example.com:22020",
-            consoleURL: try #require(URL(string: "https://iw.example.com/native/console")),
-            username: "oidc-admin",
-            machineID: UUID()
+    func signIn(username: String, host: String) throws -> BrowserSSOSignIn {
+        BrowserSSOSignIn(
+            username: username,
+            configToken: "\(username)-token",
+            configEndpoint: "tcp://\(host):22020",
+            controlOrigin: try #require(URL(string: "https://\(host)")),
+            consoleURL: try #require(URL(string: "https://\(host)/console"))
+        )
+    }
+
+    func account(username: String, host: String) throws -> StoredRemoteAccount {
+        let signIn = try signIn(username: username, host: host)
+        return StoredRemoteAccount(
+            profile: RemoteAccountProfile(
+                controlOrigin: signIn.controlOrigin,
+                consoleURL: signIn.consoleURL,
+                username: username
+            ),
+            deviceBinding: RemoteDeviceBinding(configEndpoint: signIn.configEndpoint, machineID: UUID())
+        )
+    }
+
+    func credential(for account: StoredRemoteAccount, token: String) -> RemoteAccountCredential {
+        RemoteAccountCredential(
+            endpoint: account.deviceBinding.configEndpoint,
+            token: token,
+            machineID: account.deviceBinding.machineID,
+            deviceName: "Test Mac"
         )
     }
 
@@ -249,16 +324,11 @@ private final class AccountModelFixture: @unchecked Sendable {
         try? FileManager.default.removeItem(at: directory)
         userDefaults.removePersistentDomain(forName: suiteName)
     }
-
 }
 
 private struct AccountModelNetworkSecretStore: NetworkSecretStore {
     func save(_: String, for _: NetworkConfig, purpose _: NetworkSecretAccessPurpose) throws {}
-    func secret(
-        for _: NetworkConfig,
-        purpose _: NetworkSecretAccessPurpose,
-        reason _: String?
-    ) throws -> String? { nil }
+    func secret(for _: NetworkConfig, purpose _: NetworkSecretAccessPurpose, reason _: String?) throws -> String? { nil }
     func deleteSecret(for _: NetworkConfig, purpose _: NetworkSecretAccessPurpose) throws {}
     func presence(for _: NetworkConfig) throws -> NetworkSecretPresence { .missing }
     func authenticationCapability() -> NetworkSecretAuthenticationCapability { .unknown }

@@ -5,10 +5,10 @@
   <h1>EasyTier for macOS</h1>
 
   <p>
-    EasyTier 的 Mac 原生桌面客户端。用 SwiftUI 写的，底层通过 Rust FFI 调用 EasyTier Core。
+    EasyTier 的 Mac 客户端。把你散落在家里、办公室、云上的电脑拉进同一个虚拟局域网，互相访问就像接在同一台交换机旁边。不用记命令行参数，不用对着配置文件挠头，大部分时候点几下就完事。
   </p>
   <p>
-    家里 NAS、公司电脑、云服务器，放在同一个虚拟局域网里。不用背命令，打开 App 就能看到连上了没、谁在线、网速怎么样。
+    装好之后，菜单栏会常驻一个小图标——网络什么状态、谁在线、跑得快不快，扫一眼就有数。
   </p>
 
   <p>
@@ -25,13 +25,11 @@
   <p>
     <a href="#截图">截图</a>
     ·
-    <a href="#功能">功能</a>
+    <a href="#它能做什么">它能做什么</a>
     ·
     <a href="#安装">安装</a>
     ·
-    <a href="#构建">构建</a>
-    ·
-    <a href="#架构">架构</a>
+    <a href="#自己构建">自己构建</a>
     ·
     <a href="#star-历史">Star 历史</a>
     ·
@@ -67,146 +65,82 @@
   <img src="pictures/runtime-logs.png" width="420" alt="Runtime logs" />
 </div>
 
-## 功能
+## 它能做什么
 
 ### 菜单栏常驻
 
-菜单栏图标会实时反映连接状态 —— 灰色是停的，闪烁是正在连，绿色是全通，红色是出错了。点一下弹出面板，不用切到主窗口就能看到当前网络和在线设备。
+App 收进菜单栏之后，那个小图标就替你看网络了。灰色是没在跑，绿色是全通，红色是出了状况，连接过程中会一闪一闪。点一下弹出面板，当前网络、在线设备、本地 IP 都在里面，不用专门打开主窗口。
 
 ### 设备列表
 
-一张表列清当前网络里所有节点。每行显示：
-- 设备名和 IP（点一下就能复制）
-- 路线类型（P2P、Relay、Local）
-- 隧道协议（TCP、UDP、QUIC 等）
-- 延迟、上传量、下载量、丢包率
-- NAT 类型和 EasyTier 版本
-
-设备名可以直接双击改名，改完通过 RPC 实时生效到远端。
+当前网络里的节点都在一张表里：谁在线、走的是 P2P 还是 Relay、隧道用 TCP / UDP / QUIC 哪种协议、延迟多少、传了多少流量、丢没丢包、NAT 是什么类型、EasyTier 什么版本，一眼看全。IP 点一下就复制；双击设备名还能直接改名，改完通过 RPC 同步到远端节点，不用再登录那台机器去折腾。
 
 ### 流量图表
 
-上传和下载趋势画成面积图。鼠标悬停看具体数值，每秒自动刷新。图表自动调整 Y 轴刻度，不会因为偶尔的流量尖峰把曲线压扁。
+上传和下载画成面积图，每秒刷新，鼠标悬停能看具体数值。Y 轴会自动缩放，偶尔来个流量尖峰，也不会把整条曲线压成一条直线。
 
 ### 多网络配置
 
-网络配置、工作区状态和 Gateway 期望配置统一保存在本机 SQLite 数据库中，多个网络的开关仍互不影响。可以用 Cmd+[ / Cmd+] 在配置之间快速切换。TOML 仅用于显式导入和导出，继续与 EasyTier 命令行配置格式互通；网络密钥仍单独保存在 macOS 钥匙串中。
+想维护几套网络都行，各开各的，互不干扰，用 Cmd+[ / Cmd+] 就能来回切。配置存在本机数据库里，网络密钥单独放在钥匙串中；TOML 保留给显式导入导出，和 EasyTier 命令行配置格式互通。
 
 ### 运行日志
 
-EasyTier Core 的运行输出和 App 自身的操作记录都收在一个日志面板里。可以复制、搜索，出问题时起码知道从哪看起。
+EasyTier 内核的输出和 App 自己的操作记录都收在同一个日志面板里，能搜索、能复制。出了状况，起码知道该从哪里看起。
 
-### 远程管理
+### 发布服务（Beta）
 
-在设备表里双击任意远端节点可改其主机名，改名通过 RPC 实时同步到对端。
+把虚拟局域网里的某个服务，通过 HTTPS 域名暴露到公网。证书自动申请、自动续期（Let's Encrypt），支持 HTTP-01 和 DNS-01（含通配符）。想给家里的服务开个公网入口，又不想自己折腾证书和反代的话，可以试试这个。
 
-### 特权 Helper
+### 睡醒自动恢复
 
-EasyTier Core 统一运行在 privileged helper（LaunchDaemon）中，App 通过 XPC 控制它。TUN 网卡仍需要 root 权限；`no_tun` 不创建 TUN 网卡，但也使用同一 helper，以避免 GUI 和后台进程各维护一套 Core。
+笔记本合盖睡了一觉，醒来网络会自动重新连上，不用手动重开。
 
-Helper 仅支持当前签名 App 通过 `SMAppService` 注册的版本；旧式手动安装的 Helper 不再自动识别、迁移或清理。运行状态和远端管理协议也只接受当前格式。网络密码按配置 UUID 存入 Data Protection Keychain，旧版本按网络名保存的密码不会迁移，升级后可能需要重新输入一次。
+### 开机自启，退出后也能继续跑
+
+可以设成登录时自动启动；也可以让网络在 App 退出之后继续跑，需要的时候再从菜单栏接管。
+
+### 自动更新
+
+内置 Sparkle，可以在 Stable 和 Nightly 两条轨道里选。Nightly 每晚从最新代码构建，适合想提前尝鲜、也受得了不稳定的人。
+
+### 还有这些小地方
+
+- 全局搜索：在侧边栏直接搜网络、设备和 IP，不用挨个翻
+- no_tun 模式：不想创建 TUN 网卡也能用
+- Magic DNS：只接管 EasyTier 自己域名的解析，其他照旧走系统 DNS
+- 无障碍：VoiceOver、减少动态效果、减少透明度都照顾到了
+- 应用里附了 Linux 安装指南，给远程 Linux 节点装客户端时有参照
 
 ## 安装
 
-macOS 15 及以上。
+需要 macOS 15 及以上。
 
-去 [Releases](https://github.com/socoldkiller/easytier-macos/releases) 下载最新 DMG，拖进 Applications。
+去 [Releases](https://github.com/socoldkiller/easytier-macos/releases) 下载最新的 DMG，拖进 Applications 就行。
 
-从 v1.4.0 开始，后续版本可通过 `EasyTier > Check for Updates…` 直接验证、安装并重新启动，不再需要打开 Finder 或拖拽 DMG。由于 v1.3.3 及更早版本尚未内置 Sparkle，升级到 v1.4.0 仍需完成最后一次手动安装。
+从 v1.4.0 开始支持应用内更新（EasyTier > Check for Updates…），以后不用再手动换 DMG。v1.3.3 及更早版本没有内置更新机制，升到 v1.4.0 还是得手动装一次。
 
-在 `Settings > General > Software Update` 中可选择 `Latest Stable` 或 `Nightly`。Nightly 每晚从最新 GUI 与 EasyTier Core `main` 构建，可能不稳定；切回 Stable 只改变后续更新轨道，不会自动降级当前安装。
+Settings > General > Software Update 里可以选 Latest Stable 或 Nightly。切回 Stable 只影响后续更新轨道，不会自动降级当前版本。
 
 首次启动：
-1. Release DMG 已经过 Developer ID 签名和 Apple 公证；如果 macOS 提示无法验证开发者，请不要绕过 Gatekeeper，重新下载并提交 Issue
-2. 启动后会自动检查并提示安装 Helper，按 macOS 弹窗操作
-3. 如果开了防火墙，允许 EasyTier 的入站连接
 
-## 构建
+1. 发布用的 DMG 经过 Developer ID 签名和 Apple 公证。如果 macOS 提示无法验证开发者，别绕过 Gatekeeper，重新下载并提 Issue
+2. 首次启动会提示安装 Helper，按系统弹窗操作
+3. 开了防火墙的话，允许 EasyTier 的入站连接
 
-需要 Xcode 16+（带 Swift 6）、Rust 1.95+ stable 工具链和 Protocol Buffers 编译器（`protoc`）。运行测试不需要签名证书；打包 App 需要 Developer ID Application 证书、匹配的 provisioning profile 和 Sparkle 公钥，最终 DMG 还需要有效的 `notarytool` profile。
+## 自己构建
+
+需要 Xcode 16+（Swift 6）、Rust 1.95+ stable 工具链和 protoc。
 
 ```bash
 git clone --recurse-submodules https://github.com/socoldkiller/easytier-macos.git
 cd easytier-macos
 
 make bootstrap   # 检查工具链
-make ffi         # 编译当前 Mac 架构的 Core/Gateway 独立 FFI 静态库
-make test        # 运行 Swift 和 Rust 测试
+make ffi         # 编译当前架构的 Core/Gateway FFI 静态库
+make test        # 跑 Swift 和 Rust 测试
 ```
 
-应用分发工程是原生 Xcode 项目：
-
-```bash
-open EasyTier.xcodeproj
-```
-
-`EasyTierMac` Scheme 包含 macOS App、EasyTier/Gateway 两个 Privileged Helper 和 Rust FFI 构建依赖。Debug 可直接用于本地编译；`Product > Archive` 使用 Release 配置，需要 Developer ID 证书和匹配的 provisioning profile。SwiftPM 继续管理 Shared/Runtime 模块及测试，避免在 Xcode 中维护第二份业务依赖图。
-
-需要调试 Data Protection Keychain 时，先复制并填写本机签名配置：
-
-```bash
-cp Configurations/Signing.example.xcconfig Configurations/Signing.local.xcconfig
-```
-
-`Signing.local.xcconfig` 不会提交到 Git。普通 `EasyTierMac` Scheme 可调试 GUI、Keychain、配置和 Preview，但不再在 GUI 进程中运行 EasyTier Core。调试任何网络模式都必须从稳定安装路径注册 privileged helper；在 Xcode 中选择 `EasyTierMac-InstalledDebug` 后运行，它会把签名后的 Debug App 安装到 `/Applications/EasyTier.app`，再由 LLDB 启动该副本。首次安装 Helper 时仍需在“系统设置 → 通用 → 登录项与扩展”中批准 EasyTier。命令行等价操作是 `make debug-install`。
-
-产物路径：
-- App bundle：`.build/artifacts/EasyTier.app`
-- Xcode archive：`.build/AppProducts/EasyTier.xcarchive`
-- EasyTier Core FFI：`Vendor/Frameworks/static/libeasytier_core_ffi.a`
-- Gateway FFI：`Vendor/Frameworks/static/libgateway_ffi.a`
-- DMG：`.build/artifacts/EasyTier-macOS-ARM64.dmg`
-
-Developer ID 打包：
-
-```bash
-export CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)"
-export PROVISIONING_PROFILE="/path/to/EasyTier.provisionprofile"
-export SPARKLE_PUBLIC_ED_KEY="base64-public-key-from-generate_keys"
-make app-debug \
-  CODESIGN_IDENTITY="$CODESIGN_IDENTITY" \
-  PROVISIONING_PROFILE="$PROVISIONING_PROFILE" \
-  SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY"
-
-# 在版本 tag 上运行时会得到稳定版本号和 build number；未打 tag 时显式传 APP_VERSION。
-make dmg \
-  CODESIGN_IDENTITY="$CODESIGN_IDENTITY" \
-  PROVISIONING_PROFILE="$PROVISIONING_PROFILE" \
-  SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY" \
-  APP_VERSION=1.4.0
-```
-
-`make dmg` 现在只生成最终发布产物：App 先公证并 staple，再创建 DMG，之后 DMG 再公证、staple，并通过 quarantine/Gatekeeper 全链路验证，不再暴露“只有签名但尚未公证”的 DMG 入口。Provisioning profile 必须授权应用自己的 Keychain access group，用于 Data Protection Keychain；不要把 profile 提交到仓库。缺少正确签名配置时会直接失败，不会生成降级包。
-
-完整的本地与 CI 发布配置见 [`Packaging/RELEASE.md`](Packaging/RELEASE.md)，Sparkle 生产密钥设置见 [`Packaging/SPARKLE.md`](Packaging/SPARKLE.md)。
-
-## 架构
-
-```
-┌────────────────────────────────┐
-│  SwiftUI App (EasyTierMac)     │
-│  Views / Menu Bar / Settings   │
-├────────────────────────────────┤
-│  EasyTierShared (Models / RPC) │
-├────────────────────────────────┤
-│  EasyTier XPC / Gateway XPC   │
-└───────────────┬────────────────┘
-                │ signed XPC
-┌───────────────▼────────────────┐
-│ EasyTierPrivilegedHelper      │
-│ → EasyTier Core / RPC / DNS   │
-├────────────────────────────────┤
-│ GatewayPrivilegedHelper       │
-│ → Gateway / ACME / TLS        │
-└────────────────────────────────┘
-```
-
-EasyTier 网络操作走 `com.kkrainbow.easytier.mac.helper`，Gateway 操作走独立的 `com.coldkiller.gateway.helper`。两个 LaunchDaemon 分别注册、启动和探测，并分别链接 `libeasytier_core_ffi.a` 与 `libgateway_ffi.a`；任何 helper 都不会携带另一方的 FFI 入口，GUI 二进制也不直接链接 FFI。`no_tun` 只改变 EasyTier Core 是否创建 TUN 接口。
-
-RPC 远程调用同样经 XPC 交给 helper：Swift 构造 JSON-RPC payload → helper 中的 C shim → Rust 发起 TCP 连接到远端 RPC Portal。
-
-SwiftUI 状态入口、Feature 目录边界、依赖注入规则及多 Agent 协作约定见
-[`Documentation/ARCHITECTURE.md`](Documentation/ARCHITECTURE.md)。
+本地调试直接 `open EasyTier.xcodeproj`，跑 EasyTierMac scheme 就行。打包发布需要 Developer ID 证书、对应的 provisioning profile 和 Sparkle 密钥，完整流程见 [Packaging/RELEASE.md](Packaging/RELEASE.md) 和 [Packaging/SPARKLE.md](Packaging/SPARKLE.md)。
 
 ## Star 历史
 
@@ -222,9 +156,9 @@ SwiftUI 状态入口、Feature 目录边界、依赖注入规则及多 Agent 协
 
 ## 致谢
 
-基于 [EasyTier](https://github.com/EasyTier/EasyTier) 的组网能力，用 SwiftUI + Rust FFI 做了 Mac 原生体验。
+组网能力来自 [EasyTier](https://github.com/EasyTier/EasyTier)，这个项目是它的 Mac 原生客户端。
 
-Bug 和功能建议提 Issue，想帮忙改直接 PR。觉得还行的话点个 Star。
+Bug 和建议去 Issues 提，想动手直接 PR。用着顺手的话，赏个 Star 吧。
 
 ## License
 

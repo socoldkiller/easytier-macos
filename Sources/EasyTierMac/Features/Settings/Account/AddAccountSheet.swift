@@ -71,8 +71,10 @@ struct AlternateServerAccountPopover: View {
         .onAppear {
             serverFieldIsFocused = true
         }
-        .onChange(of: model.account?.machineID) { _, machineID in
-            if machineID != nil { isPresented = false }
+        .onChange(of: model.operation) { previous, current in
+            if previous == .signingIn, current == nil, model.activeAccountID != nil {
+                isPresented = false
+            }
         }
     }
 }

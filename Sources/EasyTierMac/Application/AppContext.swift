@@ -68,16 +68,7 @@ final class AppContext {
 
     var menuBarConnectionState: ConnectionGlyphState {
         let store = workspace.store
-        if store.lastError != nil || store.selectedRuntimeReadinessPhase == .failed {
-            return .error
-        }
-        if store.isBusy || store.isQuitting {
-            return .connecting
-        }
-        guard var instance = store.selectedRunningInstance else {
-            return .idle
-        }
-        instance.detail = store.selectedRuntimeDetail
-        return store.instanceIsFullyConnected(instance) ? .connected : .connecting
+        if store.isQuitting { return .connecting }
+        return NetworkPresentationResolver.summary(for: store).connectionState
     }
 }

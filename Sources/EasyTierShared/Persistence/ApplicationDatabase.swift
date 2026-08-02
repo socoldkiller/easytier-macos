@@ -95,34 +95,75 @@ package actor ApplicationDatabase {
         repairDatabaseFilePermissions()
     }
 
-    package func loadRemoteAccount() async throws -> RemoteAccountProfile? {
+    package func loadRemoteAccounts() async throws -> [StoredRemoteAccount] {
         let queue = try await preparedQueue()
-        guard let record = try await queue.read({ db in
-            try RemoteAccountRecord.fetchOne(db, key: 1)
-        }) else { return nil }
+        let records = try await queue.read { db in
+            try RemoteAccountRecord.fetchAll(db)
+        }
+        return try records
+            .map(Self.decodeRemoteAccountRecord)
+            .sorted { lhs, rhs in lhs.updatedAt > rhs.updatedAt }
+    }
+
+    @discardableResult
+    package func upsertRemoteAccount(_ proposedAccount: StoredRemoteAccount) async throws -> StoredRemoteAccount {
+        let queue = try await preparedQueue()
+        let account = try await queue.write { db in
+            var account = proposedAccount
+            if let existing = try RemoteAccountRecord
+                .filter(Column("controlOrigin") == account.profile.controlOrigin.absoluteString)
+                .filter(Column("username") == account.profile.username)
+                .fetchOne(db),
+               existing.id != account.id.rawValue.uuidString.lowercased()
+            {
+                account.id = RemoteAccountID(
+                    UUID(uuidString: existing.id) ?? account.id.rawValue
+                )
+                account.createdAt = try Self.decodeRemoteAccountRecord(existing).createdAt
+            }
+            let record = try Self.remoteAccountRecord(from: account)
+            try record.save(db)
+            return account
+        }
+        repairDatabaseFilePermissions()
+        return account
+    }
+
+    static func decodeRemoteAccountRecord(_ record: RemoteAccountRecord) throws -> StoredRemoteAccount {
         guard record.payloadVersion == 1 else {
             throw ApplicationDatabaseError.unsupportedPayloadVersion(
                 table: RemoteAccountRecord.databaseTableName,
                 version: record.payloadVersion
             )
         }
-        return try PersistenceCoding.decode(RemoteAccountProfile.self, from: record.jsonPayload)
+        let account = try PersistenceCoding.decode(StoredRemoteAccount.self, from: record.jsonPayload)
+        guard account.id.rawValue.uuidString.lowercased() == record.id,
+              account.profile.controlOrigin.absoluteString == record.controlOrigin,
+              account.profile.username == record.username
+        else {
+            throw ApplicationDatabaseError.invalidStoredData(
+                "Remote account identity columns do not match its payload."
+            )
+        }
+        return account
     }
 
-    package func saveRemoteAccount(_ account: RemoteAccountProfile) async throws {
-        let record = RemoteAccountRecord(jsonPayload: try PersistenceCoding.encode(account))
+    package func removeRemoteAccount(id: RemoteAccountID) async throws {
         let queue = try await preparedQueue()
-        try await queue.write { db in
-            try RemoteAccountRecord.deleteAll(db)
-            try record.insert(db)
+        _ = try await queue.write { db in
+            try RemoteAccountRecord.deleteOne(db, key: id.rawValue.uuidString.lowercased())
         }
         repairDatabaseFilePermissions()
     }
 
-    package func removeRemoteAccount() async throws {
-        let queue = try await preparedQueue()
-        _ = try await queue.write { db in try RemoteAccountRecord.deleteAll(db) }
-        repairDatabaseFilePermissions()
+    private static func remoteAccountRecord(from account: StoredRemoteAccount) throws -> RemoteAccountRecord {
+        RemoteAccountRecord(
+            id: account.id.rawValue.uuidString.lowercased(),
+            controlOrigin: account.profile.controlOrigin.absoluteString,
+            username: account.profile.username,
+            payloadVersion: 1,
+            jsonPayload: try PersistenceCoding.encode(account)
+        )
     }
 
     package func retryPreparation() async throws {
@@ -376,11 +417,17 @@ package actor ApplicationDatabase {
                 table.column("jsonPayload", .text).notNull()
             }
         }
-        migrator.registerMigration("createRemoteAccountV2") { db in
+        migrator.registerMigration("createRemoteAccounts") { db in
+            if try db.tableExists(RemoteAccountRecord.databaseTableName) {
+                try db.drop(table: RemoteAccountRecord.databaseTableName)
+            }
             try db.create(table: RemoteAccountRecord.databaseTableName) { table in
-                table.column("id", .integer).primaryKey().check { $0 == 1 }
+                table.column("id", .text).primaryKey()
+                table.column("controlOrigin", .text).notNull()
+                table.column("username", .text).notNull()
                 table.column("payloadVersion", .integer).notNull()
                 table.column("jsonPayload", .text).notNull()
+                table.uniqueKey(["controlOrigin", "username"])
             }
         }
         return migrator
