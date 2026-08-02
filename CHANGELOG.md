@@ -7,10 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-08-02
+
 ### Added
 - Split Gateway into its own `GatewayPrivilegedHelper` LaunchDaemon and XPC service (`com.coldkiller.gateway.helper`), with independent registration, lifecycle, protocol version, build metadata, and diagnostics from the EasyTier Core helper.
 - Added `Latest Stable` and opt-in `Nightly` software-update tracks. Nightly packages exact GUI and EasyTier Core `main` revisions in one signed, notarized DMG.
 - Added SQLite persistence through GRDB 7.8.0 for network configurations, Workspace state, peer subscriptions, runtime intents, and desired Gateway state, including transactional legacy import, integrity checks, migration backups, and an in-app recovery flow.
+- Added browser SSO and multiple Saved Accounts for Config Server deployments, including Active Account switching, Managed Network controls, and helper-owned credential restoration.
 
 ### Changed
 - TOML is now an explicit import/export format instead of the GUI's canonical storage. Existing `state.json` migrations import only referenced TOML files and leave all legacy files untouched; network secrets remain in Keychain.
@@ -20,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keychain authentication is scoped to each action: start/restart/wake may reuse a recent Touch ID device unlock for 10 seconds, while reveal, export, update, and delete require a fresh context.
 - Extended the signed Sparkle appcast to preserve one Stable and one Nightly channel item, with immutable daily prereleases, duplicate-source suppression, and retention of the newest 14 Nightly builds.
 - Unified local and GitHub release builds behind one tested signing, notarization, DMG, and Sparkle pipeline. Tag reruns now reuse an existing immutable GitHub Release DMG when recovering a failed feed or Pages deployment.
-- Removed the unused Config Server and legacy Remote app-mode paths. EasyTier now keeps one local runtime mode, with per-peer hostname updates handled separately through RPC.
+- Isolated Config Server-managed runtime state from Local Network configurations. Managed configurations are presented read-only while their runtime and selection state remain independently restorable.
 - Simplified macOS packaging to publish one DMG and require Developer ID signing and Apple notarization for every release.
 - Removed non-Developer-ID packaging fallbacks; local App and DMG packaging now require a Developer ID Application identity, secure timestamp, hardened runtime, and an installable privileged helper.
 - Replaced the generated XCFramework/header pipeline with one current-architecture Rust static library and the tracked C header.
@@ -31,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Legacy network-password entries now migrate in the safe order of read, protected write, verification, then precise legacy deletion. Cleanup failures no longer discard a verified modern password and are retried later.
 - Sleep/wake recovery waits until both the macOS user session and the app are active before requesting authentication, and transient Keychain-loaded plaintext is cleared when the app becomes inactive.
 - Passwords that were already deleted by version 1.4.1 cannot be recovered and must be entered again after installing this update.
+- Hardened browser SSO callback state validation and normalized helper-owned Account Credential permissions before use.
+- Preserved the selected Managed Network when Config Server reissues its runtime instance identifier, and fixed related account/sidebar selection regressions.
 - Corrected the License string in the About pane: the app is MIT-licensed, not LGPL-3.0.
 - Unified the minimum supported macOS version to 15.0 across `Package.swift`, the generated `Info.plist` (`LSMinimumSystemVersion`), the README badges, and the update-feed `minimumSystemVersion`. Previously the badge/prose/Info.plist claimed macOS 14+ while `Package.swift` required macOS 15.
 - The privileged helper `LaunchDaemon` now ships with `RunAtLoad=false` so it starts when the app establishes its signed XPC runtime session instead of launching at every login.
