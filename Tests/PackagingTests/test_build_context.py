@@ -268,13 +268,14 @@ class BuildContextTests(unittest.TestCase):
         self.assertNotIn('git -C Vendor/EasyTier fetch --no-tags origin main', workflow)
         self.assertNotIn('release_channel=none', workflow)
 
-    def test_workflow_skips_automated_tests_for_nightly_releases(self) -> None:
+    def test_workflow_skips_duplicate_tests_for_prerelease_channels(self) -> None:
         workflow = (ROOT_DIR / ".github" / "workflows" / "macos-app.yml").read_text(
             encoding="utf-8"
         )
 
         self.assertIn(
-            "if: steps.context.outputs.release_channel != 'nightly'\n"
+            "if: steps.context.outputs.release_channel != 'nightly' "
+            "&& steps.context.outputs.release_channel != 'dev'\n"
             "        run: make test",
             workflow,
         )

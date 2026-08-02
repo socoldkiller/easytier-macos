@@ -114,8 +114,7 @@ package actor ApplicationDatabase {
                 .filter(Column("controlOrigin") == account.profile.controlOrigin.absoluteString)
                 .filter(Column("username") == account.profile.username)
                 .fetchOne(db),
-               existing.id != account.id.rawValue.uuidString.lowercased()
-            {
+               existing.id != account.id.rawValue.uuidString.lowercased() {
                 account.id = RemoteAccountID(
                     UUID(uuidString: existing.id) ?? account.id.rawValue
                 )

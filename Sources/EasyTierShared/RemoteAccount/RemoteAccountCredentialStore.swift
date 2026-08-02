@@ -87,8 +87,7 @@ package struct RemoteAccountCredentialStore: Sendable {
             throw RemoteAccountCredentialStoreError.invalidLibrary("duplicate account identifiers")
         }
         if let activeAccountID = library.activeAccountID,
-           !ids.contains(activeAccountID)
-        {
+           !ids.contains(activeAccountID) {
             throw RemoteAccountCredentialStoreError.invalidLibrary("active account has no credential")
         }
     }

@@ -331,8 +331,7 @@ final class AccountSettingsModel {
             var status = try await runtime.remoteAccountStatus()
             if reconcileOrphan,
                let helperAccountID = status.activeAccountID,
-               !accounts.contains(where: { $0.id == helperAccountID })
-            {
+               !accounts.contains(where: { $0.id == helperAccountID }) {
                 try await runtime.removeRemoteAccount(accountID: helperAccountID)
                 status = try await runtime.remoteAccountStatus()
             }

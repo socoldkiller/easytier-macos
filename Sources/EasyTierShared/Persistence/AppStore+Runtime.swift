@@ -55,6 +55,43 @@ extension EasyTierAppStore {
         }
     }
 
+    public func runningInstance(matching config: NetworkConfig) -> NetworkInstance? {
+        let instanceID = config.instance_id
+        let networkName = config.network_name
+
+        if let byID = instances.first(where: { instance in instance.instance_id == instanceID }) { return byID }
+        return uniquelyMatchedInstance(named: networkName)
+    }
+
+    public func config(matching instance: NetworkInstance) -> NetworkConfig? {
+        if let local = localConfig(matching: instance) { return local }
+        let instanceID = instance.instance_id
+        let networkName = instance.name
+
+        if let byID = runtimeManagedConfigs.first(where: { $0.instance_id == instanceID }) { return byID }
+        let matches = runtimeManagedConfigs.filter { $0.network_name == networkName }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    public func runtimeReadinessPhase(matching config: NetworkConfig) -> RuntimeReadinessPhase {
+        guard let instance = runningInstance(matching: config) else { return .stopped }
+        return instance.runtimeReadinessPhase(
+            requiresTUN: config.requiresTUN,
+            runtimeDetail: runtimeDetails[instance.name] ?? instance.detail
+        )
+    }
+
+    public func instanceIsFullyConnected(_ instance: NetworkInstance) -> Bool {
+        guard let config = config(matching: instance) else { return false }
+        let detail = runtimeDetails[instance.name] ?? instance.detail
+        guard instance.runtimeReadinessPhase(requiresTUN: config.requiresTUN, runtimeDetail: detail) == .ready else {
+            return false
+        }
+        var resolved = instance
+        resolved.detail = detail
+        return resolved.isFullyConnected(expectRemotePeers: config.expectsRemotePeerConnection)
+    }
+
     func handleSystemWillSleep(now: Date = Date()) {
         invalidateSecretAuthenticationSession()
         let shouldScheduleRecovery = !runtimeMutationInProgress && !isQuitting
