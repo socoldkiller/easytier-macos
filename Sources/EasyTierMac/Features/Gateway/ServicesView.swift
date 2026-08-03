@@ -37,8 +37,14 @@ struct ServicesView: View {
     }
 
     private var displayedError: String? {
-        errorMessage ?? gatewayControlError ?? gateway.convergence.message ?? gateway.lastError
-            ?? gateway.status.runtimeIssues.last?.message
+        ServicesErrorPresentation.message(
+            operationError: errorMessage,
+            gatewayControlError: gatewayControlError,
+            convergenceError: gateway.convergence.message,
+            runtimeError: gateway.lastError,
+            runtimeIssue: gateway.status.runtimeIssues.last?.message,
+            magicDNSState: gateway.magicDNSState
+        )
     }
 
     private var display: PublishedServicesDisplayModel {

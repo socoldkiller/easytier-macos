@@ -1,5 +1,24 @@
 import EasyTierShared
 
+enum ServicesErrorPresentation {
+    static func message(
+        operationError: String?,
+        gatewayControlError: String?,
+        convergenceError: String?,
+        runtimeError: String?,
+        runtimeIssue: String?,
+        magicDNSState: MagicDNSOperationalState
+    ) -> String? {
+        if let operationError {
+            return operationError
+        }
+        if magicDNSState == .disabled {
+            return nil
+        }
+        return gatewayControlError ?? convergenceError ?? runtimeError ?? runtimeIssue
+    }
+}
+
 enum GatewayPresentationTone: Equatable, Sendable {
     case neutral
     case positive

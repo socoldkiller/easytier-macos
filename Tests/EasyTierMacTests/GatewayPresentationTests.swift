@@ -3,6 +3,32 @@ import Foundation
 import Testing
 @testable import EasyTierMac
 
+@Test func servicesErrorPresentationHidesGatewayControlErrorWhileMagicDNSIsDisabled() {
+    let message = ServicesErrorPresentation.message(
+        operationError: nil,
+        gatewayControlError: "EasyTier needs background permission",
+        convergenceError: nil,
+        runtimeError: nil,
+        runtimeIssue: nil,
+        magicDNSState: .disabled
+    )
+
+    #expect(message == nil)
+}
+
+@Test func servicesErrorPresentationKeepsOperationErrorsWhileMagicDNSIsDisabled() {
+    let message = ServicesErrorPresentation.message(
+        operationError: "Unable to update the published service",
+        gatewayControlError: "EasyTier needs background permission",
+        convergenceError: nil,
+        runtimeError: nil,
+        runtimeIssue: nil,
+        magicDNSState: .disabled
+    )
+
+    #expect(message == "Unable to update the published service")
+}
+
 @Test func gatewayRuntimePresentationSummarizesRuntimeAndServices() {
     var status = GatewayStatus.stopped
     var presentation = GatewayRuntimePresentation(
