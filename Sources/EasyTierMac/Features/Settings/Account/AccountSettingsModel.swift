@@ -126,6 +126,12 @@ final class AccountSettingsModel {
         }
     }
 
+    func runtimeServiceDidBecomeAvailable() async {
+        errorMessage = nil
+        await refreshStatus(reconcileOrphan: true)
+        if activeAccountID != nil { startStatusMonitoring() }
+    }
+
     func status(for accountID: RemoteAccountID) -> AccountStatus {
         if activeAccountID == accountID {
             switch phase {

@@ -61,6 +61,7 @@ final class AppContext {
     }
 
     private func restoreRuntimeAfterHelperPreparation() async {
+        await settings.account?.runtimeServiceDidBecomeAvailable()
         await workspace.store.retryStartAfterHelperApproval()
         await softwareUpdate.controller.restorePendingRuntimeIfNeeded()
         await runtime.startGatewayIfNeeded()

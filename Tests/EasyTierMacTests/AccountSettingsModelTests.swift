@@ -109,6 +109,35 @@ import Testing
 }
 
 @MainActor
+@Test func helperRecoveryRestoresAccountAfterTransientUpgradeFailure() async throws {
+    let fixture = try AccountModelFixture()
+    defer { fixture.removeFiles() }
+    let account = try fixture.account(username: "operator", host: "control.example.com")
+    _ = try await fixture.database.upsertRemoteAccount(account)
+    let runtime = AccountRuntimeStub(
+        credentials: [account.id: fixture.credential(for: account, token: "saved-token")],
+        activeAccountID: account.id,
+        statusErrors: [PrivilegedHelperError.needsRegistration]
+    )
+    let model = fixture.makeModel(
+        browserSSO: BrowserSSOStub(error: AccountModelTestError.expected),
+        runtime: runtime
+    )
+
+    await model.load()
+
+    #expect(model.phase == .failed)
+    #expect(model.errorMessage?.contains("background permission") == true)
+
+    await model.runtimeServiceDidBecomeAvailable()
+
+    #expect(model.activeAccountID == account.id)
+    #expect(model.credentialAccountIDs == [account.id])
+    #expect(model.phase == .connected)
+    #expect(model.errorMessage == nil)
+}
+
+@MainActor
 @Test func logoutRemovesOnlyCredentialAndKeepsMetadata() async throws {
     let fixture = try AccountModelFixture()
     defer { fixture.removeFiles() }
@@ -203,19 +232,22 @@ private actor AccountRuntimeStub: RemoteAccountRuntimeClient {
     private let configureError: (any Error & Sendable)?
     private let activateError: (any Error & Sendable)?
     private let removeError: (any Error & Sendable)?
+    private var statusErrors: [any Error & Sendable]
 
     init(
         credentials: [RemoteAccountID: RemoteAccountCredential] = [:],
         activeAccountID: RemoteAccountID? = nil,
         configureError: (any Error & Sendable)? = nil,
         activateError: (any Error & Sendable)? = nil,
-        removeError: (any Error & Sendable)? = nil
+        removeError: (any Error & Sendable)? = nil,
+        statusErrors: [any Error & Sendable] = []
     ) {
         self.credentials = credentials
         self.activeAccountID = activeAccountID
         self.configureError = configureError
         self.activateError = activateError
         self.removeError = removeError
+        self.statusErrors = statusErrors
     }
 
     func configureRemoteAccount(
@@ -239,8 +271,11 @@ private actor AccountRuntimeStub: RemoteAccountRuntimeClient {
         if activeAccountID == accountID { activeAccountID = nil }
     }
 
-    func remoteAccountStatus() -> RemoteRuntimeStatus {
-        RemoteRuntimeStatus(
+    func remoteAccountStatus() throws -> RemoteRuntimeStatus {
+        if !statusErrors.isEmpty {
+            throw statusErrors.removeFirst()
+        }
+        return RemoteRuntimeStatus(
             activeAccountID: activeAccountID,
             credentialAccountIDs: Array(credentials.keys),
             active: activeAccountID != nil,
